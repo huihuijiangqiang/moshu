@@ -1,0 +1,813 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="stylesheet" href="_ds/modernist-667439bb-dc19-4ae0-8e09-28868acb4b72/styles.css">
+<script src="_ds/modernist-667439bb-dc19-4ae0-8e09-28868acb4b72/_ds_bundle.js"></script>
+<style>
+  body { margin: 0; background: var(--color-bg); color: var(--color-text); }
+  a { color: var(--color-accent-700); text-decoration: none; border-bottom: 2px solid var(--color-accent); }
+  a:hover { color: var(--color-accent-900); background: var(--color-accent-100); }
+  code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.92em; background: var(--color-neutral-200); padding: 1px 5px; }
+  h2.sec { font-family: var(--font-heading); font-weight: 700; font-size: 14px; letter-spacing: 0.18em; text-transform: uppercase; margin: 0 0 12px; }
+  .lede { font-size: 18px; line-height: 1.6; margin: 0 0 40px; max-width: 62ch; text-wrap: pretty; }
+  .band { padding: 72px 0 56px; border-bottom: 2px solid var(--color-divider); }
+  .kick { font-family: var(--font-heading); font-size: 12px; font-weight: 700; letter-spacing: 0.14em; text-transform: uppercase; color: var(--color-neutral-700); margin-bottom: 12px; }
+  .cellgrid { display: grid; gap: 2px; background: var(--color-divider); }
+  .cell { background: var(--color-bg); padding: 30px 24px; }
+  .cell h3 { font-family: var(--font-heading); font-size: 19px; font-weight: 700; margin: 0 0 12px; }
+  .cell p { margin: 0 0 14px; font-size: 14px; line-height: 1.6; }
+  .foot { border-top: 2px solid var(--color-divider); padding-top: 12px; font-size: 13px; line-height: 1.5; }
+  .table { font-size: 14px; }
+  .table td, .table th { vertical-align: top; }
+  pre { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 13px; line-height: 1.7; background: var(--color-neutral-200); padding: 22px 26px; margin: 0; overflow-x: auto; }
+  .poster { padding: 36px 40px; background: var(--color-accent); color: #fff; }
+  .poster p { margin: 0; font-family: var(--font-heading); font-size: 26px; font-weight: 700; line-height: 1.35; max-width: 52ch; }
+  .lane { background: var(--color-bg); padding: 20px 22px; font-size: 14px; line-height: 1.65; }
+</style>
+</helmet>
+<div style="max-width: 1280px; margin: 0 auto; padding: 0 40px 120px; font-family: var(--font-body);">
+
+  <div style="display: flex; align-items: baseline; justify-content: space-between; gap: 24px; padding: 22px 0; border-bottom: 2px solid var(--color-divider);">
+    <div style="font-family: var(--font-heading); font-weight: 700; font-size: 14px; letter-spacing: 0.18em; text-transform: uppercase;">开发规划 &amp; 技术选型 · v1.0</div>
+    <div style="font-size: 13px; letter-spacing: 0.06em; color: var(--color-neutral-700);">2026 / 08 · 决议版</div>
+  </div>
+
+  <div style="display: grid; grid-template-columns: 1.4fr 1fr; gap: 72px; padding: 80px 0 64px; border-bottom: 2px solid var(--color-divider);">
+    <div>
+      <div style="font-family: var(--font-heading); font-size: 13px; font-weight: 700; letter-spacing: 0.18em; text-transform: uppercase; color: var(--color-accent-700); margin-bottom: 24px;">墨枢 · 前后端实施方案</div>
+      <h1 style="font-family: var(--font-heading); font-weight: 700; font-size: 46px; line-height: 1.18; letter-spacing: -0.01em; margin: 0 0 32px;">前端已有骨架，<br>后端从上下文<br>装配器开始</h1>
+      <p style="font-size: 19px; line-height: 1.6; margin: 0 0 20px; max-width: 44ch; text-wrap: pretty;">前端十二屏脚手架已跑通 mock，剩下的是接口替换与四处留白。后端从零开始，<strong>第一个要写的不是 CRUD，是上下文装配器</strong>——它决定生成质量、成本模型与守卫的输入。</p>
+      <p style="font-size: 17px; line-height: 1.6; margin: 0; max-width: 46ch; color: var(--color-neutral-800);">本文档定义后端架构、数据模型、接口契约、异步链路、分阶段排期与降级路径。范围以《需求文档与技术选型》的功能需求表为唯一依据。</p>
+    </div>
+    <div style="border-left: 2px solid var(--color-divider); padding-left: 36px;">
+      <div style="font-family: var(--font-heading); font-size: 13px; font-weight: 700; letter-spacing: 0.18em; text-transform: uppercase; color: var(--color-neutral-700); margin-bottom: 24px;">四条已决议</div>
+      <div style="display: grid; gap: 20px; font-size: 15px; line-height: 1.6;">
+        <div style="border-top: 2px solid var(--color-divider); padding-top: 14px;"><strong>后端语言</strong><br><span style="color: var(--color-neutral-800);">Python + FastAPI。守卫、摘要、风格抽取都是算法活，省一次跨语言</span></div>
+        <div style="border-top: 2px solid var(--color-divider); padding-top: 14px;"><strong>工作室产线</strong><br><span style="color: var(--color-neutral-800);">排入第二阶段（第 11-18 周），MVP 只预留三张表与组织归属</span></div>
+        <div style="border-top: 2px solid var(--color-divider); padding-top: 14px;"><strong>团队基准</strong><br><span style="color: var(--color-neutral-800);">2 前端 / 2 后端 / 1 算法 / 1 设计，10 周 MVP。小团队降级路径见 08</span></div>
+        <div style="border-top: 2px solid var(--color-divider); padding-top: 14px;"><strong>协作编辑</strong><br><span style="color: var(--color-neutral-800);">MVP 不引入 Yjs。章节正文独立存储，为切换留余地</span></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="band">
+    <h2 class="sec">01 &nbsp;起点盘点：前端已有什么，缺什么</h2>
+    <p class="lede">前端不是从零开始。<code>app/</code> 下十二个路由全部可跑，走 <code>src/api/mock</code>。接后端时 mock 层整个删掉，签名不变，上层视图不动。</p>
+
+    <div class="cellgrid" style="grid-template-columns: repeat(2, 1fr); margin-bottom: 2px;">
+      <div class="cell">
+        <div class="kick">已完成 · 直接复用</div>
+        <div style="font-size: 15px; line-height: 1.9;">
+          十二屏视图与路由，<code>keep-alive</code> 保活写作台<br>
+          <strong>AiDraft 节点</strong>——流式写入不进 history，采纳是一次事务，有单测锁住<br>
+          <strong>CodexRef 节点</strong>——存条目 id，改名自动跟随<br>
+          <code>@</code> 唤起的设定下拉（<code>@tiptap/suggestion</code>）<br>
+          三层保险自动保存（IndexedDB 即时写 + 节流 3s 上传）<br>
+          SSE 解析已写好，<code>generation.ts</code> 里 mock 与真实两条路径同签名<br>
+          Pinia 三个 store：project / codex / guard<br>
+          Modernist 设计令牌落地
+        </div>
+      </div>
+      <div class="cell" style="box-shadow: inset 0 0 0 2px var(--color-accent);">
+        <div class="kick" style="color: var(--color-accent);">缺口 · 本轮要补</div>
+        <div style="font-size: 15px; line-height: 1.9;">
+          行内 AI 动作只插占位文本，等 <code>/api/generate/inline</code><br>
+          大纲网格拖拽换序（结构就位，缺 dnd）<br>
+          登录只做前端校验，无真实鉴权<br>
+          <strong>章节树无虚拟滚动</strong>——超 200 项会卡，需求文档明确要求<br>
+          <strong>离线冲突并列展示未实现</strong>——目前只有单向覆盖<br>
+          <strong>Dexie 未接入</strong>——现在是 <code>idb-keyval</code>，够用但版本历史要换<br>
+          <strong>多作品切换未打通</strong>——<code>shelfApi</code> 与 <code>projectStore</code> 尚未连接<br>
+          守卫「跳到出问题的那一句」缺定位锚点
+        </div>
+      </div>
+    </div>
+
+    <div style="margin-top: 2px; background: var(--color-neutral-200); padding: 24px 28px; font-size: 15px; line-height: 1.7;">
+      <strong>一个必须先补的前端约定：</strong>守卫要能「一键跳到出问题的那一句」，这需要正文里有稳定的段落锚点。TipTap 默认段落无 id，重排后位置就漂了。<strong>解法：给 paragraph 加一个 <code>data-pid</code> 属性（nanoid，创建时生成、复制时重生成）</strong>，守卫结果按 <code>pid + 字符 offset</code> 定位。这件事越晚做越贵——已有正文需要回填迁移。
+    </div>
+  </div>
+
+  <div class="band">
+    <h2 class="sec">02 &nbsp;后端技术选型（已决议）</h2>
+    <p class="lede">Python + FastAPI。取舍依据：一致性守卫、章摘要、风格抽取三条链路全是算法活，放在 Python 生态省一次跨语言序列化与一次团队协作边界。</p>
+
+    <div class="cellgrid" style="grid-template-columns: 160px 1fr; margin-bottom: 2px;">
+      <div style="background: var(--color-neutral-200); padding: 26px 22px; font-family: var(--font-heading); font-size: 15px; font-weight: 700; letter-spacing: 0.06em;">运行时</div>
+      <div class="lane" style="padding: 26px 28px;">
+        <div style="display: grid; grid-template-columns: repeat(2, 1fr); gap: 28px; font-size: 16px; line-height: 1.8;">
+          <div>
+            <strong>Python 3.12 + FastAPI</strong> — 异步原生，SSE 用 <code>StreamingResponse</code><br>
+            <strong>Uvicorn + Gunicorn</strong> — 生产多 worker<br>
+            <strong>Pydantic v2</strong> — 请求/响应模型，与前端 TS 类型对齐<br>
+            <strong>uv</strong> — 依赖与虚拟环境管理，比 poetry 快一个量级
+          </div>
+          <div>
+            <strong>SQLAlchemy 2.0（async）</strong> — ORM，<code>asyncpg</code> 驱动<br>
+            <strong>Alembic</strong> — 迁移，每次改模型必须生成迁移<br>
+            <strong>Celery + Redis</strong> — 异步任务；守卫、摘要、风格抽取全走这里<br>
+            <strong>pytest + pytest-asyncio</strong> — 测试
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="cellgrid" style="grid-template-columns: 160px 1fr; margin-bottom: 2px;">
+      <div style="background: var(--color-neutral-200); padding: 26px 22px; font-family: var(--font-heading); font-size: 15px; font-weight: 700; letter-spacing: 0.06em;">存储</div>
+      <div class="lane" style="padding: 26px 28px;">
+        <div style="font-size: 16px; line-height: 1.8;">
+          <strong>PostgreSQL 16 + pgvector</strong> — 关系数据与向量检索合一。MVP 不引入独立向量库：条目量级在千级，pgvector 的 HNSW 索引完全够用，而且第 2 层检索<strong>主路径是实体索引精确命中，向量只是兜底</strong><br>
+          <strong>Redis 7</strong> — Celery broker + 生成状态缓存 + 额度扣减的原子计数<br>
+          <strong>对象存储（S3 兼容 / MinIO）</strong> — 导出包、风格档上传的旧作原文、版本快照的冷数据
+        </div>
+        <div style="margin-top: 20px; border-top: 2px solid var(--color-divider); padding-top: 16px; font-size: 15px; line-height: 1.7;">
+          <strong>正文存哪：</strong>章节正文存 PostgreSQL 的 <code>chapter_body</code> 独立表（一行一章，<code>content_html</code> + <code>content_json</code> 双写）。独立表而非 <code>chapters</code> 表的列，原因有三：列表查询永不误带正文、将来切 Yjs 时只换这一张表、版本快照可以只对这张表做。
+        </div>
+      </div>
+    </div>
+
+    <div class="cellgrid" style="grid-template-columns: 160px 1fr; margin-bottom: 2px;">
+      <div style="background: var(--color-neutral-200); padding: 26px 22px; font-family: var(--font-heading); font-size: 15px; font-weight: 700; letter-spacing: 0.06em;">模型网关</div>
+      <div class="lane" style="padding: 26px 28px;">
+        <div style="font-size: 16px; line-height: 1.8;">
+          <strong>自建薄网关</strong>，不用 LiteLLM 之类的全功能框架——我们需要的只有四件事：统一 OpenAI 兼容协议、按任务路由、失败降级、token 归因记账。自己写 300 行比接一个框架再绕过它的抽象更省<br>
+          <strong>必须支持 prompt caching</strong> — 第 1 层设定常驻是成本模型成立的前提。网关层要保证同一作品的 system 段字节级稳定，否则缓存命中率归零<br>
+          <strong>任务路由表</strong>：摘要与实体抽取走便宜档、正文生成走主力档、高级档可选顶级模型、守卫的冲突判定走中档 + 结构化输出
+        </div>
+        <div style="margin-top: 20px; border-top: 2px solid var(--color-divider); padding-top: 16px; font-size: 15px; line-height: 1.7;">
+          <strong>缓存命中的硬约束：</strong>prompt 的前缀必须字节稳定。这意味着<strong>第 1 层设定的序列化顺序要固定</strong>（按条目 id 排序，不按更新时间），且第 1 层与第 2 层之间要有明确分隔符。设定改动时缓存失效是正常的，但不能因为排序抖动而无谓失效。
+        </div>
+      </div>
+    </div>
+
+    <div class="cellgrid" style="grid-template-columns: 160px 1fr;">
+      <div style="background: var(--color-neutral-200); padding: 26px 22px; font-family: var(--font-heading); font-size: 15px; font-weight: 700; letter-spacing: 0.06em;">传输与部署</div>
+      <div class="lane" style="padding: 26px 28px;">
+        <div style="font-size: 16px; line-height: 1.8;">
+          <strong>SSE 而非 WebSocket</strong> — 生成是单向流。<strong>注意 Nginx 要关 <code>proxy_buffering</code></strong>，否则首字延迟 &lt; 3s 的验收标准直接失败，这是最常见的坑<br>
+          <strong>Docker Compose</strong>（MVP）→ <strong>K8s</strong>（工作室阶段）。MVP 阶段别上 K8s，运维成本换不来收益<br>
+          <strong>鉴权</strong>：手机号/邮箱验证码 → JWT（access 30min + refresh 30d），refresh 存 Redis 可吊销。<strong>SSE 的 token 通过 POST body 传，不走 query string</strong>——query 会进 Nginx access log
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="band">
+    <h2 class="sec">03 &nbsp;后端目录结构</h2>
+    <p class="lede">按领域切分而非按技术分层。<code>memory/</code> 与 <code>guard/</code> 是产品的两个心脏，各自独立成包，不许业务代码直接调它们的内部函数。</p>
+
+    <pre>server/
+  pyproject.toml            uv 管理依赖
+  alembic/                  迁移；每次改 models 必须生成
+  app/
+    main.py                 FastAPI 应用装配、中间件、异常处理
+    config.py               Pydantic Settings，全部配置走环境变量
+    deps.py                 依赖注入：db session / current_user / 额度校验
+
+    api/                    路由层。只做参数校验与响应组装，不写业务
+      auth.py               验证码、JWT 签发与刷新
+      projects.py           作品 / 卷 CRUD、书架列表
+      chapters.py           章节元数据 CRUD、排序、回收站
+      bodies.py             正文读写、版本快照、冲突检测
+      codex.py              六类条目 CRUD、别名、关系、待确认处置
+      generate.py           ★ SSE：/chapter /inline /wizard
+      guard.py              守卫报告读取、告警处置
+      style.py              风格档上传、抽取状态、维度读取
+      ratio.py              AI 占比报告
+      export.py             导出任务创建与下载
+      usage.py              用量明细、积分余额
+
+    domain/                 领域模型与业务规则（无 IO）
+      entities.py           纯数据类，与 ORM 解耦
+      rules.py             『改名跟随』『锁定段不重生成』这类不变量
+
+    memory/                 ★ 分层记忆装配器。整个产品的技术心脏
+      assembler.py          四层装配主入口，返回 messages + 预算报告
+      layer1_resident.py    稳定设定，序列化顺序固定（保缓存命中）
+      layer2_retrieval.py   实体索引精确命中 + pgvector 兜底
+      layer3_summary.py     章摘要 / 卷摘要金字塔读取
+      layer4_adjacent.py    前 2 章原文，定长截取优先章末
+      budget.py             25k 硬上限；超出时按层降级的优先级表
+      tokenizer.py          token 计数，与网关所用模型口径一致
+
+    guard/                  ★ 一致性守卫。MVP 的成败点
+      extractor.py          新增设定抽取 → pending 条目
+      conflict.py           属性冲突检测（规则前置 + LLM 判定）
+      foreshadow.py         伏笔登记与倒计时
+      anchor.py             pid + offset 定位，供前端跳转
+      eval/                 评测集与召回率脚本，跟着代码走
+
+    gateway/                模型网关
+      client.py             OpenAI 兼容调用，流式与非流式
+      router.py             任务 → 模型档位的路由表
+      fallback.py           失败降级链
+      accounting.py         token 记账与成本归因，写 usage_log
+
+    tasks/                  Celery
+      celery_app.py
+      summarize.py          章摘要 → 每 10 章卷摘要压缩
+      guard_scan.py         保存后触发的守卫扫描
+      style_extract.py      风格档抽取
+      export_pack.py        导出打包
+      embed.py              条目向量化
+
+    db/
+      models.py             SQLAlchemy 模型
+      repositories/         查询封装；API 层只碰 repository
+
+    services/               跨领域编排
+      generation.py         装配 → 网关 → 流式转发 → 记账
+      wizard.py             开书向导四步的状态机
+      quota.py              额度校验与原子扣减
+
+  tests/
+    test_memory_budget.py   ★ 25k 上限的回归测试
+    test_guard_recall.py    ★ 召回率评测，CI 里跑
+    test_sse.py             流式协议与中断</pre>
+
+    <div style="margin-top: 24px; background: var(--color-neutral-200); padding: 24px 28px; font-size: 15px; line-height: 1.7;">
+      <strong>两条目录纪律：</strong>其一，<code>api/</code> 层不允许出现业务逻辑，它只做参数校验与响应组装——这样将来换 GraphQL 或加 gRPC 时业务代码零改动。其二，<code>memory/</code> 与 <code>guard/</code> 只暴露包级入口函数，内部实现随时可重写；算法同学在这两个包里迭代不会波及后端同学的进度，这是 6 人团队能真正并行的前提。
+    </div>
+  </div>
+
+  <div class="band">
+    <h2 class="sec">04 &nbsp;数据模型</h2>
+    <p class="lede">十九张表，分五组。前六张是骨架，<code>codex_*</code> 四张支撑设定库与第 2 层检索，守卫资产两张，风格 / 用量 / 占比四张，最后三张是组织权限——MVP 建表但不开功能。</p>
+
+    <div style="border: 2px solid var(--color-divider);">
+      <table class="table" style="width: 100%; border-collapse: collapse;">
+        <thead>
+          <tr>
+            <th style="width: 15%;">表</th>
+            <th style="width: 43%;">关键字段</th>
+            <th style="width: 42%;">要点</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr><td colspan="3" style="background: var(--color-neutral-200); font-family: var(--font-heading); font-size: 12px; font-weight: 700; letter-spacing: 0.14em; text-transform: uppercase;">骨架</td></tr>
+          <tr>
+            <td><code>users</code></td>
+            <td>id, phone, email, plan, credits_remaining, credits_quota, created_at</td>
+            <td>无密码。<code>credits_*</code> 的写操作必须走 Redis 原子计数再落库，否则并发生成会超扣或漏扣</td>
+          </tr>
+          <tr>
+            <td><code>projects</code></td>
+            <td>id, owner_id, <strong>org_id</strong>, title, genre, status, daily_goal, style_profile_id, cover_url</td>
+            <td><strong><code>org_id</code> 从第一天就建</strong>，个人作品填个人默认组织。后补这一列要改所有查询的 where 条件</td>
+          </tr>
+          <tr>
+            <td><code>volumes</code></td>
+            <td>id, project_id, idx, title, summary</td>
+            <td><code>summary</code> 是第 3 层的卷级摘要，每 10 章由 Celery 压缩生成</td>
+          </tr>
+          <tr>
+            <td><code>chapters</code></td>
+            <td>id, project_id, volume_id, idx, title, words, status, outline(jsonb), outline_note, summary, deleted_at</td>
+            <td><strong>此表永不含正文</strong>——这是首屏 &lt; 2s 的唯一保证。<code>idx</code> 用间隔 1024 的稀疏整数，拖拽换序只改一行</td>
+          </tr>
+          <tr style="background: var(--color-accent-100);">
+            <td><code>chapter_bodies</code></td>
+            <td>id, chapter_id, content_html, content_json(jsonb), rev, updated_at</td>
+            <td>一行一章，独立表。<code>content_json</code> 存 ProseMirror doc，守卫与占比分析读它而非 HTML。<code>rev</code> 单调递增，用于离线冲突判定</td>
+          </tr>
+          <tr>
+            <td><code>chapter_versions</code></td>
+            <td>id, chapter_id, rev, content_html, created_at, trigger</td>
+            <td>每章保留最近 50 个快照，超出删最旧。<code>trigger</code> 记来源（autosave / accept-draft / manual）</td>
+          </tr>
+
+          <tr><td colspan="3" style="background: var(--color-neutral-200); font-family: var(--font-heading); font-size: 12px; font-weight: 700; letter-spacing: 0.14em; text-transform: uppercase;">设定库与检索</td></tr>
+          <tr>
+            <td><code>codex_entries</code></td>
+            <td>id, project_id, kind, name, summary, attrs(jsonb), resident, status, embedding(vector)</td>
+            <td><code>attrs</code> 存结构化属性（如「左手：已断，第 12 章」），冲突检测比对的是它而非自由文本。<code>status='pending'</code> 是守卫抽取待确认</td>
+          </tr>
+          <tr>
+            <td><code>codex_aliases</code></td>
+            <td>id, entry_id, alias</td>
+            <td>独立表而非数组列——第 2 层的实体索引要对别名建 GIN 索引做精确命中</td>
+          </tr>
+          <tr>
+            <td><code>codex_refs</code></td>
+            <td>chapter_id, entry_id, occurrences</td>
+            <td><strong>一致性检查与上下文装配的共同基础。</strong>保存正文时从 <code>content_json</code> 扫 CodexRef 节点全量重建本章的行</td>
+          </tr>
+          <tr>
+            <td><code>codex_relations</code></td>
+            <td>id, from_entry_id, to_entry_id, kind, note</td>
+            <td>人物关系图。MVP 只做展示与注入，不做图推理</td>
+          </tr>
+
+          <tr><td colspan="3" style="background: var(--color-neutral-200); font-family: var(--font-heading); font-size: 12px; font-weight: 700; letter-spacing: 0.14em; text-transform: uppercase;">守卫资产</td></tr>
+          <tr style="background: var(--color-accent-100);">
+            <td><code>guard_issues</code></td>
+            <td>id, project_id, kind, severity, category, title, chapter_id, <strong>anchor(jsonb)</strong>, evidence(jsonb), resolution, resolved_at, false_positive</td>
+            <td><code>anchor</code> 存 <code>{pid, start, end}</code>，前端靠它跳到出问题那一句。<code>false_positive</code> 回流评测集，用于持续调准</td>
+          </tr>
+          <tr>
+            <td><code>foreshadows</code></td>
+            <td>id, project_id, entry_id, planted_chapter, expected_by_chapter, status, closed_chapter</td>
+            <td>伏笔独立成表而非塞进 codex——它有生命周期与倒计时，查询模式完全不同</td>
+          </tr>
+
+          <tr><td colspan="3" style="background: var(--color-neutral-200); font-family: var(--font-heading); font-size: 12px; font-weight: 700; letter-spacing: 0.14em; text-transform: uppercase;">风格、用量、占比</td></tr>
+          <tr>
+            <td><code>style_profiles</code></td>
+            <td>id, user_id, name, source, sample_words, is_default, dimensions(jsonb), extracted_at</td>
+            <td><code>dimensions</code> 存六维抽取结果。归属 user 而非 project——风格档跨作品复用</td>
+          </tr>
+          <tr>
+            <td><code>generation_runs</code></td>
+            <td>id, user_id, chapter_id, kind, model, prompt_tokens, cached_tokens, completion_tokens, credits, <strong>accepted_words</strong>, layer_report(jsonb)</td>
+            <td><strong><code>accepted_words</code> 是北极星指标的数据源</strong>，采纳时回写。<code>layer_report</code> 存四层实际 token 占用，用于调预算</td>
+          </tr>
+          <tr>
+            <td><code>usage_logs</code></td>
+            <td>id, user_id, run_id, feature, credits, created_at</td>
+            <td>用量面板按 <code>feature</code> 聚合。基础档记 0 积分但仍要记行，成本核算需要</td>
+          </tr>
+          <tr>
+            <td><code>ratio_reports</code></td>
+            <td>id, chapter_id, ai_raw, ai_edited, human, segments(jsonb), computed_at</td>
+            <td>占比靠<strong>采纳时打标</strong>而非事后检测：草稿采纳时段落标 <code>ai-raw</code>，用户编辑后降级 <code>ai-edited</code></td>
+          </tr>
+
+          <tr><td colspan="3" style="background: var(--color-neutral-200); font-family: var(--font-heading); font-size: 12px; font-weight: 700; letter-spacing: 0.14em; text-transform: uppercase;">组织权限 · MVP 建表不开功能</td></tr>
+          <tr>
+            <td><code>orgs</code></td>
+            <td>id, name, plan, seats, created_at</td>
+            <td>个人用户注册时自动建一个单人组织，避免两套归属逻辑</td>
+          </tr>
+          <tr>
+            <td><code>org_members</code></td>
+            <td>org_id, user_id, role, joined_at</td>
+            <td><code>role</code> 枚举：owner / lead（主笔）/ writer（写手）/ editor（主编）</td>
+          </tr>
+          <tr>
+            <td><code>chapter_assignments</code></td>
+            <td>id, chapter_id, assignee_id, assigner_id, state, due_at</td>
+            <td>派章领章。MVP 不用，但建表能让 <code>chapters</code> 查询从一开始就带 assignee 视角</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div style="margin-top: 32px;" class="poster">
+      <div style="font-family: var(--font-heading); font-size: 12px; font-weight: 700; letter-spacing: 0.18em; text-transform: uppercase; opacity: 0.85; margin-bottom: 16px;">最容易被忽略的一张表</div>
+      <p><code>codex_refs</code> 决定第 2 层检索的精确率、守卫的检查范围和「改名自动跟随」的正确性。它必须在每次正文保存时全量重建，不能增量更新——增量会漏删。</p>
+    </div>
+  </div>
+
+  <div class="band">
+    <h2 class="sec">05 &nbsp;接口契约</h2>
+    <p class="lede">与 <code>app/src/api/mock/index.ts</code> 的方法签名一一对应。前端把 mock 换成 <code>request()</code> 调用即可，视图层零改动。</p>
+
+    <div style="border: 2px solid var(--color-divider);">
+      <table class="table" style="width: 100%; border-collapse: collapse;">
+        <thead>
+          <tr>
+            <th style="width: 30%;">接口</th>
+            <th style="width: 26%;">对应 mock 方法</th>
+            <th style="width: 44%;">要点</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><code>POST /auth/code</code><br><code>POST /auth/verify</code></td>
+            <td>—（前端待补）</td>
+            <td>验证码 60s 冷却、单 IP 限流。<code>verify</code> 返回 access + refresh</td>
+          </tr>
+          <tr>
+            <td><code>GET /books</code></td>
+            <td><code>shelfApi.listBooks</code></td>
+            <td>书架卡片。<code>words / chapters / codexCount / guardOpen</code> 全是聚合数，走物化视图或缓存，别每次现算</td>
+          </tr>
+          <tr>
+            <td><code>GET /projects/:id</code></td>
+            <td><code>getProject</code></td>
+            <td>含卷列表、日更目标、绑定的风格档 id</td>
+          </tr>
+          <tr>
+            <td><code>GET /projects/:id/chapters</code></td>
+            <td><code>listChapters</code></td>
+            <td><strong>响应绝不含正文。</strong>80 万字作品（约 270 章）这个响应应在 100KB 以内</td>
+          </tr>
+          <tr>
+            <td><code>GET /chapters/:id</code></td>
+            <td><code>getChapter</code></td>
+            <td>带正文。<code>rev</code> 必须返回，前端离线冲突判定要用</td>
+          </tr>
+          <tr style="background: var(--color-accent-100);">
+            <td><code>PUT /chapters/:id/body</code></td>
+            <td><code>saveChapter</code></td>
+            <td>请求带 <code>base_rev</code>。若服务端 rev 更高返回 <strong>409 + 双方内容</strong>，前端并列展示。<strong>永不静默覆盖</strong>。保存成功后异步触发守卫扫描与 <code>codex_refs</code> 重建</td>
+          </tr>
+          <tr>
+            <td><code>PATCH /chapters/:id</code><br><code>POST /chapters/reorder</code></td>
+            <td>—（前端待补 dnd）</td>
+            <td>元数据改动与拖拽换序分开。换序传 <code>{id, before_id, after_id}</code>，服务端算稀疏 idx</td>
+          </tr>
+          <tr>
+            <td><code>GET /projects/:id/codex</code><br><code>POST/PATCH/DELETE /codex/:id</code></td>
+            <td><code>listCodex</code> / <code>confirmCodexEntry</code> / <code>dropCodexEntry</code></td>
+            <td>改名只改 <code>name</code>，正文无需迁移——引用存 id。改名后要重算该条目的 embedding</td>
+          </tr>
+          <tr style="background: var(--color-accent-100);">
+            <td><code>POST /generate/chapter</code></td>
+            <td><code>streamChapter</code></td>
+            <td><strong>SSE。</strong>推 <code>data: {"text":"…"}</code> / <code>data: {"node":2}</code> / <code>data: [DONE]</code>，前端解析已写好。首帧前先推一条 <code>{"layers":{…}}</code> 让右栏显示实际装配情况。客户端断开必须真正中止上游请求，否则积分照扣</td>
+          </tr>
+          <tr>
+            <td><code>POST /generate/inline</code></td>
+            <td>—（前端占位待接）</td>
+            <td>续写/扩写/润色/改写四个 action。传选区文本 + 前后各 500 字 + 本章引用条目。同样走 SSE，结果同样落 <code>aiDraft</code></td>
+          </tr>
+          <tr>
+            <td><code>POST /generate/wizard/:step</code></td>
+            <td>—（前端待接）</td>
+            <td>开书向导四步。每步结果落库，中途退出可续做——「&lt; 5 分钟拿到第一章」的验收要求这个</td>
+          </tr>
+          <tr>
+            <td><code>GET /chapters/:id/context</code></td>
+            <td><code>getContextLayers</code></td>
+            <td>四层预算预览，不真正调模型。右栏「已装配 21.4k token」读它</td>
+          </tr>
+          <tr>
+            <td><code>GET /projects/:id/guard</code><br><code>POST /guard/:id/resolve</code></td>
+            <td><code>listGuardIssues</code> / <code>resolveGuardIssue</code></td>
+            <td>处置传 <code>{resolution: 'keep-old' | 'keep-new' | 'intentional' | 'false-positive'}</code>。前三种回写设定库，第四种回流评测集</td>
+          </tr>
+          <tr>
+            <td><code>GET /style/profiles</code><br><code>POST /style/upload</code><br><code>GET /style/:id/dimensions</code></td>
+            <td><code>styleApi.list</code> / <code>dimensions</code></td>
+            <td>上传走对象存储直传 + 回调，5 万字文件别过应用层。抽取异步，前端轮询状态</td>
+          </tr>
+          <tr>
+            <td><code>GET /chapters/:id/ratio</code></td>
+            <td><code>ratioApi.report</code></td>
+            <td>段落来源标记在采纳时已写入 <code>content_json</code>，此接口只做聚合 + 疑似句式匹配</td>
+          </tr>
+          <tr>
+            <td><code>POST /export</code><br><code>GET /export/:taskId</code></td>
+            <td>—（前端待接）</td>
+            <td>异步打包，完成后给对象存储预签名 URL。<strong>不校验积分</strong>——导出免费是写进定价页的承诺</td>
+          </tr>
+          <tr>
+            <td><code>GET /usage</code></td>
+            <td><code>shelfApi.usage</code> / <code>dailySeries</code></td>
+            <td>按 <code>feature</code> 聚合 <code>usage_logs</code>。基础档显示「免费」而非 0</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div style="margin-top: 24px; background: var(--color-neutral-200); padding: 24px 28px; font-size: 15px; line-height: 1.7;">
+      <strong>SSE 的两个必须做对的细节：</strong>其一，Nginx 必须 <code>proxy_buffering off</code> 且 <code>X-Accel-Buffering: no</code>，否则首字延迟卡在缓冲区里，&lt; 3s 的验收标准必然失败。其二，客户端 <code>AbortController</code> 断开时，FastAPI 侧要通过 <code>await request.is_disconnected()</code> 感知并真正中止上游模型请求——只停转发不停上游，用户按了「停止」但积分照扣完。
+    </div>
+  </div>
+
+  <div class="band">
+    <h2 class="sec">06 &nbsp;两条关键链路</h2>
+    <p class="lede">生成链路决定成本与体验，守卫链路决定护城河。其余接口都是 CRUD，不值得单独画。</p>
+
+    <div class="kick" style="margin-bottom: 18px;">链路 A · 一键成章</div>
+    <pre>前端 insertAiDraft()                      草稿容器就位，status=streaming
+  │
+  ├─ POST /generate/chapter { chapterId, targetWords, model, useStyleProfile, dialogueDensity }
+  │
+  ▼
+services/generation.py
+  1  quota.check()                        额度不足直接 402 + 降档建议，不静默失败
+  2  memory.assembler.build()             ★ 四层装配
+       layer1  稳定设定      ~6k   全量，序列化顺序固定 → 命中 prompt cache
+       layer2  检索条目      ~5k   章纲实体抽取 → codex_aliases 精确命中 → pgvector 兜底
+       layer3  前情摘要      ~4k   本卷已有章摘要 + 更早的卷摘要
+       layer4  相邻原文     ~10k   前 2 章，从章末往前截
+       budget.enforce()               超 25k 时按 layer4→3→2 顺序削，layer1 永不削
+  3  gateway.router.pick()                任务=chapter → 主力档；model=advanced → 顶级档
+  4  首帧先推 {"layers": {...}}            右栏立刻显示实际装配，不等正文
+  5  流式转发，每段边界推 {"node": n}       章纲节点进度
+  6  accounting.record()                  prompt/cached/completion token 分别记账
+  │
+  ▼
+前端 appendDraftText() 逐帧写入          addToHistory: false，不污染撤销栈
+  │
+  ├─ 用户点「采纳」→ acceptDraftAt()      一次事务，段落打标 ai-raw
+  │                  └→ PATCH /runs/:id/accepted  回写 accepted_words（北极星指标）
+  └─ 用户点「停止」→ AbortController      服务端 is_disconnected() → 中止上游 → 按已生成量扣费</pre>
+
+    <div style="margin-top: 20px; background: var(--color-neutral-200); padding: 22px 26px; font-size: 15px; line-height: 1.7;">
+      <strong>「重生成但保留锁定段」怎么实现：</strong>前端把 <code>status='locked'</code> 的草稿段落原文一并发给后端，作为 prompt 里的「已确定内容，请衔接而非重写」约束段。这段文本计入 layer4 预算。<code>rejectAllDrafts</code> 已经跳过 locked 节点，前端这块逻辑是现成的。
+    </div>
+
+    <div class="kick" style="margin: 44px 0 18px;">链路 B · 一致性守卫（MVP 成败点）</div>
+    <pre>PUT /chapters/:id/body 成功
+  │
+  ├─ 同步：从 content_json 扫 CodexRef 节点 → 全量重建 codex_refs
+  │        （同步做，因为下一次生成的 layer2 依赖它）
+  │
+  └─ 异步投递 Celery: guard_scan(chapter_id)      绝不阻塞写作
+       │
+       1  extractor.py    抽取本章新出现的实体与属性
+       │                  → 新条目写 codex_entries(status='pending')
+       │                  → 已有条目的新属性写入 attrs 的候选区
+       │
+       2  conflict.py     ★ 两阶段，成本与准确率的平衡
+       │     阶段一  规则前置：attrs 的结构化字段做直接比对
+       │              （左手=已断 vs 本章「左手接剑」→ 命中）
+       │              规则能覆盖的部分零模型成本、零误报
+       │     阶段二  LLM 判定：规则命中的候选 + 语义存疑的段落
+       │              送中档模型做结构化输出 {is_conflict, reason, anchor}
+       │              只判定候选，不全文扫描——这是成本可控的关键
+       │
+       3  foreshadow.py   伏笔登记与倒计时；超过 expected_by 未回收 → 升级 severity
+       │
+       4  anchor.py       为每条 issue 计算 {pid, start, end}
+       │
+       ▼
+     guard_issues 落库 → 前端轮询或 SSE 推送 → 右栏红点
+
+评测闭环：false_positive 标记 → guard/eval/ 数据集 → CI 跑召回率
+目标：植入 20 处矛盾召回 ≥ 14，误报率 ≤ 20%</pre>
+
+    <div style="margin-top: 24px;" class="poster">
+      <div style="font-family: var(--font-heading); font-size: 12px; font-weight: 700; letter-spacing: 0.18em; text-transform: uppercase; opacity: 0.85; margin-bottom: 16px;">先做 spike，再对外承诺</div>
+      <p>召回 ≥ 14 / 20 这个数字是需求文档里的待决议项。<strong>第 1 周就要开始算法预研</strong>：手工构造 20 处矛盾的测试稿，先只用规则前置跑一遍，看规则能覆盖多少。规则覆盖率决定了整条链路的成本模型，也决定这个指标现不现实。</p>
+    </div>
+  </div>
+
+  <h2 class="sec">07 &nbsp;前端剩余工作</h2>
+  <p class="lede">骨架已经能跑通全部 12 屏，剩下的活分三类：接后端、补性能、补缺失交互。按优先级排。</p>
+
+  <table class="table">
+    <thead>
+      <tr>
+        <th style="width: 90px;">优先级</th>
+        <th style="width: 200px;">工作项</th>
+        <th>要做什么</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr style="background: var(--color-accent-100);">
+        <td><strong>必做</strong></td>
+        <td>替换 mock 层</td>
+        <td><code>VITE_USE_MOCK=false</code>，打开 vite proxy，把 <code>mock/index.ts</code> 每个方法换成 <code>request()</code>。<strong>签名一个都不改</strong>，视图层零改动。这是 README 已经写明的路径。</td>
+      </tr>
+      <tr style="background: var(--color-accent-100);">
+        <td><strong>必做</strong></td>
+        <td>保存改为带 rev 的乐观锁</td>
+        <td><code>use-autosave.ts</code> 现在只发 html。要改成带 <code>base_rev</code>，收到 409 时把服务端版本和本地版本并列展示，让用户选。当前完全没有冲突处理。</td>
+      </tr>
+      <tr style="background: var(--color-accent-100);">
+        <td><strong>必做</strong></td>
+        <td>段落锚点 <code>data-pid</code></td>
+        <td>Paragraph 扩展加 <code>pid</code> 属性（nanoid，复制时重新生成）。守卫的「跳到出问题的那一句」靠它定位。<strong>越早做越便宜</strong>，有稿子之后再补要写迁移。</td>
+      </tr>
+      <tr>
+        <td>必做</td>
+        <td>离线队列换 Dexie</td>
+        <td>现在是 <code>idb-keyval</code>，单键读写。需要按章排队、失败重试、恢复时批量回放，键值对撑不住。HANDOFF 里写的就是 Dexie。</td>
+      </tr>
+      <tr>
+        <td>必做</td>
+        <td>章节树虚拟滚动</td>
+        <td>80 万字作品约 270 章，全量渲染 DOM 会拖垮首屏。<code>@vueuse/core</code> 的 <code>useVirtualList</code> 够用，不必上 tanstack。切章 &lt; 200ms 的验收标准依赖这个。</td>
+      </tr>
+      <tr>
+        <td>必做</td>
+        <td>多作品切换打通</td>
+        <td><code>shelfApi</code> 目前和 <code>projectStore</code> 没有连线。切书要清 project / codex / guard 三个 store，并处理 <code>keep-alive</code> 缓存失效。</td>
+      </tr>
+      <tr>
+        <td>该做</td>
+        <td>行内 AI 四个动作接真</td>
+        <td><code>runInline()</code> 现在只插占位文本。改成走 <code>POST /generate/inline</code>，同样落进 <code>aiDraft</code> 节点，复用采纳/拒绝的现成交互。</td>
+      </tr>
+      <tr>
+        <td>该做</td>
+        <td>额度耗尽的降级引导</td>
+        <td>402 不能只弹「额度不足」。要给出「换标准模型继续」或「本章缩短到 2000 字」的具体下一步，否则用户卡在这里就走了。</td>
+      </tr>
+      <tr>
+        <td>该做</td>
+        <td>@引用改名跟随的视图刷新</td>
+        <td>条目存 id，所以改名后引用节点要重取显示名。改名接口返回受影响的 <code>chapter_ids</code>，前端只失效这些章的缓存。</td>
+      </tr>
+      <tr>
+        <td>可延后</td>
+        <td>移动端只读</td>
+        <td>非目标里排除了「移动端完整编辑」，但只读查阅设定库和已写章节，成本很低、留存收益明确。放二阶段。</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <div style="margin-top: 28px; background: var(--color-neutral-200); padding: 22px 26px; font-size: 15px; line-height: 1.7;">
+    <strong>一条不要碰的红线：</strong>不要为了「实时协作」提前引入 Yjs。<code>chapter_bodies</code> 已经独立成表、带 <code>rev</code>，将来换 CRDT 只动这一张表和一个接口。现在引入等于给 MVP 加一个分布式状态难题，而多人实时协作明确在非目标里。工作室产线要的是<strong>章节级分工不冲突</strong>，靠 <code>chapter_assignments</code> 加乐观锁就够，不需要字符级合并。
+  </div>
+
+  <div class="band">
+    <h2 class="sec">08 &nbsp;分阶段排期</h2>
+    <p class="lede">基准 6 人 · 2 前端 / 2 后端 / 1 算法 / 1 设计。第一阶段 10 周对齐需求文档的里程碑，第二阶段 8 周做工作室产线。小团队降级路径见本节末。</p>
+
+    <div class="kick" style="margin-bottom: 18px;">第一阶段 · MVP 10 周</div>
+    <table class="table">
+      <thead>
+        <tr>
+          <th style="width: 80px;">周次</th>
+          <th style="width: 150px;">里程碑</th>
+          <th>后端</th>
+          <th>前端</th>
+          <th style="width: 190px;">算法</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><strong>1-2</strong></td>
+          <td>骨架跑通</td>
+          <td>19 张表 + Alembic；auth / projects / chapters / bodies 五组接口；Docker Compose 起 PG+pgvector+Redis</td>
+          <td>替换 mock 层；<code>data-pid</code> 锚点；带 rev 的保存 + 409 并列展示</td>
+          <td><strong>守卫 spike</strong>：手工构造 20 处矛盾测试稿，测规则前置的覆盖率</td>
+        </tr>
+        <tr>
+          <td><strong>3-4</strong></td>
+          <td>设定库 + 网关</td>
+          <td>codex 四张表全套 CRUD；改名跟随；<code>codex_refs</code> 全量重建；模型网关（路由/回退/记账）</td>
+          <td>Dexie 离线队列；章节树虚拟滚动；多作品切换；@引用改名刷新</td>
+          <td>实体抽取器；<code>attrs</code> 结构化字段的取值规范</td>
+        </tr>
+        <tr>
+          <td><strong>5-6</strong></td>
+          <td>生成链路</td>
+          <td>★ 四层上下文装配器 + 预算裁剪；<code>/generate/chapter</code> SSE；开书向导四步；Celery 摘要链路</td>
+          <td>行内 AI 四动作接真；额度降级引导；首帧 layers 展示；重生成保留锁定段</td>
+          <td>摘要压缩策略（200 字/章、每 10 章压卷摘要）；prompt 模板与缓存前缀固化</td>
+        </tr>
+        <tr style="background: var(--color-accent-100);">
+          <td><strong>7-8</strong></td>
+          <td><strong>一致性守卫</strong></td>
+          <td><code>guard_scan</code> 全链路；<code>guard_issues</code> 读写与四种处置；伏笔倒计时；评测集接入 CI</td>
+          <td>守卫面板；证据并列对比；锚点跳转；误报回流打标</td>
+          <td>★ 冲突判定两阶段调优，跑到召回 ≥ 14/20、误报 ≤ 20%</td>
+        </tr>
+        <tr>
+          <td><strong>9-10</strong></td>
+          <td>收口</td>
+          <td>导出三格式（免费全量，不校验积分）；用量与订阅；性能压测；错误上报</td>
+          <td>12 屏走查；首屏 &lt; 2s / 切章 &lt; 200ms 达标；断网演练</td>
+          <td>风格指纹预研（不上线，为二阶段铺路）</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <div style="margin-top: 22px; background: var(--color-neutral-200); padding: 22px 26px; font-size: 15px; line-height: 1.7;">
+      <strong>第 7-8 周是唯一不能延的两周。</strong>其余功能延一周都只是体验打折，守卫做不到验收线，产品就退化成又一个「一键成章」工具——那个市场已经很挤了。所以第 1 周的 spike 必须出结论：如果规则前置只能覆盖三成，就要在第 3 周而不是第 8 周重新谈这个指标。
+    </div>
+
+    <div class="kick" style="margin: 44px 0 18px;">第二阶段 · 工作室产线 第 11-18 周</div>
+    <p style="font-size: 15px; line-height: 1.75; margin: 0 0 20px;">MVP 只<strong>建表不开功能</strong>：<code>orgs</code> / <code>org_members</code> / <code>chapter_assignments</code> 三张表随第一阶段一起上，<code>projects.org_id</code> 从第一天就写入。这样第二阶段不需要数据迁移，只需要把权限判断从「作者本人」放宽到「组织成员 + 角色」。</p>
+    <table class="table">
+      <thead>
+        <tr>
+          <th style="width: 80px;">周次</th>
+          <th style="width: 170px;">交付</th>
+          <th>内容</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><strong>11-12</strong></td>
+          <td>席位与权限</td>
+          <td>组织创建、成员邀请、四种角色（owner / lead / writer / editor）；所有既有接口接入组织级鉴权；席位计费</td>
+        </tr>
+        <tr>
+          <td><strong>13-14</strong></td>
+          <td>章节分派与看板</td>
+          <td><code>chapter_assignments</code> 开放；分派 / 认领 / 交回；进度看板；章节级软锁（同一章第二人进入时提示，不做字符级合并）</td>
+        </tr>
+        <tr>
+          <td><strong>15-16</strong></td>
+          <td>审校流</td>
+          <td>editor 角色的批注与打回；改稿留痕；<strong>5 人并行不冲突</strong>的验收演练</td>
+        </tr>
+        <tr>
+          <td><strong>17-18</strong></td>
+          <td>风格指纹 + AI 占比</td>
+          <td>★ 作者风格指纹（≥5 万字样本，盲测「像我写的」≥60%）；AI 占比自查（采纳时打标，非事后检测）；拆书</td>
+        </tr>
+      </tbody>
+    </table>
+    <p style="font-size: 15px; line-height: 1.75; margin: 22px 0 0; color: var(--color-neutral-700);">风格指纹排在这里而不是更早，是因为它依赖 <code>≥5 万字</code> 的真实样本。MVP 上线后才会有足够语料，提前做只能拿公开文本调，调出来的东西不解决「像我写的」。</p>
+
+    <div class="kick" style="margin: 44px 0 18px;">降级路径 · 2-3 人怎么排</div>
+    <table class="table">
+      <thead>
+        <tr>
+          <th style="width: 150px;">砍掉</th>
+          <th style="width: 130px;">省下</th>
+          <th>代价</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>开书向导四步</td>
+          <td>约 1 周</td>
+          <td>换成单页表单，仍能 5 分钟出第一章，只是引导感弱。低风险，第一个砍。</td>
+        </tr>
+        <tr>
+          <td>行内 AI 四动作</td>
+          <td>约 1 周</td>
+          <td>只留「续写」一个。扩写/精简/改口吻延后。对核心价值无损。</td>
+        </tr>
+        <tr>
+          <td>DOCX 导出</td>
+          <td>约 0.5 周</td>
+          <td>先只做 TXT + Markdown。DOCX 用 <code>python-docx</code> 补起来很快，不占关键路径。</td>
+        </tr>
+        <tr>
+          <td>用量图表</td>
+          <td>约 0.5 周</td>
+          <td>只显示剩余额度数字，不做 14 天曲线。</td>
+        </tr>
+        <tr>
+          <td>pgvector 语义检索</td>
+          <td>约 1 周</td>
+          <td>layer2 只用实体索引精确命中。<strong>有风险</strong>：指代和别名场景会漏召，会连带影响守卫。砍之前先看 spike 数据。</td>
+        </tr>
+        <tr style="background: var(--color-accent-100);">
+          <td><strong>不能砍</strong></td>
+          <td>—</td>
+          <td>四层装配器、25k 预算裁剪、<code>codex_refs</code> 全量重建、守卫两阶段判定、带 rev 的乐观锁、<code>data-pid</code> 锚点。这六项要么是护城河本身，要么是补起来需要数据迁移。</td>
+        </tr>
+      </tbody>
+    </table>
+    <p style="font-size: 15px; line-height: 1.75; margin: 22px 0 0;">3 人配置（1 前端 / 1 后端 / 1 兼算法）按上表全砍，MVP 约 <strong>14 周</strong>，工作室产线推到第二年再谈。2 人配置不建议做这个产品——守卫的评测调优是一个人两周全职都不一定够的活，兼职做等于不做。</p>
+  </div>
+
+  <h2 class="sec">09 &nbsp;风险与待决议</h2>
+  <p class="lede">前四条是真实风险，各自带了退路。后三条是这份规划管不了、需要拍板的事。</p>
+
+  <div class="cellgrid" style="grid-template-columns: 1fr 1fr;">
+    <div class="cell" style="box-shadow: inset 0 0 0 2px var(--color-accent);">
+      <div class="kick">风险 01 · 高</div>
+      <p><strong>守卫达不到召回 14/20。</strong>这是唯一会让产品失去差异化的风险。</p>
+      <p style="color: var(--color-neutral-700);">退路：把「自动召回」降级为「可疑标注」——不判定对错，只把涉及同一实体属性的前后文并列给用户看，由人判断。价值降低但仍强于市面产品，且误报率问题自动消失。第 3 周就要决定走不走这条。</p>
+    </div>
+    <div class="cell">
+      <div class="kick">风险 02 · 中</div>
+      <p><strong>生成成本超出订阅定价。</strong>25k 输入 × 每章一次重生成 × 日更两章，单用户月成本可能吃掉 69 元里的大头。</p>
+      <p style="color: var(--color-neutral-700);">退路：prompt caching 是主要手段，layer1 的 6k 命中缓存能省七八成输入成本——前提是序列化字节稳定。第 5 周装配器一上线就要看 <code>generation_runs.layer_report</code> 里的真实缓存命中率，不要等到有付费用户才算账。</p>
+    </div>
+    <div class="cell">
+      <div class="kick">风险 03 · 中</div>
+      <p><strong>单文档编辑器在长章上仍然卡。</strong>一章一文档已经解决了 80 万字的问题，但个别作者会写单章 2 万字。</p>
+      <p style="color: var(--color-neutral-700);">退路：TipTap 在 2 万字量级尚可，超过就在保存时提示拆章。这是内容规范问题，不值得为它上分块渲染。第 9 周压测时用 2 万字样本验一次。</p>
+    </div>
+    <div class="cell">
+      <div class="kick">风险 04 · 低</div>
+      <p><strong>模型供应商变更或限流。</strong></p>
+      <p style="color: var(--color-neutral-700);">退路：自建薄网关的全部理由就在这里。路由表和回退链是配置而非代码，换供应商改一处。代价是要自己维护三家的 SSE 帧格式差异，约 300 行。</p>
+    </div>
+  </div>
+
+  <table class="table" style="margin-top: 36px;">
+    <thead>
+      <tr>
+        <th style="width: 190px;">待决议</th>
+        <th>需要谁拍板 · 什么时候</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>守卫召回指标</td>
+        <td>产品 + 算法，<strong>第 3 周</strong>。spike 出数据后立刻定，不要拖到第 8 周才发现做不到。指标本身是需求文档里就标着待决议的。</td>
+      </tr>
+      <tr>
+        <td>免费额度与订阅档位</td>
+        <td>业务侧，<strong>第 6 周前</strong>。装配器一上线就有真实 token 成本，那时算比现在准。导出免费全量已经是定了的承诺，接口不校验积分。</td>
+      </tr>
+      <tr>
+        <td>风格指纹的语料授权</td>
+        <td>法务 + 产品，<strong>第二阶段启动前</strong>。用户上传自己的 5 万字来抽指纹，这份语料存多久、能不能用于模型侧优化，要写进条款。</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <div class="poster" style="margin-top: 44px;">
+    <div style="font-family: var(--font-heading); font-size: 12px; font-weight: 700; letter-spacing: 0.18em; text-transform: uppercase; opacity: 0.85; margin-bottom: 16px;">下一步</div>
+    <p>后端从 <code>memory/</code> 开始，不从 <code>api/</code> 开始。四层上下文装配器是整个系统里唯一没有现成范式、且所有核心功能都依赖的部分——一键成章的质量、守卫的准确率、成本模型，全部由它的输出决定。CRUD 接口任何时候都能补，装配器越晚动手，越晚知道这个产品的成本和质量天花板在哪。</p>
+  </div>
+
+  <div class="foot">墨枢 · 开发规划与技术选型 · v1.0 · 2026/08 · 配套《需求文档与技术选型》《产品定位与竞品分析》《界面设计规范》</div>
+
+
+</div>
+</x-dc>
+</body>
+</html>

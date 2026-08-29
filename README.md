@@ -1,0 +1,54 @@
+# 墨枢
+
+墨枢是面向长篇网文创作的 AI 写作平台。项目以一键成章为入口，重点解决长程设定记忆、一致性检查、伏笔追踪和作者风格保真。
+
+当前仓库包含可运行的 Vue 3 前端原型、FastAPI 后端骨架，以及产品调研、需求、界面设计和开发规划。
+
+## 仓库结构
+
+```text
+.
+├── app/       Vue 3 + TypeScript + Tiptap 前端
+├── server/    FastAPI + SQLAlchemy 后端骨架
+├── _ds/       设计系统资源
+├── HANDOFF.md 开发交接与关键约束
+└── *.dc.html  调研、需求、界面设计和技术规划
+```
+
+## 前端启动
+
+```bash
+cd app
+cp .env.example .env
+npm install
+npm run dev
+```
+
+默认启用 mock API，可在没有后端的情况下浏览全部产品界面。测试和类型检查命令：
+
+```bash
+npm test
+npm run typecheck
+```
+
+## 后端启动
+
+后端要求 Python 3.12+，详细准备步骤见 `server/README.md`。
+
+```bash
+cd server
+uv venv
+uv pip install -e ".[dev]"
+cp .env.example .env
+uvicorn main:app --reload --port 8000
+```
+
+## 核心约束
+
+- 一章一文档，章节列表接口不返回正文。
+- 单次生成上下文不超过 25k token。
+- AI 流式输出先进入 `aiDraft`，采纳后才成为正文。
+- 正文中的设定引用保存条目 ID，不保存显示名称。
+- MVP 阶段不引入 Yjs；多人协作留到工作室阶段。
+
+开始开发前请先阅读 `HANDOFF.md`，产品范围以 `需求文档与技术选型.dc.html` 的功能需求表为准。
