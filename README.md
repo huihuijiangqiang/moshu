@@ -10,6 +10,7 @@
 .
 ├── app/       Vue 3 + TypeScript + Tiptap 前端
 ├── server/    FastAPI + SQLAlchemy 后端骨架
+├── docs/      代码审阅与实施辅助文档
 ├── _ds/       设计系统资源
 ├── HANDOFF.md 开发交接与关键约束
 └── *.dc.html  调研、需求、界面设计和技术规划
