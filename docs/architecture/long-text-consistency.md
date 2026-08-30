@@ -68,13 +68,19 @@
 | `created_by` | varchar(32) | 作者 id |
 | `created_at` | timestamptz | 服务端时间 |
 
-`chapters` 增加：
+#### `chapter_outline_states`
 
-- `outline_note text not null default ''`
-- `outline_revision int not null default 0`
+章纲的可变并发状态放在一张与章节一对一的表中，避免把计划版本和正文版本混入同一行：
+
+- `chapter_id varchar(32) primary key references chapters(id)`
+- `revision int not null default 0`
+- `note text not null default ''`
 - `body_needs_revision bool not null default false`
-- `body_revision_marked_outline_rev int nullable`
-- `body_revision_marked_body_rev int nullable`
+- `marked_outline_rev int nullable`
+- `marked_body_rev int nullable`
+- `updated_at timestamptz not null`
+
+`chapters.title` 和 `chapters.outline` 继续保存列表页需要的当前章名与节点；它们必须与 `chapter_outline_states` 和 revision 快照在同一事务更新。读取旧数据时若 state 行不存在，服务端按 revision 0、空 note、未标记处理，并在第一次实质保存时创建 state，避免要求停机回填。列表接口需要显示计划状态时显式 left join，不能为方便而逐章查询。
 
 `chapter_bodies.rev` 只表示正文版本。`chapter_versions` 继续保存正文快照，并增加 `content_hash` 以便幂等判断。正文中的段落必须具有稳定 `pid`。
 
@@ -286,7 +292,7 @@ Hard negative 是“共享实体和相似表述，但因条件、时间、视角
 
 ### P0-A：可靠写入边界
 
-- 迁移：outline revision、chapter 标记、outbox、idempotency record。
+- 迁移：outline state/revision、outbox、idempotency record。
 - Outline service/API、真实 409/422、正文不变量测试。
 - Body save outbox、稳定 paragraph id 校验、任务状态查询。
 
