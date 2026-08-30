@@ -69,6 +69,10 @@ function openPanel(side: 'left' | 'right') {
   }
 }
 
+function handleChapterPick() {
+  if (window.innerWidth <= 840) shell.leftOpen = false
+}
+
 onMounted(() => {
   shell.setCrumb(crumb.value)
   syncViewport()
@@ -136,7 +140,7 @@ function runInline(action: string) {
       <button class="panel-mobile-close" type="button" title="关闭章节" aria-label="关闭章节" @click="shell.leftOpen = false">
         <AppIcon name="close" />
       </button>
-      <ChapterPanel v-if="shell.leftOpen" />
+      <ChapterPanel v-if="shell.leftOpen" @pick="handleChapterPick" />
       <button v-else class="wk-stub" type="button" title="展开章节栏 ⌘B" @click="shell.leftOpen = true">
         章节 {{ store.chapters.length }}
       </button>

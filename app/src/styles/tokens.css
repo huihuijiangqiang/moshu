@@ -13,38 +13,38 @@
   color-scheme: light;
 
   /* — 深色工具外壳 — */
-  --chrome-bg: #1c2026;
-  --chrome-bg-raised: #242a31;
-  --chrome-bg-active: #2d333c;
-  --chrome-line: #353c46;
-  --chrome-ink: #c7cdd6;
-  --chrome-ink-dim: #858d98;
-  --chrome-ink-strong: #f8fafc;
+  --chrome-bg: #f0f3f3;
+  --chrome-bg-raised: #e7ecec;
+  --chrome-bg-active: #dce7e6;
+  --chrome-line: #d5dddd;
+  --chrome-ink: #4e5b5f;
+  --chrome-ink-dim: #7a8589;
+  --chrome-ink-strong: #202729;
 
   /* — 浅色工作区 — */
-  --canvas: #eef1f5; /* 面板之间的槽，露出来当分隔用 */
-  --paper: #fcfdfe; /* 正文纸面 */
+  --canvas: #eef1f2; /* 面板之间的槽，露出来当分隔用 */
+  --paper: #fbfcfc; /* 正文纸面 */
   --panel: #ffffff; /* 侧栏、卡片 */
-  --panel-sunken: #f5f7fa; /* 表头、次级行 */
-  --line: #dde1e7;
-  --line-strong: #cbd1d9;
-  --ink: #17191d;
-  --ink-2: #48505a;
-  --ink-3: #69707a;
-  --ink-4: #9aa1ab;
+  --panel-sunken: #f4f6f6; /* 表头、次级行 */
+  --line: #e0e5e5;
+  --line-strong: #cbd3d4;
+  --ink: #202426;
+  --ink-2: #4c575b;
+  --ink-3: #707b7f;
+  --ink-4: #9ba4a7;
 
   /* 主操作、告警、成功各负其责，避免整页被一种状态色统治。 */
-  --primary: #315efb;
-  --primary-hover: #254ed8;
-  --primary-soft: #e9eeff;
-  --primary-line: #b9c7ff;
-  --alert: #d6524a;
-  --alert-ink: #ad3732;
-  --alert-soft: #fff0ee;
-  --alert-line: #f2bbb6;
-  --success: #3f7d67;
-  --success-soft: #e7f2ed;
-  --success-line: #b8d6c9;
+  --primary: #2f666b;
+  --primary-hover: #24565a;
+  --primary-soft: #e5f0ef;
+  --primary-line: #b7d2cf;
+  --alert: #b34a58;
+  --alert-ink: #923743;
+  --alert-soft: #faecef;
+  --alert-line: #e5b8bf;
+  --success: #4e755f;
+  --success-soft: #e9f1ec;
+  --success-line: #bfd2c5;
   /* 压在 --alert 实色上的文字。两套主题都保持白，所以不随主题翻转。 */
   --on-alert: #ffffff;
 
@@ -66,15 +66,15 @@
   --fs-lg: 17px;
   --fs-xl: 22px;
 
-  --row-h: 26px;
-  --row-h-md: 30px;
-  --ctl-h: 28px;
+  --row-h: 30px;
+  --row-h-md: 36px;
+  --ctl-h: 32px;
 
-  --rail-w: 72px;
-  --topbar-h: 40px;
-  --statusbar-h: 26px;
-  --left-w: 248px;
-  --right-w: 320px;
+  --rail-w: 84px;
+  --topbar-h: 46px;
+  --statusbar-h: 28px;
+  --left-w: 232px;
+  --right-w: 312px;
   --prose-w: 720px;
 
   --u1: 4px;
@@ -86,7 +86,7 @@
 
   /* 结构分隔线 2px（沿用界面设计的实现约定），
      列表内部行线 1px —— 否则 88 行 × 2px 的线自己就成了噪音。 */
-  --rule: 2px;
+  --rule: 1px;
   --hair: 1px;
 
   --z-palette: 80;
@@ -98,9 +98,25 @@
   --color-accent-300: var(--primary-line);
   --color-accent-500: var(--primary);
   --color-accent-600: var(--primary-hover);
-  --color-accent-700: #2448c2;
-  --color-accent-800: #1f3c9d;
-  --color-accent-900: #192f78;
+  --color-accent-700: #24565a;
+  --color-accent-800: #1d484b;
+  --color-accent-900: #163b3e;
+
+  --color-bg: var(--canvas);
+  --color-surface: var(--panel-sunken);
+  --color-text: var(--ink);
+  --color-divider: var(--line-strong);
+  --color-neutral-100: var(--panel);
+  --color-neutral-200: var(--panel-sunken);
+  --color-neutral-300: var(--line);
+  --color-neutral-400: var(--line-strong);
+  --color-neutral-500: var(--ink-4);
+  --color-neutral-600: var(--ink-4);
+  --color-neutral-700: var(--ink-3);
+  --color-neutral-800: var(--ink-2);
+  --color-neutral-900: var(--ink);
+  --font-heading: var(--font-ui);
+  --font-body: var(--font-ui);
 }
 
 [data-theme='dark'] {

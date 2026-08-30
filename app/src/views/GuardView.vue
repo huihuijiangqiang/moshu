@@ -52,9 +52,10 @@ function act(issue: GuardIssue, action: string) {
 </script>
 
 <template>
-  <div :style="{ display: 'grid', gridTemplateRows: 'auto minmax(0, 1fr)', height: '100%', background: 'var(--canvas)' }">
+  <div class="guard-view" :style="{ display: 'grid', gridTemplateRows: 'auto minmax(0, 1fr)', height: '100%', background: 'var(--canvas)' }">
     <!-- 顶部四个计数。数字大、标签小，扫一眼就知道要不要进来处理 -->
     <div
+      class="guard-summary"
       :style="{
         display: 'grid', gridTemplateColumns: 'repeat(4, 1fr) auto',
         gap: 'var(--rule)', background: 'var(--line-strong)',
@@ -65,6 +66,7 @@ function act(issue: GuardIssue, action: string) {
         v-for="t in tabs"
         :key="t.key"
         type="button"
+        class="guard-summary-item"
         :aria-selected="guard.tab === t.key"
         :style="{
           textAlign: 'left', border: 0, cursor: 'pointer', padding: 'var(--u3) var(--u4)',
@@ -83,7 +85,7 @@ function act(issue: GuardIssue, action: string) {
         <span :style="{ display: 'block', marginTop: '2px', fontSize: 'var(--fs-sm)', color: 'var(--ink-3)' }">{{ t.note }}</span>
       </button>
 
-      <div :style="{ background: 'var(--panel-sunken)', padding: 'var(--u3) var(--u4)', display: 'grid', alignContent: 'center', gap: '6px' }">
+      <div class="guard-scan" :style="{ background: 'var(--panel-sunken)', padding: 'var(--u3) var(--u4)', display: 'grid', alignContent: 'center', gap: '6px' }">
         <span :style="{ fontSize: 'var(--fs-sm)', color: 'var(--ink-3)', whiteSpace: 'nowrap' }">
           上次全量扫描 · 8 月 27 日 23:10<br>
           {{ project.chapters.length }} 章 / {{ (project.totalWords / 10000).toFixed(1) }} 万字
@@ -94,7 +96,7 @@ function act(issue: GuardIssue, action: string) {
       </div>
     </div>
 
-    <div class="wk-cols" :style="{ gridTemplateColumns: '340px minmax(0, 1fr)' }">
+    <div class="wk-cols guard-workspace" :style="{ gridTemplateColumns: '340px minmax(0, 1fr)' }">
       <!-- 告警列表 -->
       <div class="wk-pane" aria-label="告警列表">
         <div class="wk-head">
@@ -131,7 +133,7 @@ function act(issue: GuardIssue, action: string) {
       </div>
 
       <!-- 证据与处置 -->
-      <main class="wk-pane wk-pane-paper" aria-label="告警详情">
+      <main class="wk-pane wk-pane-paper guard-detail" aria-label="告警详情">
         <template v-if="selected">
           <div class="paper-bar">
             <span class="pill" :class="selected.severity === 'high' ? 'pill-alert' : ''">
