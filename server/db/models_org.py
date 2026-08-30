@@ -1,12 +1,15 @@
 """
 组织权限模型 - 3张表（MVP建表不开功能）
 """
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
 
 from sqlalchemy import ForeignKey, Integer, String, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from db.base import Base, TimestampMixin
+
+if TYPE_CHECKING:
+    from db.models_core import Chapter, User
 
 
 class Org(Base, TimestampMixin):

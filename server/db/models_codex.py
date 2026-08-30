@@ -1,7 +1,7 @@
 """
 设定库模型 - 4张表
 """
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
 
 from pgvector.sqlalchemy import Vector
 from sqlalchemy import ForeignKey, Index, Integer, String, Text
@@ -9,6 +9,9 @@ from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from db.base import Base, TimestampMixin
+
+if TYPE_CHECKING:
+    from db.models_core import Project
 
 
 class CodexEntry(Base, TimestampMixin):

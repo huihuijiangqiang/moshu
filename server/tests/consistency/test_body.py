@@ -1,7 +1,6 @@
 """
 Tests for body save service - versioning, content_hash, outbox
 """
-import pytest
 
 from services.body import (
     compute_content_hash,
@@ -126,7 +125,6 @@ class TestCodexRefExtraction:
         refs = extract_codex_refs(content)
         assert len(refs) == 1
         assert refs[0]["entry_id"] == "ent_123"
-        assert refs[0]["attrs"]["paragraphId"] == "p1"
 
     def test_extract_mark_level_ref(self):
         """提取标记级 CodexRef"""

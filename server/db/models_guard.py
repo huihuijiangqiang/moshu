@@ -1,13 +1,17 @@
 """
 守卫模型 - 2张表
 """
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
 
-from sqlalchemy import ForeignKey, Integer, String, Text
+from sqlalchemy import ForeignKey, String, Text
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from db.base import Base, TimestampMixin
+
+if TYPE_CHECKING:
+    from db.models_codex import CodexEntry
+    from db.models_core import Chapter, Project
 
 
 class GuardIssue(Base, TimestampMixin):

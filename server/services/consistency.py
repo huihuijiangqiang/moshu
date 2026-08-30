@@ -93,7 +93,7 @@ async def resolve_entity_by_alias(
         select(CodexEntry.id)
         .join(CodexAlias, CodexAlias.entry_id == CodexEntry.id)
         .where(CodexEntry.project_id == project_id)
-        .where(CodexAlias.text == normalized)
+        .where(CodexAlias.alias == normalized)
         .limit(1)
     )
     result = await db.execute(stmt)

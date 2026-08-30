@@ -7,8 +7,7 @@ from dataclasses import dataclass
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from db.models_codex import CodexEntry, CodexRef
-from db.models_core import Chapter
+from db.models_codex import CodexEntry
 
 
 @dataclass
@@ -131,7 +130,7 @@ class ContextAssembler:
         """
         stmt = (
             select(CodexEntry)
-            .where(CodexEntry.project_id == project_id, CodexEntry.resident == True)
+            .where(CodexEntry.project_id == project_id, CodexEntry.resident)
             .order_by(CodexEntry.id)  # 关键：按 id 排序，不按时间
         )
         result = await self.db.execute(stmt)

@@ -2,13 +2,16 @@
 核心数据模型 - 骨架（6张表）
 """
 from datetime import datetime
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
 
-from sqlalchemy import BigInteger, ForeignKey, Integer, String, Text
+from sqlalchemy import BigInteger, DateTime, ForeignKey, Integer, String, Text, func
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from db.base import Base, TimestampMixin
+
+if TYPE_CHECKING:
+    from db.models_codex import CodexEntry
 
 
 class User(Base, TimestampMixin):
@@ -116,6 +119,7 @@ class ChapterVersion(Base):
     content_json: Mapped[dict] = mapped_column(JSONB)
     rev: Mapped[int] = mapped_column(Integer)
     trigger: Mapped[str] = mapped_column(String(50))  # manual, autosave, accept_draft
+    content_hash: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     # 关系

@@ -1,7 +1,6 @@
 """
 Tests for consistency service - claim management and rule evaluation
 """
-import pytest
 
 from services.consistency import compute_claim_fingerprint
 
@@ -152,7 +151,6 @@ class TestRuleLogic:
     def test_ownership_conflict_detection_concept(self):
         """物品归属冲突检测概念验证"""
         # 测试逻辑：同一物品在同一时间点只能归属一个人
-        item = "sword_123"
         owner_a = "char_a"
         owner_b = "char_b"
         time_a = 100.0
@@ -189,7 +187,6 @@ class TestHardNegatives:
         """条件性能力不冲突"""
         # "不擅长用剑" vs "危急时勉强拔剑"
         # 应该不冲突，因为有明确条件限定
-        base_claim = {"ability": "sword", "level": "poor"}
         conditional_claim = {"ability": "sword", "level": "barely_usable", "condition": "emergency"}
 
         # 有条件限定时不应判为冲突
@@ -211,7 +208,6 @@ class TestHardNegatives:
         """治疗后状态不冲突"""
         # "左肩旧伤遇寒痛" vs "服药后症状减轻"
         # 不冲突，因为有明确的因果关系
-        before_treatment = {"condition": "shoulder_pain", "trigger": "cold", "severity": "high"}
         after_treatment = {"condition": "shoulder_pain", "severity": "reduced", "cause": "medication"}
 
         # 有因果关系时不应判为冲突

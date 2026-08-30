@@ -15,7 +15,6 @@ from sqlalchemy import (
     String,
     Text,
     UniqueConstraint,
-    func,
 )
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
@@ -212,7 +211,7 @@ class GuardIssueEvidence(Base, TimestampMixin):
     __tablename__ = "guard_issue_evidence"
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
-    issue_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("guard_issues.id", ondelete="CASCADE"), index=True)
+    issue_id: Mapped[str] = mapped_column(String(32), ForeignKey("guard_issues.id", ondelete="CASCADE"), index=True)
     side: Mapped[str] = mapped_column(String(20), nullable=False)
     source_kind: Mapped[str] = mapped_column(String(20), nullable=False)
     chapter_id: Mapped[Optional[str]] = mapped_column(
@@ -262,7 +261,7 @@ class GuardResolution(Base, TimestampMixin):
     __tablename__ = "guard_resolutions"
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
-    issue_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("guard_issues.id", ondelete="CASCADE"), index=True)
+    issue_id: Mapped[str] = mapped_column(String(32), ForeignKey("guard_issues.id", ondelete="CASCADE"), index=True)
     issue_rev: Mapped[int] = mapped_column(Integer, nullable=False)
     action: Mapped[str] = mapped_column(String(50), nullable=False)
     note: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
