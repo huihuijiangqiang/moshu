@@ -9,6 +9,41 @@ export const CODEX_KIND_LABEL: Record<CodexKind, string> = {
   foreshadow: '伏笔'
 }
 
+export interface CharacterArc {
+  past?: string
+  current?: string
+  next?: string
+}
+
+export interface CharacterProfile {
+  role?: string
+  age?: string
+  appearance?: string
+  personality?: string[]
+  desire?: string
+  motivation?: string
+  flaw?: string
+  fear?: string
+  ability?: string
+  limitation?: string
+  speech?: string
+  background?: string
+  currentState?: string
+  arc?: CharacterArc
+}
+
+export interface CodexFact {
+  label: string
+  value: string
+}
+
+export interface CodexRelation {
+  targetId?: string
+  name: string
+  relation: string
+  note: string
+}
+
 export interface CodexEntry {
   id: string
   kind: CodexKind
@@ -22,6 +57,11 @@ export interface CodexEntry {
   /** 'pending' = 守卫自动抽取、等作者确认 */
   status: 'confirmed' | 'pending'
   conflicts: number
+  /** 人物专属档案；待确认人物允许只记录已从正文抽取到的字段。 */
+  character?: CharacterProfile
+  /** 非人物条目的类型化事实，按写作时的查阅优先级排列。 */
+  facts?: CodexFact[]
+  relations?: CodexRelation[]
   /** 仅 foreshadow：埋设章与预计回收点 */
   plantedAt?: number
   expectedBy?: string
