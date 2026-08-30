@@ -10,6 +10,15 @@ from db.models_consistency import (
     IdempotencyRecord,
     OutboxEvent,
 )
+from db.models_consistency_extended import (
+    ConsistencyClaim,
+    ConsistencyRun,
+    DocumentSummary,
+    EntityStateInterval,
+    GuardIssueEvidence,
+    GuardResolution,
+    StoryEvent,
+)
 from db.models_core import Chapter, ChapterBody, ChapterVersion, Project, User, Volume
 from db.models_guard import Foreshadow, GuardIssue
 from db.models_org import ChapterAssignment, Org, OrgMember
@@ -30,6 +39,14 @@ __all__ = [
     "ChapterOutlineRevision",
     "OutboxEvent",
     "IdempotencyRecord",
+    # Consistency extended
+    "ConsistencyRun",
+    "DocumentSummary",
+    "ConsistencyClaim",
+    "StoryEvent",
+    "EntityStateInterval",
+    "GuardIssueEvidence",
+    "GuardResolution",
     # Codex
     "CodexEntry",
     "CodexAlias",
