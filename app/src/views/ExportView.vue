@@ -16,7 +16,7 @@ const split = ref<'single' | 'zip'>('single')
 const done = ref(false)
 
 const items = computed(() => [
-  { key: 'body' as const, label: `正文 ${store.chapters.length} 章 · ${(store.totalWords / 10000).toFixed(1)} 万字` },
+  { key: 'body' as const, label: `正文 ${store.totalChapters} 章 · ${(store.totalWords / 10000).toFixed(1)} 万字` },
   { key: 'codex' as const, label: `设定库 ${codex.entries.length} 条` },
   { key: 'outline' as const, label: '大纲与章纲' },
   { key: 'history' as const, label: '版本历史（体积较大）' },

@@ -4,6 +4,7 @@ import { useRouter } from 'vue-router'
 import { shelfApi, type ShelfBook } from '@/api/mock/shelf'
 import AppIcon from '@/components/ui/AppIcon.vue'
 import { useShellStore } from '@/stores/shell'
+import { projectPath } from '@/router/project-route'
 
 type StatusFilter = 'all' | ShelfBook['status']
 type SortKey = 'updated' | 'words' | 'issues'
@@ -58,7 +59,7 @@ const statusLabel: Record<ShelfBook['status'], string> = {
 }
 
 function open(book: ShelfBook) {
-  router.push(book.status === 'planning' || book.status === 'finished' ? '/outline' : '/write')
+  router.push(projectPath(book.id, book.status === 'planning' || book.status === 'finished' ? 'outline' : 'write'))
 }
 
 function setStatus(next: StatusFilter) {
@@ -85,7 +86,7 @@ function formatWords(words: number) {
     <aside class="studio-sidebar" :data-open="filtersOpen" aria-label="作品筛选">
       <header class="studio-sidebar-head">
         <div><span class="studio-kicker">墨枢写作室</span><h1>我的作品</h1></div>
-        <button class="icon-button" type="button" title="新建作品" @click="router.push('/wizard')"><AppIcon name="plus" /></button>
+        <button class="icon-button" type="button" title="新建作品" @click="router.push('/projects/new')"><AppIcon name="plus" /></button>
       </header>
 
       <nav class="studio-status-nav" aria-label="作品状态">
@@ -103,10 +104,10 @@ function formatWords(words: number) {
 
       <section class="studio-sidebar-section studio-reminder-block">
         <span class="studio-section-label">需要留意</span>
-        <button type="button" @click="router.push('/guard')">
+        <button type="button" @click="router.push(projectPath('p1', 'guard'))">
           <span class="reminder-mark">3</span><span><strong>一致性问题</strong><small>《剑起山河》有 3 条待处理</small></span>
         </button>
-        <button type="button" @click="router.push('/codex')">
+        <button type="button" @click="router.push(projectPath('p1', 'codex'))">
           <span class="reminder-mark reminder-mark-muted">5</span><span><strong>新设定待确认</strong><small>写作前确认可提升生成准确度</small></span>
         </button>
       </section>
@@ -119,7 +120,7 @@ function formatWords(words: number) {
     <main class="studio-main">
       <header class="studio-main-head">
         <div><span class="studio-kicker">2026 年 8 月 30 日</span><h2>继续你的故事</h2></div>
-        <button class="wk-btn" data-primary="true" type="button" @click="router.push('/wizard')"><AppIcon name="plus" :size="15" />新建作品</button>
+        <button class="wk-btn" data-primary="true" type="button" @click="router.push('/projects/new')"><AppIcon name="plus" :size="15" />新建作品</button>
       </header>
 
       <section v-if="currentBook" class="featured-manuscript">
@@ -134,7 +135,7 @@ function formatWords(words: number) {
           <p class="featured-last">{{ currentBook.lastTouched }}</p>
           <div class="featured-actions">
             <button class="wk-btn" data-primary="true" type="button" @click="open(currentBook)">继续写作</button>
-            <button class="wk-btn" type="button" @click="router.push('/outline')">查看大纲</button>
+            <button class="wk-btn" type="button" @click="router.push(projectPath(currentBook.id, 'outline'))">查看大纲</button>
             <button class="icon-button" type="button" title="更多操作"><AppIcon name="more" /></button>
           </div>
         </div>

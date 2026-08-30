@@ -51,6 +51,9 @@ export interface Project {
   id: string
   title: string
   volumes: Volume[]
+  /** 全书统计来自项目摘要，不等于当前已加载到内存的章节列表。 */
+  wordCount?: number
+  chapterCount?: number
   dailyGoal: number
   dailyWords: number
   styleProfile: string | null

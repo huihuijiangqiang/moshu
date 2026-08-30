@@ -8,6 +8,7 @@ export const useCodexStore = defineStore('codex', () => {
   const kind = ref<CodexKind>('character')
   const query = ref('')
   const loaded = ref(false)
+  const loadedProjectId = ref<string | null>(null)
 
   const byId = computed(() => new Map(entries.value.map((e) => [e.id, e])))
   const resident = computed(() => entries.value.filter((e) => e.resident))
@@ -38,9 +39,10 @@ export const useCodexStore = defineStore('codex', () => {
       .slice(0, limit)
   }
 
-  async function load() {
-    if (loaded.value) return
-    entries.value = await mockApi.listCodex()
+  async function load(projectId = 'p1') {
+    if (loaded.value && loadedProjectId.value === projectId) return
+    entries.value = await mockApi.listCodex(projectId)
+    loadedProjectId.value = projectId
     loaded.value = true
   }
 
@@ -55,5 +57,5 @@ export const useCodexStore = defineStore('codex', () => {
     entries.value = entries.value.filter((e) => e.id !== id)
   }
 
-  return { entries, kind, query, byId, resident, pending, counts, visible, search, load, confirm, drop }
+  return { entries, kind, query, byId, resident, pending, counts, visible, search, load, confirm, drop, loadedProjectId }
 })

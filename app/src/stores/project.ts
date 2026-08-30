@@ -7,6 +7,7 @@ export const useProjectStore = defineStore('project', () => {
   const project = ref<Project | null>(null)
   const chapters = ref<Chapter[]>([])
   const activeId = ref<string | null>(null)
+  const loadedProjectId = ref<string | null>(null)
   const loading = ref(false)
 
   const active = computed(() => chapters.value.find((c) => c.id === activeId.value) ?? null)
@@ -18,15 +19,18 @@ export const useProjectStore = defineStore('project', () => {
     }))
   )
 
-  const totalWords = computed(() => chapters.value.reduce((s, c) => s + c.words, 0))
+  const totalWords = computed(() => project.value?.wordCount ?? chapters.value.reduce((s, c) => s + c.words, 0))
+  const totalChapters = computed(() => project.value?.chapterCount ?? chapters.value.length)
 
-  async function load() {
+  async function load(projectId = 'p1') {
+    if (loadedProjectId.value === projectId && project.value) return
     loading.value = true
     try {
-      const [p, list] = await Promise.all([mockApi.getProject(), mockApi.listChapters()])
+      const [p, list] = await Promise.all([mockApi.getProject(projectId), mockApi.listChapters(projectId)])
       project.value = p
       chapters.value = list
-      activeId.value ??= list.find((c) => c.status === 'drafting')?.id ?? list[0]?.id ?? null
+      loadedProjectId.value = projectId
+      activeId.value = list.find((c) => c.status === 'drafting')?.id ?? list.at(-1)?.id ?? null
     } finally {
       loading.value = false
     }
@@ -43,8 +47,11 @@ export const useProjectStore = defineStore('project', () => {
 
   function setWords(id: string, words: number) {
     const c = chapters.value.find((x) => x.id === id)
-    if (c) c.words = words
+    if (!c) return
+    const delta = words - c.words
+    c.words = words
+    if (project.value?.wordCount !== undefined) project.value.wordCount += delta
   }
 
-  return { project, chapters, activeId, active, byVolume, totalWords, loading, load, openChapter, setWords }
+  return { project, chapters, activeId, active, byVolume, totalWords, totalChapters, loading, loadedProjectId, load, openChapter, setWords }
 })

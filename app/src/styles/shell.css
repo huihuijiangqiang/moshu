@@ -27,6 +27,7 @@ body { font-family: var(--font-ui); font-size: var(--fs); }
   min-height: 0;
 }
 .shell-main[data-library='true'] { grid-template-rows: 1fr; }
+.shell-main[data-project='false']:not([data-library='true']) { grid-template-rows: var(--topbar-h) 1fr; }
 .shell-body {
   min-width: 0;
   min-height: 0;

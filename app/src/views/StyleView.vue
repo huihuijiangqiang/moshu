@@ -2,8 +2,10 @@
 import { computed, onMounted, ref } from 'vue'
 import { styleApi, type StyleProfile } from '@/api/mock/style-profile'
 import { useShellStore } from '@/stores/shell'
+import { useProjectStore } from '@/stores/project'
 
 const shell = useShellStore()
+const project = useProjectStore()
 const profiles = ref<StyleProfile[]>([])
 const dims = ref<Awaited<ReturnType<typeof styleApi.dimensions>>>([])
 const activeId = ref<string | null>(null)
@@ -58,7 +60,7 @@ async function select(id: string) {
             <div :style="{ fontSize: '30px', fontWeight: 700 }">{{ active.name }}</div>
             <div class="muted" :style="{ marginTop: '8px' }">
               来源：{{ active.source }} · 抽取于 {{ active.extractedAt }}
-              <template v-if="active.isDefault"> · 已应用于当前作品</template>
+              <template v-if="active.name === project.project?.styleProfile"> · 已应用于当前作品</template>
             </div>
           </div>
           <div v-if="active.alignment" :style="{ textAlign: 'right' }">

@@ -5,6 +5,7 @@ import { useGuardStore } from '@/stores/guard'
 import { useProjectStore } from '@/stores/project'
 import { useShellStore } from '@/stores/shell'
 import type { GuardIssue, GuardKind } from '@/types'
+import { useProjectNavigation } from '@/composables/use-project-navigation'
 
 /**
  * 一致性守卫：主从布局。左列是按严重度排序的告警行，右侧是证据与处置。
@@ -15,11 +16,11 @@ const guard = useGuardStore()
 const project = useProjectStore()
 const shell = useShellStore()
 const router = useRouter()
+const { toProject } = useProjectNavigation()
 
 const selectedId = ref<string | null>(null)
 
 onMounted(() => {
-  guard.load()
   shell.setCrumb('一致性守卫')
 })
 
@@ -44,7 +45,7 @@ watch(rows, (list) => {
 function act(issue: GuardIssue, action: string) {
   // 真实实现：处置结果回写设定库，误报另计入调准样本
   if (action.includes('查看时间线')) {
-    router.push('/outline')
+    router.push(toProject('outline'))
     return
   }
   guard.resolve(issue.id)
@@ -88,7 +89,7 @@ function act(issue: GuardIssue, action: string) {
       <div class="guard-scan" :style="{ background: 'var(--panel-sunken)', padding: 'var(--u3) var(--u4)', display: 'grid', alignContent: 'center', gap: '6px' }">
         <span :style="{ fontSize: 'var(--fs-sm)', color: 'var(--ink-3)', whiteSpace: 'nowrap' }">
           上次全量扫描 · 8 月 27 日 23:10<br>
-          {{ project.chapters.length }} 章 / {{ (project.totalWords / 10000).toFixed(1) }} 万字
+          {{ project.totalChapters }} 章 / {{ (project.totalWords / 10000).toFixed(1) }} 万字
         </span>
         <button class="wk-btn" type="button" :disabled="guard.scanning" @click="guard.rescan()">
           {{ guard.scanning ? '扫描中…' : '重新全量扫描' }}
@@ -142,7 +143,7 @@ function act(issue: GuardIssue, action: string) {
             <span :style="{ fontWeight: 700, color: 'var(--ink)', fontSize: 'var(--fs)' }">{{ selected.category }}</span>
             <span :style="{ color: 'var(--ink-3)' }">{{ selected.chapterRef }}</span>
             <span :style="{ marginLeft: 'auto' }" />
-            <button class="wk-btn wk-btn-xs" type="button" @click="router.push('/write')">跳到那一句</button>
+            <button class="wk-btn wk-btn-xs" type="button" @click="router.push(toProject('write'))">跳到那一句</button>
           </div>
 
           <div :style="{ maxWidth: '820px', padding: 'var(--u6)' }">

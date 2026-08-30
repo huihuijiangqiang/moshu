@@ -5,6 +5,7 @@ import { useCodexStore } from '@/stores/codex'
 import { useProjectStore } from '@/stores/project'
 import { useShellStore } from '@/stores/shell'
 import { CODEX_KIND_LABEL, type CodexEntry, type CodexKind } from '@/types'
+import { useProjectNavigation } from '@/composables/use-project-navigation'
 
 /**
  * 设定库：三栏（分类 / 列表 / 详情），不用卡片墙。
@@ -15,6 +16,7 @@ const codex = useCodexStore()
 const project = useProjectStore()
 const shell = useShellStore()
 const router = useRouter()
+const { toProject } = useProjectNavigation()
 
 const kinds = Object.keys(CODEX_KIND_LABEL) as CodexKind[]
 type Scope = 'kind' | 'resident' | 'pending' | 'conflict' | 'all'
@@ -22,7 +24,6 @@ const scope = ref<Scope>('kind')
 const selectedId = ref<string | null>(null)
 
 onMounted(() => {
-  codex.load()
   shell.setCrumb('设定库')
 })
 
@@ -241,7 +242,7 @@ const gapChapters = (e: CodexEntry) => {
           </div>
 
           <div v-if="selected.conflicts" :style="{ marginBottom: 'var(--u5)' }">
-            <button class="wk-btn" type="button" data-primary="true" @click="router.push('/guard')">
+            <button class="wk-btn" type="button" data-primary="true" @click="router.push(toProject('guard'))">
               去一致性守卫处理 {{ selected.conflicts }} 处冲突
             </button>
           </div>
@@ -264,7 +265,7 @@ const gapChapters = (e: CodexEntry) => {
                 class="pill"
                 type="button"
                 :style="{ cursor: 'pointer', height: '20px', fontFamily: 'var(--font-mono)' }"
-                @click="router.push('/write')"
+                @click="router.push(toProject('write'))"
               >{{ n }}</button>
               <span v-if="selected.refChapters.length > 40" :style="{ fontSize: 'var(--fs-sm)', color: 'var(--ink-3)' }">
                 仅显示最近 40 章

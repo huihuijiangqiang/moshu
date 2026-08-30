@@ -4,10 +4,12 @@ import { useRouter } from 'vue-router'
 import { useProjectStore } from '@/stores/project'
 import { useShellStore } from '@/stores/shell'
 import type { Chapter } from '@/types'
+import { useProjectNavigation } from '@/composables/use-project-navigation'
 
 const router = useRouter()
 const store = useProjectStore()
 const shell = useShellStore()
+const { toProject } = useProjectNavigation()
 const view = ref<'grid' | 'list'>('grid')
 const selectedId = ref<string | null>(null)
 
@@ -63,7 +65,7 @@ function cellStyle(c: Chapter) {
         <button
           type="button"
           :style="{ flex: 13, border: 0, cursor: 'pointer', background: 'var(--color-accent-100)', color: 'var(--color-accent-700)', fontWeight: 700, textAlign: 'left', padding: '0 12px' }"
-          @click="router.push('/guard')"
+          @click="router.push(toProject('guard'))"
         >时间线冲突</button>
       </div>
       <p :style="{ margin: '12px 0 0', color: 'var(--color-neutral-800)', lineHeight: 1.6, fontSize: '13px' }">
@@ -142,7 +144,7 @@ function cellStyle(c: Chapter) {
           <p v-else class="muted" :style="{ margin: '0 0 18px', lineHeight: 1.7 }">这一章还没有章纲。</p>
 
           <div :style="{ display: 'grid', gap: '8px' }">
-            <button class="btn btn-primary" type="button" :style="{ height: '36px', fontSize: '13px' }" @click="router.push('/write')">
+            <button class="btn btn-primary" type="button" :style="{ height: '36px', fontSize: '13px' }" @click="router.push(toProject('write'))">
               按此章纲生成正文
             </button>
             <button class="btn btn-secondary" type="button" :style="{ height: '36px', fontSize: '13px' }">AI 补全章纲节点</button>

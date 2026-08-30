@@ -1,11 +1,12 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
-import { useRouter } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import { useProjectStore } from '@/stores/project'
 import { useCodexStore } from '@/stores/codex'
 import { useGuardStore } from '@/stores/guard'
 import { useShellStore } from '@/stores/shell'
 import { CODEX_KIND_LABEL } from '@/types'
+import { useProjectNavigation } from '@/composables/use-project-navigation'
 
 /**
  * ⌘K 命令面板 —— 密集工具台的主入口。
@@ -21,10 +22,12 @@ interface Cmd {
 }
 
 const router = useRouter()
+const route = useRoute()
 const project = useProjectStore()
 const codex = useCodexStore()
 const guard = useGuardStore()
 const shell = useShellStore()
+const { inProject, toProject } = useProjectNavigation()
 
 const query = ref('')
 const cursor = ref(0)
@@ -32,25 +35,21 @@ const inputEl = ref<HTMLInputElement | null>(null)
 const listEl = ref<HTMLElement | null>(null)
 
 const navCmds = computed<Cmd[]>(() => [
-  { id: 'nav-write', group: '前往', label: '写作台', hint: 'G W', run: () => router.push('/write') },
-  { id: 'nav-outline', group: '前往', label: '大纲', hint: 'G O', run: () => router.push('/outline') },
-  { id: 'nav-codex', group: '前往', label: `设定库 · ${codex.entries.length} 条`, hint: 'G C', run: () => router.push('/codex') },
-  {
-    id: 'nav-guard',
-    group: '前往',
-    label: `一致性守卫 · ${guard.open.length} 条待处理`,
-    hint: 'G G',
-    run: () => router.push('/guard')
-  },
-  { id: 'nav-style', group: '前往', label: '风格档', run: () => router.push('/style') },
-  { id: 'nav-ratio', group: '前往', label: 'AI 占比自查', run: () => router.push('/ai-ratio') },
-  { id: 'nav-export', group: '前往', label: '导出（免费且全量）', run: () => router.push('/export') },
-  { id: 'nav-usage', group: '前往', label: '用量与计费', run: () => router.push('/usage') },
-  { id: 'nav-shelf', group: '前往', label: '书架', run: () => router.push('/') }
+  ...(inProject.value ? [
+    { id: 'nav-write', group: '当前作品', label: '写作台', hint: 'G W', run: () => router.push(toProject('write')) },
+    { id: 'nav-outline', group: '当前作品', label: '大纲', hint: 'G O', run: () => router.push(toProject('outline')) },
+    { id: 'nav-codex', group: '当前作品', label: `设定库 · ${codex.entries.length} 条`, hint: 'G C', run: () => router.push(toProject('codex')) },
+    { id: 'nav-guard', group: '当前作品', label: `一致性守卫 · ${guard.open.length} 条待处理`, hint: 'G G', run: () => router.push(toProject('guard')) },
+    { id: 'nav-style', group: '当前作品', label: '风格档', run: () => router.push(toProject('style')) },
+    { id: 'nav-ratio', group: '当前作品', label: 'AI 占比自查', run: () => router.push(toProject('ai-ratio')) },
+    { id: 'nav-export', group: '当前作品', label: '导出作品', run: () => router.push(toProject('export')) }
+  ] : []),
+  { id: 'nav-shelf', group: '全局', label: '作品库', run: () => router.push('/') },
+  { id: 'nav-usage', group: '全局', label: '用量与计费', run: () => router.push('/usage') }
 ])
 
 const actionCmds = computed<Cmd[]>(() => [
-  {
+  ...(route.name === 'workspace' ? [{
     id: 'act-zen',
     group: '操作',
     label: shell.zen ? '退出纯净模式' : '进入纯净模式（只留正文）',
@@ -70,31 +69,31 @@ const actionCmds = computed<Cmd[]>(() => [
     label: shell.rightOpen ? '收起 AI 面板' : '展开 AI 面板',
     hint: '⌘J',
     run: () => (shell.rightOpen = !shell.rightOpen)
-  },
+  }] : []),
   {
     id: 'act-theme',
     group: '操作',
     label: shell.theme === 'dark' ? '切到浅色主题' : '切到深色主题',
     run: () => shell.toggleTheme()
   },
-  { id: 'act-rescan', group: '操作', label: '重新全量扫描一致性', run: () => guard.rescan() }
+  ...(inProject.value ? [{ id: 'act-rescan', group: '操作', label: '重新扫描当前作品一致性', run: () => guard.rescan() }] : [])
 ])
 
 const chapterCmds = computed<Cmd[]>(() =>
-  project.chapters.map((c) => ({
+  inProject.value ? project.chapters.map((c) => ({
     id: 'ch-' + c.id,
     group: '章节',
     label: `第${c.index}章　${c.title || '未命名'}`,
     hint: c.status === 'outlined' ? '有章纲' : (c.words / 1000).toFixed(1) + 'k',
     run: () => {
       project.openChapter(c.id)
-      router.push('/write')
+      router.push(toProject('write'))
     }
-  }))
+  })) : []
 )
 
 const codexCmds = computed<Cmd[]>(() =>
-  codex.entries.map((e) => ({
+  inProject.value ? codex.entries.map((e) => ({
     id: 'cx-' + e.id,
     group: '设定',
     label: e.name,
@@ -102,9 +101,9 @@ const codexCmds = computed<Cmd[]>(() =>
     run: () => {
       codex.kind = e.kind
       codex.query = e.name
-      router.push('/codex')
+      router.push(toProject('codex'))
     }
-  }))
+  })) : []
 )
 
 /** 匹配名称、别名、拼音首字母都不做——先做子串命中，把 hint 也算进去 */

@@ -8,6 +8,7 @@ export const useGuardStore = defineStore('guard', () => {
   const tab = ref<GuardKind | 'resolved'>('conflict')
   const scanning = ref(false)
   const loaded = ref(false)
+  const loadedProjectId = ref<string | null>(null)
 
   const open = computed(() => issues.value.filter((i) => !i.resolved))
   const counts = computed(() => ({
@@ -28,16 +29,17 @@ export const useGuardStore = defineStore('guard', () => {
     [...open.value].sort((a, b) => (a.severity === b.severity ? 0 : a.severity === 'high' ? -1 : 1)).slice(0, 3)
   )
 
-  async function load() {
-    if (loaded.value) return
-    issues.value = await mockApi.listGuardIssues()
+  async function load(projectId = 'p1') {
+    if (loaded.value && loadedProjectId.value === projectId) return
+    issues.value = await mockApi.listGuardIssues(projectId)
+    loadedProjectId.value = projectId
     loaded.value = true
   }
 
   async function rescan() {
     scanning.value = true
     try {
-      issues.value = await mockApi.listGuardIssues()
+      issues.value = await mockApi.listGuardIssues(loadedProjectId.value ?? 'p1')
     } finally {
       scanning.value = false
     }
@@ -49,5 +51,5 @@ export const useGuardStore = defineStore('guard', () => {
     if (i) i.resolved = true
   }
 
-  return { issues, tab, scanning, open, counts, visible, topThree, load, rescan, resolve }
+  return { issues, tab, scanning, open, counts, visible, topThree, load, rescan, resolve, loadedProjectId }
 })

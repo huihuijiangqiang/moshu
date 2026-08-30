@@ -6,6 +6,7 @@ import { useProjectStore } from '@/stores/project'
 import { useCodexStore } from '@/stores/codex'
 import { useGuardStore } from '@/stores/guard'
 import { CODEX_KIND_LABEL, type ContextLayer } from '@/types'
+import { useProjectNavigation } from '@/composables/use-project-navigation'
 
 /**
  * AI 面板。三件事按重要性排：能不能生成（章纲 + 参数）、
@@ -19,6 +20,7 @@ const router = useRouter()
 const project = useProjectStore()
 const codex = useCodexStore()
 const guard = useGuardStore()
+const { toProject } = useProjectNavigation()
 
 const layers = ref<ContextLayer[]>([])
 const tab = ref<'ai' | 'refs' | 'notes'>('ai')
@@ -159,7 +161,7 @@ const refs = computed(() => {
           <span class="wk-label" :style="{ color: guard.open.length ? 'var(--alert-ink)' : 'var(--ink-3)' }">
             守卫提醒
           </span>
-          <button class="wk-btn wk-btn-xs" type="button" @click="router.push('/guard')">
+          <button class="wk-btn wk-btn-xs" type="button" @click="router.push(toProject('guard'))">
             全部 {{ guard.open.length }}
           </button>
         </div>
@@ -175,7 +177,7 @@ const refs = computed(() => {
               background: 'var(--panel-sunken)', border: 0,
               borderLeft: '2px solid ' + (i.severity === 'high' ? 'var(--alert)' : 'var(--ink-4)')
             }"
-            @click="router.push('/guard')"
+            @click="router.push(toProject('guard'))"
           >
             <span class="row" :style="{ gap: '6px' }">
               <span class="pill" :class="i.severity === 'high' ? 'pill-alert' : ''">
@@ -199,7 +201,7 @@ const refs = computed(() => {
         class="wk-row"
         type="button"
         :style="{ minHeight: 'auto', padding: 'var(--u2) var(--u3)', display: 'grid', gap: '2px' }"
-        @click="router.push('/codex')"
+        @click="router.push(toProject('codex'))"
       >
         <span class="row" :style="{ gap: '6px' }">
           <span :style="{ fontWeight: 700, color: 'var(--ink)' }">{{ e.name }}</span>

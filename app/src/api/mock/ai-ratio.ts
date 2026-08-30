@@ -7,13 +7,28 @@ export interface RatioSegment { text: string; source: SegmentSource; note?: stri
 export interface SuspectLine { id: string; text: string; reason: string }
 
 export const ratioApi = {
-  async report(_chapterId: string) {
+  async report(chapterId: string, scope: 'chapter' | 'book' = 'chapter') {
     await delay(200)
+    if (chapterId.startsWith('p')) {
+      return {
+        aiRaw: scope === 'book' ? 23 : 18,
+        aiEdited: scope === 'book' ? 34 : 31,
+        human: scope === 'book' ? 43 : 51,
+        suspectCount: scope === 'book' ? 7 : 1,
+        paragraphs: [
+          [{ text: '这部作品的章节来源记录已按当前项目隔离。', source: 'human' }],
+          [{ text: '继续写作后，这里会显示每一段文字的来源与修改程度。', source: 'ai-edited' }]
+        ] as RatioSegment[][],
+        suspects: [
+          { id: `${chapterId}-r1`, text: '「继续写作后」', reason: '演示数据：正式报告会依据当前章节分析。' }
+        ] as SuspectLine[]
+      }
+    }
     return {
-      aiRaw: 39,
-      aiEdited: 22,
-      human: 39,
-      suspectCount: 11,
+      aiRaw: scope === 'book' ? 26 : 39,
+      aiEdited: scope === 'book' ? 31 : 22,
+      human: scope === 'book' ? 43 : 39,
+      suspectCount: scope === 'book' ? 38 : 11,
       paragraphs: [
         [
           { text: '风雪压着城墙走了三日，第四日清晨忽然停了。', source: 'ai-raw' },

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted, ref } from 'vue'
+import { onMounted, ref, watch } from 'vue'
 import { ratioApi, type SegmentSource } from '@/api/mock/ai-ratio'
 import { useProjectStore } from '@/stores/project'
 import { useShellStore } from '@/stores/shell'
@@ -11,8 +11,15 @@ const scope = ref<'chapter' | 'book'>('chapter')
 
 onMounted(async () => {
   shell.setCrumb('AI 占比自查')
-  report.value = await ratioApi.report(store.activeId ?? '')
 })
+
+watch(
+  [() => store.activeId, scope],
+  async ([chapterId, nextScope]) => {
+    report.value = await ratioApi.report(chapterId ?? '', nextScope)
+  },
+  { immediate: true }
+)
 
 const legend: { source: SegmentSource; label: string }[] = [
   { source: 'ai-raw', label: 'AI 原文' },

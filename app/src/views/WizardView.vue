@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref } from 'vue'
 import { useRouter } from 'vue-router'
+import { projectPath } from '@/router/project-route'
 
 const router = useRouter()
 const step = ref(3)
@@ -99,7 +100,7 @@ const why = [
         </div>
 
         <div class="row" :style="{ gap: '10px', marginTop: '30px' }">
-          <button class="btn btn-primary" type="button" :style="{ height: '40px', fontSize: '14px' }" @click="router.push('/')">
+          <button class="btn btn-primary" type="button" :style="{ height: '40px', fontSize: '14px' }" @click="router.push(projectPath('p1', 'write'))">
             确认并生成前三章
           </button>
           <button class="btn btn-secondary" type="button" :style="{ height: '40px', fontSize: '14px' }">全部重新生成</button>

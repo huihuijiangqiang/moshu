@@ -3,8 +3,10 @@ import type { Chapter, CodexEntry, GuardIssue, Project, ContextLayer } from '@/t
 export const project: Project = {
   id: 'p1',
   title: '剑起山河',
+  wordCount: 783000,
+  chapterCount: 89,
   dailyGoal: 6000,
-  dailyWords: 4280,
+  dailyWords: 2780,
   styleProfile: '沈氏白描',
   volumes: [
     { id: 'v1', index: 1, title: '少年出山' },
