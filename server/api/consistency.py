@@ -8,7 +8,7 @@ from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from db.models_consistency_extended import ConsistencyClaim, ConsistencyRun, GuardIssueEvidence
+from db.models_consistency_extended import ConsistencyRun
 from db.models_guard import GuardIssue
 from db.session import get_db
 

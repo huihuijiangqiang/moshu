@@ -1,13 +1,8 @@
 """
 Consistency Celery tasks - extraction, summarization, scanning
 """
-from datetime import datetime, timezone
 
 from celery import shared_task
-from sqlalchemy import select, update
-
-from db.models_consistency_extended import ConsistencyRun
-from db.session import AsyncSessionLocal
 
 
 @shared_task(bind=True, name="consistency.process_body_saved")
