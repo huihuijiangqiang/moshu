@@ -122,6 +122,14 @@ const writingAnchors = computed(() => {
   }
   return (selected.value?.facts ?? []).slice(0, 3)
 })
+
+function openChapter(index: number) {
+  const chapter = project.chapters.find((item) => item.index === index)
+  router.push({
+    path: toProject('write'),
+    query: chapter ? { chapter: chapter.id } : undefined
+  })
+}
 </script>
 
 <template>
@@ -303,7 +311,7 @@ const writingAnchors = computed(() => {
                 class="pill"
                 type="button"
                 :aria-label="`打开第 ${chapter} 章`"
-                @click="router.push(toProject('write'))"
+                @click="openChapter(chapter)"
               >{{ chapter }}</button>
               <span v-if="selected.refChapters.length > 40">仅显示最近 40 章</span>
             </div>

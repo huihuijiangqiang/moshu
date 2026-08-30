@@ -43,12 +43,30 @@ watch(rows, (list) => {
 }, { immediate: true })
 
 function act(issue: GuardIssue, action: string) {
-  // 真实实现：处置结果回写设定库，误报另计入调准样本
   if (action.includes('查看时间线')) {
     router.push(toProject('outline'))
     return
   }
+  if (action.includes('改写') || action.includes('回到正文') || action.includes('补一段')) {
+    openIssueChapter(issue)
+    return
+  }
+
+  // 更新设定、确认忽略等动作由 mock API 记录为已处置；正文修改必须由作者完成后再消警。
   guard.resolve(issue.id)
+}
+
+function openIssueChapter(issue: GuardIssue) {
+  const indexes = [...issue.chapterRef.matchAll(/\d+/g)].map((match) => Number(match[0]))
+  const chapter = [...indexes]
+    .reverse()
+    .map((index) => project.chapters.find((item) => item.index === index))
+    .find(Boolean)
+
+  router.push({
+    path: toProject('write'),
+    query: chapter ? { chapter: chapter.id } : undefined
+  })
 }
 </script>
 
@@ -143,7 +161,7 @@ function act(issue: GuardIssue, action: string) {
             <span :style="{ fontWeight: 700, color: 'var(--ink)', fontSize: 'var(--fs)' }">{{ selected.category }}</span>
             <span :style="{ color: 'var(--ink-3)' }">{{ selected.chapterRef }}</span>
             <span :style="{ marginLeft: 'auto' }" />
-            <button class="wk-btn wk-btn-xs" type="button" @click="router.push(toProject('write'))">跳到那一句</button>
+            <button class="wk-btn wk-btn-xs" type="button" @click="openIssueChapter(selected)">打开对应章节</button>
           </div>
 
           <div :style="{ maxWidth: '820px', padding: 'var(--u6)' }">

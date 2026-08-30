@@ -36,6 +36,10 @@ function cellStyle(c: Chapter) {
     boxShadow: active ? 'inset 0 0 0 2px var(--color-accent)' : 'none'
   }
 }
+
+function writeChapter(chapter: Chapter) {
+  router.push({ path: toProject('write'), query: { chapter: chapter.id } })
+}
 </script>
 
 <template>
@@ -144,7 +148,7 @@ function cellStyle(c: Chapter) {
           <p v-else class="muted" :style="{ margin: '0 0 18px', lineHeight: 1.7 }">这一章还没有章纲。</p>
 
           <div :style="{ display: 'grid', gap: '8px' }">
-            <button class="btn btn-primary" type="button" :style="{ height: '36px', fontSize: '13px' }" @click="router.push(toProject('write'))">
+            <button class="btn btn-primary" type="button" :style="{ height: '36px', fontSize: '13px' }" @click="writeChapter(selected)">
               按此章纲生成正文
             </button>
             <button class="btn btn-secondary" type="button" :style="{ height: '36px', fontSize: '13px' }">AI 补全章纲节点</button>

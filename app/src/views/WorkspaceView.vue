@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
 import { EditorContent } from '@tiptap/vue-3'
 import ChapterPanel from '@/components/layout/ChapterPanel.vue'
 import AiSidePanel from '@/components/layout/AiSidePanel.vue'
@@ -16,6 +17,8 @@ defineOptions({ name: 'WorkspaceView' })
 
 const store = useProjectStore()
 const shell = useShellStore()
+const route = useRoute()
+const router = useRouter()
 const html = ref(store.active?.content ?? '')
 const chapterId = computed(() => store.activeId)
 const generating = ref(false)
@@ -29,15 +32,31 @@ const editor = useNovelEditor(html.value, (next, chars) => {
 
 const { state: saveState, savedAt, online } = useAutosave(chapterId, html)
 
-// 切章：卸载旧正文内容，只把新章塞进同一个编辑器实例（不重挂载）
+const requestedChapterId = computed(() => typeof route.query.chapter === 'string' ? route.query.chapter : null)
+
+// 切章或跨页打开指定章节：正文返回后再写入同一个编辑器实例。
 watch(
-  () => store.activeId,
-  async (id) => {
+  [() => store.activeId, () => store.chapters.length, requestedChapterId],
+  async ([activeId, , requestedId]) => {
+    const id = requestedId && store.chapters.some((chapter) => chapter.id === requestedId)
+      ? requestedId
+      : activeId
     if (!id) return
     await store.openChapter(id)
-    editor.value?.commands.setContent(store.active?.content ?? '', { emitUpdate: false })
-    html.value = store.active?.content ?? ''
-  }
+    if (store.activeId !== id) return
+
+    const content = store.chapters.find((chapter) => chapter.id === id)?.content ?? ''
+    editor.value?.commands.setContent(content, { emitUpdate: false })
+    html.value = content
+
+    // 查询参数只负责一次跨页定位，消费后移除，避免用户在章节栏切换时被拉回旧章节。
+    if (requestedId === id) {
+      const query = { ...route.query }
+      delete query.chapter
+      await router.replace({ query })
+    }
+  },
+  { immediate: true }
 )
 
 const crumb = computed(() => {
