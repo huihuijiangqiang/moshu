@@ -9,6 +9,7 @@ import CodexSuggestList from '@/components/editor/CodexSuggestList.vue'
 import AppIcon from '@/components/ui/AppIcon.vue'
 import { useNovelEditor } from '@/editor/use-novel-editor'
 import { useAutosave } from '@/composables/use-autosave'
+import { useProjectNavigation } from '@/composables/use-project-navigation'
 import { useProjectStore } from '@/stores/project'
 import { useShellStore } from '@/stores/shell'
 import { streamChapter } from '@/api/generation'
@@ -19,6 +20,7 @@ const store = useProjectStore()
 const shell = useShellStore()
 const route = useRoute()
 const router = useRouter()
+const { toProject } = useProjectNavigation()
 const html = ref(store.active?.content ?? '')
 const chapterId = computed(() => store.activeId)
 const generating = ref(false)
@@ -150,6 +152,11 @@ function runInline(action: string) {
   if (!editor.value) return
   editor.value.chain().focus().insertAiDraft().appendDraftText(`（${action}：此处接后端行内生成）`).setDraftStatus('pending').run()
 }
+
+function editChapterPlan() {
+  if (!store.active) return
+  router.push({ path: toProject('outline'), query: { chapter: store.active.id } })
+}
 </script>
 
 <template>
@@ -214,7 +221,14 @@ function runInline(action: string) {
       </div>
 
       <div v-if="paneTab === 'outline'" class="prose" :style="{ paddingTop: 'var(--u6)' }">
-        <div class="wk-label" :style="{ marginBottom: 'var(--u3)' }">章纲节点</div>
+        <div class="row" :style="{ justifyContent: 'space-between', marginBottom: 'var(--u3)', paddingBottom: 'var(--u3)', borderBottom: 'var(--hair) solid var(--line)' }">
+          <div class="wk-label">章纲节点</div>
+          <button class="wk-btn wk-btn-xs" type="button" @click="editChapterPlan">修改章纲</button>
+        </div>
+        <p
+          v-if="store.active?.bodyNeedsRevision"
+          :style="{ margin: '0 0 var(--u4)', padding: 'var(--u2) var(--u3)', borderLeft: '3px solid var(--alert)', background: 'var(--alert-soft)', color: 'var(--alert-ink)', fontWeight: 700 }"
+        >章纲已更新，这一章的正文被标记为待调整。</p>
         <ol
           v-if="store.active?.outline.length"
           :style="{ margin: 0, padding: '0 0 0 22px', fontSize: 'var(--fs-md)', lineHeight: 2.1 }"

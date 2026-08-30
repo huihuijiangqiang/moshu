@@ -1,7 +1,7 @@
 import { defineStore } from 'pinia'
 import { computed, ref } from 'vue'
 import { mockApi } from '@/api/mock'
-import type { Chapter, Project } from '@/types'
+import type { Chapter, ChapterPlanPatch, Project } from '@/types'
 
 export const useProjectStore = defineStore('project', () => {
   const project = ref<Project | null>(null)
@@ -53,5 +53,28 @@ export const useProjectStore = defineStore('project', () => {
     if (project.value?.wordCount !== undefined) project.value.wordCount += delta
   }
 
-  return { project, chapters, activeId, active, byVolume, totalWords, totalChapters, loading, loadedProjectId, load, openChapter, setWords }
+  async function updateChapterPlan(id: string, patch: ChapterPlanPatch) {
+    const updated = await mockApi.updateChapterPlan(id, patch)
+    if (!updated) throw new Error('chapter_not_found')
+    const index = chapters.value.findIndex((chapter) => chapter.id === id)
+    if (index >= 0) chapters.value[index] = { ...chapters.value[index], ...updated }
+    return updated
+  }
+
+  async function insertChapterAfter(volumeId: string, afterIndex: number) {
+    const projectId = loadedProjectId.value
+    if (!projectId) throw new Error('project_not_loaded')
+    const created = await mockApi.insertChapter(projectId, volumeId, afterIndex)
+    chapters.value.forEach((chapter) => {
+      if (chapter.volumeId === volumeId && chapter.index > afterIndex) chapter.index += 1
+    })
+    chapters.value.push(created)
+    if (project.value?.chapterCount !== undefined) project.value.chapterCount += 1
+    return created
+  }
+
+  return {
+    project, chapters, activeId, active, byVolume, totalWords, totalChapters, loading, loadedProjectId,
+    load, openChapter, setWords, updateChapterPlan, insertChapterAfter
+  }
 })

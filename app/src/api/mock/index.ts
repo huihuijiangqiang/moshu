@@ -1,7 +1,7 @@
 import { delay } from '../http'
 import * as seed from './seed'
 import { findShelfBook } from './shelf'
-import type { Chapter, CodexEntry, GuardIssue, Project, ContextLayer } from '@/types'
+import type { Chapter, ChapterPlanPatch, CodexEntry, GuardIssue, Project, ContextLayer } from '@/types'
 
 /** 内存态副本：mock 下的写操作要真的改变数据，否则界面行为是假的。 */
 const state = {
@@ -86,6 +86,46 @@ export const mockApi = {
     await delay(120)
     const c = [...state.chapters, ...projectDrafts.values()].flat().find((x) => x.id === id)
     if (c) Object.assign(c, patch)
+  },
+
+  async updateChapterPlan(id: string, patch: ChapterPlanPatch): Promise<Chapter | undefined> {
+    await delay(160)
+    const c = [...state.chapters, ...projectDrafts.values()].flat().find((x) => x.id === id)
+    if (!c) return undefined
+    const revision = c.outlineRevision ?? 0
+    if (patch.baseRevision !== revision) throw new Error('outline_revision_conflict')
+    Object.assign(c, {
+      title: patch.title.trim(),
+      outline: patch.outline.map((node) => node.trim()).filter(Boolean),
+      outlineNote: patch.outlineNote.trim(),
+      bodyNeedsRevision: patch.bodyNeedsRevision,
+      outlineRevision: revision + 1,
+      outlineUpdatedAt: new Date().toISOString()
+    })
+    return structuredClone(c)
+  },
+
+  async insertChapter(projectId: string, volumeId: string, afterIndex: number): Promise<Chapter> {
+    await delay(160)
+    const rows = chaptersFor(projectId)
+    rows
+      .filter((chapter) => chapter.volumeId === volumeId && chapter.index > afterIndex)
+      .forEach((chapter) => { chapter.index += 1 })
+    const chapter: Chapter = {
+      id: `${projectId}-ch-${Date.now().toString(36)}`,
+      volumeId,
+      index: afterIndex + 1,
+      title: '',
+      words: 0,
+      status: 'outlined',
+      outline: [],
+      outlineNote: '',
+      outlineRevision: 0,
+      bodyNeedsRevision: false
+    }
+    rows.push(chapter)
+    if (projectId === state.project.id && state.project.chapterCount !== undefined) state.project.chapterCount += 1
+    return structuredClone(chapter)
   },
 
   async listCodex(projectId = 'p1'): Promise<CodexEntry[]> {

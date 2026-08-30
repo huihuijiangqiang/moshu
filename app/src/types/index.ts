@@ -79,10 +79,23 @@ export interface Chapter {
   /** 章纲节点，一键成章按它逐点推进 */
   outline: string[]
   outlineNote: string
+  /** 章纲每次确认保存后递增，后端据此做乐观锁与历史快照。 */
+  outlineRevision?: number
+  outlineUpdatedAt?: string
+  /** 作者明确选择“更新计划并标记正文待调整”后才会设为 true。 */
+  bodyNeedsRevision?: boolean
   /** 正文 HTML（TipTap 序列化）。列表接口不返回，按需拉取。 */
   content?: string
   /** 写完后异步生成的 200 字摘要，供第 3 层滚动记忆使用 */
   summary?: string
+}
+
+export interface ChapterPlanPatch {
+  title: string
+  outline: string[]
+  outlineNote: string
+  bodyNeedsRevision: boolean
+  baseRevision: number
 }
 
 export interface Volume { id: string; index: number; title: string }
