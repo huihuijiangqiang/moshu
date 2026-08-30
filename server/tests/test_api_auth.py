@@ -3,9 +3,8 @@ Tests for API authentication and project access control
 """
 import pytest
 from fastapi import HTTPException
-from sqlalchemy import select
 
-from api.auth import get_current_user, verify_project_access
+from api.auth import verify_project_access
 from db import Organization, Project, User
 from db.models_core import OrgMember
 

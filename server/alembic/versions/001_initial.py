@@ -7,9 +7,11 @@ Create Date: 2025-01-20 10:00:00.000000
 """
 from typing import Sequence, Union
 
-from alembic import op
 import sqlalchemy as sa
+from pgvector.sqlalchemy import Vector
 from sqlalchemy.dialects import postgresql
+
+from alembic import op
 
 # revision identifiers, used by Alembic.
 revision: str = "001_initial"
@@ -183,7 +185,7 @@ def upgrade() -> None:
         sa.Column("conflicts", postgresql.JSONB(astext_type=sa.Text()), nullable=False),
         sa.Column("planted_at", sa.String(length=32), nullable=True),
         sa.Column("expected_by", sa.String(length=32), nullable=True),
-        sa.Column("embedding", postgresql.Vector(1536), nullable=True),
+        sa.Column("embedding", Vector(1536), nullable=True),
         sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.text("now()"), nullable=False),
         sa.Column("updated_at", sa.DateTime(timezone=True), server_default=sa.text("now()"), nullable=False),
         sa.ForeignKeyConstraint(["project_id"], ["projects.id"], ondelete="CASCADE"),

@@ -4,14 +4,12 @@ Rule Scanner - Persistent consistency checking with fingerprinted issues
 import hashlib
 import json
 from datetime import datetime, timezone
-from typing import Optional
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from db.models_consistency_extended import ConsistencyClaim
+from db.models_consistency_extended import ConsistencyClaim, GuardIssueEvidence
 from db.models_guard import GuardIssue
-from db.models_guard import GuardIssueEvidence
 
 
 class RuleScanner:
@@ -36,25 +34,34 @@ class RuleScanner:
     ) -> list[str]:
         """
         Scan a chapter's claims and produce/update GuardIssue records
+        Cross-chapter consistency: load all project claims for timeline analysis
 
         Returns:
             List of issue IDs (new or updated)
         """
-        # Load accepted claims for this chapter and body_rev
+        # Load all accepted claims for the project (cross-chapter consistency)
         result = await db.execute(
+            select(ConsistencyClaim)
+            .where(ConsistencyClaim.project_id == project_id)
+            .where(ConsistencyClaim.status == "accepted")
+        )
+        all_claims = list(result.scalars().all())
+
+        # Load claims for this specific chapter+body_rev (for anchoring issues)
+        chapter_claims_result = await db.execute(
             select(ConsistencyClaim)
             .where(ConsistencyClaim.project_id == project_id)
             .where(ConsistencyClaim.chapter_id == chapter_id)
             .where(ConsistencyClaim.body_rev == body_rev)
             .where(ConsistencyClaim.status == "accepted")
         )
-        claims = list(result.scalars().all())
+        chapter_claims = list(chapter_claims_result.scalars().all())
 
-        # Run rules and collect detected issues
+        # Run rules on all project claims
         detected_issues = []
-        detected_issues.extend(await self._check_alive_conflicts(db, project_id, claims))
-        detected_issues.extend(await self._check_ownership_conflicts(db, project_id, claims))
-        detected_issues.extend(await self._check_knowledge_boundary(db, project_id, claims))
+        detected_issues.extend(await self._check_alive_conflicts(db, project_id, all_claims))
+        detected_issues.extend(await self._check_ownership_conflicts(db, project_id, all_claims))
+        detected_issues.extend(await self._check_knowledge_boundary(db, project_id, all_claims))
 
         # Upsert issues
         issue_ids = []
@@ -73,7 +80,7 @@ class RuleScanner:
         project_id: str,
         claims: list[ConsistencyClaim],
     ) -> list[dict]:
-        """Check for alive=false overlaps in same timeline"""
+        """Check for death followed by alive=true (resurrection without explanation)"""
         issues = []
         alive_claims = [c for c in claims if c.predicate == "alive" and c.object_type == "scalar"]
 
@@ -90,27 +97,24 @@ class RuleScanner:
             if any(c.story_order is None for c in group):
                 continue
 
-            false_claims = [c for c in group if c.object_value == "false" and c.polarity == "positive"]
-            if len(false_claims) < 2:
-                continue
-
             # Sort by story_order
-            sorted_claims = sorted(false_claims, key=lambda c: c.story_order)
+            sorted_claims = sorted(group, key=lambda c: c.story_order)
 
-            # Check for overlaps
+            # Check for death (alive=false) followed by alive=true
             for i in range(len(sorted_claims) - 1):
                 current = sorted_claims[i]
                 next_claim = sorted_claims[i + 1]
 
-                # If current.valid_to_order is None or > next.valid_from_order, conflict
-                if current.valid_to_order is None or current.valid_to_order > next_claim.valid_from_order:
+                # Death followed by alive?
+                if (current.object_value == "false" and current.polarity == "positive" and
+                    next_claim.object_value == "true" and next_claim.polarity == "positive"):
                     issues.append({
                         "issue_type": "alive_conflict",
                         "severity": "high",
                         "confidence": 0.95,
-                        "description": f"{subject} is marked as not alive in overlapping time intervals",
+                        "description": f"{subject} marked as dead then alive without explanation",
                         "evidence_claims": [current.id, next_claim.id],
-                        "anchor": {"pid": current.paragraph_id or "unknown"},
+                        "anchor": {"pid": next_claim.paragraph_id or "unknown"},
                     })
 
         return issues
@@ -155,7 +159,7 @@ class RuleScanner:
                             "issue_type": "ownership_conflict",
                             "severity": "high",
                             "confidence": 0.90,
-                            "description": f"Item owned by different entities at overlapping times",
+                            "description": "Item owned by different entities at overlapping times",
                             "evidence_claims": [current.id, next_claim.id],
                             "anchor": {"pid": current.paragraph_id or "unknown"},
                         })
@@ -171,34 +175,34 @@ class RuleScanner:
         """Check for knowledge used before its narrative introduction"""
         issues = []
 
-        # Group by subject
-        by_subject = {}
-        for claim in claims:
-            if claim.subject_entry_id:
-                if claim.subject_entry_id not in by_subject:
-                    by_subject[claim.subject_entry_id] = []
-                by_subject[claim.subject_entry_id].append(claim)
+        # Look for "uses_knowledge" and "acquires_knowledge" predicates
+        knowledge_uses = [c for c in claims if c.predicate == "uses_knowledge"]
+        knowledge_acquires = [c for c in claims if c.predicate == "acquires_knowledge"]
 
-        for subject_id, group in by_subject.items():
-            # Skip if any claim has unknown story_order
-            if any(c.story_order is None for c in group):
+        # Group by subject (who uses/acquires knowledge)
+        for use_claim in knowledge_uses:
+            if use_claim.story_order is None:
                 continue
 
-            # Find first mention (introduction)
-            sorted_claims = sorted(group, key=lambda c: c.story_order)
-            first = sorted_claims[0]
+            # Find if there's a matching acquire for same subject and knowledge
+            for acquire_claim in knowledge_acquires:
+                if acquire_claim.story_order is None:
+                    continue
 
-            # Check for claims before first mention
-            for claim in sorted_claims[1:]:
-                if claim.story_order < first.story_order:
-                    issues.append({
-                        "issue_type": "knowledge_boundary",
-                        "severity": "medium",
-                        "confidence": 0.85,
-                        "description": f"Knowledge about {claim.subject_text} used before narrative introduction",
-                        "evidence_claims": [claim.id, first.id],
-                        "anchor": {"pid": claim.paragraph_id or "unknown"},
-                    })
+                # Same subject and same knowledge object?
+                if (use_claim.subject_text == acquire_claim.subject_text and
+                    use_claim.object_value == acquire_claim.object_value):
+
+                    # Used before acquired?
+                    if use_claim.story_order < acquire_claim.story_order:
+                        issues.append({
+                            "issue_type": "knowledge_boundary",
+                            "severity": "medium",
+                            "confidence": 0.85,
+                            "description": f"{use_claim.subject_text} uses knowledge '{use_claim.object_value}' before acquiring it",
+                            "evidence_claims": [use_claim.id, acquire_claim.id],
+                            "anchor": {"pid": use_claim.paragraph_id or "unknown"},
+                        })
 
         return issues
 
@@ -290,17 +294,13 @@ class RuleScanner:
             evidence = GuardIssueEvidence(
                 issue_id=issue_id,
                 side=side,
+                source_kind="claim",
                 claim_id=claim.id,
                 chapter_id=claim.chapter_id,
                 body_rev=claim.body_rev,
                 paragraph_id=claim.paragraph_id,
                 quote=claim.subject_text,
-                content_hash=None,
-                metadata={
-                    "predicate": claim.predicate,
-                    "object_type": claim.object_type,
-                    "object_value": claim.object_value,
-                },
+                sort_order=idx,
             )
             db.add(evidence)
 

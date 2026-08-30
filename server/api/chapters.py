@@ -10,7 +10,13 @@ from api.auth import get_current_user
 from db import Chapter, ChapterBody
 from db.models_core import User
 from db.session import get_db
-from services.body import InvalidCodexRefError, save_chapter_body
+from services.body import (
+    BodyRevisionConflictError,
+    IdempotencyInProgressError,
+    InvalidCodexRefError,
+    save_chapter_body,
+)
+from services.idempotency import IdempotencyConflictError
 
 router = APIRouter()
 
@@ -189,36 +195,53 @@ async def save_chapter_body_endpoint(
             content_json=request.content_json,
             base_rev=request.base_rev,
             idempotency_key=idempotency_key,
-            trigger="user_edit",
+            trigger="manual",
         )
+        await db.commit()
     except InvalidCodexRefError as e:
+        await db.rollback()
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail=str(e),
         )
-    except ValueError as e:
-        # Version conflict or validation error
-        if "base_rev" in str(e).lower():
-            # Re-fetch current body for conflict response
-            body_result = await db.execute(body_stmt)
-            body = body_result.scalar_one_or_none()
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail=ConflictResponse(
-                    server_content_html=body.content_html if body else "",
-                    server_content_json=body.content_json if body else {},
-                    server_rev=body.rev if body else 0,
-                    client_content_html=request.content_html,
-                    client_content_json=request.content_json,
-                ).model_dump(),
-            )
-        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(e))
+    except BodyRevisionConflictError as e:
+        await db.rollback()
+        # Re-fetch current body for conflict response
+        body_result = await db.execute(body_stmt)
+        body = body_result.scalar_one_or_none()
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=ConflictResponse(
+                server_content_html=body.content_html if body else "",
+                server_content_json=body.content_json if body else {},
+                server_rev=body.rev if body else 0,
+                client_content_html=request.content_html,
+                client_content_json=request.content_json,
+            ).model_dump(),
+        )
+    except IdempotencyConflictError as e:
+        await db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Idempotency key conflict: {e.key}",
+        )
+    except IdempotencyInProgressError:
+        raise HTTPException(
+            status_code=status.HTTP_202_ACCEPTED,
+            detail="Request is being processed, please retry later",
+        )
+    except Exception as e:
+        await db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=str(e),
+        )
 
     # Return appropriate status based on consistency_status
     if result["consistency_status"] == "queued":
         return SaveChapterResponse(
             success=True,
-            rev=result["new_rev"],
+            rev=result["rev"],
             consistency_status="queued",
             message="保存成功，一致性检查已排队",
         )
@@ -226,7 +249,7 @@ async def save_chapter_body_endpoint(
         # consistency_status == "unchanged"
         return SaveChapterResponse(
             success=True,
-            rev=result["new_rev"],
+            rev=result["rev"],
             consistency_status="unchanged",
             message="保存成功",
         )
