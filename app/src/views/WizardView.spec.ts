@@ -1,4 +1,4 @@
-import { mount } from '@vue/test-utils'
+import { flushPromises, mount } from '@vue/test-utils'
 import { createMemoryHistory, createRouter } from 'vue-router'
 import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import { nextTick } from 'vue'
@@ -25,7 +25,7 @@ describe('new project wizard', () => {
       history: createMemoryHistory(),
       routes: [
         { path: '/projects/new', component: WizardView },
-        { path: '/projects/p1/outline', component: { template: '<div />' } }
+        { path: '/projects/:projectId/outline', component: { template: '<div />' } }
       ]
     })
     await router.push('/projects/new')
@@ -50,5 +50,11 @@ describe('new project wizard', () => {
     expect(wrapper.text()).toContain('这是根据你的选择搭出的骨架')
     expect(wrapper.get('input[type="text"]').element).toHaveProperty('value', '残锋照雪')
     expect(wrapper.get('textarea[aria-label="主角设定"]').element).toHaveProperty('value')
+
+    await buttonByText(wrapper, '确认故事骨架')?.trigger('click')
+    await buttonByText(wrapper, '创建作品并进入大纲')?.trigger('click')
+    await new Promise((resolve) => setTimeout(resolve, 200))
+    await flushPromises()
+    expect(router.currentRoute.value.path).toMatch(/^\/projects\/draft-[a-z0-9]+\/outline$/)
   })
 })

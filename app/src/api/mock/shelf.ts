@@ -18,6 +18,8 @@ export interface ShelfBook {
 
 export interface UsageBreakdown { label: string; count: string; credits: number | 'free' }
 
+const CREATED_BOOKS_KEY = 'moshu:created-books'
+
 export const SHELF_BOOKS: ShelfBook[] = [
   {
     id: 'p1', title: '剑起山河', genre: '男频 · 边关权谋', status: 'ongoing',
@@ -51,10 +53,50 @@ export const SHELF_BOOKS: ShelfBook[] = [
   }
 ]
 
+function readCreatedBooks(): ShelfBook[] {
+  if (typeof localStorage === 'undefined' || typeof localStorage.getItem !== 'function') return []
+  try {
+    const value = JSON.parse(localStorage.getItem(CREATED_BOOKS_KEY) ?? '[]')
+    return Array.isArray(value) ? value : []
+  } catch {
+    return []
+  }
+}
+
+function writeCreatedBooks(books: ShelfBook[]) {
+  if (typeof localStorage === 'undefined' || typeof localStorage.setItem !== 'function') return
+  localStorage.setItem(CREATED_BOOKS_KEY, JSON.stringify(books))
+}
+
+export function findShelfBook(id: string) {
+  return readCreatedBooks().find((book) => book.id === id) ?? SHELF_BOOKS.find((book) => book.id === id)
+}
+
 export const shelfApi = {
   async listBooks(): Promise<ShelfBook[]> {
     await delay()
-    return structuredClone(SHELF_BOOKS)
+    return structuredClone([...readCreatedBooks(), ...SHELF_BOOKS])
+  },
+
+  async createBook(input: { title: string; genre: string }): Promise<ShelfBook> {
+    await delay(160)
+    const book: ShelfBook = {
+      id: `draft-${Date.now().toString(36)}`,
+      title: input.title.trim() || '未命名作品',
+      genre: input.genre,
+      status: 'planning',
+      words: 0,
+      chapters: 0,
+      codexCount: 0,
+      guardOpen: 0,
+      lastTouched: '刚刚 · 创建故事骨架',
+      targetWords: 600000,
+      progress: 0,
+      todayWords: 0,
+      coverTone: 'mountain'
+    }
+    writeCreatedBooks([book, ...readCreatedBooks()])
+    return structuredClone(book)
   },
 
   async dailySeries(): Promise<number[]> {

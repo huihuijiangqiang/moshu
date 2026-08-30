@@ -113,7 +113,7 @@ function formatWords(words: number) {
       </section>
 
       <button class="studio-team" type="button">
-        <span class="workspace-avatar">墨</span><span><strong>个人工作区</strong><small>5 部作品</small></span><AppIcon name="chevron" :size="13" />
+        <span class="workspace-avatar">墨</span><span><strong>个人工作区</strong><small>{{ books.length }} 部作品</small></span><AppIcon name="chevron" :size="13" />
       </button>
     </aside>
 

@@ -2,6 +2,7 @@
 import { computed, onMounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { projectPath } from '@/router/project-route'
+import { shelfApi } from '@/api/mock/shelf'
 
 type Audience = 'male' | 'female' | 'general'
 
@@ -32,6 +33,8 @@ const synopsis = ref('')
 const volumes = ref<VolumeDraft[]>([])
 const expandedOutline = ref(false)
 const variant = ref(0)
+const creating = ref(false)
+const createError = ref('')
 
 const inspirations = [
   '一个守关将军能听见兵器记忆，却发现佩剑一直在替师父撒谎。',
@@ -70,6 +73,7 @@ const hookVariants = [
 
 const selectedGenre = computed(() => genres.find((item) => item.id === genreId.value) ?? null)
 const selectedTemplate = computed(() => templates.find((item) => item.id === templateId.value) ?? null)
+const audienceLabel = computed(() => audience.value === 'male' ? '男频' : audience.value === 'female' ? '女频' : '通用')
 const inspirationValid = computed(() => inspiration.value.trim().length >= 8)
 const choicesValid = computed(() => !!genreId.value && !!templateId.value)
 const skeletonValid = computed(() =>
@@ -175,6 +179,24 @@ function resetDraft() {
   expandedOutline.value = false
   variant.value = 0
   localStorage.removeItem(DRAFT_KEY)
+}
+
+async function createProject() {
+  if (creating.value || !skeletonValid.value || !selectedGenre.value) return
+  creating.value = true
+  createError.value = ''
+  try {
+    const book = await shelfApi.createBook({
+      title: bookTitle.value,
+      genre: `${audienceLabel.value} · ${selectedGenre.value.label}`
+    })
+    localStorage.removeItem(DRAFT_KEY)
+    await router.push(projectPath(book.id, 'outline'))
+  } catch {
+    createError.value = '创建失败，请保留当前草稿后重试。'
+  } finally {
+    creating.value = false
+  }
 }
 
 onMounted(() => {
@@ -351,7 +373,7 @@ watch(
           </header>
 
           <dl>
-            <div><dt>读者方向</dt><dd>{{ audience === 'male' ? '男频' : audience === 'female' ? '女频' : '通用' }}</dd></div>
+            <div><dt>读者方向</dt><dd>{{ audienceLabel }}</dd></div>
             <div><dt>题材</dt><dd>{{ selectedGenre?.label }}</dd></div>
             <div><dt>故事模板</dt><dd>{{ selectedTemplate?.label }}</dd></div>
             <div><dt>卷数</dt><dd>{{ volumes.length }} 卷</dd></div>
@@ -360,7 +382,10 @@ watch(
           <div class="wizard-review-copy">
             <strong>故事总述</strong><p>{{ synopsis }}</p>
           </div>
-          <button class="btn btn-primary wizard-create" type="button" @click="router.push(projectPath('p1', 'outline'))">创建作品并进入大纲</button>
+          <p v-if="createError" class="wizard-create-error">{{ createError }}</p>
+          <button class="btn btn-primary wizard-create" type="button" :disabled="creating" @click="createProject">
+            {{ creating ? '创建中…' : '创建作品并进入大纲' }}
+          </button>
         </section>
 
         <footer class="wizard-actions">
@@ -482,6 +507,7 @@ watch(
 .wizard-review dd { margin: 5px 0 0; font-weight: 700; }
 .wizard-review-copy { margin: var(--u5) 0; }
 .wizard-review-copy p { color: var(--ink-2); line-height: 1.8; }
+.wizard-create-error { color: var(--alert); font-size: var(--fs-sm); }
 
 @media (max-width: 900px) {
   .wizard-workspace { grid-template-columns: minmax(0, 1fr); }

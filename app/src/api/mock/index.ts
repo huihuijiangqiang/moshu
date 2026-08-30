@@ -1,6 +1,6 @@
 import { delay } from '../http'
 import * as seed from './seed'
-import { SHELF_BOOKS } from './shelf'
+import { findShelfBook } from './shelf'
 import type { Chapter, CodexEntry, GuardIssue, Project, ContextLayer } from '@/types'
 
 /** 内存态副本：mock 下的写操作要真的改变数据，否则界面行为是假的。 */
@@ -15,7 +15,7 @@ const projectDrafts = new Map<string, Chapter[]>()
 
 function projectFor(id: string): Project {
   if (id === seed.project.id) return state.project
-  const book = SHELF_BOOKS.find((item) => item.id === id)
+  const book = findShelfBook(id)
   return {
     id,
     title: book?.title ?? '未命名作品',
@@ -33,7 +33,7 @@ function chaptersFor(id: string): Chapter[] {
   const existing = projectDrafts.get(id)
   if (existing) return existing
 
-  const book = SHELF_BOOKS.find((item) => item.id === id)
+  const book = findShelfBook(id)
   const chapterTitle: Record<string, string> = {
     p2: '无人知晓',
     p3: '纸船灯影',
@@ -107,7 +107,7 @@ export const mockApi = {
   async listGuardIssues(projectId = 'p1'): Promise<GuardIssue[]> {
     await delay()
     if (projectId === 'p1') return structuredClone(state.issues)
-    const book = SHELF_BOOKS.find((item) => item.id === projectId)
+    const book = findShelfBook(projectId)
     return Array.from({ length: book?.guardOpen ?? 0 }, (_, index): GuardIssue => ({
       id: `${projectId}-g${index + 1}`,
       kind: 'conflict',
