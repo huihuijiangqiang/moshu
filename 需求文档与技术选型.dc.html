@@ -20,15 +20,15 @@
 <div style="max-width: 1280px; margin: 0 auto; padding: 0 40px 120px; font-family: var(--font-body);">
 
   <div style="display: flex; align-items: baseline; justify-content: space-between; gap: 24px; padding: 22px 0; border-bottom: 2px solid var(--color-divider);">
-    <div style="font-family: var(--font-heading); font-weight: 700; font-size: 14px; letter-spacing: 0.18em; text-transform: uppercase;">需求文档 &amp; 技术选型 · v0.1 草案</div>
-    <div style="font-size: 13px; letter-spacing: 0.06em; color: var(--color-neutral-700);">2026 / 08 · 待评审</div>
+    <div style="font-family: var(--font-heading); font-weight: 700; font-size: 14px; letter-spacing: 0.18em; text-transform: uppercase;">需求文档 &amp; 技术选型 · v0.2</div>
+    <div style="font-size: 13px; letter-spacing: 0.06em; color: var(--color-neutral-700);">2026 / 08 / 30 · 竞品与原型核查后修订</div>
   </div>
 
   <div style="display: grid; grid-template-columns: 1.4fr 1fr; gap: 72px; padding: 80px 0 64px; border-bottom: 2px solid var(--color-divider);">
     <div>
       <div style="font-family: var(--font-heading); font-size: 13px; font-weight: 700; letter-spacing: 0.18em; text-transform: uppercase; color: var(--color-accent-700); margin-bottom: 24px;">AI 网文创作平台 · Web</div>
       <h1 style="font-family: var(--font-heading); font-weight: 700; font-size: 46px; line-height: 1.18; letter-spacing: -0.01em; margin: 0 0 32px;">能一键出稿，<br>更能在第八十万字<br>不出错</h1>
-      <p style="font-size: 19px; line-height: 1.6; margin: 0 0 20px; max-width: 44ch; text-wrap: pretty;">产品定位：以 AI 代写为主的网文生产平台。一键成章是入场功能，<strong>一致性守卫</strong>与<strong>作者风格指纹</strong>是差异点，工作室产线是第二阶段的商业化放大器。</p>
+      <p style="font-size: 19px; line-height: 1.6; margin: 0 0 20px; max-width: 44ch; text-wrap: pretty;">产品定位：面向中文长篇连载的<strong>可审阅 AI 写作台</strong>。一键成章只是入场能力；每一段 AI 修改可追踪、每一条长程冲突有证据、80 万字仍按固定预算稳定续写，才是核心承诺。</p>
       <p style="font-size: 17px; line-height: 1.6; margin: 0; max-width: 46ch; color: var(--color-neutral-800);">本文档定义 MVP 范围、功能需求、数据模型、技术选型与里程碑。范围外的内容在文末「明确不做」列出。</p>
     </div>
     <div style="border-left: 2px solid var(--color-divider); padding-left: 36px;">
@@ -37,7 +37,8 @@
         <div style="border-bottom: 2px solid var(--color-divider); padding-bottom: 16px;"><strong style="font-family: var(--font-heading);">目标用户</strong><br>网文全职作者（日更 6-10k 字）、新人兼职作者、内容工作室</div>
         <div style="border-bottom: 2px solid var(--color-divider); padding-bottom: 16px;"><strong style="font-family: var(--font-heading);">形态</strong><br>Web 应用（Vue 3），桌面优先，移动端只读 + 灵感速记</div>
         <div style="border-bottom: 2px solid var(--color-divider); padding-bottom: 16px;"><strong style="font-family: var(--font-heading);">MVP 周期</strong><br>10 周（2 前端 / 2 后端 / 1 算法 / 1 设计）</div>
-        <div><strong style="font-family: var(--font-heading);">北极星指标</strong><br>周留存作者中「AI 产出被采纳进正文的字数占比」</div>
+        <div style="border-bottom: 2px solid var(--color-divider); padding-bottom: 16px;"><strong style="font-family: var(--font-heading);">北极星指标</strong><br>周留存作者中「AI 产出被采纳进正文的字数占比」</div>
+        <div><strong style="font-family: var(--font-heading);">质量护栏</strong><br>零静默丢稿；所有 AI 改动可审阅；所有守卫告警可追溯证据</div>
       </div>
     </div>
   </div>
@@ -90,8 +91,14 @@
           <tr>
             <td><strong>P0</strong></td>
             <td>写作编辑器</td>
-            <td>专注写作界面，自动保存，版本历史，离线草稿；选中文本唤起 AI 浮层（续写 / 扩写 / 润色 / 改写）。</td>
-            <td>断网后继续可写，恢复网络自动同步且不丢字；自动保存间隔 ≤ 3s。</td>
+            <td>专注写作界面，自动保存，版本历史，离线草稿；选中文本唤起 AI 浮层（续写 / 扩写 / 润色 / 改写）。正文段落具备稳定 id。</td>
+            <td>80 万字 / 270 章基准项目首屏 &lt; 2s，切章 &lt; 200ms；守卫问题可按段落 id 精确跳转。</td>
+          </tr>
+          <tr>
+            <td><strong>P0</strong></td>
+            <td>可信保存与恢复</td>
+            <td>本地草稿、服务端自动保存与版本快照三层保护；使用 <code>base_rev</code> 乐观锁，冲突时展示双版本；切章、关闭和失焦前安全 flush。</td>
+            <td>自动保存间隔 ≤ 3s；断网可继续写，重启后可恢复；模拟断网、快速切章、双端冲突和异常退出均不静默丢字或覆盖。</td>
           </tr>
           <tr>
             <td><strong>P0</strong></td>
@@ -102,8 +109,14 @@
           <tr>
             <td><strong>P0</strong></td>
             <td>一键成章</td>
-            <td>基于章纲 + 设定库 + 前情摘要生成整章正文，流式输出，可中断、可重生成、可只重写某段。</td>
-            <td>3000 字章节首字延迟 &lt; 3s，全章 &lt; 90s；重生成保留已锁定段落。</td>
+            <td>基于章纲 + 设定库 + 前情摘要生成整章正文，流式输出，可中断、可重生成、可只重写某段；生成结果先进入候选草稿。</td>
+            <td>3000 字章节首字延迟 &lt; 3s，全章 &lt; 90s；重生成保留已锁定段落；失败时保留已生成内容并给出重试动作。</td>
+          </tr>
+          <tr style="background: var(--color-accent-100);">
+            <td><strong>P0</strong> <span style="color: var(--color-accent);">★</span></td>
+            <td>AI 变更审阅与来源</td>
+            <td>生成、改写和守卫修复统一进入 Change Review；支持逐段接受 / 拒绝、整批处理和一次撤销；记录 <code>human</code> / <code>ai-raw</code> / <code>ai-edited</code> 来源。</td>
+            <td>未接受内容不计入正文字数、不触发正式保存；所有 AI 改动可定位、可回退，刷新后待审状态不丢失。</td>
           </tr>
           <tr>
             <td><strong>P0</strong></td>
@@ -114,8 +127,8 @@
           <tr style="background: var(--color-accent-100);">
             <td><strong>P0</strong> <span style="color: var(--color-accent);">★</span></td>
             <td>一致性守卫</td>
-            <td>每章保存后异步跑检查：新增设定自动抽取入库（待确认）、与既有设定冲突告警、未回收伏笔倒计时。</td>
-            <td>人工植入 20 处矛盾的测试稿中召回 ≥ 14 处，误报率 ≤ 20%。</td>
+            <td>每章采纳后异步检查人物属性、物品状态、时间线、信息知情边界、能力规则、地理距离与伏笔；每条告警展示证据、来源章节、置信度和建议动作。</td>
+            <td>版本化评测集召回率 ≥ 70%，误报率 ≤ 20%，证据定位准确率 ≥ 90%；用户可忽略、修复或反馈，处理结果用于压低同类误报。</td>
           </tr>
           <tr>
             <td><strong>P0</strong></td>
@@ -126,8 +139,8 @@
           <tr>
             <td><strong>P0</strong></td>
             <td>导出</td>
-            <td>全量导出正文（TXT / DOCX / Markdown）+ 设定库 + 大纲，一键打包，无需付费。</td>
-            <td>导出内容可完整还原，定价页明确写出该承诺。</td>
+            <td>全量导出正文（TXT / DOCX / Markdown）+ 设定库 + 大纲 + 开放 JSON 备份，一键打包，无需付费；EPUB 列为 P1。</td>
+            <td>导出包可在新账号或空项目中完整恢复；格式选择必须产生对应格式，不以 TXT 占位。</td>
           </tr>
           <tr style="background: var(--color-accent-100);">
             <td><strong>P1</strong> <span style="color: var(--color-accent);">★</span></td>
@@ -233,13 +246,16 @@
         <div style="margin-top: 24px; border-top: 2px solid var(--color-divider); padding-top: 20px; font-size: 15px; line-height: 1.7;">
           <strong>编辑器为什么选 TipTap 而不是 wangEditor / Quill：</strong>AI 建议的「接受 / 拒绝 / 局部重写」需要在文档模型上叠加临时装饰层（decoration）与自定义节点，这是 ProseMirror 的强项。TipTap 是 headless 的 ProseMirror 封装，官方支持 Vue 3。<code>@tiptap/suggestion</code> 直接用来做 <code>@</code> 引用设定条目。wangEditor 开箱快但扩展模型弱，做到「AI 段落作为可回退的节点」会很痛。
         </div>
+        <div style="margin-top: 20px; border-top: 2px solid var(--color-divider); padding-top: 20px; font-size: 15px; line-height: 1.7;">
+          <strong>工程基线：</strong>固定 Node 22 或 24 LTS，提交唯一 lockfile；CI 必须依次通过类型检查、单元测试、生产构建和依赖审计。不得把“Vite 可转译”当作“可发布”。
+        </div>
       </div>
     </div>
 
     <div style="display: grid; grid-template-columns: 160px 1fr; gap: 2px; background: var(--color-divider); margin-bottom: 2px;">
       <div style="background: var(--color-neutral-200); padding: 26px 22px; font-family: var(--font-heading); font-size: 15px; font-weight: 700; letter-spacing: 0.06em;">后端</div>
       <div style="background: var(--color-bg); padding: 26px 28px; font-size: 16px; line-height: 1.8;">
-        <strong>Python + FastAPI</strong>（算法同学也在 Python 生态，一致性守卫与摘要链路省一次跨语言）。若团队更熟 Node，<strong>NestJS</strong> 同样成立。<br>
+        <strong>Python + FastAPI</strong>（已采用）—— 与算法链路共用 Python 生态，一致性守卫与摘要任务无需跨语言。<br>
         <strong>PostgreSQL + pgvector</strong> — 关系数据与向量检索合并在一处，MVP 阶段不要引入独立向量库。<br>
         <strong>Redis + Celery / BullMQ</strong> — 摘要生成、一致性检查、风格抽取全部异步化，绝不阻塞写作。<br>
         <strong>SSE</strong> 而非 WebSocket — 生成是单向流，SSE 更简单且穿透代理更稳；协作阶段再上 WebSocket。
@@ -265,8 +281,8 @@
   </div>
 
   <div style="padding: 72px 0 56px; border-bottom: 2px solid var(--color-divider);">
-    <h2 style="font-family: var(--font-heading); font-weight: 700; font-size: 14px; letter-spacing: 0.18em; text-transform: uppercase; margin: 0 0 12px;">05 &nbsp;前端要提前解决的四个硬问题</h2>
-    <p style="font-size: 18px; line-height: 1.6; margin: 0 0 44px; max-width: 62ch;">这四个如果架构时没想，后期返工代价极大。</p>
+    <h2 style="font-family: var(--font-heading); font-weight: 700; font-size: 14px; letter-spacing: 0.18em; text-transform: uppercase; margin: 0 0 12px;">05 &nbsp;前端要提前解决的六个硬问题</h2>
+    <p style="font-size: 18px; line-height: 1.6; margin: 0 0 44px; max-width: 62ch;">这些问题直接决定正文是否安全、长篇是否可用，不应推迟到视觉收口阶段。</p>
     <div style="display: grid; gap: 2px; background: var(--color-divider);">
       <div style="background: var(--color-bg); padding: 34px 0; display: grid; grid-template-columns: 56px 260px 1fr; gap: 40px; align-items: start;">
         <div style="font-family: var(--font-heading); font-size: 32px; font-weight: 700; line-height: 1; color: var(--color-accent);">01</div>
@@ -281,19 +297,40 @@
       <div style="background: var(--color-bg); padding: 34px 0; display: grid; grid-template-columns: 56px 260px 1fr; gap: 40px; align-items: start;">
         <div style="font-family: var(--font-heading); font-size: 32px; font-weight: 700; line-height: 1; color: var(--color-accent);">03</div>
         <div style="font-family: var(--font-heading); font-size: 20px; font-weight: 700; line-height: 1.3;">丢稿是不可原谅的</div>
-        <p style="margin: 0; font-size: 16px; line-height: 1.65;">三层保险：本地 IndexedDB 每次变更即写、节流 3s 上传服务端、服务端保留最近 50 个版本快照。断网时顶部常驻提示并继续可写，恢复后按「本地较新则以本地为准，冲突则并列展示」处理，<strong>永不静默覆盖</strong>。</p>
+        <p style="margin: 0; font-size: 16px; line-height: 1.65;">三层保险：本地 IndexedDB 合并写入（≤ 500ms）、节流 3s 上传服务端、服务端保留最近 50 个版本快照。保存携带 <code>base_rev</code>，切章前等待 flush；恢复时比较本地与服务端版本，冲突并列展示，<strong>永不静默覆盖</strong>。</p>
       </div>
       <div style="background: var(--color-bg); padding: 34px 0; display: grid; grid-template-columns: 56px 260px 1fr; gap: 40px; align-items: start;">
         <div style="font-family: var(--font-heading); font-size: 32px; font-weight: 700; line-height: 1; color: var(--color-accent);">04</div>
         <div style="font-family: var(--font-heading); font-size: 20px; font-weight: 700; line-height: 1.3;">设定引用要活着</div>
         <p style="margin: 0; font-size: 16px; line-height: 1.65;"><code>@</code> 引用存的是<strong>条目 id 而非文字</strong>（自定义 inline node，渲染时读当前名称）。这样改名自动跟随，且服务端能精确知道本章引用了哪些条目——一致性检查和上下文装配都依赖这份引用关系。</p>
       </div>
+      <div style="background: var(--color-bg); padding: 34px 0; display: grid; grid-template-columns: 56px 260px 1fr; gap: 40px; align-items: start;">
+        <div style="font-family: var(--font-heading); font-size: 32px; font-weight: 700; line-height: 1; color: var(--color-accent);">05</div>
+        <div style="font-family: var(--font-heading); font-size: 20px; font-weight: 700; line-height: 1.3;">窄屏不能把正文挤没</div>
+        <p style="margin: 0; font-size: 16px; line-height: 1.65;">桌面编辑器最低支持宽度 1024px；低于该宽度时左右栏变为互斥抽屉，正文保持可读。移动端 MVP 虽不提供完整编辑，也必须支持只读、搜索与灵感速记，页面不得横向溢出。</p>
+      </div>
+      <div style="background: var(--color-bg); padding: 34px 0; display: grid; grid-template-columns: 56px 260px 1fr; gap: 40px; align-items: start;">
+        <div style="font-family: var(--font-heading); font-size: 32px; font-weight: 700; line-height: 1; color: var(--color-accent);">06</div>
+        <div style="font-family: var(--font-heading); font-size: 20px; font-weight: 700; line-height: 1.3;">错误必须可见、可恢复</div>
+        <p style="margin: 0; font-size: 16px; line-height: 1.65;">真实 SSE 先检查 HTTP 状态并区分主动停止、鉴权、额度、冲突和网络失败。失败草稿保留部分内容，进入明确的错误状态，并提供重试、降档或丢弃动作；状态变化通过 <code>aria-live</code> 告知辅助技术。</p>
+      </div>
+    </div>
+    <div style="margin-top: 40px; padding: 34px 38px; border: 2px solid var(--color-divider);">
+      <div style="font-family: var(--font-heading); font-size: 13px; font-weight: 700; letter-spacing: 0.16em; text-transform: uppercase; color: var(--color-accent-700); margin-bottom: 16px;">MVP 发布质量门</div>
+      <div style="display: grid; grid-template-columns: repeat(2, 1fr); gap: 12px 36px; font-size: 15px; line-height: 1.65;">
+        <div><strong>构建：</strong>类型检查、单测、生产构建全部通过，使用 lockfile 冷安装可复现。</div>
+        <div><strong>安全：</strong>生产依赖无已知 high / critical；开发依赖例外必须记录原因和隔离措施。</div>
+        <div><strong>浏览器：</strong>11 个核心路由无 console error；1440 / 1024 / 390px 均无内容遮挡或页面横向溢出。</div>
+        <div><strong>数据：</strong>真实 API 下通过自动保存、离线恢复、409 冲突、切章 flush 和 SSE 失败集成测试。</div>
+        <div><strong>性能：</strong>270 章基准达到首屏与切章指标；1000 章压力测试不一次加载全部正文。</div>
+        <div><strong>可访问性：</strong>主结构使用语义标题，键盘可完成核心写作流，异步状态可被辅助技术感知。</div>
+      </div>
     </div>
   </div>
 
   <div style="padding: 72px 0 56px; border-bottom: 2px solid var(--color-divider);">
     <h2 style="font-family: var(--font-heading); font-weight: 700; font-size: 14px; letter-spacing: 0.18em; text-transform: uppercase; margin: 0 0 12px;">06 &nbsp;GitHub 参考</h2>
-    <p style="font-size: 18px; line-height: 1.6; margin: 0 0 40px; max-width: 66ch;">按用途分三类。<strong>不建议 fork 任何一个作为产品底座</strong>——它们的价值在于验证思路和抄具体实现细节。星数与状态请以仓库当前页面为准。</p>
+    <p style="font-size: 18px; line-height: 1.6; margin: 0 0 40px; max-width: 66ch;">2026-08-29 复核后按用途分三类。<strong>不建议 fork 任何一个作为产品底座</strong>；重点验证产品判断、交互和数据模型。长期记忆、一致性审计和风格分析已有直接竞品，差异必须落到可测指标。</p>
     <div style="overflow-x: auto;">
       <table class="table" style="width: 100%; font-size: 14px;">
         <thead>
@@ -309,28 +346,40 @@
             <td colspan="4" style="background: var(--color-neutral-200); font-family: var(--font-heading); font-weight: 700; letter-spacing: 0.1em; font-size: 12px; text-transform: uppercase;">同类产品 · 看产品结构</td>
           </tr>
           <tr>
-            <td><a href="https://github.com/ponysb/91Writing">ponysb/91Writing</a></td>
-            <td>Vue 3 + Element Plus + Vite</td>
-            <td>最接近你的技术栈。长篇/短篇创作、拆书、prompt 管理、AI 调用统计的完整界面组织；有在线演示可直接体验交互。</td>
-            <td>MVP 界面结构的第一参考。重点看它的 prompt 管理和调用统计怎么做。</td>
+            <td><a href="https://github.com/Narcooo/inkos">Narcooo/inkos</a></td>
+            <td>TypeScript · AGPL-3.0</td>
+            <td>中文长篇、结构化状态、伏笔与记忆检索、风格指纹、AIGC 检测、审稿修订和多格式导出。</td>
+            <td><strong>最直接竞品。</strong>重点比较守卫准确率、证据质量、作者控制感和中文连载效率；闭源产品不要复制其 AGPL 代码。</td>
           </tr>
           <tr>
-            <td><a href="https://github.com/RhythmicWave/NovelForge">RhythmicWave/NovelForge</a></td>
-            <td>Vue（Vue Flow）+ FastAPI</td>
-            <td>卡片式创作、基于 JSON Schema 的结构化 AI 生成与上下文引用；可选 Neo4j 存关系图谱；工作流画布。</td>
-            <td><strong>最值得深读</strong>。「结构化生成 + 上下文引用」正是你的分层记忆要解决的问题。</td>
+            <td><a href="https://github.com/alfredxw/denova">alfredxw/denova</a></td>
+            <td>Go + Web · Apache-2.0</td>
+            <td>AI 写作 IDE、累计 Diff 审阅、本地 Git 历史、跨重启恢复、上下文预算、Agents / Skills 与 PWA。</td>
+            <td>Change Review、版本恢复和上下文可解释性的第一参考；把生成、改写和守卫修复统一成一种可审阅变更。</td>
           </tr>
           <tr>
-            <td><a href="https://github.com/ExplosiveCoderflome/AI-Novel-Writing-Assistant">AI-Novel-Writing-Assistant</a></td>
-            <td>React + Express + LangGraph</td>
-            <td>整本生产链：章节生成 → 审核 → 修复 → 状态回灌，可暂停可恢复；世界手册、写法引擎、角色资源账本。</td>
-            <td>前端栈不同，但<strong>生产链与「审核修复」环节</strong>的设计直接对应你的一致性守卫。</td>
+            <td><a href="https://github.com/yuanbw2025/storyforge">yuanbw2025/storyforge</a></td>
+            <td>TypeScript · MIT</td>
+            <td>本地优先、候选采纳、Context Gateway，以及事实、关系、时间线、伏笔状态的分层管理。</td>
+            <td>参考上下文来源、可采纳字段和项目表生命周期的单一事实源；其百万字成熟度仍需独立验证。</td>
           </tr>
           <tr>
-            <td><a href="https://github.com/xindoo/ai-novel-lab">xindoo/ai-novel-lab</a></td>
-            <td>Markdown + 脚本 + React 阅读站</td>
-            <td>用它真的写完了一部 100 章 43 万字的作品，含大纲、进度追踪、一致性维护的完整约定。</td>
-            <td>看它的 <code>AGENTS.md</code> —— 长篇约束规则怎么写，是很好的 prompt 工程样本。</td>
+            <td><a href="https://github.com/vkbo/novelWriter">vkbo/novelWriter</a></td>
+            <td>Python + PyQt6 · GPL-3.0</td>
+            <td>小文档组装小说、梗概、交叉引用、人类可读文件和版本控制友好存储。</td>
+            <td>传统写作工具的确定性参考：章节拆分、稳定引用、开放格式和可靠导出。</td>
+          </tr>
+          <tr>
+            <td><a href="https://github.com/olivierkes/manuskript">olivierkes/manuskript</a></td>
+            <td>Python + PyQt5 · GPL-3.0</td>
+            <td>从一句话到摘要、人物、情节、大纲和索引卡的渐进式规划。</td>
+            <td>开书向导应允许逐步理解和修订，而不是一次生成全部设定。</td>
+          </tr>
+          <tr>
+            <td><a href="https://github.com/jacquetc/skribisto">jacquetc/skribisto</a></td>
+            <td>C++ / QML · GPL-3.0</td>
+            <td>自动保存、备份、动态布局、触屏与屏幕阅读器支持。</td>
+            <td>响应式、键盘操作和可访问性参考；这些应从组件基线开始，而非发布前补丁。</td>
           </tr>
           <tr>
             <td colspan="4" style="background: var(--color-neutral-200); font-family: var(--font-heading); font-weight: 700; letter-spacing: 0.1em; font-size: 12px; text-transform: uppercase;">编辑器 · 直接用或抄实现</td>
@@ -371,7 +420,7 @@
         </tbody>
       </table>
     </div>
-    <p style="font-size: 14px; line-height: 1.6; margin: 24px 0 0; color: var(--color-neutral-700); max-width: 76ch;">合规提醒：逐项确认许可证（TipTap 核心 MIT，但部分官方扩展为商业授权；国内项目多为 MIT 但需自查是否含第三方素材）。参考开源产品的界面结构可以，整段复制代码入商业产品需按许可证履约。</p>
+    <p style="font-size: 14px; line-height: 1.6; margin: 24px 0 0; color: var(--color-neutral-700); max-width: 76ch;">合规提醒：InkOS 为 AGPL-3.0，novelWriter / Manuskript / Skribisto 为 GPL-3.0，Denova 为 Apache-2.0，StoryForge 与 TipTap 核心为 MIT（TipTap 部分官方扩展另有商业授权）。研究公开行为和架构不等于可以复制代码、样式、文案或素材，复用前必须逐项履约。</p>
   </div>
 
   <div style="padding: 72px 0 56px; border-bottom: 2px solid var(--color-divider);">
@@ -380,27 +429,27 @@
       <div style="background: var(--color-bg); padding: 28px 22px;">
         <div style="font-family: var(--font-heading); font-size: 12px; font-weight: 700; letter-spacing: 0.14em; color: var(--color-accent); margin-bottom: 12px;">第 1-2 周</div>
         <div style="font-family: var(--font-heading); font-size: 18px; font-weight: 700; margin-bottom: 12px;">骨架</div>
-        <p style="margin: 0; font-size: 14px; line-height: 1.6;">Vue 工程搭建、设计 token 落地、作品/章节 CRUD、TipTap 接入与自动保存。</p>
+        <p style="margin: 0; font-size: 14px; line-height: 1.6;">固定 Node LTS 与 lockfile，修复类型 / 测试 / 构建，打通真实章节 CRUD、<code>base_rev</code>、冲突处理与启动恢复。</p>
       </div>
       <div style="background: var(--color-bg); padding: 28px 22px;">
         <div style="font-family: var(--font-heading); font-size: 12px; font-weight: 700; letter-spacing: 0.14em; color: var(--color-accent); margin-bottom: 12px;">第 3-4 周</div>
         <div style="font-family: var(--font-heading); font-size: 18px; font-weight: 700; margin-bottom: 12px;">设定库 + 网关</div>
-        <p style="margin: 0; font-size: 14px; line-height: 1.6;">六类条目、<code>@</code> 引用节点、模型网关与用量记账、SSE 通路打通。</p>
+        <p style="margin: 0; font-size: 14px; line-height: 1.6;">稳定段落 id、来源标记、六类设定条目、<code>@</code> 引用节点；完成窄屏抽屉和编辑器性能基准。</p>
       </div>
       <div style="background: var(--color-bg); padding: 28px 22px;">
         <div style="font-family: var(--font-heading); font-size: 12px; font-weight: 700; letter-spacing: 0.14em; color: var(--color-accent); margin-bottom: 12px;">第 5-6 周</div>
         <div style="font-family: var(--font-heading); font-size: 18px; font-weight: 700; margin-bottom: 12px;">生成链路</div>
-        <p style="margin: 0; font-size: 14px; line-height: 1.6;">分层记忆装配、一键成章、草稿节点与采纳/拒绝、章摘要异步生成。</p>
+        <p style="margin: 0; font-size: 14px; line-height: 1.6;">模型网关、真实 SSE、分层记忆装配、一键成章、统一 Change Review 与章摘要异步生成。</p>
       </div>
       <div style="background: var(--color-bg); padding: 28px 22px; box-shadow: inset 0 0 0 2px var(--color-accent);">
         <div style="font-family: var(--font-heading); font-size: 12px; font-weight: 700; letter-spacing: 0.14em; color: var(--color-accent); margin-bottom: 12px;">第 7-8 周</div>
         <div style="font-family: var(--font-heading); font-size: 18px; font-weight: 700; margin-bottom: 12px;">一致性守卫</div>
-        <p style="margin: 0; font-size: 14px; line-height: 1.6;">设定抽取、冲突检测、伏笔追踪、报告界面。<strong>这是 MVP 的成败点，留足时间调准确率。</strong></p>
+        <p style="margin: 0; font-size: 14px; line-height: 1.6;">版本化评测集、设定抽取、七类冲突检测、证据定位、处置反馈与伏笔追踪。<strong>按召回和误报数据收口。</strong></p>
       </div>
       <div style="background: var(--color-bg); padding: 28px 22px;">
         <div style="font-family: var(--font-heading); font-size: 12px; font-weight: 700; letter-spacing: 0.14em; color: var(--color-accent); margin-bottom: 12px;">第 9-10 周</div>
         <div style="font-family: var(--font-heading); font-size: 18px; font-weight: 700; margin-bottom: 12px;">收口</div>
-        <p style="margin: 0; font-size: 14px; line-height: 1.6;">开书向导、导出、额度与支付、离线容错、10 位种子作者内测。</p>
+        <p style="margin: 0; font-size: 14px; line-height: 1.6;">开书向导、可恢复导出、额度与支付；完成发布质量门并以 10 位种子作者的真实长篇项目内测。</p>
       </div>
     </div>
   </div>
@@ -421,10 +470,10 @@
       <div style="border-left: 2px solid var(--color-divider); padding-left: 36px;">
         <h2 style="font-family: var(--font-heading); font-weight: 700; font-size: 14px; letter-spacing: 0.18em; text-transform: uppercase; margin: 0 0 20px;">待决议</h2>
         <ol style="margin: 0; padding-left: 20px; font-size: 16px; line-height: 1.8;">
-          <li>一致性守卫的召回率指标是否现实 —— 需先做算法预研 spike，再定 MVP 承诺</li>
-          <li>基础档模型具体选哪家 —— 需实测中文网文语感，别只看榜单</li>
-          <li>后端语言 Python 还是 Node —— 取决于团队现有人手</li>
-          <li>是否 MVP 就上工作室席位版 —— 若已有明确付费客户，值得提前</li>
+          <li>一致性守卫当前阈值是否现实 —— 先建立七类错误评测集，以首轮 spike 数据校准</li>
+          <li>基础档模型具体选哪家 —— 以中文网文盲测、延迟和单章成本共同决策</li>
+          <li>AI 来源统计对发布平台的展示边界 —— 需结合法务与平台规则确认</li>
+          <li>是否 MVP 就上工作室席位版 —— 只有已有明确付费客户才提前</li>
         </ol>
       </div>
     </div>
