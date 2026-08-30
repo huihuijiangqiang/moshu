@@ -115,10 +115,6 @@ class ConsistencyClaim(Base, TimestampMixin):
     status: Mapped[str] = mapped_column(String(20), server_default="candidate", nullable=False, index=True)
 
     __table_args__ = (
-        UniqueConstraint(
-            "source_kind", "chapter_id", "body_rev", "outline_rev", "fingerprint", "extractor_version",
-            name="uq_claim_source_fingerprint"
-        ),
         CheckConstraint("polarity IN ('positive', 'negative')", name="ck_claim_polarity"),
         CheckConstraint("certainty IN ('explicit', 'inferred', 'uncertain')", name="ck_claim_certainty"),
         CheckConstraint(
@@ -139,6 +135,30 @@ class ConsistencyClaim(Base, TimestampMixin):
             "(source_kind IN ('codex', 'resolution'))",
             name="ck_claim_source_versioning"
         ),
+        Index(
+            "uq_claim_body_source",
+            "chapter_id", "body_rev", "fingerprint", "extractor_version",
+            unique=True,
+            postgresql_where="source_kind = 'body'"
+        ),
+        Index(
+            "uq_claim_outline_source",
+            "chapter_id", "outline_rev", "fingerprint", "extractor_version",
+            unique=True,
+            postgresql_where="source_kind = 'outline'"
+        ),
+        Index(
+            "uq_claim_codex_source",
+            "fingerprint", "extractor_version",
+            unique=True,
+            postgresql_where="source_kind = 'codex'"
+        ),
+        Index(
+            "uq_claim_resolution_source",
+            "fingerprint", "extractor_version",
+            unique=True,
+            postgresql_where="source_kind = 'resolution'"
+        ),
         Index("ix_claim_subject_predicate", "subject_entry_id", "predicate", "status"),
         Index("ix_claim_timeline_order", "timeline_id", "story_order"),
     )
@@ -153,7 +173,7 @@ class StoryEvent(Base, TimestampMixin):
     project_id: Mapped[str] = mapped_column(String(32), ForeignKey("projects.id", ondelete="CASCADE"), index=True)
     event_type: Mapped[str] = mapped_column(String(100), nullable=False)
     timeline_id: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
-    story_order: Mapped[float] = mapped_column(Numeric(24, 8), nullable=False)
+    story_order: Mapped[Optional[float]] = mapped_column(Numeric(24, 8), nullable=True)
     time_text: Mapped[Optional[str]] = mapped_column(String(200), nullable=True)
     time_start: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
     time_end: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)

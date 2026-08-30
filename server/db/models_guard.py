@@ -1,9 +1,21 @@
 """
 守卫模型 - 2张表
 """
+from datetime import datetime
 from typing import TYPE_CHECKING, Optional
 
-from sqlalchemy import ForeignKey, String, Text
+from sqlalchemy import (
+    BigInteger,
+    CheckConstraint,
+    DateTime,
+    ForeignKey,
+    Index,
+    Integer,
+    Numeric,
+    String,
+    Text,
+    UniqueConstraint,
+)
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -22,22 +34,38 @@ class GuardIssue(Base, TimestampMixin):
     id: Mapped[str] = mapped_column(String(32), primary_key=True)
     project_id: Mapped[str] = mapped_column(String(32), ForeignKey("projects.id", ondelete="CASCADE"), index=True)
     chapter_id: Mapped[str] = mapped_column(String(32), ForeignKey("chapters.id", ondelete="CASCADE"), index=True)
+    run_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("consistency_runs.id", ondelete="CASCADE"), index=True)
     entry_id: Mapped[Optional[str]] = mapped_column(
         String(32), ForeignKey("codex_entries.id", ondelete="SET NULL"), nullable=True
     )
-    issue_type: Mapped[str] = mapped_column(String(50))  # conflict, foreshadow_overdue, attribute_mismatch
-    severity: Mapped[str] = mapped_column(String(20), default="medium")  # low, medium, high
+    issue_type: Mapped[str] = mapped_column(String(50), index=True)
+    rule_version: Mapped[str] = mapped_column(String(50), nullable=False)
+    fingerprint: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    severity: Mapped[str] = mapped_column(String(20), default="medium")
+    confidence: Mapped[float] = mapped_column(Numeric(4, 3), nullable=False)
     description: Mapped[str] = mapped_column(Text)
-    evidence: Mapped[dict] = mapped_column(JSONB)  # 证据：前后文、冲突字段等
-    anchor: Mapped[dict] = mapped_column(JSONB)  # {pid: str, start: int, end: int}
-    actions: Mapped[list[str]] = mapped_column(JSONB)  # ['keep-old', 'keep-new', 'intentional']
+    evidence: Mapped[dict] = mapped_column(JSONB)
+    anchor: Mapped[dict] = mapped_column(JSONB)
+    actions: Mapped[list[str]] = mapped_column(JSONB)
+    status: Mapped[str] = mapped_column(String(20), server_default="open", nullable=False, index=True)
+    issue_rev: Mapped[int] = mapped_column(Integer, server_default="1", nullable=False)
     resolved: Mapped[bool] = mapped_column(default=False)
-    resolution: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)  # 用户选择的处置方式
-    false_positive: Mapped[bool] = mapped_column(default=False)  # 误报标记，回流评测集
+    resolution: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
+    false_positive: Mapped[bool] = mapped_column(default=False)
+    stale_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
 
     # 关系
     project: Mapped["Project"] = relationship()
     chapter: Mapped["Chapter"] = relationship()
+
+    __table_args__ = (
+        UniqueConstraint("project_id", "fingerprint", name="uq_guard_issue_fingerprint"),
+        CheckConstraint("status IN ('open', 'resolved', 'stale', 'false_positive')", name="ck_guard_issue_status"),
+        CheckConstraint("severity IN ('low', 'medium', 'high')", name="ck_guard_issue_severity"),
+        CheckConstraint("confidence >= 0.0 AND confidence <= 1.0", name="ck_guard_issue_confidence"),
+        CheckConstraint("issue_rev > 0", name="ck_guard_issue_rev_positive"),
+        Index("ix_guard_issue_status_stale", "status", "stale_at"),
+    )
 
 
 class Foreshadow(Base, TimestampMixin):
