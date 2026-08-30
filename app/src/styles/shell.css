@@ -1269,20 +1269,20 @@ body { font-family: var(--font-ui); font-size: var(--fs); }
 .codex-library-head h1 { margin: 4px 0 0; font-family: var(--font-prose); font-size: 21px; font-weight: 600; }
 .codex-library-head > strong { color: var(--ink-4); font-family: var(--font-mono); font-size: 13px; }
 .codex-library-controls { display: grid; gap: var(--u3); padding: var(--u3); border-bottom: var(--hair) solid var(--line); }
-.codex-kind-tabs { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 3px; }
+.codex-kind-tabs { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 4px; }
 .codex-kind-tabs button {
   min-width: 0;
-  min-height: 32px;
+  min-height: 38px;
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 4px;
-  padding: 0 8px;
+  padding: 0 10px;
   border: 0;
   border-radius: 4px;
   color: var(--ink-3);
   background: transparent;
-  font-size: var(--fs-xs);
+  font-size: var(--fs-sm);
   cursor: pointer;
 }
 .codex-kind-tabs button:hover { color: var(--ink); background: var(--panel); }
