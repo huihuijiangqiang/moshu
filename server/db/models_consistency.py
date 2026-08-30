@@ -1,10 +1,11 @@
 """
 一致性相关数据模型 - P0-A 持久化基础设施
 """
+
 from datetime import datetime
 from typing import Optional
 
-from sqlalchemy import BigInteger, CheckConstraint, ForeignKey, Integer, String, Text, UniqueConstraint
+from sqlalchemy import BigInteger, CheckConstraint, DateTime, ForeignKey, Integer, String, Text, UniqueConstraint, func
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -16,9 +17,7 @@ class ChapterOutlineState(Base, TimestampMixin):
 
     __tablename__ = "chapter_outline_states"
 
-    chapter_id: Mapped[str] = mapped_column(
-        String(32), ForeignKey("chapters.id", ondelete="CASCADE"), primary_key=True
-    )
+    chapter_id: Mapped[str] = mapped_column(String(32), ForeignKey("chapters.id", ondelete="CASCADE"), primary_key=True)
     revision: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     note: Mapped[str] = mapped_column(Text, default="", nullable=False)
     body_needs_revision: Mapped[bool] = mapped_column(default=False, nullable=False)
@@ -39,8 +38,8 @@ class ChapterOutlineRevision(Base):
     note: Mapped[str] = mapped_column(Text, default="", nullable=False)
     body_policy: Mapped[str] = mapped_column(String(32), nullable=False)
     body_rev_at_change: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
-    created_by: Mapped[str] = mapped_column(String(32), nullable=False)
-    created_at: Mapped[datetime] = mapped_column(server_default="now()")
+    created_by: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     __table_args__ = (
         UniqueConstraint("chapter_id", "revision", name="uq_chapter_outline_revision"),
@@ -61,13 +60,13 @@ class OutboxEvent(Base, TimestampMixin):
     aggregate_id: Mapped[str] = mapped_column(String(64), nullable=False)
     aggregate_rev: Mapped[int] = mapped_column(Integer, nullable=False)
     payload: Mapped[dict] = mapped_column(JSONB, nullable=False)
-    status: Mapped[str] = mapped_column(String(20), default="pending", nullable=False, index=True)
-    attempts: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
-    available_at: Mapped[datetime] = mapped_column(server_default="now()")
+    status: Mapped[str] = mapped_column(String(20), server_default="pending", nullable=False, index=True)
+    attempts: Mapped[int] = mapped_column(Integer, server_default="0", nullable=False)
+    available_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     lease_owner: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
     lease_token: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
-    lease_until: Mapped[Optional[datetime]] = mapped_column(nullable=True)
-    sent_at: Mapped[Optional[datetime]] = mapped_column(nullable=True)
+    lease_until: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    sent_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
     last_error: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
 
     __table_args__ = (
@@ -80,7 +79,7 @@ class OutboxEvent(Base, TimestampMixin):
 
 
 class IdempotencyRecord(Base):
-    """幂等键记录 - 保证 API 请求幂等性"""
+    """幂等键记录 - 保证 API 请求幂等性，两阶段：reserve/complete"""
 
     __tablename__ = "idempotency_records"
 
@@ -88,9 +87,18 @@ class IdempotencyRecord(Base):
     scope: Mapped[str] = mapped_column(String(100), nullable=False)
     key: Mapped[str] = mapped_column(String(100), nullable=False)
     request_hash: Mapped[str] = mapped_column(String(64), nullable=False)
-    response_status: Mapped[int] = mapped_column(Integer, nullable=False)
-    response_body: Mapped[dict] = mapped_column(JSONB, nullable=False)
-    expires_at: Mapped[datetime] = mapped_column(nullable=False)
-    created_at: Mapped[datetime] = mapped_column(server_default="now()")
+    status: Mapped[str] = mapped_column(String(20), server_default="pending", nullable=False)
+    owner_token: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    lease_until: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    response_status: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    response_body: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
-    __table_args__ = (UniqueConstraint("scope", "key", name="uq_idempotency_scope_key"),)
+    __table_args__ = (
+        UniqueConstraint("scope", "key", name="uq_idempotency_scope_key"),
+        CheckConstraint(
+            "status IN ('pending', 'completed')",
+            name="ck_idempotency_status_enum",
+        ),
+    )
