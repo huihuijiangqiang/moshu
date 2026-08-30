@@ -9,7 +9,8 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from config import settings
 from db import ChapterBody, ConsistencyClaim, ConsistencyRun, DocumentSummary, OutboxEvent
-from providers.llm import EmbeddingProvider, StructuredExtractionProvider
+from providers.llm import EmbeddingProvider as LLMEmbeddingProvider
+from providers.llm import StructuredExtractionProvider as LLMStructuredExtractionProvider
 from services.outbox import OutboxService
 from services.rule_scanner import RuleScanner
 
@@ -108,12 +109,12 @@ async def _extract_claims_async(task_id: str, run_id: int):
             return {"status": "error", "message": "Chapter body not found"}
 
         # Extract claims using LLM
-        extractor = StructuredExtractionProvider()
+        extractor = LLMStructuredExtractionProvider()
         try:
             claims_data = await extractor.extract_claims(body.content_html)
 
             # Generate embeddings
-            embedding_provider = EmbeddingProvider()
+            embedding_provider = LLMEmbeddingProvider()
 
             # Save claims
             for claim_data in claims_data:
@@ -182,12 +183,12 @@ async def _generate_summary_async(task_id: str, run_id: int):
             return {"status": "error", "message": "Chapter body not found"}
 
         # Generate summary using LLM
-        extractor = StructuredExtractionProvider()
+        extractor = LLMStructuredExtractionProvider()
         try:
             summary_text = await extractor.generate_summary(body.content_html)
 
             # Generate embedding
-            embedding_provider = EmbeddingProvider()
+            embedding_provider = LLMEmbeddingProvider()
             embedding = await embedding_provider.embed(summary_text)
 
             # Save summary
