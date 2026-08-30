@@ -204,7 +204,7 @@ async def save_chapter_body_endpoint(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail=str(e),
         )
-    except BodyRevisionConflictError as e:
+    except BodyRevisionConflictError:
         await db.rollback()
         # Re-fetch current body for conflict response
         body_result = await db.execute(body_stmt)

@@ -10,13 +10,13 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from api.auth import get_current_user, verify_project_access
-from db.models_consistency_extended import ConsistencyRun
+from db.models_consistency_extended import ConsistencyRun, GuardResolution
 from db.models_core import User
-from db.models_guard import GuardIssue, GuardResolution
+from db.models_guard import GuardIssue
 from db.session import get_db
 from services.outbox import OutboxService
 
-router = APIRouter(prefix="/consistency", tags=["consistency"])
+router = APIRouter(tags=["consistency"])
 
 
 class ConsistencyStatusResponse(BaseModel):

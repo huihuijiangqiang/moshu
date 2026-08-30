@@ -47,16 +47,6 @@ class RuleScanner:
         )
         all_claims = list(result.scalars().all())
 
-        # Load claims for this specific chapter+body_rev (for anchoring issues)
-        chapter_claims_result = await db.execute(
-            select(ConsistencyClaim)
-            .where(ConsistencyClaim.project_id == project_id)
-            .where(ConsistencyClaim.chapter_id == chapter_id)
-            .where(ConsistencyClaim.body_rev == body_rev)
-            .where(ConsistencyClaim.status == "accepted")
-        )
-        chapter_claims = list(chapter_claims_result.scalars().all())
-
         # Run rules on all project claims
         detected_issues = []
         detected_issues.extend(await self._check_alive_conflicts(db, project_id, all_claims))
