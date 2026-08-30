@@ -1,115 +1,111 @@
-"""
-测试 - Outbox 服务
-"""
+"""Statement and behavior tests for the transactional outbox."""
 
-from datetime import datetime, timedelta, timezone
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
-from services.outbox import OutboxPayloadConflictError
+import pytest
+from sqlalchemy.dialects import postgresql
 
-
-class TestOutboxEnqueue:
-    """测试 outbox 入队逻辑"""
-
-    def test_enqueue_payload_conflict_detection(self):
-        """测试检测 payload 冲突"""
-        # 同 key 不同 payload 应抛异常
-        payload1 = {"task": "extract", "chapter_id": "ch_123"}
-        payload2 = {"task": "extract", "chapter_id": "ch_456"}
-
-        assert payload1 != payload2
-
-        # 验证异常结构
-        exc = OutboxPayloadConflictError(
-            topic="chapter.saved",
-            aggregate_id="ch_123",
-            aggregate_rev=5,
-        )
-        assert exc.topic == "chapter.saved"
-        assert exc.aggregate_id == "ch_123"
-        assert exc.aggregate_rev == 5
-        assert "Outbox payload conflict" in str(exc)
-
-    def test_enqueue_idempotent_with_same_payload(self):
-        """测试相同 payload 幂等"""
-        # 同 topic/aggregate_id/aggregate_rev/payload 应幂等返回
-        # 需要真实数据库验证并发插入行为
-        pass
+from services.outbox import OutboxPayloadConflictError, OutboxService
 
 
-class TestOutboxLease:
-    """测试 outbox 租约机制"""
+class ScalarResult:
+    def __init__(self, value=None, values=None, rowcount=0):
+        self.value = value
+        self.values = values or []
+        self.rowcount = rowcount
 
-    def test_lease_batch_skip_locked(self):
-        """测试 SELECT FOR UPDATE SKIP LOCKED 语义"""
-        # 需要真实数据库验证并发领取行为
-        pass
+    def scalar_one_or_none(self):
+        return self.value
 
-    def test_lease_expiry_allows_reacquisition(self):
-        """测试租约过期后可重新获取"""
-        pass
+    def scalar_one(self):
+        return self.value
 
+    def scalars(self):
+        return self
 
-class TestOutboxMarkSent:
-    """测试标记已发送"""
-
-    def test_mark_sent_requires_matching_token_and_status(self):
-        """测试必须匹配 lease_token 和 status=dispatching"""
-        # mark_sent 更新条件：
-        # WHERE id=? AND lease_token=? AND status='dispatching'
-        # SET status='sent', lease_owner=NULL, lease_token=NULL, lease_until=NULL
-        pass
-
-    def test_mark_sent_releases_lease_fields(self):
-        """测试标记已发送时清空租约字段"""
-        # 验证更新语义：sent 状态应清空 lease_owner/token/until
-        # 需要真实数据库验证
-        pass
-
-    def test_mark_sent_with_wrong_token_fails(self):
-        """测试错误 token 无法标记"""
-        pass
-
-    def test_mark_sent_with_wrong_status_fails(self):
-        """测试错误 status 无法标记"""
-        # status != 'dispatching' 应返回 False
-        pass
+    def all(self):
+        return self.values
 
 
-class TestOutboxMarkFailed:
-    """测试失败重试"""
+def compiled_sql(statement) -> str:
+    return str(statement.compile(dialect=postgresql.dialect())).lower()
 
-    def test_exponential_backoff(self):
-        """测试指数退避"""
-        attempts = [1, 2, 3, 4, 5]
-        expected_backoff = [2, 4, 8, 16, 32]  # 2^attempts
 
-        for attempt, expected in zip(attempts, expected_backoff):
-            backoff = min(2**attempt, 3600)
-            assert backoff == expected
+@pytest.mark.asyncio
+async def test_enqueue_uses_on_conflict_and_replays_same_payload() -> None:
+    existing = SimpleNamespace(payload={"chapter_id": "ch-1"})
+    db = SimpleNamespace(
+        execute=AsyncMock(side_effect=[ScalarResult(), ScalarResult(existing)]),
+        flush=AsyncMock(),
+    )
 
-    def test_max_attempts_dead_letter(self):
-        """测试超过最大重试次数进入死信队列"""
-        max_attempts = 5
-        current_attempts = 5
+    result = await OutboxService.enqueue(db, "chapter.saved", "ch-1", 4, {"chapter_id": "ch-1"})
 
-        should_be_dead_letter = current_attempts >= max_attempts
-        assert should_be_dead_letter is True
+    assert result is existing
+    assert "on conflict" in compiled_sql(db.execute.await_args_list[0].args[0])
+    db.flush.assert_not_awaited()
 
-    def test_retry_after_custom_delay(self):
-        """测试自定义延迟重试"""
-        retry_after_seconds = 300  # 5分钟后重试
-        now = datetime.now(timezone.utc)
-        available_at = now + timedelta(seconds=retry_after_seconds)
 
-        assert (available_at - now).total_seconds() == retry_after_seconds
+@pytest.mark.asyncio
+async def test_enqueue_rejects_same_key_with_different_payload() -> None:
+    existing = SimpleNamespace(payload={"chapter_id": "other"})
+    db = SimpleNamespace(
+        execute=AsyncMock(side_effect=[ScalarResult(), ScalarResult(existing)]),
+        flush=AsyncMock(),
+    )
 
-    def test_mark_failed_requires_for_update(self):
-        """测试 mark_failed 使用 FOR UPDATE 锁定行"""
-        # 验证 mark_failed 先 SELECT FOR UPDATE 读取行
-        # 需要真实数据库验证
-        pass
+    with pytest.raises(OutboxPayloadConflictError):
+        await OutboxService.enqueue(db, "chapter.saved", "ch-1", 4, {"chapter_id": "ch-1"})
 
-    def test_mark_failed_requires_matching_token_and_status(self):
-        """测试 mark_failed 必须匹配 token 和 status"""
-        # 更新条件：WHERE id=? AND lease_token=? AND status='dispatching'
-        pass
+
+@pytest.mark.asyncio
+async def test_lease_batch_uses_skip_locked() -> None:
+    db = SimpleNamespace(execute=AsyncMock(return_value=ScalarResult(values=[])))
+
+    assert await OutboxService.lease_batch(db, "dispatcher-1") == []
+    assert "skip locked" in compiled_sql(db.execute.await_args.args[0])
+
+
+@pytest.mark.asyncio
+async def test_mark_sent_requires_active_lease_and_releases_it() -> None:
+    db = SimpleNamespace(execute=AsyncMock(return_value=ScalarResult(rowcount=1)))
+
+    assert await OutboxService.mark_sent(db, 12, "lease-token") is True
+    statement = db.execute.await_args.args[0]
+    sql = compiled_sql(statement)
+    values = statement.compile().params
+
+    assert "outbox_events.status" in sql
+    assert "outbox_events.lease_token" in sql
+    assert values["status"] == "sent"
+    assert values["lease_owner"] is None
+    assert values["lease_token"] is None
+    assert values["lease_until"] is None
+
+
+@pytest.mark.asyncio
+async def test_mark_failed_locks_row_and_applies_backoff() -> None:
+    event = SimpleNamespace(attempts=2)
+    db = SimpleNamespace(execute=AsyncMock(side_effect=[ScalarResult(event), ScalarResult(rowcount=1)]))
+
+    assert await OutboxService.mark_failed(db, 12, "lease-token", "temporary") is True
+    select_sql = compiled_sql(db.execute.await_args_list[0].args[0])
+    update_statement = db.execute.await_args_list[1].args[0]
+    update_values = update_statement.compile().params
+
+    assert "for update" in select_sql
+    assert update_values["status"] == "pending"
+    assert update_values["lease_token"] is None
+    assert update_values["last_error"] == "temporary"
+
+
+@pytest.mark.asyncio
+async def test_mark_failed_moves_exhausted_event_to_dead_letter() -> None:
+    event = SimpleNamespace(attempts=5)
+    db = SimpleNamespace(execute=AsyncMock(side_effect=[ScalarResult(event), ScalarResult(rowcount=1)]))
+
+    assert await OutboxService.mark_failed(db, 12, "lease-token", "permanent", max_attempts=5) is True
+    values = db.execute.await_args_list[1].args[0].compile().params
+    assert values["status"] == "dead_letter"
+    assert values["available_at"] is None

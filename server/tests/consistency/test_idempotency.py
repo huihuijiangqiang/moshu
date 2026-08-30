@@ -1,6 +1,11 @@
-"""
-测试 - 幂等性服务
-"""
+"""Tests for canonical request hashing and two-phase idempotency."""
+
+from datetime import datetime, timedelta, timezone
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
+
+import pytest
+from sqlalchemy.dialects import postgresql
 
 from services.idempotency import IdempotencyConflictError, IdempotencyService
 
@@ -183,55 +188,103 @@ class TestIdempotencyConflict:
         assert "def456" in str(exc)
 
 
-class TestReserveCompleteSemantics:
-    """测试 reserve/complete 语义"""
+class ScalarResult:
+    def __init__(self, value=None, rowcount=0):
+        self.value = value
+        self.rowcount = rowcount
 
-    def test_reserve_hash_conflict_detection(self):
-        """测试 reserve 检测 hash 冲突"""
-        # 模拟：同 key 不同 payload 应抛异常
-        payload1 = {"data": "value1"}
-        payload2 = {"data": "value2"}
+    def scalar_one_or_none(self):
+        return self.value
 
-        hash1 = IdempotencyService.compute_canonical_hash(payload1)
-        hash2 = IdempotencyService.compute_canonical_hash(payload2)
+    def scalar_one(self):
+        return self.value
 
-        assert hash1 != hash2  # 不同 payload 产生不同 hash
 
-    def test_reserve_returns_execute_action(self):
-        """测试 reserve 返回 execute 指令"""
-        # 新请求应返回 {"action": "execute", "owner_token": "..."}
-        # 需要真实数据库，这里只验证返回结构
-        result = {"action": "execute", "owner_token": "token_abc"}
-        assert result["action"] == "execute"
-        assert "owner_token" in result
+def compiled_sql(statement) -> str:
+    return str(statement.compile(dialect=postgresql.dialect())).lower()
 
-    def test_reserve_returns_replay_action(self):
-        """测试 reserve 返回 replay 指令"""
-        # 已完成请求应返回 {"action": "replay", "status": 200, "body": {...}}
-        result = {"action": "replay", "status": 200, "body": {"id": "ch_123"}}
-        assert result["action"] == "replay"
-        assert result["status"] == 200
-        assert "body" in result
 
-    def test_reserve_returns_wait_action(self):
-        """测试 reserve 返回 wait 指令"""
-        # 正在处理的请求应返回 {"action": "wait"}
-        result = {"action": "wait"}
-        assert result["action"] == "wait"
+@pytest.mark.asyncio
+async def test_reserve_returns_execute_after_successful_insert() -> None:
+    db = SimpleNamespace(execute=AsyncMock(return_value=ScalarResult(SimpleNamespace())))
 
-    def test_complete_requires_owner_token(self):
-        """测试 complete 必须匹配 owner_token"""
-        # complete 必须用正确的 token，否则返回 False
-        # 需要真实数据库验证，这里只验证参数要求
-        scope = "user_123:POST:/api"
-        key = "idem_key"
-        owner_token = "token_abc"
-        response_status = 200
-        response_body = {"success": True}
+    result = await IdempotencyService.reserve(db, "user:route", "key-1", {"title": "第一章"})
 
-        # 验证参数类型
-        assert isinstance(scope, str)
-        assert isinstance(key, str)
-        assert isinstance(owner_token, str)
-        assert isinstance(response_status, int)
-        assert isinstance(response_body, dict)
+    assert result["action"] == "execute"
+    assert result["owner_token"]
+    assert "on conflict" in compiled_sql(db.execute.await_args.args[0])
+
+
+@pytest.mark.asyncio
+async def test_reserve_replays_completed_response() -> None:
+    existing = SimpleNamespace(
+        request_hash=IdempotencyService.compute_canonical_hash({"title": "第一章"}),
+        status="completed",
+        expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
+        response_status=201,
+        response_body={"revision": 3},
+    )
+    db = SimpleNamespace(execute=AsyncMock(side_effect=[ScalarResult(), ScalarResult(existing)]))
+
+    result = await IdempotencyService.reserve(db, "user:route", "key-1", {"title": "第一章"})
+
+    assert result == {"action": "replay", "status": 201, "body": {"revision": 3}}
+
+
+@pytest.mark.asyncio
+async def test_reserve_rejects_same_key_with_different_payload() -> None:
+    existing = SimpleNamespace(request_hash="different")
+    db = SimpleNamespace(execute=AsyncMock(side_effect=[ScalarResult(), ScalarResult(existing)]))
+
+    with pytest.raises(IdempotencyConflictError):
+        await IdempotencyService.reserve(db, "user:route", "key-1", {"title": "第一章"})
+
+
+@pytest.mark.asyncio
+async def test_reserve_waits_for_active_owner() -> None:
+    existing = SimpleNamespace(
+        request_hash=IdempotencyService.compute_canonical_hash({"title": "第一章"}),
+        status="pending",
+        lease_until=datetime.now(timezone.utc) + timedelta(minutes=1),
+    )
+    db = SimpleNamespace(execute=AsyncMock(side_effect=[ScalarResult(), ScalarResult(existing)]))
+
+    result = await IdempotencyService.reserve(db, "user:route", "key-1", {"title": "第一章"})
+
+    assert result == {"action": "wait"}
+
+
+@pytest.mark.asyncio
+async def test_expired_reservation_claim_is_atomic() -> None:
+    existing = SimpleNamespace(
+        request_hash=IdempotencyService.compute_canonical_hash({"title": "第一章"}),
+        status="pending",
+        lease_until=datetime.now(timezone.utc) - timedelta(minutes=1),
+    )
+    db = SimpleNamespace(
+        execute=AsyncMock(side_effect=[ScalarResult(), ScalarResult(existing), ScalarResult(rowcount=1)])
+    )
+
+    result = await IdempotencyService.reserve(db, "user:route", "key-1", {"title": "第一章"})
+    claim_statement = db.execute.await_args_list[2].args[0]
+    sql = compiled_sql(claim_statement)
+
+    assert result["action"] == "execute"
+    assert "lease_until is null" in sql
+    assert "lease_until <=" in sql
+
+
+@pytest.mark.asyncio
+async def test_complete_requires_pending_record_and_owner_token() -> None:
+    db = SimpleNamespace(execute=AsyncMock(return_value=ScalarResult(rowcount=1)))
+
+    assert await IdempotencyService.complete(db, "user:route", "key-1", "owner", 200, {"ok": True})
+    statement = db.execute.await_args.args[0]
+    sql = compiled_sql(statement)
+    values = statement.compile().params
+
+    assert "idempotency_records.owner_token" in sql
+    assert "idempotency_records.status" in sql
+    assert values["status"] == "completed"
+    assert values["owner_token"] is None
+    assert values["lease_until"] is None

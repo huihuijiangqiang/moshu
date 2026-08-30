@@ -7,7 +7,7 @@ import json
 import secrets
 from datetime import datetime, timedelta, timezone
 
-from sqlalchemy import delete, select, update
+from sqlalchemy import delete, or_, select, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -166,6 +166,7 @@ class IdempotencyService:
                 IdempotencyRecord.scope == scope,
                 IdempotencyRecord.key == key,
                 IdempotencyRecord.status == "pending",
+                or_(IdempotencyRecord.lease_until.is_(None), IdempotencyRecord.lease_until <= now),
             )
             .values(
                 owner_token=owner_token,
