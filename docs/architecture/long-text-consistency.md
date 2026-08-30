@@ -1,7 +1,9 @@
 # 小说长文本一致性后端架构
 
-状态：提案（P0 实现前冻结核心契约）  
-适用范围：章节大纲持续修改、章节保存、长期记忆、一致性守卫  
+状态：提案（P0 实现前冻结核心契约）
+
+适用范围：章节大纲持续修改、章节保存、长期记忆、一致性守卫
+
 产品指标：Guard 召回率 >= 70%，误报率 <= 20%，证据定位准确率 >= 90%
 
 ## 1. 目标与边界
@@ -101,8 +103,8 @@
 | `certainty` | `explicit` / `inferred` / `uncertain` |
 | `source_kind` | `codex` / `body` / `outline` / `resolution` |
 | `chapter_id` / `body_rev` / `outline_rev` | 来源版本 |
-| `story_order` | 可空的故事内排序值，不等同于章节序号 |
-| `valid_from_order` / `valid_to_order` | 事实在故事内的有效区间 |
+| `timeline_id` / `story_order` | 可空的故事时间线与其中的稀疏排序值，不等同于章节序号 |
+| `valid_from_order` / `valid_to_order` | 同一故事时间线内的事实有效区间 |
 | `extractor_version` / `confidence` | 可重跑、可校准 |
 | `fingerprint` | 规范化 claim 哈希，防重复 |
 | `status` | `candidate` / `accepted` / `rejected` / `superseded` |
@@ -111,7 +113,9 @@
 
 #### `story_events`
 
-保存事件的故事时间和叙事位置：`event_type`、`story_order`、`time_text`、`time_start/end`、`chapter_id`、`body_rev`、`anchor`、`confidence`。倒叙通过 `story_order` 表达，不能用章节 `idx` 代替故事时间。
+保存事件的故事时间和叙事位置：`event_type`、`timeline_id`、`story_order numeric(24,8)`、`time_text`、`time_start/end`、`chapter_id`、`body_rev`、`anchor`、`confidence`。倒叙通过故事顺序和章节 `idx` 的差异表达，不能用章节 `idx` 代替故事时间。
+
+`story_order` 是故事世界中的事件顺序，不是“第几章”。插章、拆章或移动章节不会重排已有事件。时间线服务在两个已确认事件之间用稀疏中点分配顺序值；空间不足时只重排同一 `timeline_id` 的事件和状态区间，并在单事务内完成。无法从正文可靠确定顺序时保持为空，只进入待确认列表，不运行依赖时序的硬规则。多线叙事先按 `timeline_id` 隔离，只有存在已确认的跨线锚点时才比较。
 
 #### `entity_state_intervals`
 
@@ -125,8 +129,10 @@
 
 - `issue_id`、`side`（expected/actual/context）。
 - `source_kind`、`chapter_id`、`body_rev`、`outline_rev`、`codex_entry_id`。
-- `paragraph_id`、`start_offset`、`end_offset`、`quote`、`quote_hash`。
+- `paragraph_id`、`start_offset`、`end_offset`、`offset_encoding`、`quote`、`quote_hash`、`anchor_version`。
 - `claim_id` 和 `sort_order`。
+
+证据锚点以对应 `body_rev` 的不可变正文快照为基准。`paragraph_id` 在单个 ProseMirror 文档内唯一且跨普通编辑保持稳定；offset 使用 UTF-16 code unit，与浏览器和 ProseMirror 的字符串坐标一致。`quote_hash` 固定为 `SHA-256(UTF-8(NFC(quote)))`，不折叠空白、不替换标点，避免不同原文被误认成同一证据。当前正文 rev 改变时，历史证据仍可在原快照查看，但相对当前正文标为 stale；只有通过重新扫描产生的新 evidence 才能指向新 rev。`anchor_version` 用于未来升级纯文本提取和坐标算法。
 
 新增 `guard_resolutions`：记录 `issue_id`、`issue_rev`、`action`、`note`、`created_by`、`created_at`。允许动作：`accept_old_fact`、`accept_new_fact`、`intentional_exception`、`false_positive`、`fixed_in_body`、`defer`。任何动作都只更新结构化状态或生成待审修改建议，不直接改正文。
 
@@ -167,6 +173,8 @@ API 使用枚举 `body_policy`，不能继续使用含义不清的布尔值：
 
 不能在数据库 commit 前投递 Celery，否则 worker 可能读不到新正文；也不能只在 commit 后直接投递，否则进程崩溃会永久漏任务。
 
+多实例 dispatcher 使用 `FOR UPDATE SKIP LOCKED` 批量领取事件，并在短事务内写入 `dispatching`、`lease_owner`、`lease_until`；网络投递不持有数据库锁。发送成功后凭 lease token 更新为 `sent`，租约超时可重新领取。进程在“任务已发送、sent 尚未落库”之间崩溃仍会导致重复投递，因此消费者的数据库幂等键才是最终保障，dispatcher 锁不能代替消费者幂等。
+
 ### 6.3 增量一致性流水线
 
 队列分离：
@@ -198,6 +206,8 @@ API 使用枚举 `body_policy`，不能继续使用含义不清的布尔值：
 5. **LLM 仲裁**：输入两个 claim、必要上下文和规则定义，输出结构化 `conflict / no_conflict / uncertain`。`uncertain` 不打高等级告警。
 
 生成上下文与 Guard 共用实体/claim 存储，但排序目标不同：生成侧追求“相关且有用”，Guard 侧追求“可证实且可复现”。两者不能共用一个未经区分的 top-k 结果。
+
+`confidence` 不使用跨规则统一的固定阈值。每个 extractor/rule/model 组合保存 `decision_policy_version`，阈值只根据版本化 dev 集校准并在 holdout 验证。作者确认事实固定为最高可信来源；低于出警阈值的模型候选只进入待确认，不生成 Guard issue；任一输入 claim 为 uncertain 时不得产生 high severity。线上反馈进入待审核样本池，不能自动改变阈值。
 
 ## 8. 幂等、并发与失败恢复
 
@@ -259,7 +269,9 @@ P0 不追求一次覆盖所有文学歧义，先实现可评测的七类规则�
 
 ## 11. 评测与上线门槛
 
-建立版本化 JSONL/数据库夹具，样本必须包含正文版本、设定、期望 issue type、证据 paragraph id 和 hard negative。首版至少 100 个正例、50 个近似但不冲突的负例，七类规则每类均有覆盖；20 个矛盾只能做开发 smoke test，不能证明指标。
+建立版本化 JSONL/数据库夹具，样本必须包含正文版本、设定、期望 issue type、证据 paragraph id 和 hard negative。20 个最明确矛盾只做流水线 smoke test，用于证明任务可运行和结果可定位，不设置上线结论。首版上线集至少 100 个正例、50 个 hard negative，七类规则每类均有覆盖。
+
+Hard negative 是“共享实体和相似表述，但因条件、时间、视角或状态演变而不冲突”的配对，例如“不擅长用剑”与“危急时勉强拔剑”、“四月开始融雪”与“四月底山阴仍有残雪”、“左肩旧伤遇寒痛”与“服药后症状减轻”。它们必须和正例走同一候选召回路径，才能真实衡量误报；明显无关文本只能作为 easy negative，单独报告，不能稀释误报率。
 
 指标定义：
 
@@ -298,8 +310,10 @@ P0 不追求一次覆盖所有文学歧义，先实现可评测的七类规则�
 
 工作树边界：
 
-- 主工作区负责会触碰现有脏文件的 `models_core.py`、`models_guard.py`、`api/chapters.py` 及最终集成。
-- Claude 工作树只负责新增模块：consistency 模型/服务、outbox/幂等基础设施、纯规则与测试夹具；需要改共享文件时单独小提交，便于选择性 cherry-pick。
+- 主工作区保留现有未提交改动，不直接开发本阶段功能；最终合并前先单独处置这些改动。
+- Claude 固定复用会话 `85240d32-a3ec-4012-8787-ace96fc115df`，实际绑定工作树 `.claude/worktrees/moshu-consistency-backend`；该分支已快进到架构提交。Claude 只负责新增 consistency 模型、outbox/幂等基础设施、纯规则与测试夹具。
+- Codex 使用 `D:/moshu-worktrees/codex-consistency`，负责 API/service 契约、集成测试和最终集成。
+- 仅新增文件可以直接并行；运行时接线必然需要修改 `main.py`、`db/__init__.py` 等共享文件，应由 Codex 在 Claude 提交完成后单线完成。通过迁移给已有表加字段并不等于 ORM 自动获得这些属性，不能把“零修改已有 Python 文件”误称为可运行集成。
 - 两边不得同时修改 `memory/assembler.py`、`config.py`、`db/models_*.py` 或同一迁移；每个提交只包含约定边界内文件。
 
 ## 13. 验收清单
