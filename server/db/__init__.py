@@ -1,8 +1,15 @@
 """
 数据库模型 - 统一导出
 """
+
 from db.base import Base, TimestampMixin
 from db.models_codex import CodexAlias, CodexEntry, CodexRef, CodexRelation
+from db.models_consistency import (
+    ChapterOutlineRevision,
+    ChapterOutlineState,
+    IdempotencyRecord,
+    OutboxEvent,
+)
 from db.models_core import Chapter, ChapterBody, ChapterVersion, Project, User, Volume
 from db.models_guard import Foreshadow, GuardIssue
 from db.models_org import ChapterAssignment, Org, OrgMember
@@ -18,6 +25,11 @@ __all__ = [
     "Chapter",
     "ChapterBody",
     "ChapterVersion",
+    # Consistency persistence
+    "ChapterOutlineState",
+    "ChapterOutlineRevision",
+    "OutboxEvent",
+    "IdempotencyRecord",
     # Codex
     "CodexEntry",
     "CodexAlias",
