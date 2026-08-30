@@ -1,11 +1,14 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
-import AppHeader from '@/components/layout/AppHeader.vue'
+import { computed, onMounted, ref } from 'vue'
 import { useProjectStore } from '@/stores/project'
 import { useCodexStore } from '@/stores/codex'
+import { useShellStore } from '@/stores/shell'
 
 const store = useProjectStore()
 const codex = useCodexStore()
+const shell = useShellStore()
+
+onMounted(() => shell.setCrumb('导出'))
 
 const parts = ref({ body: true, codex: true, outline: true, history: false, ratio: false })
 const format = ref<'TXT' | 'DOCX' | 'Markdown' | 'EPUB'>('TXT')
@@ -36,9 +39,8 @@ function exportNow() {
 </script>
 
 <template>
-  <div class="app">
-    <AppHeader subtitle="导出" />
-    <main class="pane" :style="{ flex: 1, padding: '40px', background: 'var(--color-neutral-100)' }">
+  <div class="wk-pane" :style="{ height: '100%', overflow: 'auto' }">
+    <main class="pane" :style="{ flex: 1, padding: '40px', background: 'var(--panel)' }">
       <div :style="{ maxWidth: '520px', fontSize: '13px' }">
         <h1 :style="{ fontSize: '28px', fontWeight: 700, margin: '0 0 30px' }">导出《{{ store.project?.title }}》</h1>
 

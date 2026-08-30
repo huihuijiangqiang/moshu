@@ -1,0 +1,139 @@
+/* 密集工具台 · token 层
+   —————————————————————————————————————————————————————————
+   在 modernist.css 之后加载，只覆盖不删除：modernist 的 .btn/.input/.tag
+   还被未改造的 7 屏使用，不能动。这里定义两套语义色：
+     chrome-*  深色工具外壳（左侧图标轨、顶栏、底部状态条、命令面板）
+     canvas / paper / panel / line / ink-*  浅色工作区
+   规则：任何颜色都必须是变量。深色模式的钩子已经预留在文件末尾，
+   届时只改这些变量的值，组件不需要动。 */
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;700&family=Noto+Sans+SC:wght@400;500;700&family=Noto+Serif+SC:wght@400;600&family=JetBrains+Mono:wght@400;500&display=swap');
+
+
+:root {
+  color-scheme: light;
+
+  /* — 深色工具外壳 — */
+  --chrome-bg: #1c2026;
+  --chrome-bg-raised: #242a31;
+  --chrome-bg-active: #2d333c;
+  --chrome-line: #353c46;
+  --chrome-ink: #c7cdd6;
+  --chrome-ink-dim: #858d98;
+  --chrome-ink-strong: #f8fafc;
+
+  /* — 浅色工作区 — */
+  --canvas: #eef1f5; /* 面板之间的槽，露出来当分隔用 */
+  --paper: #fcfdfe; /* 正文纸面 */
+  --panel: #ffffff; /* 侧栏、卡片 */
+  --panel-sunken: #f5f7fa; /* 表头、次级行 */
+  --line: #dde1e7;
+  --line-strong: #cbd1d9;
+  --ink: #17191d;
+  --ink-2: #48505a;
+  --ink-3: #69707a;
+  --ink-4: #9aa1ab;
+
+  /* 主操作、告警、成功各负其责，避免整页被一种状态色统治。 */
+  --primary: #315efb;
+  --primary-hover: #254ed8;
+  --primary-soft: #e9eeff;
+  --primary-line: #b9c7ff;
+  --alert: #d6524a;
+  --alert-ink: #ad3732;
+  --alert-soft: #fff0ee;
+  --alert-line: #f2bbb6;
+  --success: #3f7d67;
+  --success-soft: #e7f2ed;
+  --success-line: #b8d6c9;
+  /* 压在 --alert 实色上的文字。两套主题都保持白，所以不随主题翻转。 */
+  --on-alert: #ffffff;
+
+  /* — 字体 —
+     Inter 在前：它没有中日韩字形，CJK 会自然落到思源黑体，
+     于是拉丁字母与数字用 Inter、汉字用思源黑体，字重与字宽能对上。
+     （旧版把 Archivo 放首位，宽度差太大，中英混排像两套字。） */
+  --font-ui: 'Inter', 'Source Han Sans SC', 'Noto Sans SC', 'PingFang SC',
+    'Hiragino Sans GB', 'Microsoft YaHei', sans-serif;
+  --font-prose: 'Source Han Serif SC', 'Noto Serif SC', 'Songti SC', 'SimSun', Georgia, serif;
+  --font-mono: 'JetBrains Mono', 'SF Mono', ui-monospace, monospace;
+
+  /* — 密度 —
+     13px 基准、26px 行高：一屏能放下 88 章而不用滚两次。 */
+  --fs-xs: 11px;
+  --fs-sm: 12px;
+  --fs: 13px;
+  --fs-md: 14px;
+  --fs-lg: 17px;
+  --fs-xl: 22px;
+
+  --row-h: 26px;
+  --row-h-md: 30px;
+  --ctl-h: 28px;
+
+  --rail-w: 72px;
+  --topbar-h: 40px;
+  --statusbar-h: 26px;
+  --left-w: 248px;
+  --right-w: 320px;
+  --prose-w: 720px;
+
+  --u1: 4px;
+  --u2: 8px;
+  --u3: 12px;
+  --u4: 16px;
+  --u5: 20px;
+  --u6: 24px;
+
+  /* 结构分隔线 2px（沿用界面设计的实现约定），
+     列表内部行线 1px —— 否则 88 行 × 2px 的线自己就成了噪音。 */
+  --rule: 2px;
+  --hair: 1px;
+
+  --z-palette: 80;
+  --z-float: 40;
+
+  /* 旧页面仍使用 modernist 的 accent token；统一映射到新版主色。 */
+  --color-accent: var(--primary);
+  --color-accent-100: var(--primary-soft);
+  --color-accent-300: var(--primary-line);
+  --color-accent-500: var(--primary);
+  --color-accent-600: var(--primary-hover);
+  --color-accent-700: #2448c2;
+  --color-accent-800: #1f3c9d;
+  --color-accent-900: #192f78;
+}
+
+[data-theme='dark'] {
+  color-scheme: dark;
+
+  --chrome-bg: #15171a;
+  --chrome-bg-raised: #1c1f23;
+  --chrome-bg-active: #262a30;
+  --chrome-line: #282c31;
+  --chrome-ink: #b7bdc5;
+  --chrome-ink-dim: #6d747d;
+  --chrome-ink-strong: #eef1f4;
+
+  --canvas: #101215;
+  --paper: #1a1d21;
+  --panel: #191c20;
+  --panel-sunken: #15181b;
+  --line: #282c32;
+  --line-strong: #3a3f47;
+  --ink: #e6e9ed;
+  --ink-2: #b0b6be;
+  --ink-3: #868d96;
+  --ink-4: #656c75;
+
+  --primary: #6f8cff;
+  --primary-hover: #88a0ff;
+  --primary-soft: #242d4f;
+  --primary-line: #41568f;
+  --alert: #ff7269;
+  --alert-ink: #ff948d;
+  --alert-soft: #311d1d;
+  --alert-line: #63302f;
+  --success: #79b39e;
+  --success-soft: #1d302a;
+  --success-line: #335b4d;
+}

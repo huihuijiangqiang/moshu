@@ -1,14 +1,18 @@
 <script setup lang="ts">
 import { onMounted, ref } from 'vue'
-import AppHeader from '@/components/layout/AppHeader.vue'
 import { ratioApi, type SegmentSource } from '@/api/mock/ai-ratio'
 import { useProjectStore } from '@/stores/project'
+import { useShellStore } from '@/stores/shell'
 
 const store = useProjectStore()
+const shell = useShellStore()
 const report = ref<Awaited<ReturnType<typeof ratioApi.report>> | null>(null)
 const scope = ref<'chapter' | 'book'>('chapter')
 
-onMounted(async () => { report.value = await ratioApi.report(store.activeId ?? '') })
+onMounted(async () => {
+  shell.setCrumb('AI 占比自查')
+  report.value = await ratioApi.report(store.activeId ?? '')
+})
 
 const legend: { source: SegmentSource; label: string }[] = [
   { source: 'ai-raw', label: 'AI 原文' },
@@ -37,24 +41,18 @@ function segStyle(source: SegmentSource) {
 </script>
 
 <template>
-  <div class="app">
-    <AppHeader subtitle="AI 占比自查">
-      <template #actions>
-        <button
-          v-for="s in (['chapter', 'book'] as const)"
-          :key="s"
-          type="button"
-          :style="{
-            border: 0, background: 'none', cursor: 'pointer', fontSize: '13px', paddingBottom: '3px',
-            borderBottom: scope === s ? '2px solid var(--color-accent)' : '2px solid transparent',
-            fontWeight: scope === s ? 700 : 400,
-            color: scope === s ? 'var(--color-text)' : 'var(--color-neutral-700)'
-          }"
-          @click="scope = s"
-        >{{ s === 'chapter' ? '本章' : '全书' }}</button>
-        <button class="btn btn-secondary" type="button" :style="{ height: '30px', fontSize: '12px' }">导出自查报告</button>
-      </template>
-    </AppHeader>
+  <div class="wk-pane" :style="{ height: '100%', overflow: 'auto' }">
+    <Teleport to="#topbar-actions">
+      <button
+        v-for="s in (['chapter', 'book'] as const)"
+        :key="s"
+        class="topbar-btn"
+        type="button"
+        :data-primary="scope === s"
+        @click="scope = s"
+      >{{ s === 'chapter' ? '本章' : '全书' }}</button>
+      <button class="topbar-btn" type="button">导出自查报告</button>
+    </Teleport>
 
     <template v-if="report">
       <div class="grid-rule rule-b" :style="{ gridTemplateColumns: 'repeat(4, 1fr)', flex: 'none' }">

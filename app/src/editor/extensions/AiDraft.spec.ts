@@ -14,6 +14,18 @@ function makeEditor() {
   })
 }
 
+/** 草稿容器内部的段落文本。只看容器内，不受容器之后的正文影响。 */
+function draftParagraphTexts(editor: Editor): string[] {
+  const texts: string[] = []
+  editor.state.doc.descendants((node) => {
+    if (node.type.name !== 'aiDraft') return
+    node.descendants((child) => {
+      if (child.type.name === 'paragraph') texts.push(child.textContent)
+    })
+  })
+  return texts
+}
+
 describe('AiDraft', () => {
   it('插入草稿容器并流式追加文本', () => {
     const editor = makeEditor()
@@ -31,9 +43,9 @@ describe('AiDraft', () => {
     editor.commands.appendDraftText('第一段')
     editor.commands.appendDraftText('\n')
     editor.commands.appendDraftText('第二段')
-    const html = editor.getHTML()
-    const draft = html.slice(html.indexOf('data-ai-draft'))
-    expect((draft.match(/<p>/g) ?? []).length).toBe(2)
+    // 数节点而不是数 HTML 里的 <p>：字符串切片会一直切到文档末尾，
+    // 把草稿容器之后的正文段落也算进来。
+    expect(draftParagraphTexts(editor)).toEqual(['第一段', '第二段'])
     editor.destroy()
   })
 

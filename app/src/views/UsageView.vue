@@ -1,10 +1,14 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
-import AppHeader from '@/components/layout/AppHeader.vue'
 import { shelfApi } from '@/api/mock/shelf'
+import { useShellStore } from '@/stores/shell'
 
+const shell = useShellStore()
 const data = ref<Awaited<ReturnType<typeof shelfApi.usage>> | null>(null)
-onMounted(async () => { data.value = await shelfApi.usage() })
+onMounted(async () => {
+  shell.setCrumb('用量与计费')
+  data.value = await shelfApi.usage()
+})
 
 const pct = computed(() => (data.value ? Math.round((data.value.remaining / data.value.quota) * 100) : 0))
 
@@ -15,9 +19,8 @@ const tiers = [
 </script>
 
 <template>
-  <div class="app">
-    <AppHeader subtitle="用量与计费" />
-    <main v-if="data" class="pane" :style="{ flex: 1, padding: '40px', background: 'var(--color-neutral-100)' }">
+  <div class="wk-pane" :style="{ height: '100%', overflow: 'auto' }">
+    <main v-if="data" class="pane" :style="{ flex: 1, padding: '40px', background: 'var(--panel)' }">
       <div :style="{ maxWidth: '560px', fontSize: '13px' }">
         <div class="row-between" :style="{ alignItems: 'end', marginBottom: '8px' }">
           <div>

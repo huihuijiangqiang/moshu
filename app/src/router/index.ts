@@ -1,5 +1,6 @@
 import { createRouter, createWebHistory } from 'vue-router'
 
+/** meta.bare = 不套 AppShell 的全屏页（登录、开书向导） */
 export const router = createRouter({
   history: createWebHistory(),
   routes: [
@@ -12,8 +13,8 @@ export const router = createRouter({
     { path: '/ai-ratio', name: 'ai-ratio', component: () => import('@/views/AiRatioView.vue') },
     { path: '/export', name: 'export', component: () => import('@/views/ExportView.vue') },
     { path: '/usage', name: 'usage', component: () => import('@/views/UsageView.vue') },
-    { path: '/wizard', name: 'wizard', component: () => import('@/views/WizardView.vue') },
-    { path: '/login', name: 'login', component: () => import('@/views/LoginView.vue') },
+    { path: '/wizard', name: 'wizard', component: () => import('@/views/WizardView.vue'), meta: { bare: true } },
+    { path: '/login', name: 'login', component: () => import('@/views/LoginView.vue'), meta: { bare: true } },
     { path: '/:pathMatch(.*)*', redirect: '/' }
   ]
 })

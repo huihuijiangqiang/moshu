@@ -1,14 +1,17 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
-import AppHeader from '@/components/layout/AppHeader.vue'
 import { useProjectStore } from '@/stores/project'
+import { useShellStore } from '@/stores/shell'
 import type { Chapter } from '@/types'
 
 const router = useRouter()
 const store = useProjectStore()
+const shell = useShellStore()
 const view = ref<'grid' | 'list'>('grid')
 const selectedId = ref<string | null>(null)
+
+onMounted(() => shell.setCrumb('大纲'))
 
 const currentVolume = computed(() => store.byVolume.at(-1) ?? null)
 const selected = computed<Chapter | null>(
@@ -34,24 +37,19 @@ function cellStyle(c: Chapter) {
 </script>
 
 <template>
-  <div class="app">
-    <AppHeader subtitle="大纲">
-      <template #actions>
-        <button
-          v-for="v in (['grid', 'list'] as const)"
-          :key="v"
-          type="button"
-          :style="{
-            border: 0, background: 'none', cursor: 'pointer', fontSize: '13px', paddingBottom: '3px',
-            borderBottom: view === v ? '2px solid var(--color-accent)' : '2px solid transparent',
-            fontWeight: view === v ? 700 : 400,
-            color: view === v ? 'var(--color-text)' : 'var(--color-neutral-700)'
-          }"
-          @click="view = v"
-        >{{ v === 'grid' ? '网格' : '列表' }}</button>
-        <button class="btn btn-primary" type="button" :style="{ height: '30px', fontSize: '12px' }">AI 续排后续章纲</button>
-      </template>
-    </AppHeader>
+  <div class="wk-pane" :style="{ height: '100%', display: 'flex', flexDirection: 'column' }">
+    <!-- 顶栏动作 Teleport 到外壳，本屏不再自带 header -->
+    <Teleport to="#topbar-actions">
+      <button
+        v-for="v in (['grid', 'list'] as const)"
+        :key="v"
+        class="topbar-btn"
+        type="button"
+        :data-primary="view === v"
+        @click="view = v"
+      >{{ v === 'grid' ? '网格' : '列表' }}</button>
+      <button class="topbar-btn" type="button">AI 续排后续章纲</button>
+    </Teleport>
 
     <section class="rule-b" :style="{ padding: '26px 24px', flex: 'none' }">
       <div class="kicker" :style="{ marginBottom: '16px' }">故事内时间线</div>

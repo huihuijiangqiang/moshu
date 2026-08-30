@@ -10,11 +10,17 @@ const labelText = computed(() =>
   status.value === 'streaming' ? '正在写入' : status.value === 'locked' ? '已锁定' : '待采纳'
 )
 
+// TipTap 3 的 getPos() 在节点已从文档移除时返回 undefined，
+// 例如流式写入过程中用户手动删掉了草稿块。此时不能把 undefined 传给命令。
 function accept() {
-  props.editor.chain().focus().acceptDraftAt(props.getPos()).run()
+  const pos = props.getPos()
+  if (pos === undefined) return
+  props.editor.chain().focus().acceptDraftAt(pos).run()
 }
 function reject() {
-  props.editor.chain().focus().rejectDraftAt(props.getPos()).run()
+  const pos = props.getPos()
+  if (pos === undefined) return
+  props.editor.chain().focus().rejectDraftAt(pos).run()
 }
 function toggleLock() {
   props.updateAttributes({ status: status.value === 'locked' ? 'pending' : 'locked' })

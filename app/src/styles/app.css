@@ -4,8 +4,8 @@
   --app-header-h: 52px;
   --app-left-w: 240px;
   --app-right-w: 320px;
-  --prose-w: 720px;
-  --font-cjk: 'Archivo', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', sans-serif;
+  /* 字体与 --prose-w 已移到 tokens.css。这里保留别名，旧屏引用不至于失效。 */
+  --font-cjk: var(--font-ui);
 }
 
 * { box-sizing: border-box; }
@@ -55,9 +55,9 @@ button { font: inherit; color: inherit; }
   border: 0; background: none; width: 100%; text-align: left;
 }
 .side-item:hover { background: color-mix(in srgb, var(--color-text) 7%, transparent); }
-.side-item[aria-current='true'] { background: var(--color-accent); color: #fff; font-weight: 700; }
+.side-item[aria-current='true'] { background: var(--color-accent); color: var(--on-alert); font-weight: 700; }
 .badge {
-  background: var(--color-accent); color: #fff; font-size: 11px;
+  background: var(--color-accent); color: var(--on-alert); font-size: 11px;
   font-weight: 700; padding: 1px 6px; line-height: 1.5;
 }
 
@@ -112,7 +112,7 @@ button { font: inherit; color: inherit; }
   box-shadow: var(--shadow-md);
 }
 .suggest-item { padding: 8px 12px; font-size: 13px; cursor: pointer; display: flex; justify-content: space-between; gap: 10px; }
-.suggest-item[aria-selected='true'] { background: var(--color-accent); color: #fff; }
+.suggest-item[aria-selected='true'] { background: var(--color-accent); color: var(--on-alert); }
 
 /* 浮动 AI 工具条 */
 .ai-bar {
@@ -123,11 +123,11 @@ button { font: inherit; color: inherit; }
 }
 .ai-bar button { border: 0; background: none; padding: 0 14px; height: 38px; font-size: 13px; cursor: pointer; }
 .ai-bar button + button { border-left: 2px solid var(--color-divider); }
-.ai-bar button[data-primary='true'] { background: var(--color-accent); color: #fff; font-weight: 700; }
+.ai-bar button[data-primary='true'] { background: var(--color-accent); color: var(--on-alert); font-weight: 700; }
 .ai-bar button:hover:not([data-primary='true']) { background: color-mix(in srgb, var(--color-text) 7%, transparent); }
 
 /* 离线 / 保存状态条 */
 .wire-note {
   padding: 6px 18px; font-size: 12px; font-weight: 700;
-  background: var(--color-accent); color: #fff;
+  background: var(--color-accent); color: var(--on-alert);
 }

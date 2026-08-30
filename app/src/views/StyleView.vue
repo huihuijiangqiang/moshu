@@ -1,13 +1,15 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
-import AppHeader from '@/components/layout/AppHeader.vue'
 import { styleApi, type StyleProfile } from '@/api/mock/style-profile'
+import { useShellStore } from '@/stores/shell'
 
+const shell = useShellStore()
 const profiles = ref<StyleProfile[]>([])
 const dims = ref<Awaited<ReturnType<typeof styleApi.dimensions>>>([])
 const activeId = ref<string | null>(null)
 
 onMounted(async () => {
+  shell.setCrumb('风格档')
   profiles.value = await styleApi.list()
   activeId.value = profiles.value.find((p) => p.isDefault)?.id ?? profiles.value[0]?.id ?? null
   if (activeId.value) dims.value = await styleApi.dimensions(activeId.value)
@@ -23,14 +25,12 @@ async function select(id: string) {
 </script>
 
 <template>
-  <div class="app">
-    <AppHeader subtitle="风格档">
-      <template #actions>
-        <button class="btn btn-secondary" type="button" :style="{ height: '30px', fontSize: '12px' }">新建风格档</button>
-      </template>
-    </AppHeader>
+  <div class="wk-pane" :style="{ height: '100%' }">
+    <Teleport to="#topbar-actions">
+      <button class="topbar-btn" type="button">新建风格档</button>
+    </Teleport>
 
-    <div class="app-body" :style="{ gridTemplateColumns: '260px 1fr' }">
+    <div class="app-body" :style="{ gridTemplateColumns: '260px 1fr', height: '100%' }">
       <aside class="pane pane-left" :style="{ padding: '16px 0', fontSize: '13px' }">
         <button
           v-for="p in profiles"
