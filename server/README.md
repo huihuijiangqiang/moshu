@@ -99,12 +99,13 @@ uvicorn main:app --reload --host 0.0.0.0 --port 8000
 
 ## 已实现
 
-### 数据模型（19张表）
+### 数据模型（23张表）
 - ✅ 骨架 6张：users, projects, volumes, chapters, chapter_bodies, chapter_versions
 - ✅ 设定库 4张：codex_entries, codex_aliases, codex_refs, codex_relations
 - ✅ 守卫 2张：guard_issues, foreshadows
 - ✅ 风格/用量/占比 4张：style_profiles, generation_runs, usage_logs, ratio_reports
 - ✅ 组织权限 3张：orgs, org_members, chapter_assignments（MVP 建表不开功能）
+- ✅ 一致性基础 4张：chapter_outline_states, chapter_outline_revisions, outbox_events, idempotency_records
 
 ### 核心模块
 - ✅ **四层上下文装配器** (`memory/assembler.py`)
@@ -119,18 +120,27 @@ uvicorn main:app --reload --host 0.0.0.0 --port 8000
   - 冲突时返回 409 + 双方内容
   - 永不静默覆盖
 
+- ✅ **持续章纲后端** (`api/outlines.py`, `services/outlines.py`)
+  - 独立章纲版本与历史快照
+  - 已有正文时强制选择 `plan_only` / `mark_body_for_revision`
+  - 修改章纲和处置标记都不写正文
+  - transactional outbox 与两阶段 API 幂等基础设施
+
 ### API 端点
 - ✅ `GET /projects/:id` - 获取项目详情
 - ✅ `GET /projects/:id/chapters` - 章节列表（不含正文）
 - ✅ `GET /chapters/:id` - 章节详情（含正文 + rev）
 - ✅ `PUT /chapters/:id/body` - 保存章节（带乐观锁）
+- ✅ `PUT /chapters/:id/outline` - 保存章纲（带独立乐观锁）
+- ✅ `GET /chapters/:id/outline/revisions` - 章纲版本历史
+- ✅ `POST /chapters/:id/body-revision/resolve` - 作者确认正文调整状态
 
 ## 待实现（优先级排序）
 
 按《开发规划与技术选型》文档的排期：
 
 ### Week 1-2: 骨架跑通
-- [ ] 补全 17 张表的 Alembic 迁移
+- [ ] 为现有 23 张表建立首个 Alembic baseline；在 baseline 完成前不得创建伪装成初始版本的增量迁移
 - [ ] 认证接口：`POST /auth/code` + `/auth/verify`
 - [ ] Docker Compose 完整配置
 - [ ] 守卫 spike：构造 20 处矛盾测试稿，测规则前置覆盖率
