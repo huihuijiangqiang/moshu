@@ -31,6 +31,12 @@ class Settings(BaseSettings):
     model_gateway_premium_url: str
     model_gateway_premium_key: str
 
+    # OpenAI API (for consistency extraction and embedding)
+    openai_api_base: str = "https://api.openai.com/v1"
+    openai_api_key: str
+    openai_model_name: str = "gpt-4o-mini"
+    openai_embedding_model: str = "text-embedding-3-small"
+
     # Object Storage
     s3_endpoint: str
     s3_access_key: str

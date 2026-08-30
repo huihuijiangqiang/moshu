@@ -1,13 +1,16 @@
 """
-章节 API
+章节 API - 使用真实的 body save service
 """
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, Header, HTTPException, status
 from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from api.auth import get_current_user
 from db import Chapter, ChapterBody
+from db.models_core import User
 from db.session import get_db
+from services.body import InvalidCodexRefError, save_chapter_body
 
 router = APIRouter()
 
@@ -46,6 +49,7 @@ class SaveChapterResponse(BaseModel):
 
     success: bool
     rev: int
+    consistency_status: str
     message: str | None = None
 
 
@@ -61,7 +65,11 @@ class ConflictResponse(BaseModel):
 
 
 @router.get("/{chapter_id}", response_model=ChapterOut)
-async def get_chapter(chapter_id: str, db: AsyncSession = Depends(get_db)):
+async def get_chapter(
+    chapter_id: str,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
     """
     获取章节详情 - 含正文
     对应前端 mock: getChapter
@@ -74,6 +82,10 @@ async def get_chapter(chapter_id: str, db: AsyncSession = Depends(get_db)):
 
     if not chapter:
         raise HTTPException(status_code=404, detail="章节不存在")
+
+    # Verify project access
+    from api.auth import verify_project_access
+    await verify_project_access(chapter.project_id, user, db)
 
     # 加载正文
     body_stmt = select(ChapterBody).where(ChapterBody.chapter_id == chapter_id)
@@ -114,23 +126,27 @@ async def get_chapter(chapter_id: str, db: AsyncSession = Depends(get_db)):
 
 
 @router.put("/{chapter_id}/body")
-async def save_chapter_body(
+async def save_chapter_body_endpoint(
     chapter_id: str,
     request: SaveChapterRequest,
+    idempotency_key: str = Header(..., alias="Idempotency-Key"),
+    user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     """
-    保存章节正文 - 带乐观锁
-    对应前端 mock: saveChapter
+    保存章节正文 - 带乐观锁和幂等性
 
     关键约束：
     1. 请求带 base_rev，若服务端 rev 更高返回 409 + 双方内容
     2. 永不静默覆盖
     3. 保存成功后异步触发：守卫扫描 + codex_refs 重建
+    4. 必须提供 Idempotency-Key header
 
     Returns:
-        200: 保存成功，返回新 rev
+        200: 保存成功，返回新 rev 和 consistency_status
+        202: 一致性检查进行中（幂等重放）
         409: 冲突，返回双方内容供用户选择
+        422: 无效的 CodexRef（cross-project 或不存在）
     """
     # 查询当前章节和正文
     stmt = select(Chapter).where(Chapter.id == chapter_id)
@@ -139,6 +155,10 @@ async def save_chapter_body(
 
     if not chapter:
         raise HTTPException(status_code=404, detail="章节不存在")
+
+    # Verify project access
+    from api.auth import verify_project_access
+    await verify_project_access(chapter.project_id, user, db)
 
     body_stmt = select(ChapterBody).where(ChapterBody.chapter_id == chapter_id)
     body_result = await db.execute(body_stmt)
@@ -149,41 +169,64 @@ async def save_chapter_body(
 
     if request.base_rev < current_rev:
         # 冲突：返回 409 + 双方内容
-        return ConflictResponse(
-            server_content_html=body.content_html,
-            server_content_json=body.content_json,
-            server_rev=body.rev,
-            client_content_html=request.content_html,
-            client_content_json=request.content_json,
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=ConflictResponse(
+                server_content_html=body.content_html,
+                server_content_json=body.content_json,
+                server_rev=body.rev,
+                client_content_html=request.content_html,
+                client_content_json=request.content_json,
+            ).model_dump(),
         )
 
-    # 保存或更新正文
-    new_rev = current_rev + 1
-
-    if body:
-        body.content_html = request.content_html
-        body.content_json = request.content_json
-        body.rev = new_rev
-    else:
-        body = ChapterBody(
+    # Call the real save_chapter_body service
+    try:
+        result = await save_chapter_body(
+            db,
             chapter_id=chapter_id,
             content_html=request.content_html,
             content_json=request.content_json,
-            rev=new_rev,
+            base_rev=request.base_rev,
+            idempotency_key=idempotency_key,
+            trigger="user_edit",
         )
-        db.add(body)
+    except InvalidCodexRefError as e:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=str(e),
+        )
+    except ValueError as e:
+        # Version conflict or validation error
+        if "base_rev" in str(e).lower():
+            # Re-fetch current body for conflict response
+            body_result = await db.execute(body_stmt)
+            body = body_result.scalar_one_or_none()
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=ConflictResponse(
+                    server_content_html=body.content_html if body else "",
+                    server_content_json=body.content_json if body else {},
+                    server_rev=body.rev if body else 0,
+                    client_content_html=request.content_html,
+                    client_content_json=request.content_json,
+                ).model_dump(),
+            )
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(e))
 
-    # 更新章节字数（简化计算，实际应该从 content_json 精确统计）
-    chapter.words = len(request.content_html)
-
-    await db.commit()
-
-    # TODO: 异步任务
-    # 1. 同步重建 codex_refs（从 content_json 扫描 CodexRef 节点）
-    # 2. 异步投递 Celery: guard_scan(chapter_id)
-
-    return SaveChapterResponse(
-        success=True,
-        rev=new_rev,
-        message="保存成功",
-    )
+    # Return appropriate status based on consistency_status
+    if result["consistency_status"] == "queued":
+        return SaveChapterResponse(
+            success=True,
+            rev=result["new_rev"],
+            consistency_status="queued",
+            message="保存成功，一致性检查已排队",
+        )
+    else:
+        # consistency_status == "unchanged"
+        return SaveChapterResponse(
+            success=True,
+            rev=result["new_rev"],
+            consistency_status="unchanged",
+            message="保存成功",
+        )

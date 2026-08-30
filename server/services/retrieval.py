@@ -68,37 +68,44 @@ class ConsistencyRetrieval:
             project_id: Project ID
             query_text: Query text
             top_k: Number of results
-            threshold: Similarity threshold
+            threshold: Similarity threshold (cosine distance, lower is better)
 
         Returns:
-            List of {"entry_id": str, "name": str, "similarity": float}
+            List of {"entry_id": str, "name": str, "distance": float}
         """
+        from sqlalchemy import text
+
         # Generate query embedding
         query_embedding = await self.embedding_provider.embed_text(query_text)
 
-        # pgvector similarity search
-        # MVP placeholder: actual implementation needs proper SQL with vector operators
+        # pgvector cosine distance search using <=> operator
+        # Distance ranges from 0 (identical) to 2 (opposite)
+        # Threshold of 0.8 similarity ≈ 0.4 distance
+        distance_threshold = 1.0 - threshold
+
         result = await db.execute(
-            select(CodexEntry.id, CodexEntry.name, CodexEntry.embedding)
+            select(
+                CodexEntry.id,
+                CodexEntry.name,
+                CodexEntry.embedding.cosine_distance(query_embedding).label("distance"),
+            )
             .where(CodexEntry.project_id == project_id)
             .where(CodexEntry.embedding.isnot(None))
-            .limit(top_k * 2)  # Over-fetch for filtering
+            .where(CodexEntry.embedding.cosine_distance(query_embedding) <= distance_threshold)
+            .order_by(text("distance"))
+            .limit(top_k)
         )
 
         candidates = []
         for row in result:
-            if row.embedding:
-                # Compute cosine similarity (placeholder - pgvector has native operators)
-                similarity = self._cosine_similarity(query_embedding, row.embedding)
-                if similarity >= threshold:
-                    candidates.append({
-                        "entry_id": row.id,
-                        "name": row.name,
-                        "similarity": similarity,
-                    })
+            candidates.append({
+                "entry_id": row.id,
+                "name": row.name,
+                "distance": float(row.distance),
+                "similarity": 1.0 - float(row.distance),  # Convert back to similarity
+            })
 
-        candidates.sort(key=lambda x: x["similarity"], reverse=True)
-        return candidates[:top_k]
+        return candidates
 
     async def retrieve_adjacent_summaries_l4(
         self,

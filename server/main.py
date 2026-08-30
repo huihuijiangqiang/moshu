@@ -7,7 +7,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from api import chapters, outlines, projects
+from api import chapters, consistency, outlines, projects
 from config import settings
 
 
@@ -54,6 +54,7 @@ async def health():
 app.include_router(projects.router, prefix="/projects", tags=["项目"])
 app.include_router(chapters.router, prefix="/chapters", tags=["章节"])
 app.include_router(outlines.router, prefix="/chapters", tags=["章纲"])
+app.include_router(consistency.router, prefix="/consistency", tags=["一致性"])
 
 # TODO: 挂载后续路由
 # from api import auth, codex, generate, guard
