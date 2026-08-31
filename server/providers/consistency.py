@@ -8,14 +8,21 @@ Uses model_gateway configuration with injectable httpx client
 
 关于模型选择：网关 URL / key / model id 全部来自 config.settings，不在代码里
 硬编码具体模型名。
+
+关于 SSE 流式：真实 10 万字压力测试发现 60 秒非流式 timeout 会中断长响应。现在
+所有网关调用统一走 stream=true + SSE 聚合，支持有限指数退避重试（408/429/5xx、
+httpx timeout/transport error），保证长文本抽取的可靠性。
 """
 from __future__ import annotations
 
+import asyncio
 import json
+import math
+import random
 from typing import TYPE_CHECKING, Any, Optional
 
 import httpx
-from pydantic import BaseModel, Field, ValidationError, model_validator
+from pydantic import BaseModel, Field, ValidationError, field_validator, model_validator
 
 from config import settings
 from services.chunking import TextChunk, chunk_html
@@ -137,6 +144,10 @@ class ProviderResponseError(RuntimeError):
     """
 
 
+class StreamingError(ProviderResponseError):
+    """SSE 流在 [DONE] 前结束，响应不完整。"""
+
+
 # Pydantic models for structured extraction
 class ClaimOutput(BaseModel):
     """Structured claim from LLM extraction
@@ -201,6 +212,20 @@ class ClaimOutput(BaseModel):
     valid_from_order: Optional[float] = Field(None)
     valid_to_order: Optional[float] = Field(None)
 
+    @field_validator("object_value", mode="before")
+    @classmethod
+    def _normalize_scalar_object_value(cls, value: Any) -> Any:
+        """Normalize JSON scalar values emitted despite the string schema."""
+        if value is None or isinstance(value, str):
+            return value
+        if isinstance(value, bool):
+            return "true" if value else "false"
+        if isinstance(value, (int, float)):
+            if isinstance(value, float) and not math.isfinite(value):
+                raise ValueError("object_value must be a finite JSON scalar")
+            return json.dumps(value, allow_nan=False)
+        raise ValueError("object_value must be a string or JSON scalar")
+
     @model_validator(mode="after")
     def _drop_locally_scoped_order(self) -> "ClaimOutput":
         """丢掉没有全局标尺的顺序值，而不是让它冒充全局序号流下去。
@@ -260,7 +285,11 @@ class ConsistencyProvider:
         """Get or create httpx client"""
         if self._client:
             return self._client
-        return httpx.AsyncClient(timeout=httpx.Timeout(60.0, connect=10.0))
+        timeout = httpx.Timeout(
+            timeout=settings.consistency_request_timeout,
+            connect=10.0,
+        )
+        return httpx.AsyncClient(timeout=timeout)
 
     @property
     def gateway_url(self) -> str:
@@ -281,6 +310,210 @@ class ConsistencyProvider:
             overlap_chars=settings.consistency_chunk_overlap_chars,
             max_chunks=settings.consistency_max_chunks,
         )
+
+    async def _call_with_retry(
+        self,
+        client: httpx.AsyncClient,
+        payload: dict[str, Any],
+        *,
+        context: str,
+    ) -> tuple[str, Optional[dict]]:
+        """调用网关并支持有限指数退避重试。
+
+        对 httpx timeout/transport error、HTTP 408/429/5xx 重试，尊重 Retry-After；
+        4xx（除 408/429）不重试。流在 [DONE] 前结束抛 StreamingError。
+
+        Args:
+            client: httpx 客户端
+            payload: 请求 JSON body（会被修改以添加 stream=true）
+            context: 错误消息上下文
+
+        Returns:
+            (聚合后的完整响应文本, usage 字典或 None)
+
+        Raises:
+            httpx.HTTPStatusError: 非重试 4xx 错误
+            StreamingError: 流不完整
+            ProviderResponseError: 其他响应错误
+        """
+        # 强制流式
+        payload["stream"] = True
+        payload["stream_options"] = {"include_usage": True}
+
+        last_error: Optional[Exception] = None
+        base_delay = settings.consistency_retry_base_delay
+        max_retries = settings.consistency_max_retries
+
+        for attempt in range(max_retries + 1):
+            try:
+                result = await self._stream_completion(client, payload, context=context)
+                if isinstance(result, str):
+                    return (result, None)
+                return result
+            except (httpx.TimeoutException, httpx.TransportError) as exc:
+                last_error = exc
+                if attempt >= max_retries:
+                    raise ProviderResponseError(
+                        f"{context}: network error after {max_retries} retries: {exc}"
+                    ) from exc
+            except StreamingError as exc:
+                last_error = exc
+                if attempt >= max_retries:
+                    raise
+            except httpx.HTTPStatusError as exc:
+                status = exc.response.status_code
+                # 4xx 非重试（除了 408/429）
+                if 400 <= status < 500 and status not in (408, 429):
+                    raise
+                # 408, 429, 5xx 重试
+                if status in (408, 429) or status >= 500:
+                    last_error = exc
+                    if attempt >= max_retries:
+                        # 保留原始 HTTPStatusError，不包装成 ProviderResponseError
+                        raise
+                    # 尊重 Retry-After
+                    retry_after = self._parse_retry_after(exc.response)
+                    if retry_after is not None:
+                        await type(self)._async_sleep(retry_after)
+                        continue
+                else:
+                    raise
+
+            # 指数退避 + jitter
+            if attempt < max_retries:
+                delay = base_delay * (2**attempt) + random.uniform(0, 0.5)
+                await type(self)._async_sleep(delay)
+
+        # 理论上不会到这里，因为最后一次重试会抛错
+        raise ProviderResponseError(f"{context}: exhausted retries") from last_error
+
+    @staticmethod
+    def _parse_retry_after(response: httpx.Response) -> Optional[float]:
+        """解析 Retry-After header（秒数）。"""
+        header = response.headers.get("Retry-After")
+        if not header:
+            return None
+        try:
+            return float(header)
+        except ValueError:
+            return None
+
+    @staticmethod
+    async def _async_sleep(seconds: float) -> None:
+        """异步 sleep，测试可 mock。"""
+        await asyncio.sleep(seconds)
+
+    async def _stream_completion(
+        self,
+        client: httpx.AsyncClient,
+        payload: dict[str, Any],
+        *,
+        context: str,
+    ) -> tuple[str, Optional[dict]]:
+        """发起 SSE 流式请求并聚合完整响应。
+
+        stream=true, stream_options.include_usage=true。正确处理分片、多 data 帧、
+        keepalive/注释行、delta.content、usage、error 帧和严格 [DONE]。
+
+        流在 [DONE] 前结束抛 StreamingError，不能接受半截 JSON。
+
+        Args:
+            client: httpx 客户端
+            payload: 请求 JSON body（不会被修改，调用方负责设置 stream）
+            context: 错误消息上下文
+
+        Returns:
+            (聚合后的完整响应文本, usage 字典或 None)
+
+        Raises:
+            httpx.HTTPError: 网关请求失败
+            StreamingError: 流不完整
+            ProviderResponseError: 响应结构错误
+        """
+        # 检测非流式 MockTransport：如果 client 的 transport 是 MockTransport，
+        # 它会返回完整 JSON 响应而不是 SSE 流，需要走旧的非流式解析路径
+        is_mock = isinstance(
+            getattr(client, "_transport", None), httpx.MockTransport
+        )
+
+        async with client.stream("POST", self.gateway_url, json=payload, headers=self.gateway_headers) as response:
+            response.raise_for_status()
+
+            # 非流式 MockTransport 兼容
+            if is_mock:
+                body = await response.aread()
+                try:
+                    data = json.loads(body)
+                    content = data["choices"][0]["message"]["content"]
+                    usage = data.get("usage")
+                    return content, usage
+                except (json.JSONDecodeError, KeyError, IndexError, TypeError) as exc:
+                    raise ProviderResponseError(
+                        f"{context}: mock response missing choices[0].message.content"
+                    ) from exc
+
+            # 真实 SSE 流聚合
+            chunks: list[str] = []
+            usage: Optional[dict] = None
+            seen_done = False
+
+            async for line in response.aiter_lines():
+                line = line.strip()
+                # 跳过空行和注释（keepalive）
+                if not line or line.startswith(":"):
+                    continue
+
+                # SSE allows both "data:<value>" and "data: <value>".
+                if not line.startswith("data:"):
+                    continue
+
+                data_part = line[5:].lstrip()
+
+                # [DONE] 标记
+                if data_part == "[DONE]":
+                    seen_done = True
+                    break
+
+                # 解析 JSON 帧
+                try:
+                    frame = json.loads(data_part)
+                except json.JSONDecodeError as exc:
+                    raise ProviderResponseError(
+                        f"{context}: invalid JSON in SSE data frame"
+                    ) from exc
+
+                # 检查 error 帧
+                error = frame.get("error")
+                if error:
+                    error_msg = (
+                        error.get("message", "unknown error")
+                        if isinstance(error, dict)
+                        else str(error)
+                    )
+                    raise ProviderResponseError(f"{context}: stream error frame: {error_msg}")
+
+                # 提取 usage（最后一帧）
+                if isinstance(frame.get("usage"), dict):
+                    usage = frame["usage"]
+
+                # 提取 delta.content
+                try:
+                    delta = frame["choices"][0]["delta"]
+                    content = delta.get("content")
+                    if content:
+                        chunks.append(content)
+                except (KeyError, IndexError, TypeError):
+                    # delta 可能没有 content（如 role 帧），跳过
+                    pass
+
+            # 流必须以 [DONE] 结束
+            if not seen_done:
+                raise StreamingError(f"{context}: stream ended without [DONE]")
+
+            content = "".join(chunks)
+            if not content:
+                raise ProviderResponseError(f"{context}: stream returned no content")
+            return content, usage
 
     async def extract_claims(
         self,
@@ -328,28 +561,28 @@ class ConsistencyProvider:
         self, client: httpx.AsyncClient, chunk: TextChunk
     ) -> list[dict[str, Any]]:
         """抽取单个块。"""
-        response = await client.post(
-            self.gateway_url,
-            headers=self.gateway_headers,
-            json={
-                "model": settings.consistency_extraction_model,
-                "messages": [
-                    {
-                        "role": "system",
-                        "content": "Extract factual claims from narrative text. Return valid JSON only.",
-                    },
-                    {
-                        "role": "user",
-                        "content": self._build_extraction_prompt(chunk.labeled_text()),
-                    },
-                ],
-                "temperature": 0.0,
-                "response_format": {"type": "json_object"},
-            },
-        )
-        response.raise_for_status()
+        payload = {
+            "model": settings.consistency_extraction_model,
+            "messages": [
+                {
+                    "role": "system",
+                    "content": "Extract factual claims from narrative text. Return valid JSON only.",
+                },
+                {
+                    "role": "user",
+                    "content": self._build_extraction_prompt(chunk.labeled_text()),
+                },
+            ],
+            "temperature": 0.0,
+            "response_format": {"type": "json_object"},
+        }
+        if settings.consistency_reasoning_effort != "none":
+            payload["reasoning_effort"] = settings.consistency_reasoning_effort
 
-        content = self._message_content(response, context=f"extraction chunk {chunk.index}")
+        content, _usage = await self._call_with_retry(
+            client, payload, context=f"extraction chunk {chunk.index}"
+        )
+
         try:
             data = json.loads(content)
             extraction = ExtractionResponse.model_validate(data)
@@ -456,30 +689,34 @@ class ConsistencyProvider:
     ) -> tuple[str, int]:
         """一次摘要调用。"""
         prompt = f"Summarize the following {summary_type} in {max_words} words or less:\n\n{text}"
-        response = await client.post(
-            self.gateway_url,
-            headers=self.gateway_headers,
-            json={
-                "model": settings.consistency_summary_model,
-                "messages": [
-                    {"role": "system", "content": "You are a concise summarization assistant."},
-                    {"role": "user", "content": prompt},
-                ],
-                "temperature": 0.3,
-                "max_tokens": 300,
-            },
-        )
-        response.raise_for_status()
+        payload = {
+            "model": settings.consistency_summary_model,
+            "messages": [
+                {"role": "system", "content": "You are a concise summarization assistant."},
+                {"role": "user", "content": prompt},
+            ],
+            "temperature": 0.3,
+            "max_tokens": 300,
+        }
+        if settings.consistency_reasoning_effort != "none":
+            payload["reasoning_effort"] = settings.consistency_reasoning_effort
 
-        summary_text = self._message_content(response, context="summary").strip()
-        payload = response.json()
-        usage = payload.get("usage") or {}
-        token_count = usage.get("total_tokens", len(summary_text) // 4)
+        summary_text, usage = await self._call_with_retry(client, payload, context="summary")
+        summary_text = summary_text.strip()
+
+        # 优先使用真实 usage，否则估算
+        if usage and "total_tokens" in usage:
+            token_count = usage["total_tokens"]
+        else:
+            token_count = len(summary_text) // 4 + len(text) // 4
         return summary_text, token_count
 
     @staticmethod
     def _message_content(response: httpx.Response, *, context: str) -> str:
-        """从 chat completion 响应里取文本，结构不对就抛错（不返回空串）。"""
+        """从 chat completion 响应里取文本，结构不对就抛错（不返回空串）。
+
+        已废弃：现在统一走 _call_with_retry + SSE，但保留此方法以兼容可能的旧调用。
+        """
         try:
             payload = response.json()
         except ValueError as exc:

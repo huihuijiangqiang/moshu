@@ -7,7 +7,7 @@
 
 **关键事实**：
 - ✅ 30 张表完整 Alembic baseline，pgvector extension/HALFVEC 列已在迁移中定义
-- ✅ 768 个单元/功能测试通过（SQLite in-memory，mock embedding/LLM）
+- ✅ 806 个单元/功能测试通过（SQLite in-memory，mock embedding/LLM）
 - ⚠️ 36 个集成测试全部 SKIP（本机无真实 PostgreSQL + pgvector，**未在真实数据库验证**）
 - ⚠️ Codex embedding 回填的持久失败可见性尚未实现
 - ⚠️ 评测夹具仅 10 个 smoke cases，硬编码 100% 指标不代表实际质量
@@ -131,6 +131,14 @@
 - ✅ 异常分类：`EmbeddingProviderError` 用于重试判断
 - ✅ httpx 超时与错误处理
 
+#### 一致性模型 Provider (`providers/consistency.py`)
+- ✅ 摘要与事实抽取统一使用 Chat Completions SSE，严格要求 `[DONE]`
+- ✅ 聚合 `delta.content` 与 usage，支持 keepalive、任意网络字节分片和 error 帧
+- ✅ timeout/transport error、HTTP 408/429/5xx 与半截流有限指数退避重试
+- ✅ `reasoning_effort`、请求超时和重试参数均可由环境变量配置
+- ✅ JSON 标量 `object_value` 规范化，单个布尔/数字值不会拖垮整章抽取
+- ✅ 真实首章链路验证：4699 可见字符、53 条 claims、2048 维 embedding
+
 #### RAG 检索 (`services/retrieval.py`)
 - ✅ **代码已实现**：`retrieve_similar_entities_l3` 使用 pgvector cosine distance (`<=>`)
 - ✅ 距离阈值过滤，ORDER BY distance 高效最近邻
@@ -205,9 +213,9 @@
 
 ### 5. 测试覆盖
 
-#### 单元测试（768 passed，SQLite in-memory，mock providers）
+#### 单元测试（806 passed，SQLite in-memory，mock providers）
 
-**全量测试结果**：768 passed, 36 skipped, 4 warnings
+**全量测试结果**：806 passed, 36 skipped, 4 warnings
 
 主要测试覆盖（不逐文件列举测试数量，以实际 pytest 结果为准）：
 - ✅ Codex 设定库：CRUD、别名规范化、可检索文本判据、两段式事务、deferred 降级、httpx 错误重试
@@ -503,8 +511,8 @@ baseline，增量实现 Codex embedding 回填、时间锚点解析、issue 生�
 - `server/tasks/consistency.py` - 一致性任务
 - `server/tasks/codex.py` - Codex 回填任务
 
-### 测试（768 passed, 36 skipped）
-- `server/tests/` - 单元/功能测试（768 passed）
+### 测试（806 passed, 36 skipped）
+- `server/tests/` - 单元/功能测试（806 passed）
 - `server/tests/integration/` - 集成测试（36 skipped，需真实 PostgreSQL）
 
 ### 文档（1 个文件）
@@ -514,7 +522,7 @@ baseline，增量实现 Codex embedding 回填、时间锚点解析、issue 生�
 
 ## 总结
 
-墨枢一致性后端已完成核心数据模型、服务层、API 端点和异步任务的实现，768 个单元/功能
+墨枢一致性后端已完成核心数据模型、服务层、API 端点和异步任务的实现，806 个单元/功能
 测试在 SQLite in-memory + mock providers 环境下通过。30 张表完整 Alembic baseline，
 pgvector extension 与 Vector 列已在迁移中定义，代码质量经 ruff 验证。
 

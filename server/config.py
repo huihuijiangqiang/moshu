@@ -61,6 +61,12 @@ class Settings(BaseSettings):
     consistency_chunk_overlap_chars: int = 400
     consistency_max_chunks: int = 40
 
+    # SSE 流式与重试配置
+    consistency_reasoning_effort: str = "low"  # none, low, medium, high
+    consistency_request_timeout: float = 180.0  # 秒
+    consistency_max_retries: int = 3
+    consistency_retry_base_delay: float = 1.0  # 秒
+
     @field_validator("embedding_dimensions")
     @classmethod
     def validate_embedding_dimensions(cls, value: int) -> int:
