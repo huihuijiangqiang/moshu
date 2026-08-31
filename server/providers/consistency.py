@@ -485,12 +485,30 @@ class ConsistencyProvider:
                 # 检查 error 帧
                 error = frame.get("error")
                 if error:
-                    error_msg = (
-                        error.get("message", "unknown error")
-                        if isinstance(error, dict)
-                        else str(error)
+                    if isinstance(error, dict):
+                        error_msg = str(error.get("message") or "unknown error")
+                        error_kind = " ".join(
+                            str(error.get(key) or "") for key in ("code", "type")
+                        )
+                    else:
+                        error_msg = str(error)
+                        error_kind = ""
+                    error_detail = f"{error_kind} {error_msg}".lower()
+                    retryable_markers = (
+                        "stream_read_error",
+                        "timeout",
+                        "timed out",
+                        "server_error",
+                        "upstream",
+                        "overload",
+                        "rate limit",
                     )
-                    raise ProviderResponseError(f"{context}: stream error frame: {error_msg}")
+                    error_type = (
+                        StreamingError
+                        if any(marker in error_detail for marker in retryable_markers)
+                        else ProviderResponseError
+                    )
+                    raise error_type(f"{context}: stream error frame: {error_msg}")
 
                 # 提取 usage（最后一帧）
                 if isinstance(frame.get("usage"), dict):

@@ -274,6 +274,26 @@ async def test_sse_error_frame_raises():
         await provider.extract_claims("<p>短文</p>", "proj_a", "ch_a")
 
 
+async def test_stream_read_error_frame_is_retried(monkeypatch):
+    monkeypatch.setattr(settings, "consistency_max_retries", 1, raising=False)
+    call_count = 0
+
+    async def mock_stream_completion(self, client, payload, *, context):
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            raise StreamingError(f"{context}: stream error frame: stream_read_error")
+        return json.dumps({"claims": [make_claim_payload("角色A")]})
+
+    with patch.object(ConsistencyProvider, "_stream_completion", mock_stream_completion):
+        claims = await ConsistencyProvider().extract_claims(
+            "<p>短文</p>", "proj_a", "ch_a"
+        )
+
+    assert call_count == 2
+    assert claims[0]["subject_text"] == "角色A"
+
+
 async def test_sse_role_frame_without_content_is_skipped():
     """delta 没有 content 的帧（如 role 帧）必须跳过，不能报错。"""
     claims_json = json.dumps({"claims": [make_claim_payload("角色A")]})
