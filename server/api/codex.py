@@ -17,7 +17,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from api.auth import get_current_user, verify_project_access
-from db.models_codex import CodexAlias, CodexEntry
+from db.models_codex import CODEX_STATUSES, CodexAlias, CodexEntry
 from db.models_core import User
 from db.session import get_db
 from services.codex import (
@@ -37,12 +37,22 @@ router = APIRouter()
 
 #: CodexEntry.kind / status 的合法取值。用 Literal 让 FastAPI 直接以 422 拒绝
 #: 非法值（与 api.consistency 的 ResolutionAction 同一套写法），数据库的
-#: CHECK 约束是第二道防线。
+#: ck_codex_entry_status CHECK 约束是第二道防线。
 CodexKind = Literal["character", "location", "item", "faction", "event", "rule"]
 VALID_CODEX_KINDS: tuple[str, ...] = get_args(CodexKind)
 
 CodexStatus = Literal["confirmed", "pending"]
 VALID_CODEX_STATUSES: tuple[str, ...] = get_args(CodexStatus)
+
+# Literal 无法用变量拼出来（类型注解要在导入期求值），所以这里在导入期核对它与
+# db.models_codex 的取值表一致：加了状态却忘了改 API，作者就写不进新状态；反过来
+# API 放开了而 CHECK 没放开，写入会在数据库层炸成 500。用 raise 而不是 assert ——
+# python -O 会把 assert 整条去掉，而这道校验必须在生产环境同样生效。
+if VALID_CODEX_STATUSES != CODEX_STATUSES:
+    raise RuntimeError(
+        f"api.codex 的 CodexStatus {VALID_CODEX_STATUSES} 与 "
+        f"db.models_codex.CODEX_STATUSES {CODEX_STATUSES} 不一致"
+    )
 
 EmbeddingStatus = Literal["fresh", "updated", "deferred"]
 

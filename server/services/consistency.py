@@ -10,7 +10,7 @@ from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from db.models_codex import CodexAlias, CodexEntry
+from db.models_codex import CodexAlias, CodexEntry, resolve_codex_statuses
 from db.models_consistency_extended import ConsistencyClaim, ConsistencyRun, DocumentSummary
 from services.claim_identity import claim_fingerprint
 from services.timeline import is_globally_anchored
@@ -319,8 +319,14 @@ async def resolve_entity_by_alias(
     db: AsyncSession,
     project_id: str,
     text: str,
+    statuses: Optional[list[str]] = None,
 ) -> Optional[str]:
-    """通过精确别名解析实体 - Unicode 规范化"""
+    """通过精确别名解析实体 - Unicode 规范化
+
+    与 retrieval L2 同一套默认：只认作者已确认的条目。解析结果会写进
+    ConsistencyClaim.subject_entry_id，规则再按它分组判冲突 —— 把未确认的候选
+    条目解析出去，等于让模型的猜测以作者事实的身份参与判定（架构 3）。
+    """
     # NFC 规范化并去除首尾空白
     import unicodedata
 
@@ -331,6 +337,7 @@ async def resolve_entity_by_alias(
         select(CodexEntry.id)
         .join(CodexAlias, CodexAlias.entry_id == CodexEntry.id)
         .where(CodexEntry.project_id == project_id)
+        .where(CodexEntry.status.in_(resolve_codex_statuses(statuses)))
         .where(CodexAlias.alias == normalized)
         .limit(1)
     )

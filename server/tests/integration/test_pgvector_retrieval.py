@@ -208,3 +208,104 @@ async def test_entity_linker_uses_real_vector_fallback(seeded):
 
     assert entry_id == "cx_near"
     assert linker.stats.as_dict()["vector_failures"] == 0
+
+
+# --- status 过滤（架构 3 权威层级）在真实向量召回下的表现 ------------------------
+#
+# tests/test_retrieval.py 只能验证 status 条件进了 WHERE 子句（SQLite 没有
+# `<=>`，语句执行不了）。「过滤真的把高相似度的 pending 条目挡在外面」必须在这里
+# 验证：一个相似度极高的 pending 条目，正是最容易被错连的那种。
+
+
+@pytest.fixture
+async def seeded_with_pending(seeded):
+    """再加一个向量上几乎完全命中、但作者尚未确认的条目。"""
+    seeded.add(
+        CodexEntry(
+            id="cx_pending",
+            project_id="proj_pg",
+            kind="character",
+            name="待确认角色",
+            description="",
+            attrs={},
+            resident=False,
+            status="pending",
+            ref_chapters=[],
+            conflicts=[],
+            embedding=unit_vector(0),  # 与查询向量完全一致，距离 0
+        )
+    )
+    await seeded.flush()
+    seeded.add(CodexAlias(entry_id="cx_pending", alias="待确认角色"))
+    await seeded.commit()
+    return seeded
+
+
+async def test_l3_excludes_pending_entries_by_default(seeded_with_pending):
+    """距离 0 的 pending 条目也不得被默认召回。
+
+    它排在所有 confirmed 条目之前，一旦漏过过滤就会稳定夺走 top-1 —— 模型的
+    候选会以作者事实的身份进入规则判定。
+    """
+    retrieval = ConsistencyRetrieval(StubEmbeddingProvider({"查询": unit_vector(0)}))
+
+    results = await retrieval.retrieve_similar_entities_l3(
+        seeded_with_pending, "proj_pg", "查询", top_k=10, threshold=0.0
+    )
+
+    assert "cx_pending" not in [row["entry_id"] for row in results]
+
+
+async def test_l3_includes_pending_entries_when_asked_explicitly(seeded_with_pending):
+    """显式放开状态时（设定库 UI 列候选）才召回，并且因为距离 0 排在最前。"""
+    retrieval = ConsistencyRetrieval(StubEmbeddingProvider({"查询": unit_vector(0)}))
+
+    results = await retrieval.retrieve_similar_entities_l3(
+        seeded_with_pending,
+        "proj_pg",
+        "查询",
+        top_k=10,
+        threshold=0.0,
+        statuses=["confirmed", "pending"],
+    )
+
+    assert results[0]["entry_id"] == "cx_pending"
+
+
+async def test_resolve_entity_never_falls_through_to_a_pending_entry(seeded_with_pending):
+    """L2 与 L3 用同一份 status：两层都不会把 pending 条目当成命中。"""
+    retrieval = ConsistencyRetrieval(StubEmbeddingProvider({"待确认角色": unit_vector(0)}))
+
+    entry_id = await retrieval.resolve_entity(
+        seeded_with_pending, "proj_pg", "待确认角色", threshold=0.99
+    )
+
+    assert entry_id != "cx_pending"
+
+
+async def test_an_illegal_codex_status_is_rejected_by_the_check_constraint(seeded):
+    """ck_codex_entry_status 是 API Literal 之外的第二道防线。
+
+    直连数据库的回填脚本与后台任务绕不过 CHECK；写进第三种状态会让「只认
+    confirmed」的过滤静默排除这些条目，没人看得出原因。SQLite 上也能验证，
+    但真实约束语法只有 PostgreSQL 说得准。
+    """
+    from sqlalchemy.exc import IntegrityError
+
+    seeded.add(
+        CodexEntry(
+            id="cx_bogus",
+            project_id="proj_pg",
+            kind="character",
+            name="非法状态",
+            description="",
+            attrs={},
+            resident=False,
+            status="active",
+            ref_chapters=[],
+            conflicts=[],
+        )
+    )
+    with pytest.raises(IntegrityError):
+        await seeded.commit()
+    await seeded.rollback()

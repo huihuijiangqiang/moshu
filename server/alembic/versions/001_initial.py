@@ -205,6 +205,7 @@ def upgrade() -> None:
         sa.Column("updated_at", sa.DateTime(timezone=True), server_default=sa.text("now()"), nullable=False),
         sa.ForeignKeyConstraint(["project_id"], ["projects.id"], ondelete="CASCADE"),
         sa.PrimaryKeyConstraint("id"),
+        sa.CheckConstraint("status IN ('confirmed', 'pending')", name="ck_codex_entry_status"),
     )
     op.create_index(op.f("ix_codex_entries_project_id"), "codex_entries", ["project_id"])
     op.create_index("ix_codex_entries_embedding", "codex_entries", ["embedding"], postgresql_using="hnsw")

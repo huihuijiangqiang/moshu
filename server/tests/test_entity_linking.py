@@ -45,7 +45,12 @@ class RecordingRetrieval(ConsistencyRetrieval):
 
 @pytest.fixture
 async def codex_fixture(async_db_session, seed_project):
-    """建好 project + 若干 codex 条目与别名。"""
+    """建好 project + 若干 codex 条目与别名。
+
+    status 必须是 CodexEntry 的取值（confirmed/pending）。这里原先写的是
+    "active" —— 那是 DocumentSummary 的状态词表，条目因此不属于任何合法状态；
+    ck_codex_entry_status 上线后直接被拒。
+    """
     await seed_project(chapter_ids=("ch_a",))
 
     entries = [
@@ -64,7 +69,7 @@ async def codex_fixture(async_db_session, seed_project):
                 description=f"{name} 的设定",
                 attrs={},
                 resident=False,
-                status="active",
+                status="confirmed",
                 ref_chapters=[],
                 conflicts=[],
             )

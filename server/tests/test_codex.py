@@ -15,7 +15,7 @@
 import pytest
 
 from api.codex import get_embedding_provider
-from db.models_codex import CodexAlias, CodexEntry
+from db.models_codex import CODEX_STATUSES, CodexAlias, CodexEntry
 from services.codex import (
     add_alias,
     count_stale_entries,
@@ -652,6 +652,117 @@ async def test_an_invalid_status_is_rejected(
     )
 
     assert response.status_code == 422
+
+
+async def test_a_pending_entry_can_be_created_and_confirmed(
+    codex_client, async_db_session, seed_project, auth_headers
+):
+    """pending 是合法状态（模型抽取的候选），作者确认后转 confirmed。"""
+    await seed_project()
+    await async_db_session.commit()
+
+    created = await codex_client.post(
+        "/codex/proj_a/entries",
+        json={"kind": "character", "name": "李长风", "status": "pending"},
+        headers=auth_headers("user_a"),
+    )
+
+    assert created.status_code == 201
+    assert created.json()["status"] == "pending"
+
+    confirmed = await codex_client.patch(
+        f"/codex/proj_a/entries/{created.json()['id']}",
+        json={"status": "confirmed"},
+        headers=auth_headers("user_a"),
+    )
+
+    assert confirmed.status_code == 200
+    assert confirmed.json()["status"] == "confirmed"
+
+
+async def test_confirming_an_entry_does_not_recompute_the_embedding(
+    codex_client, async_db_session, seed_project, auth_headers, provider
+):
+    """status 不参与向量化：确认一个条目不该重新烧一次网关配额。"""
+    await seed_project()
+    entry = await create_entry(
+        async_db_session, project_id="proj_a", kind="character", name="李长风", status="pending"
+    )
+    await async_db_session.commit()
+    await refresh_embedding_if_stale(async_db_session, provider, entry)
+    await async_db_session.commit()
+    calls_before = provider.call_count
+
+    response = await codex_client.patch(
+        f"/codex/proj_a/entries/{entry.id}",
+        json={"status": "confirmed"},
+        headers=auth_headers("user_a"),
+    )
+
+    assert response.status_code == 200
+    assert response.json()["embedding_status"] == "fresh"
+    assert provider.call_count == calls_before
+
+
+# --- status 的合法取值 ----------------------------------------------------------
+
+
+def test_the_api_status_vocabulary_matches_the_model():
+    """Literal 与 CODEX_STATUSES 必须同步。
+
+    API 少一个状态 → 作者写不进去；API 多一个 → 写入撞 CHECK 变 500。
+    两边都由 db.models_codex 定义，这里守住它们不漂移。
+    """
+    from api.codex import VALID_CODEX_STATUSES
+
+    assert VALID_CODEX_STATUSES == CODEX_STATUSES
+
+
+async def test_the_database_rejects_a_status_outside_the_vocabulary(
+    async_db_session, seed_project
+):
+    """CHECK 是 API 之外的第二道防线：回填脚本和后台任务绕不过它。
+
+    没有它，一个拼错的状态会让检索的「只认 confirmed」过滤静默排除这些条目 ——
+    数据在库里，却对一致性判定完全不可见，而且没有任何报错。
+    """
+    from sqlalchemy.exc import IntegrityError
+
+    await seed_project()
+
+    # create_entry 内部就会 flush，所以约束在这一步（而不是 commit）生效
+    with pytest.raises(IntegrityError):
+        await create_entry(
+            async_db_session,
+            project_id="proj_a",
+            kind="character",
+            name="非法状态",
+            status="active",  # DocumentSummary 的状态词表，不属于 codex
+        )
+    await async_db_session.rollback()
+
+
+async def test_a_pending_entry_is_still_embedded_by_the_backfill(
+    async_db_session, seed_project, provider
+):
+    """回填不按 status 过滤 —— 候选条目一旦被作者确认就得立刻可召回。
+
+    等到确认那一刻再算向量，作者会看到一个「已确认但检索不到」的条目；而 L3
+    本来就会把 pending 挡在外面，提前算好向量不会让它被误召回。
+    """
+    await seed_project()
+    pending = await create_entry(
+        async_db_session, project_id="proj_a", kind="character", name="待确认", status="pending"
+    )
+    await async_db_session.commit()
+
+    written = await embed_missing_codex_entries(
+        async_db_session, provider, project_id="proj_a"
+    )
+    await async_db_session.commit()
+
+    assert written == 1
+    assert pending.embedding is not None
 
 
 async def test_a_gateway_failure_still_creates_the_entry(

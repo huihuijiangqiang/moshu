@@ -4,13 +4,24 @@ Layer 1: Resident codex (already in memory assembler)
 Layer 2: Alias exact match
 Layer 3: Vector similarity fallback
 Layer 4: Adjacent chapter summaries and recent context
+
+**默认只召回作者已确认的条目（status='confirmed'）。** 架构 3 的权威层级把
+「作者确认的设定库事实」放在第 1 级、「模型抽取尚未确认的候选」放在第 4 级；
+检索层解析出的 entry_id 会被 claim 拿去分组，规则再按分组判冲突。所以一旦把
+pending 条目解析出去，模型的猜测就以作者事实的身份进入了判定 —— 而且是静默的：
+错连之后规则看到的是两条「同一实体」的矛盾陈述，报出来的告警指向一个作者从未
+确认过的实体。
+
+要包含其他状态必须显式传 statuses（例如设定库 UI 想给作者列出待确认候选）。
+默认值不是「不过滤」：默认放开的接口，漏传参数就等于降级授权，而这个降级不会
+报错 —— 取值收敛见 db.models_codex.resolve_codex_statuses。
 """
 from typing import Optional
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from db.models_codex import CodexAlias, CodexEntry
+from db.models_codex import CodexAlias, CodexEntry, resolve_codex_statuses
 from db.models_consistency_extended import DocumentSummary
 from db.models_core import Chapter
 from services.providers import EmbeddingProvider
@@ -27,6 +38,7 @@ class ConsistencyRetrieval:
         db: AsyncSession,
         project_id: str,
         text: str,
+        statuses: Optional[list[str]] = None,
     ) -> Optional[str]:
         """
         Layer 2: 精确别名匹配（Unicode NFC 规范化）
@@ -35,6 +47,7 @@ class ConsistencyRetrieval:
             db: Database session
             project_id: Project ID
             text: Entity text to resolve
+            statuses: 只召回这些 status；None = 只要 confirmed（见模块文档）
 
         Returns:
             Entry ID if found, None otherwise
@@ -47,6 +60,7 @@ class ConsistencyRetrieval:
             select(CodexEntry.id)
             .join(CodexAlias, CodexAlias.entry_id == CodexEntry.id)
             .where(CodexEntry.project_id == project_id)
+            .where(CodexEntry.status.in_(resolve_codex_statuses(statuses)))
             .where(CodexAlias.alias == normalized)
             .limit(1)
         )
@@ -74,7 +88,7 @@ class ConsistencyRetrieval:
             threshold: 余弦相似度下限（0~1，越大越严）
             kinds: 只召回这些 kind（character/location/item/...）
             exclude_entry_ids: 排除这些条目（例如已由 L2 精确命中的）
-            statuses: 只召回这些 status（默认不限制）
+            statuses: 只召回这些 status；None = 只要 confirmed（见模块文档）
 
         Returns:
             List of {"entry_id", "name", "kind", "distance", "similarity"}
@@ -85,6 +99,7 @@ class ConsistencyRetrieval:
             raise ValueError("top_k must be positive")
         if not 0.0 <= threshold <= 1.0:
             raise ValueError("threshold must be between 0 and 1")
+        effective_statuses = resolve_codex_statuses(statuses)
         if not query_text or not query_text.strip():
             return []
 
@@ -101,12 +116,11 @@ class ConsistencyRetrieval:
             select(CodexEntry.id, CodexEntry.name, CodexEntry.kind, distance.label("distance"))
             .where(CodexEntry.project_id == project_id)
             .where(CodexEntry.embedding.isnot(None))
+            .where(CodexEntry.status.in_(effective_statuses))
             .where(distance <= distance_threshold)
         )
         if kinds:
             stmt = stmt.where(CodexEntry.kind.in_(kinds))
-        if statuses:
-            stmt = stmt.where(CodexEntry.status.in_(statuses))
         if exclude_entry_ids:
             stmt = stmt.where(CodexEntry.id.notin_(exclude_entry_ids))
 
@@ -132,18 +146,22 @@ class ConsistencyRetrieval:
         *,
         kinds: Optional[list[str]] = None,
         threshold: float = 0.8,
+        statuses: Optional[list[str]] = None,
     ) -> Optional[str]:
         """L2 精确别名 → L3 向量兜底，返回最可能的 entry_id。
 
         claim 的 subject_entry_id / object_entry_id 靠这个解析；只有精确匹配
         或高于阈值的向量召回才算命中，否则返回 None（宁可不解析也不错连）。
+
+        两层用同一份 statuses：只在一层放开状态会让「精确别名命中不了、向量却
+        命中了」这种结果出现，那比两层都不命中更难排查。
         """
-        exact = await self.resolve_entity_by_alias_l2(db, project_id, text)
+        exact = await self.resolve_entity_by_alias_l2(db, project_id, text, statuses=statuses)
         if exact:
             return exact
 
         candidates = await self.retrieve_similar_entities_l3(
-            db, project_id, text, top_k=1, threshold=threshold, kinds=kinds
+            db, project_id, text, top_k=1, threshold=threshold, kinds=kinds, statuses=statuses
         )
         return candidates[0]["entry_id"] if candidates else None
 
