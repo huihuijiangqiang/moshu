@@ -305,3 +305,184 @@ async def test_chapter_exceeding_max_chunks_raises_rather_than_truncating(monkey
 
     with pytest.raises(ValueError, match="max_chunks"):
         await provider.extract_claims(long_html(paragraph_count=40), "proj_a", "ch_a")
+
+
+# --- 叙事顺序字段（架构 4.3） -------------------------------------------------
+#
+# 这组测试盯住的缺陷是：ClaimOutput 和抽取提示词里都没有 timeline_id /
+# story_order / valid_from_order / valid_to_order，模型根本没有渠道输出这些字段。
+# 结果管道只能自己「推导」顺序 —— 而任何推导（尤其用章节序号顶替）都会把正常的
+# 倒叙判成时序矛盾。字段必须可空、必须在提示词里说清「不确定就留 null」。
+
+
+async def test_extraction_prompt_asks_for_the_order_fields():
+    """提示词必须把四个时间线字段都列进 JSON 结构，否则模型不会输出它们。"""
+    gateway = RecordingGateway([claims_response()])
+    provider = ConsistencyProvider(client=gateway.client())
+
+    await provider.extract_claims("<p>短正文</p>", "proj_a", "ch_a")
+
+    prompt = gateway.prompts[0]
+    for field in ("timeline_id", "story_order", "valid_from_order", "valid_to_order"):
+        assert field in prompt, f"提示词缺少 {field}，模型无法输出这个字段"
+
+
+async def test_extraction_prompt_states_story_order_is_not_the_chapter_number():
+    """提示词必须明确 story_order 是故事世界顺序，不是章节号，并要求倒叙取更小值。"""
+    gateway = RecordingGateway([claims_response()])
+    provider = ConsistencyProvider(client=gateway.client())
+
+    await provider.extract_claims("<p>短正文</p>", "proj_a", "ch_a")
+
+    prompt = gateway.prompts[0]
+    assert "STORY WORLD" in prompt
+    assert "NOT the chapter number" in prompt
+    assert "flashback" in prompt.lower()
+    assert "SMALLER story_order" in prompt
+
+
+async def test_extraction_prompt_forbids_guessing_the_order():
+    """提示词必须要求「判断不了就留 null」—— 模型天然倾向把字段填满。"""
+    gateway = RecordingGateway([claims_response()])
+    provider = ConsistencyProvider(client=gateway.client())
+
+    await provider.extract_claims("<p>短正文</p>", "proj_a", "ch_a")
+
+    prompt = gateway.prompts[0]
+    assert "DO NOT GUESS" in prompt
+    assert "order_basis" in prompt
+    assert "order_confidence" in prompt
+    assert "unknown" in prompt
+
+
+async def test_order_fields_round_trip_through_parsing():
+    """模型给出的顺序字段必须原样出现在解析结果里，不被丢掉也不被改写。"""
+    gateway = RecordingGateway([
+        claims_response(
+            make_claim_payload(
+                "李长风",
+                timeline_id="thread_a",
+                story_order=12.5,
+                valid_from_order=12.5,
+                valid_to_order=30.0,
+                order_basis="explicit_time",
+                order_confidence=0.9,
+            )
+        )
+    ])
+    provider = ConsistencyProvider(client=gateway.client())
+
+    claims = await provider.extract_claims("<p>短正文</p>", "proj_a", "ch_a")
+
+    claim = claims[0]
+    assert claim["timeline_id"] == "thread_a"
+    assert claim["story_order"] == 12.5
+    assert claim["valid_from_order"] == 12.5
+    assert claim["valid_to_order"] == 30.0
+    assert claim["order_basis"] == "explicit_time"
+    assert claim["order_confidence"] == 0.9
+
+
+async def test_order_fields_default_to_null_when_the_model_omits_them():
+    """字段全部可空：保守模型不给这些字段时不能报错，也不能编默认值。"""
+    gateway = RecordingGateway([claims_response(make_claim_payload("李长风"))])
+    provider = ConsistencyProvider(client=gateway.client())
+
+    claims = await provider.extract_claims("<p>短正文</p>", "proj_a", "ch_a")
+
+    claim = claims[0]
+    for field in (
+        "timeline_id",
+        "story_order",
+        "valid_from_order",
+        "valid_to_order",
+        "order_basis",
+        "order_confidence",
+    ):
+        assert claim[field] is None, f"{field} 被填了默认值 {claim[field]!r}"
+
+
+async def test_unknown_order_basis_clears_the_order_values():
+    """order_basis=unknown 时顺序值被清空 —— 不让不可信的顺序流进硬规则。
+
+    模型常见的行为是「说自己不知道，同时还是填了个数」。这种数值必须在解析阶段
+    就丢掉，否则下游看到非空 story_order 就会拿它去排序。
+    """
+    gateway = RecordingGateway([
+        claims_response(
+            make_claim_payload(
+                "李长风",
+                timeline_id="main",
+                story_order=99.0,
+                valid_from_order=99.0,
+                valid_to_order=120.0,
+                order_basis="unknown",
+                order_confidence=0.1,
+            )
+        )
+    ])
+    provider = ConsistencyProvider(client=gateway.client())
+
+    claim = (await provider.extract_claims("<p>短正文</p>", "proj_a", "ch_a"))[0]
+
+    assert claim["story_order"] is None
+    assert claim["valid_from_order"] is None
+    assert claim["valid_to_order"] is None
+    assert claim["order_basis"] == "unknown", "依据本身保留，供观测抽取质量"
+
+
+async def test_inverted_interval_is_rejected():
+    """valid_to_order <= valid_from_order 说明模型没算清楚，整段区间都不可信。"""
+    gateway = RecordingGateway([
+        claims_response(
+            make_claim_payload(
+                "李长风",
+                story_order=10.0,
+                valid_from_order=30.0,
+                valid_to_order=10.0,
+                order_basis="explicit_time",
+                order_confidence=0.9,
+            )
+        )
+    ])
+    provider = ConsistencyProvider(client=gateway.client())
+
+    claim = (await provider.extract_claims("<p>短正文</p>", "proj_a", "ch_a"))[0]
+
+    assert claim["valid_from_order"] is None
+    assert claim["valid_to_order"] is None
+
+
+async def test_invalid_order_basis_is_rejected():
+    """order_basis 只接受四个约定值，拼错必须报错而不是静默当成可信依据。"""
+    gateway = RecordingGateway([
+        claims_response(make_claim_payload("李长风", order_basis="i_guessed"))
+    ])
+    provider = ConsistencyProvider(client=gateway.client())
+
+    with pytest.raises(ProviderResponseError):
+        await provider.extract_claims("<p>短正文</p>", "proj_a", "ch_a")
+
+
+async def test_order_fields_do_not_change_the_fingerprint():
+    """指纹只由语义构成：同一事实在不同顺序判断下必须是同一行。
+
+    否则模型某次把 order_confidence 从 0.9 改成 0.85，指纹就变了，同一事实会
+    在同一版本里插出两行，作者的处置记录也会失效。
+    """
+    gateway = RecordingGateway([
+        claims_response(
+            make_claim_payload("李长风", story_order=1.0, order_basis="explicit_time",
+                               order_confidence=0.9),
+        ),
+        claims_response(
+            make_claim_payload("李长风", story_order=77.0, order_basis="flashback",
+                               order_confidence=0.2),
+        ),
+    ])
+    provider = ConsistencyProvider(client=gateway.client())
+
+    claims = await provider.extract_claims(long_html(paragraph_count=8), "proj_a", "ch_a")
+
+    matching = [c for c in claims if c["subject_text"] == "李长风"]
+    assert len(matching) == 1, "顺序字段参与了指纹，同一事实被拆成多行"

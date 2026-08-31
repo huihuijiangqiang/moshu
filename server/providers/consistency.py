@@ -14,7 +14,7 @@ import json
 from typing import Any, Optional
 
 import httpx
-from pydantic import BaseModel, Field, ValidationError
+from pydantic import BaseModel, Field, ValidationError, model_validator
 
 from config import settings
 from services.chunking import TextChunk, chunk_html
@@ -30,7 +30,16 @@ class ProviderResponseError(RuntimeError):
 
 # Pydantic models for structured extraction
 class ClaimOutput(BaseModel):
-    """Structured claim from LLM extraction"""
+    """Structured claim from LLM extraction
+
+    时间线字段（timeline_id / story_order / valid_*_order）全部可空，且**只在模型
+    能从正文可靠判断时才填**。架构 4.3 规定 story_order 是故事世界中的事件顺序，
+    不是「第几章」：倒叙、插叙、多线叙事里章节顺序与故事顺序会背离，用章节序号
+    顶替会把正常倒叙判成时序矛盾。
+
+    因此这里不给任何默认值 —— 无法可靠确定时保持 None，claim 只进入待确认，
+    不参与依赖时序的硬规则（架构 4.3 第 124 行）。
+    """
 
     subject_text: str = Field(..., min_length=1, max_length=200)
     predicate: str = Field(..., min_length=1, max_length=100)
@@ -40,6 +49,44 @@ class ClaimOutput(BaseModel):
     certainty: str = Field(default="explicit", pattern="^(explicit|inferred|uncertain)$")
     paragraph_id: Optional[str] = Field(None, max_length=100)
     confidence: float = Field(default=0.9, ge=0.0, le=1.0)
+
+    #: 故事时间线标识。多线叙事先按 timeline_id 隔离，只有存在已确认跨线锚点时
+    #: 才比较（架构 4.3）。模型不确定时留空，由调用方决定是否归入主线。
+    timeline_id: Optional[str] = Field(None, max_length=32)
+
+    #: 同一时间线内的事件顺序。相对值，只要求同线内单调，不要求与章节顺序一致。
+    story_order: Optional[float] = Field(None)
+
+    #: 事实有效区间。valid_to_order 为空表示「至今仍有效」。
+    valid_from_order: Optional[float] = Field(None)
+    valid_to_order: Optional[float] = Field(None)
+
+    #: 模型对叙事顺序的判断依据；order_confidence 低于阈值时顺序不予采信。
+    order_basis: Optional[str] = Field(
+        None, pattern="^(explicit_time|sequential_narration|flashback|unknown)$"
+    )
+    order_confidence: Optional[float] = Field(None, ge=0.0, le=1.0)
+
+    @model_validator(mode="after")
+    def _drop_unreliable_order(self) -> "ClaimOutput":
+        """顺序不可靠时清空顺序字段，而不是让它带着 unknown 依据流下去。
+
+        宁可漏报也不误报：伪造的顺序会让倒叙被判成矛盾，而作者看到的是一条
+        无法解释的高等级告警。清空后 claim 仍会落库，只是不进硬规则。
+        """
+        if self.order_basis == "unknown":
+            self.story_order = None
+            self.valid_from_order = None
+            self.valid_to_order = None
+        # 区间反了说明模型没算清楚，整段区间都不可信
+        if (
+            self.valid_from_order is not None
+            and self.valid_to_order is not None
+            and self.valid_to_order <= self.valid_from_order
+        ):
+            self.valid_from_order = None
+            self.valid_to_order = None
+        return self
 
 
 class ExtractionResponse(BaseModel):
@@ -309,7 +356,12 @@ class ConsistencyProvider:
         return content
 
     def _build_extraction_prompt(self, content: str) -> str:
-        """Build extraction prompt with schema"""
+        """Build extraction prompt with schema
+
+        时间线字段必须在提示词里说清「不确定就留 null」。模型天然倾向于把字段填满，
+        而伪造的 story_order 比留空危害大得多：倒叙会被判成时序矛盾，作者收到的是
+        无法解释的高等级告警。story_order 是故事世界顺序，不是章节顺序。
+        """
         return f"""Extract factual claims from this narrative text. Return JSON with this exact structure:
 
 {{
@@ -322,7 +374,13 @@ class ConsistencyProvider:
       "polarity": "positive|negative",
       "certainty": "explicit|inferred|uncertain",
       "paragraph_id": "optional paragraph identifier",
-      "confidence": 0.9
+      "confidence": 0.9,
+      "timeline_id": "story timeline identifier, or null if unclear",
+      "story_order": null,
+      "valid_from_order": null,
+      "valid_to_order": null,
+      "order_basis": "explicit_time|sequential_narration|flashback|unknown",
+      "order_confidence": 0.0
     }}
   ]
 }}
@@ -330,6 +388,30 @@ class ConsistencyProvider:
 Valid object_type values: scalar, entity, location, ability, timestamp
 Valid polarity values: positive, negative
 Valid certainty values: explicit, inferred, uncertain
+
+CRITICAL RULES FOR NARRATIVE ORDER:
+
+`story_order` is the order of events in the STORY WORLD, not the order they appear
+in the text, and NOT the chapter number. A flashback narrated late in the chapter
+happens EARLY in the story and must get a SMALLER story_order than the scene that
+frames it. Only the relative order matters; use any increasing numbers.
+
+Set `order_basis` to how you determined the order:
+- "explicit_time": the text states a date, time, or explicit interval.
+- "sequential_narration": events are plainly narrated one after another in story time.
+- "flashback": this event is narrated out of order (memory, dream, retelling).
+- "unknown": you cannot tell where this sits in story time.
+
+If `order_basis` is "unknown", set story_order, valid_from_order and valid_to_order
+to null. DO NOT GUESS. A wrong order produces a false contradiction shown to the
+author; a null order is handled safely as "needs confirmation".
+
+Set `order_confidence` to how sure you are about the ordering (0.0-1.0). Use a low
+value when the text is ambiguous rather than inventing a confident order.
+
+Use `timeline_id` to separate independent narrative threads (e.g. parallel POVs).
+Leave it null if the text does not make the thread clear. Never compare events
+across different timelines.
 
 Content:
 {content}"""
