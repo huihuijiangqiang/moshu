@@ -1,4 +1,13 @@
-# Consistency Backend Implementation - Complete
+# ⚠️ SUPERSEDED - 历史文档，请勿作为当前结论使用
+
+**本文档已过期**。唯一当前事实来源是 [`server/docs/IMPLEMENTATION_STATUS.md`](./server/docs/IMPLEMENTATION_STATUS.md)。
+
+本文档记录的是历史阶段的完整实现报告，提交历史（58e56bb, 6d3c002 等）、验收标准、
+指标声明**已过时**，**不代表当前后端状态**。请勿引用本文档中的任何声明作为当前结论。
+
+---
+
+# Consistency Backend Implementation - Complete (历史版本)
 
 ## Summary
 

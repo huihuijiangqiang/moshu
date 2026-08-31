@@ -6,9 +6,9 @@
 所有声明基于实际代码与测试结果，不夸大、不省略已知缺口。
 
 **关键事实**：
-- ✅ 30 张表完整 Alembic baseline，pgvector 支持
+- ✅ 30 张表完整 Alembic baseline，pgvector extension/Vector 列已在迁移中定义
 - ✅ 765 个单元/功能测试通过（SQLite in-memory，mock embedding/LLM）
-- ⚠️ 36 个集成测试全部 SKIP（本机无真实 PostgreSQL + pgvector）
+- ⚠️ 36 个集成测试全部 SKIP（本机无真实 PostgreSQL + pgvector，**未在真实数据库验证**）
 - ⚠️ Codex embedding 回填的持久失败可见性尚未实现
 - ⚠️ 评测夹具仅 10 个 smoke cases，硬编码 100% 指标不代表实际质量
 
@@ -27,7 +27,7 @@
 - `chapter_versions` - 章节版本历史
 
 #### 设定库 (4 张)
-- `codex_entries` - 设定条目（embedding 列）
+- `codex_entries` - 设定条目（Vector(1536) embedding 列）
 - `codex_aliases` - 条目别名
 - `codex_refs` - 章节对设定的引用
 - `codex_relations` - 设定条目间关系
@@ -39,12 +39,12 @@
 - `idempotency_records` - API 幂等记录
 
 #### 一致性扩展 (8 张)
-- `consistency_runs` - 一致性检查运行记录
-- `document_summaries` - 章节/卷摘要（带 embedding）
-- `consistency_claims` - 结构化事实声称
+- `consistency_runs` - 一致性检查运行记录（三阶段状态机）
+- `document_summaries` - 章节/卷摘要（带 Vector(1536) embedding）
+- `consistency_claims` - 结构化事实声称（4 个部分唯一索引）
 - `story_events` - 故事事件时间线
 - `entity_state_intervals` - 实体状态区间
-- `guard_issues` - 一致性告警（fingerprint 去重）
+- `guard_issues` - 一致性告警（fingerprint 去重，issue_rev 乐观锁）
 - `guard_issue_evidence` - 告警证据锚点
 - `guard_resolutions` - 告警处置记录
 
@@ -53,19 +53,19 @@
 - `org_members` - 组织成员
 - `chapter_assignments` - 章节分工
 
-#### 风格/用量/占比 (4 张)
+#### 风格/用量/占比 (5 张)
 - `style_profiles` - 风格档案
 - `generation_runs` - 生成任务记录
 - `usage_logs` - 模型用量日志
 - `ratio_reports` - 用量占比报告
+- `foreshadows` - 伏笔倒计时
 
-**Alembic 状态**：
-- ✅ `001_initial.py` 完整 baseline 包含全部 30 张表
-- ✅ pgvector extension 自动创建
-- ✅ Vector(1536) 列用于 text-embedding-3-small
-- ✅ 部分唯一索引（`postgresql_where` 子句）
-- ✅ 完整 `downgrade()` 实现
+**Alembic 与 pgvector 状态**：
+- ✅ **代码与迁移已实现**：`001_initial.py` 包含 `CREATE EXTENSION IF NOT EXISTS vector`、
+  Vector(1536) 列、部分唯一索引（`postgresql_where` 子句）、完整 `downgrade()`
 - ✅ `alembic upgrade head --sql` 与 `alembic downgrade -1 --sql` 语法验证通过
+- ⚠️ **真实 PostgreSQL + pgvector 未验证**：36 个集成测试因本机无真实数据库而跳过，
+  pgvector `<=>` 余弦距离、部分唯一索引的并发去重、HNSW 索引性能等**未在真实环境验证**
 
 ---
 
@@ -110,17 +110,29 @@
 - ✅ Timeline-aware：`story_order` 为 NULL 时跳过需要时序的规则
 - ✅ Issue 生命周期：fingerprint 去重、`issue_rev` 乐观锁、stale 标记
 - ✅ 证据锚点写入（expected/actual GuardIssueEvidence）
+- ✅ 不变证据重扫幂等（fingerprint 已知且证据未变时不写入，7af84ac）
+
+#### 时间线服务 (`services/timeline.py`)
+- ✅ `parse_absolute_anchor`：解析 ISO-8601 形状的绝对时间
+- ✅ `assign_story_orders`：从确认的全局锚点分配 story_order
+- ✅ `is_globally_anchored`：四条件校验（order_basis, confidence, timeline_id, 可解析值）
+- ⚠️ **MVP 保守限制**：
+  - 仅支持 ISO-8601 形状的绝对时间（`2024-01-15`, `2024-01-15T10:30:00`）
+  - **不支持**「第 N 天」「N 年后」等自然语言相对表达
+  - **不支持** LLM 辅助的模糊时间表达规范化
+  - **不支持** 相对锚点解析（`relative_to_anchor` 需显式 `base_anchor` 链，未实现）
+  - 叙述局部序号（`narration_local`）与未知（`unknown`）保持 story_order=NULL
 
 #### Embedding Provider (`services/embedding.py`)
-- ✅ `GatewayEmbeddingProvider`：调用真实 OpenAI-compatible 网关
+- ✅ `GatewayEmbeddingProvider`：调用 OpenAI-compatible 网关
 - ✅ `embed_text` / `embed_batch`（text-embedding-3-small, 1536 维）
 - ✅ 异常分类：`EmbeddingProviderError` 用于重试判断
 - ✅ httpx 超时与错误处理
 
 #### RAG 检索 (`services/retrieval.py`)
-- ✅ `retrieve_similar_entities_l3`：pgvector cosine distance (`<=>`)
-- ✅ 距离阈值过滤
-- ✅ ORDER BY distance 高效最近邻
+- ✅ **代码已实现**：`retrieve_similar_entities_l3` 使用 pgvector cosine distance (`<=>`)
+- ✅ 距离阈值过滤，ORDER BY distance 高效最近邻
+- ⚠️ **真实 PostgreSQL + pgvector 未验证**：余弦距离召回准确性、HNSW 索引性能未在真实环境测试
 
 ---
 
@@ -157,12 +169,12 @@
 - ✅ `POST /codex/{project_id}/backfill-embeddings` - 同步回填向量（受项目权限保护）
   - ⚠️ `remaining_count` 是本次响应的瞬时快照，非持续可查询状态
 
-#### 一致性状态 (`api/consistency.py`)
-- ✅ `GET /projects/{project_id}/consistency` - 项目一致性概览
-- ✅ `GET /chapters/{chapter_id}/consistency` - 章节一致性状态
-- ✅ `GET /projects/{project_id}/guard/issues` - 告警列表
-- ✅ `GET /guard/issues/{issue_id}` - 告警详情
-- ✅ `POST /guard/issues/{issue_id}/resolutions` - 提交处置
+#### 一致性状态 (`api/consistency.py`, prefix `/consistency`)
+- ✅ `GET /consistency/status/{chapter_id}/{body_rev}` - 章节版本一致性状态（三阶段）
+- ✅ `POST /consistency/scan` - 触发手工一致性扫描
+- ✅ `GET /consistency/issues/{project_id}` - 项目告警列表（可按 chapter_id/status 过滤）
+- ✅ `GET /consistency/issues/{project_id}/{issue_id}` - 告警详情
+- ✅ `POST /consistency/issues/{project_id}/{issue_id}/resolve` - 提交处置（issue_rev 乐观锁）
 
 ---
 
@@ -193,57 +205,21 @@
 
 #### 单元测试（765 passed，SQLite in-memory，mock providers）
 
-**Codex 设定库** (`tests/test_codex.py` - 52 tests)
-- ✅ 条目 CRUD 完整流程
-- ✅ 别名规范化与幂等添加
-- ✅ 可检索文本变更判据（无变化不重算）
-- ✅ 两段式事务：标脏 → 网关失败降级 deferred
-- ✅ `refresh_embedding_if_stale` 对 deferred 条目的补齐
-- ✅ httpx.HTTPError 重试传播
-- ✅ **文档断言测试**：守住「瞬时快照」「非持续可查询」等准确表述
+**全量测试结果**：765 passed, 36 skipped, 4 warnings
 
-**章纲服务** (`tests/test_outlines.py` - 28 tests)
-- ✅ 独立版本控制
-- ✅ `body_policy` 强制约束
-- ✅ 修改章纲不变正文（不变量）
-- ✅ Outbox 事件生成
-
-**正文服务** (`tests/consistency/test_body.py` - 19 tests)
-- ✅ content_hash 幂等性、键顺序无关、Unicode 保持
-- ✅ paragraph ID 提取、空内容处理
-- ✅ CodexRef 提取（节点级、标记级、多重引用）
-
-**一致性服务** (`tests/consistency/test_consistency.py` - 11 tests)
-- ✅ Claim fingerprint 规范化、大小写不敏感
-- ✅ 规则逻辑概念验证
-- ✅ Hard negative 案例（条件性能力、时间演变、治疗效果、渐变、转移）
-
-**RuleScanner** (`tests/consistency/test_scanner.py` - 9 tests)
-- ✅ 三条规则检测（alive_conflict, ownership_conflict, knowledge_boundary）
-- ✅ Timeline-aware 跳过（story_order 为 NULL）
-- ✅ Stale issue 标记
-- ✅ Fingerprint 去重
-
-**认证与授权** (`tests/test_api_auth.py` - 8 tests)
-- ✅ JWT 解码与用户验证
-- ✅ 项目权限（owner / org member / denied）
-- ✅ 404 不存在项目
-- ✅ Idempotency-Key 必需性
-
-**Alembic 迁移** (`tests/test_migration_parity.py` - 7 tests)
-- ✅ 全部 30 张表在 Base.metadata
-- ✅ pgvector extension 创建
-- ✅ 部分唯一索引
-- ✅ Downgrade 完整性
-- ✅ 主键与外键完整性
-
-**其余功能测试** (剩余 631 tests)
-- ✅ 项目、章节、章纲 CRUD
-- ✅ 乐观锁冲突处理
-- ✅ Outbox 与幂等性
-- ✅ 时间锚点解析与验证
-- ✅ Foreshadow 伏笔倒计时
-- ✅ 用量统计与风格档案
+主要测试覆盖（不逐文件列举测试数量，以实际 pytest 结果为准）：
+- ✅ Codex 设定库：CRUD、别名规范化、可检索文本判据、两段式事务、deferred 降级、httpx 错误重试
+- ✅ 章纲服务：独立版本控制、body_policy 约束、不变量测试、outbox 事件
+- ✅ 正文服务：content_hash 幂等性、paragraph ID 提取、CodexRef 提取
+- ✅ 一致性服务：Claim fingerprint、规则逻辑、hard negative 案例
+- ✅ RuleScanner：三条规则检测、timeline-aware 跳过、stale 标记、fingerprint 去重
+- ✅ 认证授权：JWT 解码、项目权限、Idempotency-Key 必需性
+- ✅ Alembic 迁移：30 张表、pgvector extension、部分唯一索引、downgrade 完整性
+- ✅ 时间锚点：ISO-8601 解析、源锚点位置校验、temporal_anchor_text 确定性要求
+- ✅ 项目、章节、章纲 CRUD、乐观锁冲突、Outbox 与幂等性
+- ✅ Foreshadow 伏笔倒计时、用量统计、风格档案
+- ✅ **文档断言测试**：`test_documentation_accurately_reflects_missing_dead_letter_visibility`
+  守住「瞬时快照」「非持续可查询」等准确表述
 
 #### 评测框架 (`tests/consistency/fixtures_eval.py`, `test_eval.py`)
 - ✅ 10 个 smoke cases：3 正例 + 5 hard negatives + 2 easy negatives
@@ -256,9 +232,9 @@
 - ⚠️ `tests/integration/` 下 36 个测试**在本地从未运行过**
 - ⚠️ 需要真实 PostgreSQL + pgvector（设置 `TEST_POSTGRES_URL` 后才会运行）
 - 覆盖内容（未验证）：
-  - 部分唯一索引（`postgresql_where`）
+  - 部分唯一索引（`postgresql_where`）的并发 upsert 去重
   - pgvector `<=>` 余弦距离与 HNSW 索引
-  - `INSERT ... ON CONFLICT` upsert
+  - `INSERT ... ON CONFLICT` upsert 语义
   - GIN 索引
   - CHECK 约束在并发/边界数据下的真实拒绝行为
 - **不能宣称这些测试通过** —— 它们从未在真实数据库上跑过
@@ -288,8 +264,7 @@
 **后续需要**：
 1. 增加 `codex_backfill_failures` 表：记录失败次数、最后错误、耗尽时间戳
 2. 增加 `GET /codex/{project_id}/embedding-status` 端点：返回持久失败状态
-3. 文档断言测试 `test_documentation_accurately_reflects_missing_dead_letter_visibility` 
-   守住诚实表述，防止未实现功能被误导性宣称
+3. 文档断言测试守住诚实表述，防止未实现功能被误导性宣称
 
 ### 2. 集成测试未验证
 **状态**：全部 SKIP
@@ -332,13 +307,13 @@
 **状态**：MVP 保守限制
 
 **当前实现**：
-- ✅ 确定性格式解析（ISO 8601, "第N天", "N年后"）
+- ✅ ISO-8601 形状绝对时间解析（`2024-01-15`, `2024-01-15T10:30:00`）
 - ✅ 相对锚点验证（要求 `base_anchor` 在锚点链中存在）
 - ✅ `temporal_anchor_text` 自身的确定性解析要求
 
 **保守限制**：
-- ⚠️ 不支持 "三天前"、"上周"、"去年夏天" 等自然语言模糊表达
-- ⚠️ 不支持 LLM 辅助的语义理解时间线
+- ⚠️ **不支持**「第 N 天」「N 年后」等自然语言相对表达（`parse_absolute_anchor` 仅接受 ISO 形状）
+- ⚠️ **不支持** LLM 辅助的语义理解时间线
 - ⚠️ 相对锚点解析需要显式 base_anchor，无法自动推断锚点链
 
 **后续需要**：
@@ -376,15 +351,22 @@
 ## 提交历史（本轮 worktree）
 
 本 worktree 在分支 `worktree-moshu-consistency-backend-v2` 上，基于主仓库已有的 30 张表 
-baseline，增量实现 Codex embedding 回填、时间锚点解析、文档修正等功能。
+baseline，增量实现 Codex embedding 回填、时间锚点解析、issue 生命周期、run 状态机、文档修正等功能。
 
-### Group 1: 时间锚点解析强化
+### Group 1: Issue 生命周期幂等强化
+- `7af84ac` - fix: make a rescan of unchanged evidence touch nothing at all
+  - 不变证据重扫幂等：fingerprint 已知且证据未变时不写入新行
+
+### Group 2: ConsistencyRun 三阶段状态机
 - `d241c54` - feat: add three-phase state machine for parallel summary/scan branches
-- `d459c72` - feat: validate source anchors against chunk paragraph positions
-- `391197f` - fix: require deterministic parsing of temporal_anchor_text itself
+  - 独立 extract/summary/scan 三条支线状态
+  - 支持并行支线：摘要与扫描可独立成功/失败
 
-### Group 2-3: 时间锚点验证与源锚点位置校验
-- `493e95c` - feat: add httpx.HTTPError retry handling and fix stale/deferred status reporting
+### Group 3: 时间锚点解析与验证
+- `d459c72` - feat: validate source anchors against chunk paragraph positions
+  - 源锚点位置校验：paragraph_index 必须在 chunk 范围内
+- `391197f` - fix: require deterministic parsing of temporal_anchor_text itself
+  - `temporal_anchor_text` 自身必须确定性可解析
 
 ### Group 4: Codex Embedding 回填逻辑修正
 - `493e95c` - feat: add httpx.HTTPError retry handling and fix stale/deferred status reporting
@@ -397,6 +379,10 @@ baseline，增量实现 Codex embedding 回填、时间锚点解析、文档修�
   - 修正 `tasks/codex.py`, `api/codex.py`, `services/codex.py` 误导性表述
   - 明确 `remaining_count` 是瞬时快照，非持续可查询
   - 新增 `test_documentation_accurately_reflects_missing_dead_letter_visibility` 守住诚实表述
+
+### Group 6: 实现状态文档（本次）
+- `2e53f9a` - docs: comprehensive implementation status report with accurate limitations
+  - 创建本文档初版，存在事实错误（API 路径、时间锚点能力、提交分组）
 
 ---
 
@@ -476,7 +462,7 @@ baseline，增量实现 Codex embedding 回填、时间锚点解析、文档修�
 
 ## 文件清单
 
-### 数据模型（6 个文件）
+### 数据模型（7 个文件）
 - `server/db/models_core.py` - 核心骨架 6 张表
 - `server/db/models_codex.py` - 设定库 4 张表
 - `server/db/models_guard.py` - 守卫 2 张表
@@ -485,13 +471,14 @@ baseline，增量实现 Codex embedding 回填、时间锚点解析、文档修�
 - `server/db/models_usage.py` - 风格/用量 4 张表
 - `server/db/models_org.py` - 组织 3 张表
 
-### 服务层（10 个文件）
+### 服务层（11 个文件）
 - `server/services/codex.py` - 设定库 CRUD
 - `server/services/codex_embedding.py` - Embedding 生命周期
 - `server/services/outlines.py` - 章纲服务
 - `server/services/body.py` - 正文保存
 - `server/services/consistency.py` - 一致性服务
 - `server/services/rule_scanner.py` - 规则扫描器
+- `server/services/timeline.py` - 时间线服务
 - `server/services/retrieval.py` - RAG 检索
 - `server/services/embedding.py` - Embedding provider
 - `server/services/outbox.py` - Outbox 服务
@@ -512,36 +499,26 @@ baseline，增量实现 Codex embedding 回填、时间锚点解析、文档修�
 - `server/tasks/codex.py` - Codex 回填任务
 
 ### 测试（765 passed, 36 skipped）
-- `server/tests/test_codex.py` - Codex 设定库 52 tests
-- `server/tests/test_outlines.py` - 章纲服务 28 tests
-- `server/tests/consistency/test_body.py` - 正文服务 19 tests
-- `server/tests/consistency/test_consistency.py` - 一致性服务 11 tests
-- `server/tests/consistency/test_scanner.py` - RuleScanner 9 tests
-- `server/tests/test_api_auth.py` - 认证授权 8 tests
-- `server/tests/test_migration_parity.py` - Alembic 7 tests
-- `server/tests/consistency/fixtures_eval.py` - 评测夹具 10 cases
-- `server/tests/consistency/test_eval.py` - 评测 runner
-- `server/tests/integration/*` - 36 tests (全部 SKIP，需真实 PostgreSQL)
-- 其余 631 tests - 项目/章节/守卫/用量等功能测试
+- `server/tests/` - 单元/功能测试（765 passed）
+- `server/tests/integration/` - 集成测试（36 skipped，需真实 PostgreSQL）
 
-### 文档（3 个文件）
-- `server/README.md` - 项目概览
-- `server/docs/CONSISTENCY_IMPLEMENTATION_STATUS.md` - 本文档（实现状态）
-- `server/docs/CONSISTENCY_IMPLEMENTATION_REPORT.md` - 旧版报告（已过期，待归档）
+### 文档（1 个文件）
+- `server/docs/IMPLEMENTATION_STATUS.md` - **本文档**（唯一当前事实来源）
 
 ---
 
 ## 总结
 
 墨枢一致性后端已完成核心数据模型、服务层、API 端点和异步任务的实现，765 个单元/功能
-测试在 SQLite in-memory + mock providers 环境下通过。30 张表完整 Alembic baseline 支持
-pgvector，代码质量经 ruff 验证，类型注解完整。
+测试在 SQLite in-memory + mock providers 环境下通过。30 张表完整 Alembic baseline，
+pgvector extension 与 Vector 列已在迁移中定义，代码质量经 ruff 验证。
 
 **关键限制**：
-1. 36 个集成测试因本机无真实 PostgreSQL + pgvector 而跳过，**不能宣称这些测试通过**
+1. 36 个集成测试因本机无真实 PostgreSQL + pgvector 而跳过，**不能宣称这些测试通过**，
+   pgvector 余弦距离、部分唯一索引等**未在真实数据库验证**
 2. Codex embedding 回填的持久失败可见性尚未实现，无 dead-letter 表与 GET 状态端点
 3. 评测夹具仅 10 个 smoke cases，硬编码 100% 指标**不代表实际质量**
-4. 时间锚点仅支持确定性格式，无 LLM 辅助模糊表达
+4. 时间锚点仅支持 ISO-8601 绝对时间，**不支持**「第 N 天」「N 年后」等自然语言表达
 5. 增量影响集、LLM 仲裁未实现
 
 生产部署前**必须**补全集成测试验证、扩充评测数据集、实现 LLM 仲裁。当前状态为功能完整

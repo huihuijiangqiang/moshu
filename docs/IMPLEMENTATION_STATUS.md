@@ -1,4 +1,13 @@
-# Consistency Backend Implementation Status
+# ⚠️ SUPERSEDED - 历史文档，请勿作为当前结论使用
+
+**本文档已过期**。唯一当前事实来源是 [`server/docs/IMPLEMENTATION_STATUS.md`](../server/docs/IMPLEMENTATION_STATUS.md)。
+
+本文档记录的是历史 P0 MVP Core 阶段的实现状态，功能声明、完成项、测试覆盖**已过时**，
+**不代表当前后端状态**。请勿引用本文档中的任何声明作为当前结论。
+
+---
+
+# Consistency Backend Implementation Status (历史版本)
 
 ## Completed (P0 MVP Core)
 

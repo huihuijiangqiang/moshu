@@ -1,4 +1,13 @@
-# Consistency Backend Implementation Status
+# ⚠️ SUPERSEDED - 历史文档，请勿作为当前结论使用
+
+**本文档已过期**。唯一当前事实来源是 [`server/docs/IMPLEMENTATION_STATUS.md`](./IMPLEMENTATION_STATUS.md)。
+
+本文档记录的是早期 P0-A/P0-B 阶段的实现状态与评测指标，**不代表当前后端状态**。
+请勿引用本文档中的指标、功能声明或技术决策作为当前结论。
+
+---
+
+# Consistency Backend Implementation Status (历史版本)
 
 ## 完成项 (Completed)
 

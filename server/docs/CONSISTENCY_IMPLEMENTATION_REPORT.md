@@ -1,4 +1,13 @@
-# Consistency Backend MVP Implementation Report
+# ⚠️ SUPERSEDED - 历史文档，请勿作为当前结论使用
+
+**本文档已过期**。唯一当前事实来源是 [`server/docs/IMPLEMENTATION_STATUS.md`](./IMPLEMENTATION_STATUS.md)。
+
+本文档记录的是早期 P0-B MVP 实现报告，提交历史、指标、文件清单等信息**已过时**，
+**不代表当前后端状态**。请勿引用本文档中的任何声明作为当前结论。
+
+---
+
+# Consistency Backend MVP Implementation Report (历史版本)
 
 ## 执行摘要
 

@@ -1,4 +1,13 @@
-# Consistency Backend Corrective Implementation Report
+# ⚠️ SUPERSEDED - 历史文档，请勿作为当前结论使用
+
+**本文档已过期**。唯一当前事实来源是 [`server/docs/IMPLEMENTATION_STATUS.md`](../server/docs/IMPLEMENTATION_STATUS.md)。
+
+本文档记录的是历史 9 项缺陷修复阶段的实现报告，测试数量（59 tests）、功能声明、
+修复清单**已过时**，**不代表当前后端状态**。请勿引用本文档中的任何声明作为当前结论。
+
+---
+
+# Consistency Backend Corrective Implementation Report (历史版本)
 
 ## Executive Summary
 
