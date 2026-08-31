@@ -192,18 +192,19 @@ def upgrade() -> None:
         sa.PrimaryKeyConstraint("id"),
     )
     op.create_index(op.f("ix_codex_entries_project_id"), "codex_entries", ["project_id"])
+    op.create_index("ix_codex_entries_embedding", "codex_entries", ["embedding"], postgresql_using="hnsw")
 
     op.create_table(
         "codex_aliases",
         sa.Column("id", sa.Integer(), autoincrement=True, nullable=False),
         sa.Column("entry_id", sa.String(length=32), nullable=False),
         sa.Column("alias", sa.String(length=200), nullable=False),
-        sa.Column("is_primary", sa.Boolean(), nullable=False),
         sa.ForeignKeyConstraint(["entry_id"], ["codex_entries.id"], ondelete="CASCADE"),
         sa.PrimaryKeyConstraint("id"),
     )
     op.create_index(op.f("ix_codex_aliases_entry_id"), "codex_aliases", ["entry_id"])
     op.create_index("ix_codex_alias_lookup", "codex_aliases", ["alias", "entry_id"])
+    op.create_index("ix_codex_aliases_alias_gin", "codex_aliases", ["alias"], postgresql_using="gin")
 
     op.create_table(
         "codex_refs",
@@ -547,22 +548,41 @@ def upgrade() -> None:
         sa.Column("id", sa.BigInteger(), autoincrement=True, nullable=False),
         sa.Column("issue_id", sa.String(length=32), nullable=False),
         sa.Column("side", sa.String(length=20), nullable=False),
-        sa.Column("claim_id", sa.BigInteger(), nullable=True),
-        sa.Column("chapter_id", sa.String(length=32), nullable=False),
-        sa.Column("body_rev", sa.Integer(), nullable=False),
+        sa.Column("source_kind", sa.String(length=20), nullable=False),
+        sa.Column("chapter_id", sa.String(length=32), nullable=True),
+        sa.Column("body_rev", sa.Integer(), nullable=True),
+        sa.Column("outline_rev", sa.Integer(), nullable=True),
+        sa.Column("codex_entry_id", sa.String(length=32), nullable=True),
         sa.Column("paragraph_id", sa.String(length=100), nullable=True),
+        sa.Column("start_offset", sa.Integer(), nullable=True),
+        sa.Column("end_offset", sa.Integer(), nullable=True),
+        sa.Column("offset_encoding", sa.String(length=20), server_default="utf16", nullable=False),
         sa.Column("quote", sa.Text(), nullable=True),
-        sa.Column("content_hash", sa.String(length=64), nullable=True),
-        sa.Column("metadata", postgresql.JSONB(astext_type=sa.Text()), nullable=False),
+        sa.Column("quote_hash", sa.String(length=64), nullable=True),
+        sa.Column("anchor_version", sa.String(length=20), server_default="v1", nullable=False),
+        sa.Column("claim_id", sa.BigInteger(), nullable=True),
+        sa.Column("sort_order", sa.Integer(), nullable=False),
+        sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.text("now()"), nullable=False),
+        sa.Column("updated_at", sa.DateTime(timezone=True), server_default=sa.text("now()"), nullable=False),
         sa.CheckConstraint("side IN ('expected', 'actual', 'context')", name="ck_evidence_side"),
-        sa.CheckConstraint("body_rev > 0", name="ck_evidence_body_rev_positive"),
+        sa.CheckConstraint("source_kind IN ('codex', 'body', 'outline', 'claim')", name="ck_evidence_source_kind"),
+        sa.CheckConstraint("offset_encoding IN ('utf8', 'utf16', 'codepoint')", name="ck_evidence_offset_encoding"),
+        sa.CheckConstraint(
+            "(source_kind = 'body' AND chapter_id IS NOT NULL AND body_rev IS NOT NULL) OR "
+            "(source_kind = 'outline' AND chapter_id IS NOT NULL AND outline_rev IS NOT NULL) OR "
+            "(source_kind = 'codex' AND codex_entry_id IS NOT NULL) OR "
+            "(source_kind = 'claim' AND claim_id IS NOT NULL)",
+            name="ck_evidence_source_required"
+        ),
         sa.ForeignKeyConstraint(["issue_id"], ["guard_issues.id"], ondelete="CASCADE"),
         sa.ForeignKeyConstraint(["claim_id"], ["consistency_claims.id"], ondelete="SET NULL"),
         sa.ForeignKeyConstraint(["chapter_id"], ["chapters.id"], ondelete="CASCADE"),
+        sa.ForeignKeyConstraint(["codex_entry_id"], ["codex_entries.id"], ondelete="SET NULL"),
         sa.PrimaryKeyConstraint("id"),
     )
     op.create_index(op.f("ix_guard_issue_evidence_issue_id"), "guard_issue_evidence", ["issue_id"])
     op.create_index(op.f("ix_guard_issue_evidence_claim_id"), "guard_issue_evidence", ["claim_id"])
+    op.create_index("ix_evidence_issue_side", "guard_issue_evidence", ["issue_id", "side", "sort_order"])
 
     op.create_table(
         "guard_resolutions",
