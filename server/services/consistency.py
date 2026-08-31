@@ -23,6 +23,36 @@ RULE_VERSION = "1.0.0"
 #: claim 抽取器版本，参与 claim 唯一键。
 EXTRACTOR_VERSION = "1.0.0"
 
+#: 摘要版本，参与 DocumentSummary 唯一键。
+SUMMARY_VERSION = "1.0.0"
+
+#: ConsistencyRun.trigger 的 CHECK 约束允许的取值。
+VALID_RUN_TRIGGERS = frozenset({"body_save", "manual_scan", "pipeline_upgrade", "maintenance"})
+
+#: 上游事件里的 trigger 名称 -> ConsistencyRun.trigger 合法取值。
+_TRIGGER_ALIASES = {
+    "user_edit": "body_save",
+    "manual": "body_save",
+    "autosave": "body_save",
+    "accept_draft": "body_save",
+    "body_saved": "body_save",
+}
+
+
+def normalize_run_trigger(raw_trigger: Optional[str]) -> str:
+    """把事件里的 trigger 映射到 ConsistencyRun.trigger 的合法取值。
+
+    直接写入未映射的值会撞上 ck_consistency_run_trigger CHECK 约束。已经合法的
+    值（如 manual_scan）必须原样保留 —— 早期实现无条件返回 body_save，手动扫描
+    与流水线升级触发的 run 全被记成了正文保存。
+    """
+    if not raw_trigger:
+        return "body_save"
+    trigger = raw_trigger.strip().lower()
+    if trigger in VALID_RUN_TRIGGERS:
+        return trigger
+    return _TRIGGER_ALIASES.get(trigger, "body_save")
+
 
 def compute_claim_fingerprint(
     subject_text: str,
