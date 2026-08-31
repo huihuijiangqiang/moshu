@@ -387,6 +387,7 @@ async def _extract_claims_async(task_id: str, run_id: int):
                         chapter_id=run.chapter_id,
                         body_rev=run.body_rev,
                         paragraph_id=claim_data.get("paragraph_id"),
+                        source_anchor=claim_data.get("source_anchor"),
                         timeline_id=claim_data.get("timeline_id"),
                         story_order=claim_data.get("story_order"),
                         valid_from_order=claim_data.get("valid_from_order"),

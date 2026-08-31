@@ -9,7 +9,6 @@ Uses model_gateway configuration with injectable httpx client
 关于模型选择：网关 URL / key / model id 全部来自 config.settings，不在代码里
 硬编码具体模型名。
 """
-import hashlib
 import json
 from typing import Any, Optional
 
@@ -18,7 +17,17 @@ from pydantic import BaseModel, Field, ValidationError, model_validator
 
 from config import settings
 from services.chunking import TextChunk, chunk_html
+from services.claim_identity import claim_fingerprint
 from services.timeline import GLOBAL_ORDER_BASES, parse_absolute_anchor
+
+#: 指纹计算只有一份实现（services.claim_identity），这里保留旧的导入位置。
+__all__ = [
+    "ClaimOutput",
+    "ConsistencyProvider",
+    "ExtractionResponse",
+    "ProviderResponseError",
+    "claim_fingerprint",
+]
 
 
 class ProviderResponseError(RuntimeError):
@@ -60,6 +69,11 @@ class ClaimOutput(BaseModel):
     #: 故事时间线标识。多线叙事先按 timeline_id 隔离，只有存在已确认跨线锚点时
     #: 才比较（架构 4.3）。模型不确定时留空，由调用方决定是否归入主线。
     timeline_id: Optional[str] = Field(None, max_length=32)
+
+    #: 这条事实所在处的全局段落号（提示词里的 [P<n>] 标号）。
+    #: 参与身份指纹：同一时间线里不同段落的同语义陈述是两次独立出现，
+    #: 而重叠区域里同一段在相邻两块中拿到同一个号，所以重复抽取仍会被去重。
+    source_anchor: Optional[str] = Field(None, max_length=64)
 
     #: 时间锚点的**原文**。可追溯性的关键：作者和后续人工确认都能拿它回正文核对。
     temporal_anchor_text: Optional[str] = Field(None, max_length=200)
@@ -123,30 +137,6 @@ class ExtractionResponse(BaseModel):
     """Response from extraction endpoint"""
 
     claims: list[ClaimOutput] = Field(default_factory=list)
-
-
-def claim_fingerprint(
-    *,
-    subject_text: str,
-    predicate: str,
-    object_type: str,
-    object_value: Optional[str],
-    polarity: str,
-) -> str:
-    """稳定的 claim 指纹（大小写、空白无关），用于跨块去重与数据库唯一键。
-
-    顺序判断（order_basis / order_confidence / story_order）不参与：它是模型对
-    同一件事的时间位置的判断，不是事实的身份。纳入它会让模型每次改口都插出一
-    条新行，作者的处置记录随之失效。
-    """
-    fingerprint_data = {
-        "subject_text": subject_text.lower().strip(),
-        "predicate": predicate.lower().strip(),
-        "object_type": object_type,
-        "object_value": (object_value or "").lower().strip(),
-        "polarity": polarity,
-    }
-    return hashlib.sha256(json.dumps(fingerprint_data, sort_keys=True).encode()).hexdigest()
 
 
 class ConsistencyProvider:
@@ -251,7 +241,7 @@ class ConsistencyProvider:
                     },
                     {
                         "role": "user",
-                        "content": self._build_extraction_prompt(chunk.text),
+                        "content": self._build_extraction_prompt(chunk.labeled_text()),
                     },
                 ],
                 "temperature": 0.0,
@@ -278,6 +268,8 @@ class ConsistencyProvider:
                 object_type=claim.object_type,
                 object_value=claim.object_value,
                 polarity=claim.polarity,
+                timeline_id=claim.timeline_id,
+                source_anchor=claim.source_anchor,
             )
             claim_dict["chunk_index"] = chunk.index
             claims.append(claim_dict)
@@ -416,6 +408,7 @@ class ConsistencyProvider:
       "polarity": "positive|negative",
       "certainty": "explicit|inferred|uncertain",
       "paragraph_id": "optional paragraph identifier",
+      "source_anchor": "the [P<n>] number of the paragraph this fact comes from",
       "confidence": 0.9,
       "timeline_id": "story timeline identifier, or null if unclear",
       "temporal_anchor_text": "the exact time expression quoted from the text, or null",
@@ -431,6 +424,14 @@ class ConsistencyProvider:
 Valid object_type values: scalar, entity, location, ability, timestamp
 Valid polarity values: positive, negative
 Valid certainty values: explicit, inferred, uncertain
+
+SOURCE ANCHORS:
+
+Each paragraph is prefixed with a marker like [P7]. Set `source_anchor` to that
+number for the paragraph the fact comes from. These numbers are stable across the
+whole chapter, so the same fact stated in two different paragraphs stays two
+separate records, each pointing at its own place in the text, while the same
+paragraph seen twice (excerpts overlap) stays one record.
 
 CRITICAL RULES FOR NARRATIVE ORDER:
 

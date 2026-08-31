@@ -1,8 +1,6 @@
 """
 Consistency service - extraction, claim management, and rule evaluation
 """
-import hashlib
-import json
 from datetime import datetime, timezone
 from typing import Optional
 
@@ -14,6 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from db.models_codex import CodexAlias, CodexEntry
 from db.models_consistency_extended import ConsistencyClaim, ConsistencyRun, DocumentSummary
+from services.claim_identity import claim_fingerprint
 from services.timeline import is_globally_anchored
 
 #: 一致性管道版本。API、Celery 任务与 ConsistencyRun 的唯一键必须共用同一个值，
@@ -63,21 +62,24 @@ def compute_claim_fingerprint(
     object_type: str,
     object_value: Optional[str],
     polarity: str,
+    timeline_id: Optional[str] = None,
+    source_anchor: Optional[str] = None,
 ) -> str:
-    """计算 claim 指纹 - 用于去重"""
-    normalized = json.dumps(
-        {
-            "subject": subject_text.strip().lower(),
-            "predicate": predicate,
-            "object_type": object_type,
-            "object_value": object_value.strip().lower() if object_value else None,
-            "polarity": polarity,
-        },
-        sort_keys=True,
-        separators=(",", ":"),
-        ensure_ascii=False,
+    """计算 claim 指纹 - 用于去重。
+
+    直接委托给 services.claim_identity：写 claim 的路径有两条（抽取任务走
+    providers，服务层走 upsert_claim），各算各的哈希时同一条事实会得到两个指纹，
+    唯一键形同虚设。这里只保留调用方习惯的位置参数形式。
+    """
+    return claim_fingerprint(
+        subject_text=subject_text,
+        predicate=predicate,
+        object_type=object_type,
+        object_value=object_value,
+        polarity=polarity,
+        timeline_id=timeline_id,
+        source_anchor=source_anchor,
     )
-    return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
 
 
 #: 状态型谓词：同一主体的后一条声明会终止前一条的有效区间。
@@ -380,6 +382,7 @@ async def upsert_claim(
     outline_rev: Optional[int] = None,
     paragraph_id: Optional[str] = None,
     timeline_id: Optional[str] = None,
+    source_anchor: Optional[str] = None,
     story_order: Optional[float] = None,
     extractor_version: str,
     confidence: Optional[float] = None,
@@ -387,6 +390,9 @@ async def upsert_claim(
     """插入或更新 claim（幂等，PostgreSQL 专用）。
 
     冲突目标按 source_kind 选取对应的部分唯一索引，见 _CLAIM_CONFLICT_TARGETS。
+
+    timeline_id 与 source_anchor 参与指纹（见 services.claim_identity）：不同
+    时间线、不同段落里的同语义陈述是不同的事实/不同的出现，不能被唯一键合并。
     """
     if source_kind not in _CLAIM_CONFLICT_TARGETS:
         raise ValueError(
@@ -397,7 +403,8 @@ async def upsert_claim(
 
     subject_entry_id = await resolve_entity_by_alias(db, project_id, subject_text)
     fingerprint = compute_claim_fingerprint(
-        subject_text, predicate, object_type, object_value, polarity
+        subject_text, predicate, object_type, object_value, polarity,
+        timeline_id, source_anchor,
     )
 
     stmt = (
@@ -416,6 +423,7 @@ async def upsert_claim(
             body_rev=body_rev,
             outline_rev=outline_rev,
             paragraph_id=paragraph_id,
+            source_anchor=source_anchor,
             timeline_id=timeline_id,
             story_order=story_order,
             extractor_version=extractor_version,

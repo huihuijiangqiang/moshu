@@ -105,6 +105,10 @@ class ConsistencyClaim(Base, TimestampMixin):
     body_rev: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     outline_rev: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     paragraph_id: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
+    #: 稳定的来源锚点：这条事实在**整章**里的全局段落号（见 services.chunking）。
+    #: 与 timeline_id 一起构成 claim 的身份（见 services.claim_identity），并让
+    #: 告警能指回正文的具体位置 —— paragraph_id 来自编辑器，抽取时看不到。
+    source_anchor: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
     timeline_id: Mapped[Optional[str]] = mapped_column(String(32), nullable=True, index=True)
     story_order: Mapped[Optional[float]] = mapped_column(Numeric(24, 8), nullable=True)
     valid_from_order: Mapped[Optional[float]] = mapped_column(Numeric(24, 8), nullable=True)

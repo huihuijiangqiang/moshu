@@ -29,16 +29,40 @@ _WS_RE = re.compile(r"[ \t\r\f\v]+")
 
 @dataclass(frozen=True)
 class TextChunk:
-    """一个待送模型处理的文本块。"""
+    """一个待送模型处理的文本块。
+
+    paragraph_positions 与 text 里的各段一一对应，给出每段在**整章**里的全局
+    段落序号。这个字段是叙事顺序与来源身份的基础：块是切分产物，块内序号在跨块
+    时没有共同标尺，只有全局段落号才能在整章范围内标识同一处正文。重叠区域里
+    同一段在相邻两块中拿到的全局段落号相同，所以重复抽到的同一事实能被识别成
+    同一条，而不同段落里的同语义陈述不会被并成一条。
+
+    超长段落被硬切成多片时，各片共享同一个全局段落号 —— 它们本来就是一段。
+    """
 
     index: int
     text: str
     start_paragraph: int
     end_paragraph: int
+    paragraph_positions: tuple[int, ...] = ()
 
     @property
     def paragraph_count(self) -> int:
         return self.end_paragraph - self.start_paragraph + 1
+
+    def labeled_text(self) -> str:
+        """带全局段落号的文本，供提示词直接使用。
+
+        没有 paragraph_positions（历史构造）时退回原文，不加标号 —— 宁可让模型
+        报不出来源，也不能编造段落号。
+        """
+        pieces = self.text.split(PARAGRAPH_SEPARATOR)
+        if len(self.paragraph_positions) != len(pieces):
+            return self.text
+        return PARAGRAPH_SEPARATOR.join(
+            f"[P{position}] {piece}"
+            for position, piece in zip(self.paragraph_positions, pieces)
+        )
 
 
 def html_to_paragraphs(content_html: str) -> list[str]:
@@ -132,6 +156,7 @@ def chunk_paragraphs(
                 text=PARAGRAPH_SEPARATOR.join(text for _, text in current),
                 start_paragraph=current[0][0],
                 end_paragraph=current[-1][0],
+                paragraph_positions=tuple(position for position, _ in current),
             )
         )
         if overlap_chars <= 0:
@@ -165,6 +190,7 @@ def chunk_paragraphs(
                 text=PARAGRAPH_SEPARATOR.join(text for _, text in current),
                 start_paragraph=current[0][0],
                 end_paragraph=current[-1][0],
+                paragraph_positions=tuple(position for position, _ in current),
             )
         )
 

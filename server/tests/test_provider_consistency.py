@@ -308,6 +308,111 @@ async def test_chapter_exceeding_max_chunks_raises_rather_than_truncating(monkey
         await provider.extract_claims(long_html(paragraph_count=40), "proj_a", "ch_a")
 
 
+# --- 来源身份：不同时间线、不同段落不得被合并 ---------------------------------
+
+
+async def test_extraction_prompt_labels_paragraphs_with_global_numbers():
+    """提示词里的每段都带 [P<n>] 标号，模型才可能报出稳定的 source_anchor。
+
+    正文经 html_to_paragraphs 剥掉了所有标签，模型看不到编辑器的段落 id ——
+    不给标号就只能让它编一个。
+    """
+    gateway = RecordingGateway([claims_response()])
+    provider = ConsistencyProvider(client=gateway.client())
+
+    await provider.extract_claims("<p>第一段</p><p>第二段</p>", "proj_a", "ch_a")
+
+    prompt = gateway.prompts[0]
+    assert "[P0] 第一段" in prompt
+    assert "[P1] 第二段" in prompt
+    assert "source_anchor" in prompt
+
+
+async def test_paragraph_numbers_stay_global_across_chunks():
+    """后面的块不会从 [P0] 重新数 —— 标号在整章范围内唯一。"""
+    gateway = RecordingGateway([claims_response()])
+    provider = ConsistencyProvider(client=gateway.client())
+
+    await provider.extract_claims(long_html(paragraph_count=12), "proj_a", "ch_a")
+
+    assert len(gateway.requests) > 1
+    assert "[P0]" in gateway.prompts[0]
+    assert "[P0]" not in gateway.prompts[-1], "后续块从头编号了，锚点跨块不再唯一"
+    assert "[P11]" in gateway.prompts[-1]
+
+
+async def test_same_statement_on_two_timelines_is_kept_as_two_claims():
+    """并行 POV：同一句话在两条独立时间线上是两条事实，不能合并成一条。
+
+    合并会让其中一条永远看不见，跨线冲突也就永远检不出来。
+    """
+    gateway = RecordingGateway([
+        claims_response(
+            make_claim_payload("李长风", timeline_id="line_a", source_anchor="3"),
+            make_claim_payload("李长风", timeline_id="line_b", source_anchor="3"),
+        )
+    ])
+    provider = ConsistencyProvider(client=gateway.client())
+
+    claims = await provider.extract_claims("<p>短正文</p>", "proj_a", "ch_a")
+
+    assert len(claims) == 2
+    assert {claim["timeline_id"] for claim in claims} == {"line_a", "line_b"}
+    assert len({claim["fingerprint"] for claim in claims}) == 2
+
+
+async def test_same_fact_in_two_paragraphs_is_kept_as_two_claims():
+    """同一条线上不同段落的同语义陈述是两次出现，作者需要分别定位。"""
+    gateway = RecordingGateway([
+        claims_response(
+            make_claim_payload("李长风", timeline_id="main", source_anchor="3"),
+            make_claim_payload("李长风", timeline_id="main", source_anchor="17"),
+        )
+    ])
+    provider = ConsistencyProvider(client=gateway.client())
+
+    claims = await provider.extract_claims("<p>短正文</p>", "proj_a", "ch_a")
+
+    assert len(claims) == 2
+    assert {claim["source_anchor"] for claim in claims} == {"3", "17"}
+
+
+async def test_the_same_paragraph_seen_in_two_chunks_is_deduplicated():
+    """重叠区域重复抽到同一处正文时仍然只保留一条，并保留较高置信度。
+
+    这是加入 source_anchor 之后最容易被破坏的性质：如果锚点跟着块走，同一段在
+    相邻两块里会拿到不同的号，重叠去重就失效，每个重叠段都会多出一条重复 claim。
+    """
+    responses = [
+        claims_response(
+            make_claim_payload("李长风", timeline_id="main", source_anchor="3",
+                               confidence=0.6)
+        ),
+        claims_response(
+            make_claim_payload("李长风", timeline_id="main", source_anchor="3",
+                               confidence=0.95)
+        ),
+    ]
+    gateway = RecordingGateway(responses)
+    provider = ConsistencyProvider(client=gateway.client())
+
+    claims = await provider.extract_claims(long_html(paragraph_count=8), "proj_a", "ch_a")
+
+    matching = [claim for claim in claims if claim["subject_text"] == "李长风"]
+    assert len(matching) == 1
+    assert matching[0]["confidence"] == 0.95
+
+
+async def test_source_anchor_defaults_to_null_when_the_model_omits_it():
+    """保守模型不报锚点时不报错，也不编一个 —— 行为退回到只按语义去重。"""
+    gateway = RecordingGateway([claims_response(make_claim_payload("李长风"))])
+    provider = ConsistencyProvider(client=gateway.client())
+
+    claim = (await provider.extract_claims("<p>短正文</p>", "proj_a", "ch_a"))[0]
+
+    assert claim["source_anchor"] is None
+
+
 # --- 叙事顺序：模型报证据，服务定顺序（架构 4.3） -----------------------------
 #
 # 这组测试盯住的是「换一种方式伪造顺序」：旧提示词让每个块自行编号（"use any

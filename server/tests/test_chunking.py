@@ -3,7 +3,7 @@
 """
 import pytest
 
-from services.chunking import chunk_html, chunk_paragraphs, html_to_paragraphs
+from services.chunking import TextChunk, chunk_html, chunk_paragraphs, html_to_paragraphs
 
 
 def test_html_is_split_into_text_paragraphs():
@@ -138,6 +138,90 @@ def test_paragraph_ranges_are_tracked():
     for chunk in chunks:
         assert chunk.start_paragraph <= chunk.end_paragraph
         assert chunk.paragraph_count >= 1
+
+
+# --- 全局段落号：来源身份的基础 -----------------------------------------------
+#
+# 块是切分产物，块内的第几段跨块没有共同标尺。只有「整章里的第几段」能稳定地
+# 标识一处正文，这正是 claim 身份指纹里的 source_anchor（见
+# services.claim_identity）。
+
+
+def test_paragraph_positions_are_global_not_chunk_local():
+    """每块记录的是段落在整章里的序号，不是块内下标。"""
+    paragraphs = [f"段落{i}" + "字" * 100 for i in range(10)]
+
+    chunks = chunk_paragraphs(paragraphs, max_chars=500, overlap_chars=0)
+
+    assert len(chunks) > 1
+    assert chunks[0].paragraph_positions[0] == 0
+    assert chunks[-1].paragraph_positions[-1] == 9
+    # 后面的块不会从 0 重新数
+    assert chunks[1].paragraph_positions[0] > 0
+
+
+def test_paragraph_positions_line_up_with_the_text_pieces():
+    paragraphs = [f"段落{i}" + "字" * 100 for i in range(10)]
+
+    for chunk in chunk_paragraphs(paragraphs, max_chars=500, overlap_chars=100):
+        pieces = chunk.text.split("\n\n")
+        assert len(chunk.paragraph_positions) == len(pieces)
+        for position, piece in zip(chunk.paragraph_positions, pieces):
+            assert piece in paragraphs[position]
+
+
+def test_overlapped_paragraph_keeps_the_same_position_in_both_chunks():
+    """重叠区域里同一段在相邻两块中拿到同一个号 —— 重复抽取才能被去重。"""
+    paragraphs = [f"段落{i}" + "字" * 90 for i in range(20)]
+
+    chunks = chunk_paragraphs(paragraphs, max_chars=600, overlap_chars=300)
+
+    shared = 0
+    for previous, following in zip(chunks, chunks[1:]):
+        previous_map = dict(zip(previous.paragraph_positions, previous.text.split("\n\n")))
+        following_map = dict(zip(following.paragraph_positions, following.text.split("\n\n")))
+        for position in set(previous_map) & set(following_map):
+            assert previous_map[position] == following_map[position]
+            shared += 1
+    assert shared >= 1, "没有产生重叠，这条测试什么都没验证"
+
+
+def test_hard_split_pieces_share_the_paragraph_position():
+    """超长段落被硬切成多片时各片同号 —— 它们本来就是一段。"""
+    giant = "".join(str(i % 10) for i in range(5000))
+
+    chunks = chunk_paragraphs([giant, "结尾段"], max_chars=1000, overlap_chars=0)
+
+    positions = [position for chunk in chunks for position in chunk.paragraph_positions]
+    assert positions.count(0) > 1, "巨型段落没有被硬切，这条测试什么都没验证"
+    assert set(positions) == {0, 1}
+
+
+def test_labeled_text_prefixes_each_paragraph_with_its_global_number():
+    """提示词看到的文本带全局段落号，模型才可能报出稳定的 source_anchor。"""
+    paragraphs = ["第一段", "第二段", "第三段"]
+
+    chunks = chunk_paragraphs(paragraphs, max_chars=20, overlap_chars=0)
+
+    labeled = "\n\n".join(chunk.labeled_text() for chunk in chunks)
+    assert "[P0] 第一段" in labeled
+    assert "[P1] 第二段" in labeled
+    assert "[P2] 第三段" in labeled
+
+
+def test_labeled_text_keeps_the_original_content():
+    paragraphs = [f"段落{i}" + "字" * 50 for i in range(6)]
+
+    for chunk in chunk_paragraphs(paragraphs, max_chars=300, overlap_chars=50):
+        for piece in chunk.text.split("\n\n"):
+            assert piece in chunk.labeled_text()
+
+
+def test_labeled_text_falls_back_to_raw_text_without_positions():
+    """没有位置信息时不加标号 —— 宁可让模型报不出来源，也不能编造段落号。"""
+    chunk = TextChunk(index=0, text="甲\n\n乙", start_paragraph=0, end_paragraph=1)
+
+    assert chunk.labeled_text() == "甲\n\n乙"
 
 
 def test_invalid_parameters_are_rejected():

@@ -421,6 +421,7 @@ def upgrade() -> None:
         sa.Column("body_rev", sa.Integer(), nullable=True),
         sa.Column("outline_rev", sa.Integer(), nullable=True),
         sa.Column("paragraph_id", sa.String(length=100), nullable=True),
+        sa.Column("source_anchor", sa.String(length=64), nullable=True),
         sa.Column("timeline_id", sa.String(length=32), nullable=True),
         sa.Column("story_order", sa.Numeric(24, 8), nullable=True),
         sa.Column("valid_from_order", sa.Numeric(24, 8), nullable=True),
