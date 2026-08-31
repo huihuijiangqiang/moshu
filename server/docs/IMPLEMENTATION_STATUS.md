@@ -120,7 +120,8 @@
   - 仅支持 ISO-8601 形状的绝对时间（`2024-01-15`, `2024-01-15T10:30:00`）
   - **不支持**「第 N 天」「N 年后」等自然语言相对表达
   - **不支持** LLM 辅助的模糊时间表达规范化
-  - **不支持** 相对锚点解析（`relative_to_anchor` 需显式 `base_anchor` 链，未实现）
+  - 相对锚点（`relative_to_anchor`）保留 `temporal_relation`/`temporal_relation_ref` 作为证据，
+    但不分配 story_order —— 相对解析链未实现，保持 NULL 进待确认
   - 叙述局部序号（`narration_local`）与未知（`unknown`）保持 story_order=NULL
 
 #### Embedding Provider (`services/embedding.py`)
@@ -308,17 +309,18 @@
 
 **当前实现**：
 - ✅ ISO-8601 形状绝对时间解析（`2024-01-15`, `2024-01-15T10:30:00`）
-- ✅ 相对锚点验证（要求 `base_anchor` 在锚点链中存在）
 - ✅ `temporal_anchor_text` 自身的确定性解析要求
+- ✅ 相对锚点证据保留（`temporal_relation`, `temporal_relation_ref`），但不分配 story_order
 
 **保守限制**：
 - ⚠️ **不支持**「第 N 天」「N 年后」等自然语言相对表达（`parse_absolute_anchor` 仅接受 ISO 形状）
 - ⚠️ **不支持** LLM 辅助的语义理解时间线
-- ⚠️ 相对锚点解析需要显式 base_anchor，无法自动推断锚点链
+- ⚠️ 相对锚点解析链未实现：`relative_to_anchor` 类型的 claim 保留证据但不分配 story_order，
+  无法自动推断 `base_anchor` 链或解析相对偏移
 
 **后续需要**：
 1. LLM 辅助时间表达规范化
-2. 自动锚点链推断
+2. 相对锚点解析链实现（`base_anchor` 追溯与偏移计算）
 3. 模糊时间跨度的区间表达
 
 ### 5. 增量影响集未实现
@@ -368,21 +370,23 @@ baseline，增量实现 Codex embedding 回填、时间锚点解析、issue 生�
 - `391197f` - fix: require deterministic parsing of temporal_anchor_text itself
   - `temporal_anchor_text` 自身必须确定性可解析
 
-### Group 4: Codex Embedding 回填逻辑修正
+### Group 4: Codex Embedding 回填逻辑与文档修正
 - `493e95c` - feat: add httpx.HTTPError retry handling and fix stale/deferred status reporting
   - httpx.HTTPError 纳入 RETRYABLE_ERRORS
   - 修正 `_settle_embedding()` 始终检查真实 embedding 哈希
   - 新增 4 个测试覆盖 httpx 错误与 deferred 状态
-
-### Group 5: 文档准确性修正
 - `9baf42f` - docs: clarify remaining_count is a snapshot, not continuous dead-letter visibility
   - 修正 `tasks/codex.py`, `api/codex.py`, `services/codex.py` 误导性表述
   - 明确 `remaining_count` 是瞬时快照，非持续可查询
   - 新增 `test_documentation_accurately_reflects_missing_dead_letter_visibility` 守住诚实表述
 
-### Group 6: 实现状态文档（本次）
+### Group 5: 实现状态文档与事实修正
 - `2e53f9a` - docs: comprehensive implementation status report with accurate limitations
   - 创建本文档初版，存在事实错误（API 路径、时间锚点能力、提交分组）
+- `42a577a` - docs: fix implementation status report factual errors and supersede old reports
+  - 修正 API 路径、时间锚点能力、提交分组
+  - 为 5 个历史报告添加 SUPERSEDED banner
+  - 区分「代码已实现」与「真实 PostgreSQL 未验证」
 
 ---
 
