@@ -388,7 +388,8 @@ async def test_hallucinated_temporal_anchor_is_stripped():
     """模型报了时间锚点但原文里根本没有，清空 temporal_anchor_value / order_basis。
 
     模型会为幻觉的日期打出 0.9 的置信度，不能信。必须核对原文：锚点文本确实在
-    对应段落里、且可解析、且值一致，三条全真才能作为 confirmed 全局锚点。
+    对应段落里、可确定性解析、且解析结果与声称值一致，四条全真才能作为 confirmed
+    全局锚点。
     """
     gateway = RecordingGateway(
         [
@@ -396,7 +397,7 @@ async def test_hallucinated_temporal_anchor_is_stripped():
                 make_claim_payload(
                     "角色A",
                     source_anchor="P0",
-                    temporal_anchor_text="三月十五日",  # 原文里没有
+                    temporal_anchor_text="2024-03-15",  # 原文里没有
                     temporal_anchor_value="2024-03-15T00:00:00",
                     order_basis="absolute_datetime",
                     story_order=100.0,
@@ -410,7 +411,7 @@ async def test_hallucinated_temporal_anchor_is_stripped():
     claims = await provider.extract_claims("<p>今天天气不错</p>", "proj_a", "ch_a")
 
     assert len(claims) == 1
-    assert claims[0]["temporal_anchor_text"] == "三月十五日", "原文保留，供人工核对"
+    assert claims[0]["temporal_anchor_text"] == "2024-03-15", "原文保留，供人工核对"
     assert claims[0]["temporal_anchor_value"] is None, "幻觉日期不能成为全局锚点"
     assert claims[0]["order_basis"] is None, "依据失效"
     assert claims[0]["story_order"] is None, "顺序不可信"
@@ -425,7 +426,7 @@ async def test_temporal_anchor_in_wrong_paragraph_is_rejected():
                 make_claim_payload(
                     "角色A",
                     source_anchor="P0",  # 指向第一段
-                    temporal_anchor_text="三月十五日",  # 但这句话在第二段
+                    temporal_anchor_text="2024-03-15",  # 但这句话在第二段
                     temporal_anchor_value="2024-03-15T00:00:00",
                     order_basis="absolute_datetime",
                 )
@@ -435,7 +436,7 @@ async def test_temporal_anchor_in_wrong_paragraph_is_rejected():
     provider = ConsistencyProvider(client=gateway.client())
 
     claims = await provider.extract_claims(
-        "<p>今天天气不错</p><p>三月十五日那天下雨</p>", "proj_a", "ch_a"
+        "<p>今天天气不错</p><p>2024-03-15那天下雨</p>", "proj_a", "ch_a"
     )
 
     assert claims[0]["temporal_anchor_value"] is None, "锚点在错误的段落"
@@ -449,7 +450,7 @@ async def test_unparseable_temporal_anchor_value_is_rejected():
                 make_claim_payload(
                     "角色A",
                     source_anchor="P0",
-                    temporal_anchor_text="三天后",
+                    temporal_anchor_text="invalid-date",
                     temporal_anchor_value="invalid-date",  # 非 ISO-8601
                     order_basis="absolute_datetime",
                 )
@@ -458,7 +459,7 @@ async def test_unparseable_temporal_anchor_value_is_rejected():
     )
     provider = ConsistencyProvider(client=gateway.client())
 
-    claims = await provider.extract_claims("<p>三天后再说</p>", "proj_a", "ch_a")
+    claims = await provider.extract_claims("<p>invalid-date</p>", "proj_a", "ch_a")
 
     assert claims[0]["temporal_anchor_value"] is None
 
@@ -471,7 +472,7 @@ async def test_temporal_anchor_without_source_is_rejected():
                 make_claim_payload(
                     "角色A",
                     # source_anchor 缺失
-                    temporal_anchor_text="三月十五日",
+                    temporal_anchor_text="2024-03-15",
                     temporal_anchor_value="2024-03-15T00:00:00",
                     order_basis="absolute_datetime",
                 )
@@ -480,20 +481,20 @@ async def test_temporal_anchor_without_source_is_rejected():
     )
     provider = ConsistencyProvider(client=gateway.client())
 
-    claims = await provider.extract_claims("<p>三月十五日那天下雨</p>", "proj_a", "ch_a")
+    claims = await provider.extract_claims("<p>2024-03-15那天下雨</p>", "proj_a", "ch_a")
 
     assert claims[0]["temporal_anchor_value"] is None, "无法定位锚点位置"
 
 
 async def test_valid_temporal_anchor_is_preserved():
-    """锚点文本确实在对应段落、可解析、格式合法 —— 三条全真，原样保留。"""
+    """锚点文本确实在对应段落、可确定性解析、格式合法、解析结果一致 —— 四条全真，原样保留。"""
     gateway = RecordingGateway(
         [
             claims_response(
                 make_claim_payload(
                     "角色A",
                     source_anchor="P0",
-                    temporal_anchor_text="三月十五日",
+                    temporal_anchor_text="2024-03-15",
                     temporal_anchor_value="2024-03-15T00:00:00",
                     order_basis="absolute_datetime",
                     story_order=100.0,
@@ -503,23 +504,127 @@ async def test_valid_temporal_anchor_is_preserved():
     )
     provider = ConsistencyProvider(client=gateway.client())
 
-    claims = await provider.extract_claims("<p>三月十五日那天下雨</p>", "proj_a", "ch_a")
+    claims = await provider.extract_claims("<p>2024-03-15那天下雨</p>", "proj_a", "ch_a")
 
-    assert claims[0]["temporal_anchor_text"] == "三月十五日"
+    assert claims[0]["temporal_anchor_text"] == "2024-03-15"
     assert claims[0]["temporal_anchor_value"] == "2024-03-15T00:00:00"
     assert claims[0]["order_basis"] == "absolute_datetime"
     assert claims[0]["story_order"] == 100.0
 
 
-async def test_temporal_anchor_matching_ignores_case_and_whitespace():
-    """锚点原文匹配时忽略大小写与多余空格 —— 「三 月 十五日」能匹配「三月十五日」。"""
+async def test_chinese_date_phrase_with_arbitrary_iso_is_rejected():
+    """原文是中文短语但模型编了 ISO 年份 —— 这是幻觉，必须拒绝。
+
+    当前 parser 只支持 ISO-8601，无法确定性解析「三月十五日」「元和七年冬月初三」
+    这类中文短语。模型报「三月十五日」+ 2024-03-15 是编造年份（实际可能是任何年份），
+    不能让它冒充 absolute_datetime。
+    """
+    for text, value in [
+        ("三月十五日", "2024-03-15"),
+        ("元和七年冬月初三", "0812-11-03"),
+        ("三天后", "2024-03-18T00:00:00"),
+    ]:
+        gateway = RecordingGateway(
+            [
+                claims_response(
+                    make_claim_payload(
+                        "角色A",
+                        source_anchor="P0",
+                        temporal_anchor_text=text,
+                        temporal_anchor_value=value,
+                        order_basis="absolute_datetime",
+                        story_order=100.0,
+                    )
+                )
+            ]
+        )
+        provider = ConsistencyProvider(client=gateway.client())
+        claims = await provider.extract_claims(f"<p>{text}那天</p>", "proj_a", "ch_a")
+        assert claims[0]["temporal_anchor_value"] is None, f"{text} + {value} 是幻觉"
+        assert claims[0]["story_order"] is None, f"{text} 不能进 absolute_datetime"
+
+
+async def test_explicit_iso_in_text_with_matching_value_passes():
+    """原文中明确写了 ISO 日期且 value 与解析结果一致 —— 通过。"""
     gateway = RecordingGateway(
         [
             claims_response(
                 make_claim_payload(
                     "角色A",
                     source_anchor="P0",
-                    temporal_anchor_text="三 月  十五日",  # 多余空格
+                    temporal_anchor_text="2024-03-15",
+                    temporal_anchor_value="2024-03-15T00:00:00",
+                    order_basis="absolute_datetime",
+                    story_order=100.0,
+                )
+            )
+        ]
+    )
+    provider = ConsistencyProvider(client=gateway.client())
+
+    claims = await provider.extract_claims("<p>2024-03-15那天下雨</p>", "proj_a", "ch_a")
+
+    assert claims[0]["temporal_anchor_value"] == "2024-03-15T00:00:00"
+    assert claims[0]["story_order"] == 100.0
+
+
+async def test_explicit_iso_in_text_with_different_value_is_rejected():
+    """原文写了 ISO 但模型报的 value 不同 —— 模型编造，拒绝。"""
+    gateway = RecordingGateway(
+        [
+            claims_response(
+                make_claim_payload(
+                    "角色A",
+                    source_anchor="P0",
+                    temporal_anchor_text="2024-03-15",
+                    temporal_anchor_value="2024-03-16T00:00:00",  # 编了不同日期
+                    order_basis="absolute_datetime",
+                )
+            )
+        ]
+    )
+    provider = ConsistencyProvider(client=gateway.client())
+
+    claims = await provider.extract_claims("<p>2024-03-15那天下雨</p>", "proj_a", "ch_a")
+
+    assert claims[0]["temporal_anchor_value"] is None, "解析结果与声称值不一致"
+
+
+async def test_iso_with_timezone_normalization():
+    """时区与时间归一化：原文与 value 必须解析成相同 timestamp。"""
+    gateway = RecordingGateway(
+        [
+            claims_response(
+                make_claim_payload(
+                    "角色A",
+                    source_anchor="P0",
+                    temporal_anchor_text="2024-03-15T08:30:00",
+                    temporal_anchor_value="2024-03-15T08:30:00",
+                    order_basis="absolute_datetime",
+                )
+            )
+        ]
+    )
+    provider = ConsistencyProvider(client=gateway.client())
+
+    claims = await provider.extract_claims("<p>2024-03-15T08:30:00发生</p>", "proj_a", "ch_a")
+
+    assert claims[0]["temporal_anchor_value"] == "2024-03-15T08:30:00"
+
+
+async def test_temporal_anchor_matching_ignores_case_and_whitespace():
+    """锚点原文匹配时忽略大小写与多余空格 —— 「2024 - 03 - 15」能匹配「2024-03-15」。
+
+    但解析仍然严格：「2024 - 03 - 15」无法被 parse_absolute_anchor 解析，所以
+    即使在段落里找到了这个子串，也会因为无法解析而拒绝。
+    """
+    gateway = RecordingGateway(
+        [
+            claims_response(
+                make_claim_payload(
+                    "角色A",
+                    source_anchor="P0",
+                    temporal_anchor_text="2024 - 03 - 15",  # 带空格的不是合法 ISO
                     temporal_anchor_value="2024-03-15T00:00:00",
                     order_basis="absolute_datetime",
                 )
@@ -528,9 +633,10 @@ async def test_temporal_anchor_matching_ignores_case_and_whitespace():
     )
     provider = ConsistencyProvider(client=gateway.client())
 
-    claims = await provider.extract_claims("<p>三月十五日那天下雨</p>", "proj_a", "ch_a")
+    claims = await provider.extract_claims("<p>2024-03-15那天下雨</p>", "proj_a", "ch_a")
 
-    assert claims[0]["temporal_anchor_value"] == "2024-03-15T00:00:00", "空格差异不影响匹配"
+    # 子串匹配成功（忽略空格），但解析失败（带空格不是合法 ISO）
+    assert claims[0]["temporal_anchor_value"] is None, "带空格的日期无法解析"
 
 
 async def test_empty_temporal_anchor_passes_validation():
@@ -755,14 +861,18 @@ async def test_extraction_prompt_forbids_cross_timeline_comparison():
 
 
 async def test_temporal_evidence_round_trips_through_parsing():
-    """模型报的时间证据必须原样留下 —— 它是后续解析和人工确认的唯一依据。"""
+    """模型报的时间证据必须原样留下 —— 它是后续解析和人工确认的唯一依据。
+
+    注意：temporal_anchor_text 若无法确定性解析（如中文短语），temporal_anchor_value
+    会被清空。只有原文本身可解析（如明确的 ISO 日期）时才保留。
+    """
     gateway = RecordingGateway([
         claims_response(
             make_claim_payload(
                 "李长风",
-                source_anchor="P0",  # 必须指明位置才能验证
+                source_anchor="P0",
                 timeline_id="thread_a",
-                temporal_anchor_text="元和七年冬月初三",
+                temporal_anchor_text="0812-11-03",  # 原文明确写了 ISO
                 temporal_anchor_value="0812-11-03",
                 temporal_relation="after",
                 temporal_relation_ref="李长风下山",
@@ -773,10 +883,10 @@ async def test_temporal_evidence_round_trips_through_parsing():
     ])
     provider = ConsistencyProvider(client=gateway.client())
 
-    claim = (await provider.extract_claims("<p>元和七年冬月初三那天</p>", "proj_a", "ch_a"))[0]
+    claim = (await provider.extract_claims("<p>0812-11-03那天</p>", "proj_a", "ch_a"))[0]
 
     assert claim["timeline_id"] == "thread_a"
-    assert claim["temporal_anchor_text"] == "元和七年冬月初三"
+    assert claim["temporal_anchor_text"] == "0812-11-03"
     assert claim["temporal_anchor_value"] == "0812-11-03"
     assert claim["temporal_relation"] == "after"
     assert claim["temporal_relation_ref"] == "李长风下山"

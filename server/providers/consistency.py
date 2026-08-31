@@ -67,12 +67,18 @@ def _validate_source_anchor(
 
 
 def _validate_temporal_anchor(claim: ClaimOutput, chunk: TextChunk) -> bool:
-    """校验时间锚点：原文必须在对应段落里且归一化后的值可解析。
+    """校验时间锚点：原文必须在对应段落里、可确定性解析、且解析结果与声称值一致。
 
-    只有三条全真时 temporal_anchor_value 才可作为 confirmed 全局锚点：
+    只有四条全真时 temporal_anchor_value 才可作为 confirmed 全局锚点：
     1. temporal_anchor_text 确实存在于 source_anchor 指向的那段正文；
-    2. 它可以被确定性解析成一个绝对时间（parse_absolute_anchor 不返回 None）；
-    3. 归一化后的值与 temporal_anchor_value 一致。
+    2. temporal_anchor_text **本身**可以被确定性解析成一个绝对时间；
+    3. 解析结果与 temporal_anchor_value 归一化后完全一致；
+    4. source_anchor 本身合法（否则无法定位段落）。
+
+    当前 parse_absolute_anchor 只支持 ISO-8601 格式，因此只有原文中明确写了 ISO
+    日期（如「2024-03-15」）才能通过验证。中文短语（「三月十五日」「元和七年冬月
+    初三」）无法解析，必须拒绝 —— 不能让模型随便编年份（「三月十五日」→ 2024-03-15
+    是幻觉，实际可能是任何年份）。
 
     不满足则清空 temporal_anchor_value 与 order_basis，story_order 保持 NULL/pending。
     不能信模型的 confidence —— 它会为幻觉的日期打出 0.9 的置信度。
@@ -106,12 +112,20 @@ def _validate_temporal_anchor(claim: ClaimOutput, chunk: TextChunk) -> bool:
     if normalized_anchor not in normalized_para:
         return False
 
-    # 归一化后的值必须可解析且与声称的值一致
-    parsed = parse_absolute_anchor(claim.temporal_anchor_value)
-    if parsed is None:
-        return False
-    # parsed 是 datetime，claim.temporal_anchor_value 是 ISO-8601 字符串
-    # 如果 parse_absolute_anchor 接受它就说明格式合法，这里不再重复解析做比对
+    # 关键：必须对 temporal_anchor_text **本身**做确定性解析
+    parsed_from_text = parse_absolute_anchor(claim.temporal_anchor_text)
+    if parsed_from_text is None:
+        return False  # 原文无法解析成绝对时间（如中文短语）
+
+    # 解析结果必须与声称的 temporal_anchor_value 一致
+    parsed_from_value = parse_absolute_anchor(claim.temporal_anchor_value)
+    if parsed_from_value is None:
+        return False  # 声称的值本身就不合法
+
+    # 两者必须完全一致（都是 Unix timestamp，直接比较）
+    if parsed_from_text != parsed_from_value:
+        return False  # 模型编造了不同的值
+
     return True
 
 
