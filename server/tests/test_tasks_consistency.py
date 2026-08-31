@@ -9,11 +9,12 @@
 * 提交前锁住 ChapterBody 头行再校验版本，旧 worker 不会覆盖新版本结论；
 * 失败抛异常（Celery chain 才会中断），而不是返回 {"status": "error"}；
 * run 一旦 failed，摘要与扫描拒绝执行；
-* 同版本重放删除旧 claim 行 —— 标记 superseded 不释放部分唯一索引；
+* 同版本重放跳过已有指纹，一行都不删 —— 架构 4.3 要求旧 claim 只标 superseded；
 * 新版本发布时旧 claim 原子作废；
 * 抽取之后摘要与扫描并行投递，扫描不等摘要；
 * 唯一键并发竞态用 SAVEPOINT 兜住（方言无关，SQLite 上也能验证）；
-* claim 的 entry_id / timeline_id / story_order / valid_*_order 全部落库。
+* claim 的 entry_id 落库；时间线字段只在模型给出可靠依据时落库，倒叙与未知顺序
+  保持 NULL 并且不触发依赖时序的硬规则。
 
 方言范围：ChapterBody 的 FOR UPDATE 行级锁在 SQLite 上被忽略，这里验证的是
 「锁 + 版本比较」这段逻辑本身；真正的并发互斥需要 PostgreSQL，见
@@ -30,7 +31,6 @@ from db.models_consistency_extended import ConsistencyClaim, DocumentSummary
 from db.models_core import Chapter, ChapterBody, ChapterVersion
 from db.models_guard import GuardIssue
 from services.consistency import (
-    DEFAULT_TIMELINE_ID,
     PIPELINE_VERSION,
     get_or_create_run,
     normalize_run_trigger,
@@ -148,6 +148,22 @@ def claim_payload(subject: str, fingerprint: str, **overrides) -> dict:
     }
     payload.update(overrides)
     return payload
+
+
+def ordered_payload(subject: str, fingerprint: str, story_order: float, **overrides) -> dict:
+    """模型给出了**可靠**顺序的 claim。
+
+    可靠 = story_order 有值 + order_basis 属于可采信依据 + order_confidence 达标
+    + timeline_id 明确。只有这样的 claim 才会参与依赖时序的硬规则。
+    """
+    payload = {
+        "timeline_id": "main",
+        "story_order": story_order,
+        "order_basis": "explicit_time",
+        "order_confidence": 0.95,
+    }
+    payload.update(overrides)
+    return claim_payload(subject, fingerprint, **payload)
 
 
 async def add_version(db, *, rev: int, html: str):
@@ -483,29 +499,53 @@ async def test_claims_are_persisted_with_run_revision(
     assert all(claim.status == "accepted" for claim in claims)
 
 
-async def test_claims_get_timeline_and_narrative_order(
+async def test_reliable_model_order_is_persisted_verbatim(
     use_test_session, async_db_session, pipeline_setup, fake_provider
 ):
-    """回归：timeline_id/story_order 留 NULL 时三条规则都看不到 claim。"""
+    """模型给出可靠顺序时原样落库 —— 管道不改写它，也不重新编号。"""
     fake_provider.claims = [
-        claim_payload("李长风", "fp_1"),
-        claim_payload("王二", "fp_2"),
+        ordered_payload("李长风", "fp_1", 10.0),
+        ordered_payload("王二", "fp_2", 20.0),
     ]
 
     await tasks._extract_claims_async("task-1", pipeline_setup.id)
 
     claims = await load_claims(async_db_session)
-    assert all(claim.timeline_id == DEFAULT_TIMELINE_ID for claim in claims)
-    assert all(claim.story_order is not None for claim in claims)
-    assert float(claims[0].story_order) < float(claims[1].story_order), "章内严格递增"
+    assert [float(claim.story_order) for claim in claims] == [10.0, 20.0]
+    assert all(claim.timeline_id == "main" for claim in claims)
 
 
-async def test_story_order_stays_inside_the_chapters_slot(
+async def test_unknown_order_stays_null_and_claim_still_lands(
     use_test_session, async_db_session, pipeline_setup, fake_provider
 ):
-    """章内偏移压在 (Chapter.idx, idx+1) 内，不会越到下一章前面。
+    """架构 4.3：无法可靠确定顺序时保持 NULL，claim 仍然落库进待确认。
 
-    Chapter.idx 是步长 1024 的稀疏序号，seed_project 给 ch_a 的是 1024。
+    回归的是「为了让规则命中而伪造顺序」：早期实现把 Chapter.idx 压成
+    story_order，正常倒叙会被判成时序矛盾。
+    """
+    fake_provider.claims = [
+        claim_payload("李长风", "fp_1"),
+        claim_payload("王二", "fp_2"),
+    ]
+
+    result = await tasks._extract_claims_async("task-1", pipeline_setup.id)
+
+    claims = await load_claims(async_db_session)
+    assert len(claims) == 2, "顺序不可靠不影响落库"
+    assert all(claim.story_order is None for claim in claims)
+    assert all(claim.valid_from_order is None for claim in claims)
+    assert all(claim.valid_to_order is None for claim in claims)
+    assert all(claim.timeline_id is None for claim in claims), "不兜底填 main"
+    assert result["pending_order_claims"] == 2
+
+
+async def test_chapter_idx_is_never_used_as_story_order(
+    use_test_session, async_db_session, pipeline_setup, fake_provider
+):
+    """回归锚点：story_order 不得来自 Chapter.idx。
+
+    seed_project 给 ch_a 的 idx 是 1024。早期实现会把顺序压进 (1024, 1025)
+    区间；现在没有可靠依据就是 NULL，不存在任何与章节序号相关的值。
     """
     fake_provider.claims = [claim_payload(f"角色{i}", f"fp_{i}") for i in range(5)]
 
@@ -515,30 +555,82 @@ async def test_story_order_stays_inside_the_chapters_slot(
         await async_db_session.execute(select(Chapter.idx).where(Chapter.id == "ch_a"))
     ).scalar_one()
     claims = await load_claims(async_db_session)
-    orders = [float(claim.story_order) for claim in claims]
-    assert all(chapter_idx < order < chapter_idx + 1 for order in orders)
-    assert orders == sorted(orders)
+    assert len(claims) == 5
+    for claim in claims:
+        assert claim.story_order is None, (
+            f"story_order={claim.story_order} 被伪造了；章节 idx={chapter_idx}"
+        )
+
+
+async def test_unreliable_basis_drops_the_model_supplied_order(
+    use_test_session, async_db_session, pipeline_setup, fake_provider
+):
+    """倒叙 / 低置信度 / 缺依据都不采信，即使模型给了 story_order 数值。"""
+    fake_provider.claims = [
+        ordered_payload("倒叙者", "fp_flashback", 5.0, order_basis="flashback"),
+        ordered_payload("模糊者", "fp_unsure", 6.0, order_confidence=0.3),
+        claim_payload("无依据者", "fp_nobasis", timeline_id="main", story_order=7.0),
+    ]
+
+    result = await tasks._extract_claims_async("task-1", pipeline_setup.id)
+
+    claims = await load_claims(async_db_session)
+    assert len(claims) == 3
+    assert all(claim.story_order is None for claim in claims)
+    assert result["pending_order_claims"] == 3
+
+
+async def test_order_without_timeline_is_not_closed_into_intervals(
+    use_test_session, async_db_session, pipeline_setup, fake_provider
+):
+    """timeline_id 未知时不闭合区间：叙事线不明就不能判定谁在谁之前。"""
+    fake_provider.claims = [
+        ordered_payload("李长风", "fp_1", 10.0, timeline_id=None, predicate="alive"),
+        ordered_payload("李长风", "fp_2", 20.0, timeline_id=None, predicate="alive",
+                        object_value="false"),
+    ]
+
+    await tasks._extract_claims_async("task-1", pipeline_setup.id)
+
+    claims = await load_claims(async_db_session)
+    assert all(claim.valid_to_order is None for claim in claims), "无时间线不闭合"
 
 
 async def test_stateful_predicate_intervals_are_closed(
     use_test_session, async_db_session, pipeline_setup, fake_provider
 ):
-    """状态型谓词的有效区间在同组内前后闭合，最后一条保持开区间。
+    """顺序可靠且同时间线时，状态型谓词的有效区间前后闭合，最后一条保持开区间。
 
     不闭合 valid_to_order，ownership 规则的区间重叠判定就永远成立（恒真误报）。
     """
     fake_provider.claims = [
-        claim_payload("李长风", "fp_1", predicate="alive", object_value="true"),
-        claim_payload("李长风", "fp_2", predicate="alive", object_value="false"),
+        ordered_payload("李长风", "fp_1", 10.0, predicate="alive", object_value="true"),
+        ordered_payload("李长风", "fp_2", 20.0, predicate="alive", object_value="false"),
     ]
 
     await tasks._extract_claims_async("task-1", pipeline_setup.id)
 
     first, second = await load_claims(async_db_session)
-    assert float(first.valid_from_order) == float(first.story_order)
-    assert float(first.valid_to_order) == float(second.story_order), "前一条被后一条闭合"
-    assert float(second.valid_from_order) == float(second.story_order)
+    assert float(first.valid_from_order) == 10.0
+    assert float(first.valid_to_order) == 20.0, "前一条被后一条闭合"
+    assert float(second.valid_from_order) == 20.0
     assert second.valid_to_order is None, "最后一条一直有效"
+
+
+async def test_intervals_are_not_closed_across_timelines(
+    use_test_session, async_db_session, pipeline_setup, fake_provider
+):
+    """架构 4.3：多线叙事先按 timeline_id 隔离，无跨线锚点就不比较。"""
+    fake_provider.claims = [
+        ordered_payload("李长风", "fp_a", 10.0, timeline_id="thread_a", predicate="alive"),
+        ordered_payload("李长风", "fp_b", 20.0, timeline_id="thread_b", predicate="alive",
+                        object_value="false"),
+    ]
+
+    await tasks._extract_claims_async("task-1", pipeline_setup.id)
+
+    claims = await load_claims(async_db_session)
+    assert all(claim.valid_to_order is None for claim in claims), "跨线不互相闭合"
 
 
 async def test_distinct_owned_items_do_not_close_each_others_intervals(
@@ -546,8 +638,10 @@ async def test_distinct_owned_items_do_not_close_each_others_intervals(
 ):
     """同时拥有剑和盾并不冲突，闭合区间必须按对象分组。"""
     fake_provider.claims = [
-        claim_payload("李长风", "fp_sword", predicate="owns", object_type="entity", object_value="长剑"),
-        claim_payload("李长风", "fp_shield", predicate="owns", object_type="entity", object_value="铁盾"),
+        ordered_payload("李长风", "fp_sword", 10.0, predicate="owns",
+                        object_type="entity", object_value="长剑"),
+        ordered_payload("李长风", "fp_shield", 20.0, predicate="owns",
+                        object_type="entity", object_value="铁盾"),
     ]
 
     await tasks._extract_claims_async("task-1", pipeline_setup.id)
@@ -559,16 +653,24 @@ async def test_distinct_owned_items_do_not_close_each_others_intervals(
 async def test_provider_supplied_positions_are_preserved(
     use_test_session, async_db_session, pipeline_setup, fake_provider
 ):
-    """模型给出更精确的时间线/顺序时沿用它，不被默认推导覆盖。"""
+    """模型自己算好的区间沿用，不被覆盖。"""
     fake_provider.claims = [
-        claim_payload("李长风", "fp_1", timeline_id="flashback", story_order=3.5)
+        ordered_payload(
+            "李长风",
+            "fp_1",
+            3.5,
+            timeline_id="thread_b",
+            valid_from_order=3.5,
+            valid_to_order=9.0,
+        )
     ]
 
     await tasks._extract_claims_async("task-1", pipeline_setup.id)
 
     claim = (await load_claims(async_db_session))[0]
-    assert claim.timeline_id == "flashback"
+    assert claim.timeline_id == "thread_b"
     assert float(claim.story_order) == 3.5
+    assert float(claim.valid_to_order) == 9.0
 
 
 async def test_subject_entry_id_is_resolved_and_persisted(
@@ -654,23 +756,90 @@ async def test_new_revision_supersedes_previous_claims(
     ]
 
 
-async def test_replaying_the_same_revision_deletes_the_previous_attempt(
+async def test_replaying_the_same_revision_keeps_the_existing_row(
     use_test_session, async_db_session, pipeline_setup, fake_provider
 ):
-    """回归：uq_claim_body_source 不含 status —— 标记 superseded 不释放唯一键。
+    """同版本重放跳过已有指纹，**不删除**任何行。
 
-    (chapter_id, body_rev, fingerprint, extractor_version) 的部分唯一索引意味着
-    同版本重放必须删掉上一轮的行，否则第二次插入直接撞索引。
+    uq_claim_body_source 是 (chapter_id, body_rev, fingerprint, extractor_version)
+    上的部分唯一索引，不含 status —— 所以重放不能盲插。早期实现在这里 DELETE 掉
+    上一轮的行，但架构 4.3 要求「旧正文版本的 claim 不删除，标为 superseded，
+    确保告警可追溯」，而且 GuardIssueEvidence.claim_id 是 ON DELETE SET NULL，
+    删 claim 会把已有告警的证据指针悄悄清空。同指纹本来就是同一行，跳过即幂等。
     """
     fake_provider.claims = [claim_payload("李长风", "fp_1")]
     await tasks._extract_claims_async("task-1", pipeline_setup.id)
+    original_id = (await load_claims(async_db_session))[0].id
 
     result = await tasks._extract_claims_async("task-1-retry", pipeline_setup.id)
 
-    assert result["replaced_claims"] == 1, "旧行被删除而不是留着占用唯一键"
+    assert result["skipped_existing_claims"] == 1, "已有指纹被跳过"
+    assert result["inserted_claims"] == 0
     claims = await load_claims(async_db_session)
     assert len(claims) == 1, "同 (body_rev, fingerprint) 只剩一行"
+    assert claims[0].id == original_id, "行没有被删掉重建 —— 证据指针必须保持有效"
     assert claims[0].status == "accepted"
+
+
+async def test_replay_preserves_guard_issue_evidence_pointers(
+    use_test_session, async_db_session, pipeline_setup, fake_provider, make_run
+):
+    """重放不能让已有告警变成「没有出处的告警」。
+
+    GuardIssueEvidence.claim_id 是 ON DELETE SET NULL 的外键：删 claim 不会报错，
+    只会把证据指针静默置空。这条测试直接盯住架构 4.3 保护的可追溯性。
+    """
+    from db.models_consistency_extended import GuardIssueEvidence
+
+    fake_provider.claims = [
+        ordered_payload("李长风", "fp_dead", 10.0, object_value="false"),
+        ordered_payload("李长风", "fp_alive", 20.0, object_value="true"),
+    ]
+    await tasks._extract_claims_async("task-1", pipeline_setup.id)
+    await tasks._scan_rules_async("task-scan", pipeline_setup.id)
+
+    evidence_before = list(
+        (await async_db_session.execute(select(GuardIssueEvidence))).scalars().all()
+    )
+    assert evidence_before, "前置条件：扫描必须写出证据行"
+    claim_ids_before = {row.claim_id for row in evidence_before}
+    assert None not in claim_ids_before
+
+    # 同版本重放（重试）
+    await tasks._extract_claims_async("task-1-retry", pipeline_setup.id)
+
+    async_db_session.expunge_all()
+    evidence_after = list(
+        (await async_db_session.execute(select(GuardIssueEvidence))).scalars().all()
+    )
+    claim_ids_after = {row.claim_id for row in evidence_after}
+    assert None not in claim_ids_after, "重放把证据的 claim_id 置空了（claim 被删了）"
+    assert claim_ids_after == claim_ids_before
+
+
+async def test_superseded_claims_are_never_deleted(
+    use_test_session, async_db_session, pipeline_setup, fake_provider, make_run
+):
+    """架构 4.3：旧正文版本的 claim 只标 superseded，行必须留着。"""
+    fake_provider.claims = [claim_payload("李长风", "fp_v1")]
+    await tasks._extract_claims_async("task-1", pipeline_setup.id)
+    old_id = (await load_claims(async_db_session))[0].id
+
+    await add_version(async_db_session, rev=2, html="<p>第二版</p>")
+    run2 = make_run(project_id="proj_a", chapter_id="ch_a", body_rev=2)
+    async_db_session.add(run2)
+    await async_db_session.commit()
+
+    fake_provider.claims = [claim_payload("李长风", "fp_v2")]
+    await tasks._extract_claims_async("task-2", run2.id)
+    # 新版本上再重放一次，确认旧行也不会被顺手清掉
+    await tasks._extract_claims_async("task-2-retry", run2.id)
+
+    claims = await load_claims(async_db_session)
+    by_id = {claim.id: claim for claim in claims}
+    assert old_id in by_id, "旧版本的 claim 行被删除了"
+    assert by_id[old_id].status == "superseded"
+    assert by_id[old_id].body_rev == 1
 
 
 async def test_replay_leaves_no_row_that_would_violate_the_unique_index(
@@ -1062,10 +1231,10 @@ async def test_scan_finds_conflicts_from_persisted_claims(
 async def test_end_to_end_extraction_feeds_the_scanner(
     use_test_session, async_db_session, pipeline_setup, fake_provider
 ):
-    """抽取补齐的 timeline/story_order 足以让规则检出冲突（字段真的够用）。"""
+    """模型给出可靠顺序时，抽取落库的字段足以让规则检出冲突。"""
     fake_provider.claims = [
-        claim_payload("李长风", "fp_dead", object_value="false"),
-        claim_payload("李长风", "fp_alive", object_value="true"),
+        ordered_payload("李长风", "fp_dead", 10.0, object_value="false"),
+        ordered_payload("李长风", "fp_alive", 20.0, object_value="true"),
     ]
     await tasks._extract_claims_async("task-1", pipeline_setup.id)
 
@@ -1074,6 +1243,107 @@ async def test_end_to_end_extraction_feeds_the_scanner(
     assert result["issues_found"] == 1, "抽取写入的字段必须足够让规则排序判断"
     issues = list((await async_db_session.execute(select(GuardIssue))).scalars().all())
     assert issues[0].issue_type == "alive_conflict"
+
+
+async def test_unknown_order_produces_no_hard_alert(
+    use_test_session, async_db_session, pipeline_setup, fake_provider
+):
+    """顺序未知的「先死后活」不出硬告警 —— 无法判定先后就不是矛盾。
+
+    架构 4.3：无法可靠确定顺序时只进入待确认列表，不运行依赖时序的硬规则。
+    """
+    fake_provider.claims = [
+        claim_payload("李长风", "fp_dead", object_value="false"),
+        claim_payload("李长风", "fp_alive", object_value="true"),
+    ]
+    await tasks._extract_claims_async("task-1", pipeline_setup.id)
+
+    result = await tasks._scan_rules_async("task-3", pipeline_setup.id)
+
+    assert result["issues_found"] == 0, "顺序未知却出了告警 —— 顺序被伪造了"
+    issues = list((await async_db_session.execute(select(GuardIssue))).scalars().all())
+    assert issues == []
+    assert len(await load_claims(async_db_session)) == 2, "claim 仍在库里等待确认"
+
+
+async def test_flashback_produces_no_hard_alert(
+    use_test_session, async_db_session, pipeline_setup, fake_provider
+):
+    """倒叙不出硬告警。
+
+    这是伪造顺序最典型的受害场景：正文里先写「李长风已死」，随后倒叙他生前的
+    一幕。按叙述位置（章节序号）排序会得到「死→活」，判成高等级复活矛盾；按
+    故事顺序才是「活→死」，完全正常。order_basis=flashback 不可采信，所以两条
+    claim 的 story_order 保持 NULL，规则看不到它们。
+    """
+    fake_provider.claims = [
+        ordered_payload("李长风", "fp_dead", 10.0, object_value="false"),
+        ordered_payload("李长风", "fp_alive", 20.0, object_value="true",
+                        order_basis="flashback"),
+    ]
+    await tasks._extract_claims_async("task-1", pipeline_setup.id)
+
+    result = await tasks._scan_rules_async("task-3", pipeline_setup.id)
+
+    assert result["issues_found"] == 0, "倒叙被误判成时序矛盾"
+    assert len(await load_claims(async_db_session)) == 2
+
+
+async def test_flashback_with_correct_story_order_is_not_a_conflict(
+    use_test_session, async_db_session, pipeline_setup, fake_provider
+):
+    """模型正确识别倒叙、给出更小的 story_order 时，顺序是「活→死」，没有矛盾。
+
+    这条和上一条互补：上一条验证「不可采信就不判」，这条验证「采信正确顺序时
+    结论也是对的」—— 倒叙里叙述在后的那一幕在故事时间里更早。
+    """
+    fake_provider.claims = [
+        # 叙述在前，但故事时间更晚
+        ordered_payload("李长风", "fp_dead", 20.0, object_value="false"),
+        # 叙述在后（倒叙），故事时间更早 —— 模型用明确时间锚定了它
+        ordered_payload("李长风", "fp_alive", 10.0, object_value="true"),
+    ]
+    await tasks._extract_claims_async("task-1", pipeline_setup.id)
+
+    result = await tasks._scan_rules_async("task-3", pipeline_setup.id)
+
+    assert result["issues_found"] == 0, "按故事顺序是「活→死」，不该出告警"
+
+
+async def test_cross_timeline_claims_do_not_conflict(
+    use_test_session, async_db_session, pipeline_setup, fake_provider
+):
+    """架构 4.3：不同 timeline_id 的事件不比较，除非有已确认的跨线锚点。"""
+    fake_provider.claims = [
+        ordered_payload("李长风", "fp_dead", 10.0, object_value="false",
+                        timeline_id="thread_a"),
+        ordered_payload("李长风", "fp_alive", 20.0, object_value="true",
+                        timeline_id="thread_b"),
+    ]
+    await tasks._extract_claims_async("task-1", pipeline_setup.id)
+
+    result = await tasks._scan_rules_async("task-3", pipeline_setup.id)
+
+    assert result["issues_found"] == 0, "跨时间线被当成同一条时间线比较了"
+
+
+async def test_uncertain_claim_downgrades_severity(
+    use_test_session, async_db_session, pipeline_setup, fake_provider
+):
+    """架构 7：任一输入 claim 为 uncertain 时不得产生 high severity。"""
+    fake_provider.claims = [
+        ordered_payload("李长风", "fp_dead", 10.0, object_value="false"),
+        ordered_payload("李长风", "fp_alive", 20.0, object_value="true",
+                        certainty="uncertain"),
+    ]
+    await tasks._extract_claims_async("task-1", pipeline_setup.id)
+
+    result = await tasks._scan_rules_async("task-3", pipeline_setup.id)
+
+    assert result["issues_found"] == 1, "仍然提示，只是降级"
+    issues = list((await async_db_session.execute(select(GuardIssue))).scalars().all())
+    assert issues[0].severity != "high", "uncertain 证据不得出 high"
+    assert issues[0].severity == "medium"
 
 
 async def test_scan_aborts_when_revision_advanced(

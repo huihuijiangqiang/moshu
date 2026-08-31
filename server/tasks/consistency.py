@@ -12,14 +12,17 @@ Consistency Celery tasks - per-revision pipeline
 * 失败必须抛异常。早期实现返回 {"status": "error"}，Celery 视为成功，chain 会继续
   跑后续步骤，于是「抽取失败」后照样出摘要和扫描结论。
 * run 一旦 failed，后续步骤必须拒绝执行，否则失败的抽取之后仍会产出摘要与告警。
-* 同一版本重跑必须先删掉上一轮的 claim 行。uq_claim_body_source 是
-  (chapter_id, body_rev, fingerprint, extractor_version) 上的部分唯一索引，
-  **不含 status** —— 把旧行标成 superseded 并不会释放这个键，重放会直接撞唯一索引。
+* 同一版本重跑跳过已有指纹，**不删除**任何 claim 行。架构 4.3 要求「旧正文版本的
+  claim 不删除，标为 superseded，确保告警可追溯」；而且
+  GuardIssueEvidence.claim_id 是 ON DELETE SET NULL 的外键 —— 删 claim 会把已有
+  告警的证据指针悄悄清空。唯一键本就是 (chapter_id, body_rev, fingerprint,
+  extractor_version)，同指纹重放就是同一行，跳过即幂等。
 * 摘要与扫描在抽取之后并行投递：扫描只依赖已落库的 claim，等摘要（一次或多次
   模型调用）纯属浪费，告警会被拖慢几十秒。
-* claim 的 timeline_id / story_order / valid_from_order / valid_to_order 必须落库。
-  三条 P0 规则都按 (subject, timeline_id) 分组、要求 story_order 非空才排序，
-  这些字段留 NULL 等于把规则整体关掉。
+* claim 的时间线字段只在模型能可靠判断时才落库。**绝不用 Chapter.idx 推导
+  story_order** —— 架构 4.3 明确 story_order 是故事世界事件顺序，不是「第几章」，
+  倒叙会被误判成时序矛盾。顺序不可靠时保持 NULL，claim 进待确认列表，不参与
+  依赖时序的硬规则。
 
 关于 run.status：摘要与扫描并行，单个 status 列无法同时表达两条支线。约定
 status 跟踪扫描支线（告警是作者直接消费的产物），completed 由扫描步骤写入；
@@ -30,11 +33,11 @@ from datetime import datetime, timezone
 from typing import Optional
 
 from celery import chain, group, shared_task
-from sqlalchemy import delete, func, select, update
+from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from config import settings
-from db import Chapter, ChapterBody, ChapterVersion, ConsistencyClaim, ConsistencyRun, DocumentSummary
+from db import ChapterBody, ChapterVersion, ConsistencyClaim, ConsistencyRun, DocumentSummary
 from providers.consistency import ConsistencyProvider
 from services.consistency import (
     EXTRACTOR_VERSION,
@@ -296,7 +299,9 @@ async def _extract_claims_async(task_id: str, run_id: int):
                 chapter_id=run.chapter_id,
             )
 
-            # 新版本发布：同章旧版本的 claim 在同一事务里作废，避免新旧共存误报
+            # 新版本发布：同章旧版本的 claim 在同一事务里作废，避免新旧共存误报。
+            # 只标 superseded，绝不删除 —— 架构 4.3 要求「旧正文版本的 claim 不删除，
+            # 标为 superseded，确保告警可追溯」。
             superseded = await db.execute(
                 update(ConsistencyClaim)
                 .where(
@@ -308,16 +313,28 @@ async def _extract_claims_async(task_id: str, run_id: int):
                 .values(status="superseded", updated_at=datetime.now(timezone.utc))
             )
 
-            # 同版本重放：必须删除而不是标记 superseded。uq_claim_body_source 是
-            # (chapter_id, body_rev, fingerprint, extractor_version) 的部分唯一
-            # 索引且不含 status，留着旧行会让重试直接撞唯一索引。
-            replaced = await db.execute(
-                delete(ConsistencyClaim).where(
-                    ConsistencyClaim.chapter_id == run.chapter_id,
-                    ConsistencyClaim.source_kind == "body",
-                    ConsistencyClaim.body_rev == run.body_rev,
-                    ConsistencyClaim.extractor_version == EXTRACTOR_VERSION,
+            # 同版本重放（重试、pipeline 重跑）：读出本版本已有的指纹，跳过它们。
+            #
+            # 早期实现在这里 DELETE 掉本版本的旧行，理由是 uq_claim_body_source 不含
+            # status、标 superseded 不释放唯一键。但删除违反架构 4.3 的可追溯性要求，
+            # 而且 GuardIssueEvidence.claim_id 是 ON DELETE SET NULL 的外键 —— 删掉
+            # claim 会把已有告警的证据指针悄悄清空，作者看到的是一条没有出处的告警。
+            #
+            # 正确做法是不产生重复行：唯一键就是 (chapter_id, body_rev, fingerprint,
+            # extractor_version)，同一指纹重放本来就该是同一行，跳过即幂等。
+            existing_fingerprints = set(
+                (
+                    await db.execute(
+                        select(ConsistencyClaim.fingerprint).where(
+                            ConsistencyClaim.chapter_id == run.chapter_id,
+                            ConsistencyClaim.source_kind == "body",
+                            ConsistencyClaim.body_rev == run.body_rev,
+                            ConsistencyClaim.extractor_version == EXTRACTOR_VERSION,
+                        )
+                    )
                 )
+                .scalars()
+                .all()
             )
 
             # 解析 subject/object 的 entry_id：规则按 entry_id 分组，
@@ -336,13 +353,17 @@ async def _extract_claims_async(task_id: str, run_id: int):
                     }
                 )
 
-            # 补齐时间线与叙事位置；Chapter.idx 是稀疏序号，章内偏移压在 idx 之后
-            chapter_idx = (
-                await db.execute(select(Chapter.idx).where(Chapter.id == run.chapter_id))
-            ).scalar_one()
-            positioned = assign_narrative_positions(linked, chapter_idx=chapter_idx)
+            # 补齐可靠区间；不推导 story_order（架构 4.3：不是章节序号）
+            positioned = assign_narrative_positions(linked)
 
+            skipped = 0
+            inserted = 0
             for claim_data in positioned:
+                # 同版本重放时跳过已有指纹：同一指纹在同一版本就是同一行
+                if claim_data["fingerprint"] in existing_fingerprints:
+                    skipped += 1
+                    continue
+                inserted += 1
                 db.add(
                     ConsistencyClaim(
                         project_id=run.project_id,
@@ -358,8 +379,8 @@ async def _extract_claims_async(task_id: str, run_id: int):
                         chapter_id=run.chapter_id,
                         body_rev=run.body_rev,
                         paragraph_id=claim_data.get("paragraph_id"),
-                        timeline_id=claim_data["timeline_id"],
-                        story_order=claim_data["story_order"],
+                        timeline_id=claim_data.get("timeline_id"),
+                        story_order=claim_data.get("story_order"),
                         valid_from_order=claim_data.get("valid_from_order"),
                         valid_to_order=claim_data.get("valid_to_order"),
                         extractor_version=EXTRACTOR_VERSION,
@@ -374,13 +395,19 @@ async def _extract_claims_async(task_id: str, run_id: int):
             await ensure_run_not_failed(db, run_id)
             await db.commit()
 
+            # 顺序不可靠的 claim 照常落库，但不进硬规则 —— 计数单独报出来，
+            # 便于观察抽取器的顺序判定质量。
+            pending_order = sum(1 for c in positioned if c.get("story_order") is None)
+
             return {
                 "status": "success",
                 "task_id": task_id,
                 "run_id": run_id,
                 "claims_count": len(positioned),
+                "inserted_claims": inserted,
                 "superseded_claims": superseded.rowcount,
-                "replaced_claims": replaced.rowcount,
+                "skipped_existing_claims": skipped,
+                "pending_order_claims": pending_order,
                 "entity_linking": linker.stats.as_dict(),
             }
         except StaleRevisionError as exc:
