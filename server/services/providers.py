@@ -9,30 +9,32 @@ class EmbeddingProvider(ABC):
     """Embedding provider interface"""
 
     @abstractmethod
-    async def embed_text(self, text: str, model: str = "text-embedding-3-small") -> list[float]:
+    async def embed_text(self, text: str, model: Optional[str] = None) -> list[float]:
         """
         Generate embedding for text
 
         Args:
             text: Input text
-            model: Model identifier
+            model: Model identifier; None 表示用 settings.embedding_model
 
         Returns:
-            Embedding vector (1536-dim for OpenAI)
+            Embedding vector (settings.embedding_dimensions 维)
         """
         pass
 
     @abstractmethod
-    async def embed_batch(self, texts: list[str], model: str = "text-embedding-3-small") -> list[list[float]]:
+    async def embed_batch(
+        self, texts: list[str], model: Optional[str] = None
+    ) -> list[list[float]]:
         """
         Generate embeddings for batch of texts
 
         Args:
             texts: List of input texts
-            model: Model identifier
+            model: Model identifier; None 表示用 settings.embedding_model
 
         Returns:
-            List of embedding vectors
+            List of embedding vectors, 顺序与输入一致
         """
         pass
 
@@ -94,16 +96,29 @@ class StructuredExtractionProvider(ABC):
 
 
 class MockEmbeddingProvider(EmbeddingProvider):
-    """Mock embedding provider for testing"""
+    """Mock embedding provider for testing
 
-    async def embed_text(self, text: str, model: str = "text-embedding-3-small") -> list[float]:
-        # Return deterministic mock embedding based on text hash
+    确定性但方向可分：不同文本的向量夹角不同，这样 cosine_distance 在测试里
+    才有区分度（早期实现返回常量向量，任意两条都完全相似）。
+    """
+
+    async def embed_text(self, text: str, model: Optional[str] = None) -> list[float]:
         import hashlib
+        import math
 
-        hash_val = int(hashlib.md5(text.encode()).hexdigest(), 16)
-        return [(hash_val % 1000) / 1000.0] * 1536
+        from config import settings
 
-    async def embed_batch(self, texts: list[str], model: str = "text-embedding-3-small") -> list[list[float]]:
+        dimensions = settings.embedding_dimensions
+        digest = hashlib.sha256(text.encode("utf-8")).digest()
+        vector = [
+            (digest[index % len(digest)] - 127.5) / 127.5 for index in range(dimensions)
+        ]
+        norm = math.sqrt(sum(value * value for value in vector)) or 1.0
+        return [value / norm for value in vector]
+
+    async def embed_batch(
+        self, texts: list[str], model: Optional[str] = None
+    ) -> list[list[float]]:
         return [await self.embed_text(text, model) for text in texts]
 
 

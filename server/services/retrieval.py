@@ -59,6 +59,9 @@ class ConsistencyRetrieval:
         query_text: str,
         top_k: int = 5,
         threshold: float = 0.8,
+        kinds: Optional[list[str]] = None,
+        exclude_entry_ids: Optional[list[str]] = None,
+        statuses: Optional[list[str]] = None,
     ) -> list[dict]:
         """
         Layer 3: 向量相似度召回
@@ -68,44 +71,81 @@ class ConsistencyRetrieval:
             project_id: Project ID
             query_text: Query text
             top_k: Number of results
-            threshold: Similarity threshold (cosine distance, lower is better)
+            threshold: 余弦相似度下限（0~1，越大越严）
+            kinds: 只召回这些 kind（character/location/item/...）
+            exclude_entry_ids: 排除这些条目（例如已由 L2 精确命中的）
+            statuses: 只召回这些 status（默认不限制）
 
         Returns:
-            List of {"entry_id": str, "name": str, "distance": float}
+            List of {"entry_id", "name", "kind", "distance", "similarity"}
         """
         from sqlalchemy import text
+
+        if top_k <= 0:
+            raise ValueError("top_k must be positive")
+        if not 0.0 <= threshold <= 1.0:
+            raise ValueError("threshold must be between 0 and 1")
+        if not query_text or not query_text.strip():
+            return []
 
         # Generate query embedding
         query_embedding = await self.embedding_provider.embed_text(query_text)
 
-        # pgvector cosine distance search using <=> operator
-        # Distance ranges from 0 (identical) to 2 (opposite)
-        # Threshold of 0.8 similarity ≈ 0.4 distance
+        # pgvector cosine distance: 0 = 完全相同，1 = 正交，2 = 完全相反。
+        # similarity = 1 - distance，所以 similarity >= threshold 等价于
+        # distance <= 1 - threshold。
         distance_threshold = 1.0 - threshold
+        distance = CodexEntry.embedding.cosine_distance(query_embedding)
 
-        result = await db.execute(
-            select(
-                CodexEntry.id,
-                CodexEntry.name,
-                CodexEntry.embedding.cosine_distance(query_embedding).label("distance"),
-            )
+        stmt = (
+            select(CodexEntry.id, CodexEntry.name, CodexEntry.kind, distance.label("distance"))
             .where(CodexEntry.project_id == project_id)
             .where(CodexEntry.embedding.isnot(None))
-            .where(CodexEntry.embedding.cosine_distance(query_embedding) <= distance_threshold)
-            .order_by(text("distance"))
-            .limit(top_k)
+            .where(distance <= distance_threshold)
         )
+        if kinds:
+            stmt = stmt.where(CodexEntry.kind.in_(kinds))
+        if statuses:
+            stmt = stmt.where(CodexEntry.status.in_(statuses))
+        if exclude_entry_ids:
+            stmt = stmt.where(CodexEntry.id.notin_(exclude_entry_ids))
+
+        result = await db.execute(stmt.order_by(text("distance")).limit(top_k))
 
         candidates = []
         for row in result:
             candidates.append({
                 "entry_id": row.id,
                 "name": row.name,
+                "kind": row.kind,
                 "distance": float(row.distance),
                 "similarity": 1.0 - float(row.distance),  # Convert back to similarity
             })
 
         return candidates
+
+    async def resolve_entity(
+        self,
+        db: AsyncSession,
+        project_id: str,
+        text: str,
+        *,
+        kinds: Optional[list[str]] = None,
+        threshold: float = 0.8,
+    ) -> Optional[str]:
+        """L2 精确别名 → L3 向量兜底，返回最可能的 entry_id。
+
+        claim 的 subject_entry_id / object_entry_id 靠这个解析；只有精确匹配
+        或高于阈值的向量召回才算命中，否则返回 None（宁可不解析也不错连）。
+        """
+        exact = await self.resolve_entity_by_alias_l2(db, project_id, text)
+        if exact:
+            return exact
+
+        candidates = await self.retrieve_similar_entities_l3(
+            db, project_id, text, top_k=1, threshold=threshold, kinds=kinds
+        )
+        return candidates[0]["entry_id"] if candidates else None
 
     async def retrieve_adjacent_summaries_l4(
         self,
@@ -124,9 +164,9 @@ class ConsistencyRetrieval:
         Returns:
             List of {"chapter_id": str, "title": str, "summary": str, "position": str}
         """
-        # Get current chapter position
+        # Get current chapter position (Chapter 的排序列是 idx，没有 sort_order)
         current_result = await db.execute(
-            select(Chapter.sort_order, Chapter.project_id)
+            select(Chapter.idx, Chapter.project_id)
             .where(Chapter.id == chapter_id)
         )
         current = current_result.one_or_none()
@@ -135,16 +175,26 @@ class ConsistencyRetrieval:
 
         current_order, project_id = current
 
-        # Get adjacent chapters
-        adjacent_result = await db.execute(
-            select(Chapter.id, Chapter.title, Chapter.sort_order)
+        # idx 是稀疏排序值（LexoRank 风格），不能用 idx±window 当「前后 N 章」。
+        # 正确做法：按 idx 排序后取当前章前后各 window 条。
+        ordered_result = await db.execute(
+            select(Chapter.id, Chapter.title, Chapter.idx)
             .where(Chapter.project_id == project_id)
-            .where(Chapter.sort_order >= current_order - window)
-            .where(Chapter.sort_order <= current_order + window)
-            .where(Chapter.id != chapter_id)
-            .order_by(Chapter.sort_order)
+            .order_by(Chapter.idx)
         )
-        adjacent_chapters = adjacent_result.all()
+        ordered_chapters = ordered_result.all()
+
+        position_index = next(
+            (i for i, row in enumerate(ordered_chapters) if row.id == chapter_id), None
+        )
+        if position_index is None:
+            return []
+
+        start = max(0, position_index - window)
+        end = position_index + window + 1
+        adjacent_chapters = [
+            row for row in ordered_chapters[start:end] if row.id != chapter_id
+        ]
 
         results = []
         for chapter in adjacent_chapters:
@@ -159,7 +209,7 @@ class ConsistencyRetrieval:
             )
             summary = summary_result.scalar_one_or_none()
 
-            position = "before" if chapter.sort_order < current_order else "after"
+            position = "before" if chapter.idx < current_order else "after"
             results.append({
                 "chapter_id": chapter.id,
                 "title": chapter.title,
