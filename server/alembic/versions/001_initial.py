@@ -200,6 +200,7 @@ def upgrade() -> None:
         sa.Column("planted_at", sa.String(length=32), nullable=True),
         sa.Column("expected_by", sa.String(length=32), nullable=True),
         sa.Column("embedding", Vector(1536), nullable=True),
+        sa.Column("embedding_text_hash", sa.String(length=64), nullable=True),
         sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.text("now()"), nullable=False),
         sa.Column("updated_at", sa.DateTime(timezone=True), server_default=sa.text("now()"), nullable=False),
         sa.ForeignKeyConstraint(["project_id"], ["projects.id"], ondelete="CASCADE"),

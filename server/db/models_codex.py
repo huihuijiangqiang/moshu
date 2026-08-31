@@ -32,6 +32,10 @@ class CodexEntry(Base, TimestampMixin):
     planted_at: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)  # 伏笔埋在哪一章
     expected_by: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)  # 期望在哪一章回收
     embedding: Mapped[Optional[list[float]]] = mapped_column(Vector(1536), nullable=True)  # pgvector
+    #: 生成当前 embedding 的那段可检索文本的 sha256（见 services.codex_embedding）。
+    #: 有它才能回答两个问题：这次改动要不要重算（哈希没变就不调网关），以及哪些
+    #: 条目的向量已经过时（NULL = 待重算，回填任务据此挑行）。只有写入成功才落哈希。
+    embedding_text_hash: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
 
     # 关系
     project: Mapped["Project"] = relationship(back_populates="codex_entries")
