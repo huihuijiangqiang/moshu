@@ -80,6 +80,11 @@ def test_pgvector_extension_is_created(recorder):
     assert any("CREATE EXTENSION" in sql and "vector" in sql for sql in recorder.executed_sql)
 
 
+def test_pg_trgm_extension_is_created(recorder):
+    """The fuzzy alias GIN index requires pg_trgm's gin_trgm_ops."""
+    assert any("CREATE EXTENSION" in sql and "pg_trgm" in sql for sql in recorder.executed_sql)
+
+
 def test_downgrade_drops_every_created_table(recorder):
     """downgrade 必须能回滚干净，否则失败的发布无法退回。"""
     metadata, rec = build_migration_metadata()
@@ -265,6 +270,21 @@ def test_embedding_index_uses_hnsw(migration_metadata):
     }
 
 
+def test_every_hnsw_migration_step_declares_an_operator_class(recorder):
+    """PostgreSQL cannot build vector HNSW indexes without an explicit opclass."""
+    hnsw_indexes = [
+        index
+        for index in recorder.created_indexes
+        if index.dialect_options["postgresql"].get("using") == "hnsw"
+    ]
+    assert hnsw_indexes
+    for index in hnsw_indexes:
+        assert index.dialect_options["postgresql"].get("ops") in (
+            {"embedding": "vector_cosine_ops"},
+            {"embedding": "halfvec_cosine_ops"},
+        )
+
+
 def test_embedding_column_is_2048_dimension_halfvec(migration_metadata):
     column_type = migration_metadata.tables["codex_entries"].c.embedding.type
 
@@ -282,6 +302,9 @@ def test_alias_index_uses_gin(migration_metadata):
     table = migration_metadata.tables["codex_aliases"]
     index = next(i for i in table.indexes if i.name == "ix_codex_aliases_alias_gin")
     assert index.dialect_options["postgresql"].get("using") == "gin"
+    assert index.dialect_options["postgresql"].get("ops") == {
+        "alias": "gin_trgm_ops"
+    }
 
 
 def test_run_uniqueness_prevents_duplicate_pipelines(migration_metadata):

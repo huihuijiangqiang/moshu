@@ -1,6 +1,6 @@
 import { defineStore } from 'pinia'
 import { computed, ref } from 'vue'
-import { mockApi } from '@/api/mock'
+import { contentApi } from '@/api/content'
 import type { GuardIssue, GuardKind } from '@/types'
 
 export const useGuardStore = defineStore('guard', () => {
@@ -31,7 +31,7 @@ export const useGuardStore = defineStore('guard', () => {
 
   async function load(projectId = 'p1') {
     if (loaded.value && loadedProjectId.value === projectId) return
-    issues.value = await mockApi.listGuardIssues(projectId)
+    issues.value = await contentApi.listGuardIssues(projectId)
     loadedProjectId.value = projectId
     loaded.value = true
   }
@@ -39,14 +39,14 @@ export const useGuardStore = defineStore('guard', () => {
   async function rescan() {
     scanning.value = true
     try {
-      issues.value = await mockApi.listGuardIssues(loadedProjectId.value ?? 'p1')
+      issues.value = await contentApi.listGuardIssues(loadedProjectId.value ?? 'p1')
     } finally {
       scanning.value = false
     }
   }
 
   async function resolve(id: string) {
-    await mockApi.resolveGuardIssue(id)
+    await contentApi.resolveGuardIssue(id)
     const i = issues.value.find((x) => x.id === id)
     if (i) i.resolved = true
   }

@@ -99,13 +99,13 @@ async def seeded(pg_session):
     return pg_session
 
 
-async def test_embedding_round_trips_as_a_vector(seeded):
-    """写进去的是真实 vector 类型，读回来仍是等长浮点列表。"""
+async def test_embedding_round_trips_as_a_halfvec(seeded):
+    """HALFVEC(2048) round-trips with expected half-precision quantization."""
     entry = (
         await seeded.execute(select(CodexEntry).where(CodexEntry.id == "cx_near"))
     ).scalar_one()
     assert len(entry.embedding) == DIMENSIONS
-    assert pytest.approx(entry.embedding[0], abs=1e-6) == blend(0, 1, 0.1)[0]
+    assert pytest.approx(entry.embedding[0], abs=5e-4) == blend(0, 1, 0.1)[0]
 
 
 async def test_l3_orders_candidates_by_cosine_distance(seeded):

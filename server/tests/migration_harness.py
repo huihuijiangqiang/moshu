@@ -20,6 +20,7 @@ class _OpRecorder:
     def __init__(self, metadata: sa.MetaData):
         self.metadata = metadata
         self.executed_sql: list[str] = []
+        self.created_indexes: list[sa.Index] = []
         self.dropped_tables: list[str] = []
 
     # --- alembic op API 子集 ---
@@ -40,7 +41,9 @@ class _OpRecorder:
         table = self.metadata.tables[table_name]
         # 迁移里索引列可以是列名字符串，也可以是 sa.text(...) 表达式
         resolved = [table.c[col] if isinstance(col, str) else col for col in columns]
-        return sa.Index(index_name, *resolved, unique=unique, _table=table, **kw)
+        index = sa.Index(index_name, *resolved, unique=unique, _table=table, **kw)
+        self.created_indexes.append(index)
+        return index
 
     def drop_table(self, table_name: str, **kw: Any) -> None:
         self.dropped_tables.append(table_name)

@@ -88,6 +88,8 @@ export interface Chapter {
   content?: string
   /** 写完后异步生成的 200 字摘要，供第 3 层滚动记忆使用 */
   summary?: string
+  /** 服务端正文乐观锁版本。 */
+  rev?: number
 }
 
 export interface ChapterPlanPatch {

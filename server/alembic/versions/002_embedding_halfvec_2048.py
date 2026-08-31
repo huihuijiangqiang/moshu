@@ -63,4 +63,5 @@ def downgrade() -> None:
         "codex_entries",
         ["embedding"],
         postgresql_using="hnsw",
+        postgresql_ops={"embedding": "vector_cosine_ops"},
     )

@@ -1,10 +1,15 @@
 const BASE = import.meta.env.VITE_API_BASE ?? '/api'
-export const USE_MOCK = (import.meta.env.VITE_USE_MOCK ?? 'true') === 'true'
+export const USE_MOCK = import.meta.env.MODE === 'test' || (import.meta.env.VITE_USE_MOCK ?? 'true') === 'true'
 
 export async function request<T>(path: string, init?: RequestInit): Promise<T> {
+  const token = import.meta.env.VITE_API_TOKEN as string | undefined
   const res = await fetch(BASE + path, {
     ...init,
-    headers: { 'Content-Type': 'application/json', ...(init?.headers ?? {}) }
+    headers: {
+      'Content-Type': 'application/json',
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      ...(init?.headers ?? {})
+    }
   })
   if (!res.ok) throw new ApiError(res.status, await res.text())
   return (await res.json()) as T

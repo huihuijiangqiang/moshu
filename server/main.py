@@ -15,10 +15,10 @@ from config import settings
 async def lifespan(app: FastAPI):
     """应用生命周期管理"""
     # 启动时
-    print("🚀 墨枢服务启动中...")
+    print("Moshu server starting...")
     yield
     # 关闭时
-    print("👋 墨枢服务关闭")
+    print("Moshu server stopped")
 
 
 app = FastAPI(

@@ -104,7 +104,14 @@ class CodexAlias(Base):
     # 关系
     entry: Mapped["CodexEntry"] = relationship(back_populates="aliases")
 
-    __table_args__ = (Index("ix_codex_aliases_alias_gin", "alias", postgresql_using="gin"),)
+    __table_args__ = (
+        Index(
+            "ix_codex_aliases_alias_gin",
+            "alias",
+            postgresql_using="gin",
+            postgresql_ops={"alias": "gin_trgm_ops"},
+        ),
+    )
 
 
 class CodexRef(Base):

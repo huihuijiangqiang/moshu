@@ -1,6 +1,6 @@
 import { defineStore } from 'pinia'
 import { computed, ref } from 'vue'
-import { mockApi } from '@/api/mock'
+import { contentApi } from '@/api/content'
 import type { Chapter, ChapterPlanPatch, Project } from '@/types'
 
 export const useProjectStore = defineStore('project', () => {
@@ -26,7 +26,9 @@ export const useProjectStore = defineStore('project', () => {
     if (loadedProjectId.value === projectId && project.value) return
     loading.value = true
     try {
-      const [p, list] = await Promise.all([mockApi.getProject(projectId), mockApi.listChapters(projectId)])
+      const [p, list] = await Promise.all([contentApi.getProject(projectId), contentApi.listChapters(projectId)])
+      p.wordCount = list.reduce((sum, chapter) => sum + chapter.words, 0)
+      p.chapterCount = list.length
       project.value = p
       chapters.value = list
       loadedProjectId.value = projectId
@@ -41,7 +43,7 @@ export const useProjectStore = defineStore('project', () => {
     activeId.value = id
     const target = chapters.value.find((c) => c.id === id)
     if (!target || target.content !== undefined) return
-    const full = await mockApi.getChapter(id)
+    const full = await contentApi.getChapter(id)
     if (full) target.content = full.content ?? ''
   }
 
@@ -54,7 +56,7 @@ export const useProjectStore = defineStore('project', () => {
   }
 
   async function updateChapterPlan(id: string, patch: ChapterPlanPatch) {
-    const updated = await mockApi.updateChapterPlan(id, patch)
+    const updated = await contentApi.updateChapterPlan(id, patch)
     if (!updated) throw new Error('chapter_not_found')
     const index = chapters.value.findIndex((chapter) => chapter.id === id)
     if (index >= 0) chapters.value[index] = { ...chapters.value[index], ...updated }
@@ -64,7 +66,7 @@ export const useProjectStore = defineStore('project', () => {
   async function insertChapterAfter(volumeId: string, afterIndex: number) {
     const projectId = loadedProjectId.value
     if (!projectId) throw new Error('project_not_loaded')
-    const created = await mockApi.insertChapter(projectId, volumeId, afterIndex)
+    const created = await contentApi.insertChapter(projectId, volumeId, afterIndex)
     chapters.value.forEach((chapter) => {
       if (chapter.volumeId === volumeId && chapter.index > afterIndex) chapter.index += 1
     })

@@ -58,10 +58,12 @@ async def pg_engine():
 
     async with engine.begin() as conn:
         await conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
+        await conn.execute(text("CREATE EXTENSION IF NOT EXISTS pg_trgm"))
         await conn.execute(text(f'CREATE SCHEMA "{schema}"'))
         await conn.execute(text(f'SET search_path TO "{schema}", public'))
-        # 建表要用带 schema 的连接；search_path 已指向测试 schema
-        await conn.run_sync(Base.metadata.create_all)
+        # Public may already contain the production tables. checkfirst=True would see
+        # those visible names and skip creating the isolated schema's tables.
+        await conn.run_sync(lambda sync_conn: Base.metadata.create_all(sync_conn, checkfirst=False))
 
     try:
         yield engine, schema

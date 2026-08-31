@@ -74,21 +74,18 @@ cp .env.example .env
 
 ### 3. 启动数据库
 
-使用 Docker Compose（TODO：补充 docker-compose.yml）：
+在仓库根目录使用 Docker Compose：
 
 ```bash
-docker-compose up -d postgres redis
+docker compose up -d postgres redis
 ```
+
+容器使用 `pgvector/pgvector:pg16` 和 `redis:7-alpine`，默认端口分别为 5432、6379，
+并带健康检查与持久卷。
 
 ### 4. 运行迁移
 
 ```bash
-# 初始化 Alembic（首次）
-alembic init alembic
-
-# 生成迁移
-alembic revision --autogenerate -m "Initial schema"
-
 # 应用迁移
 alembic upgrade head
 ```

@@ -32,7 +32,7 @@ const editor = useNovelEditor(html.value, (next, chars) => {
   if (store.activeId) store.setWords(store.activeId, chars)
 })
 
-const { state: saveState, savedAt, online } = useAutosave(chapterId, html)
+const { state: saveState, savedAt, online, markClean } = useAutosave(chapterId, html)
 
 const requestedChapterId = computed(() => typeof route.query.chapter === 'string' ? route.query.chapter : null)
 
@@ -48,6 +48,7 @@ watch(
     if (store.activeId !== id) return
 
     const content = store.chapters.find((chapter) => chapter.id === id)?.content ?? ''
+    markClean(id, content)
     editor.value?.commands.setContent(content, { emitUpdate: false })
     html.value = content
 
@@ -117,6 +118,8 @@ const saveLabel = computed(() => {
       return '未保存'
     case 'offline':
       return '离线 · 已存本地'
+    case 'error':
+      return '保存失败 · 已存本地'
     case 'saved':
       return `已保存 ${savedAt.value?.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' }) ?? ''}`
     default:
@@ -199,8 +202,8 @@ function editChapterPlan() {
         <span
           class="paper-save-state"
           :style="{
-            color: saveState === 'offline' || saveState === 'dirty' ? 'var(--alert-ink)' : 'var(--ink-3)',
-            fontWeight: saveState === 'offline' ? 700 : 400
+            color: saveState === 'offline' || saveState === 'error' || saveState === 'dirty' ? 'var(--alert-ink)' : 'var(--ink-3)',
+            fontWeight: saveState === 'offline' || saveState === 'error' ? 700 : 400
           }"
         >{{ saveLabel }}</span>
         <button class="wk-btn wk-btn-xs" type="button" :title="shell.zen ? '退出纯净模式 ⌘\\' : '纯净模式 ⌘\\'" @click="shell.toggleZen()">

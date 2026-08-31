@@ -1,6 +1,6 @@
 import { defineStore } from 'pinia'
 import { computed, ref } from 'vue'
-import { mockApi } from '@/api/mock'
+import { contentApi } from '@/api/content'
 import type { CodexEntry, CodexKind } from '@/types'
 
 function flattenSearchValue(value: unknown): string[] {
@@ -60,19 +60,19 @@ export const useCodexStore = defineStore('codex', () => {
 
   async function load(projectId = 'p1') {
     if (loaded.value && loadedProjectId.value === projectId) return
-    entries.value = await mockApi.listCodex(projectId)
+    entries.value = await contentApi.listCodex(projectId)
     loadedProjectId.value = projectId
     loaded.value = true
   }
 
   async function confirm(id: string) {
-    await mockApi.confirmCodexEntry(id)
+    await contentApi.confirmCodexEntry(id)
     const e = byId.value.get(id)
     if (e) e.status = 'confirmed'
   }
 
   async function drop(id: string) {
-    await mockApi.dropCodexEntry(id)
+    await contentApi.dropCodexEntry(id)
     entries.value = entries.value.filter((e) => e.id !== id)
   }
 

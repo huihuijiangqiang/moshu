@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
-import { mockApi } from '@/api/mock'
+import { contentApi } from '@/api/content'
 import { useProjectStore } from '@/stores/project'
 import { useCodexStore } from '@/stores/codex'
 import { useGuardStore } from '@/stores/guard'
@@ -30,7 +30,7 @@ const model = ref<'basic' | 'advanced'>('basic')
 const BUDGET = 25000
 
 onMounted(async () => {
-  layers.value = await mockApi.getContextLayers()
+  layers.value = await contentApi.getContextLayers()
 })
 
 const total = computed(() => layers.value.reduce((s, l) => s + l.tokens, 0))

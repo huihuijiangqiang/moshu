@@ -21,8 +21,9 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
-    # Enable pgvector extension
+    # Enable PostgreSQL extensions required by vector and fuzzy alias indexes.
     op.execute("CREATE EXTENSION IF NOT EXISTS vector")
+    op.execute("CREATE EXTENSION IF NOT EXISTS pg_trgm")
 
     # Core tables
     op.create_table(
@@ -208,7 +209,13 @@ def upgrade() -> None:
         sa.CheckConstraint("status IN ('confirmed', 'pending')", name="ck_codex_entry_status"),
     )
     op.create_index(op.f("ix_codex_entries_project_id"), "codex_entries", ["project_id"])
-    op.create_index("ix_codex_entries_embedding", "codex_entries", ["embedding"], postgresql_using="hnsw")
+    op.create_index(
+        "ix_codex_entries_embedding",
+        "codex_entries",
+        ["embedding"],
+        postgresql_using="hnsw",
+        postgresql_ops={"embedding": "vector_cosine_ops"},
+    )
 
     op.create_table(
         "codex_aliases",
@@ -220,7 +227,13 @@ def upgrade() -> None:
     )
     op.create_index(op.f("ix_codex_aliases_entry_id"), "codex_aliases", ["entry_id"])
     op.create_index(op.f("ix_codex_aliases_alias"), "codex_aliases", ["alias"])
-    op.create_index("ix_codex_aliases_alias_gin", "codex_aliases", ["alias"], postgresql_using="gin")
+    op.create_index(
+        "ix_codex_aliases_alias_gin",
+        "codex_aliases",
+        ["alias"],
+        postgresql_using="gin",
+        postgresql_ops={"alias": "gin_trgm_ops"},
+    )
 
     op.create_table(
         "codex_refs",
@@ -778,4 +791,5 @@ def downgrade() -> None:
     op.drop_table("orgs")
     op.drop_table("users")
 
+    op.execute("DROP EXTENSION IF EXISTS pg_trgm")
     op.execute("DROP EXTENSION IF EXISTS vector")
