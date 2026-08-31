@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 from typing import Optional
 
 from sqlalchemy import select, update
+from sqlalchemy import text as sa_text
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -332,6 +333,33 @@ async def resolve_entity_by_alias(
     return entry_id
 
 
+#: 每种 source_kind 对应的部分唯一索引推断参数。
+#:
+#: claim 的唯一性不是一个索引，而是四个按 source_kind 分区的**部分**唯一索引
+#: （见 ConsistencyClaim.__table_args__）。ON CONFLICT 的冲突推断必须同时给出
+#: 索引列**和** where 谓词，PostgreSQL 才能匹配到具体那个部分索引。
+#:
+#: 早期实现写的是 index_elements=[source_kind, chapter_id, body_rev,
+#: outline_rev, fingerprint, extractor_version] —— 这六列上没有任何索引，
+#: PostgreSQL 会直接报
+#:   InvalidColumnReference: there is no unique or exclusion constraint
+#:   matching the ON CONFLICT specification
+#: 也就是说这个函数在生产上一次都不可能成功。SQLite 不编译 ON CONFLICT，
+#: 单元测试永远碰不到，真实拒绝行为只能由 PostgreSQL 集成测试覆盖。
+_CLAIM_CONFLICT_TARGETS = {
+    "body": (
+        ["chapter_id", "body_rev", "fingerprint", "extractor_version"],
+        "source_kind = 'body'",
+    ),
+    "outline": (
+        ["chapter_id", "outline_rev", "fingerprint", "extractor_version"],
+        "source_kind = 'outline'",
+    ),
+    "codex": (["fingerprint", "extractor_version"], "source_kind = 'codex'"),
+    "resolution": (["fingerprint", "extractor_version"], "source_kind = 'resolution'"),
+}
+
+
 async def upsert_claim(
     db: AsyncSession,
     *,
@@ -352,14 +380,22 @@ async def upsert_claim(
     extractor_version: str,
     confidence: Optional[float] = None,
 ) -> int:
-    """插入或更新 claim - 幂等"""
-    # 尝试解析实体
+    """插入或更新 claim（幂等，PostgreSQL 专用）。
+
+    冲突目标按 source_kind 选取对应的部分唯一索引，见 _CLAIM_CONFLICT_TARGETS。
+    """
+    if source_kind not in _CLAIM_CONFLICT_TARGETS:
+        raise ValueError(
+            f"unknown source_kind {source_kind!r}; expected one of "
+            f"{sorted(_CLAIM_CONFLICT_TARGETS)}"
+        )
+    index_elements, index_where = _CLAIM_CONFLICT_TARGETS[source_kind]
+
     subject_entry_id = await resolve_entity_by_alias(db, project_id, subject_text)
+    fingerprint = compute_claim_fingerprint(
+        subject_text, predicate, object_type, object_value, polarity
+    )
 
-    # 计算指纹
-    fingerprint = compute_claim_fingerprint(subject_text, predicate, object_type, object_value, polarity)
-
-    # Upsert
     stmt = (
         insert(ConsistencyClaim)
         .values(
@@ -384,7 +420,8 @@ async def upsert_claim(
             status="candidate",
         )
         .on_conflict_do_update(
-            index_elements=["source_kind", "chapter_id", "body_rev", "outline_rev", "fingerprint", "extractor_version"],
+            index_elements=index_elements,
+            index_where=sa_text(index_where),
             set_={
                 "subject_entry_id": subject_entry_id,
                 "object_value": object_value,
