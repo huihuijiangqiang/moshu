@@ -30,7 +30,10 @@ from services.consistency import (
     SUMMARY_VERSION,
     normalize_run_trigger,
 )
+from services.embedding import GatewayEmbeddingProvider
+from services.entity_linking import EntityLinker
 from services.outbox import OutboxService
+from services.retrieval import ConsistencyRetrieval
 from services.rule_scanner import RuleScanner
 
 # Create async engine for tasks
@@ -115,6 +118,14 @@ async def fail_run(db, run_id: int, *, error_code: str, error_detail: str) -> No
         )
     )
     await db.commit()
+
+
+def build_entity_linker() -> EntityLinker:
+    """构造实体链接器（L2 别名 + L3 向量兜底）。
+
+    单独抽成函数，测试里可以替换成只用别名的版本；生产走真实 embedding 网关。
+    """
+    return EntityLinker(ConsistencyRetrieval(GatewayEmbeddingProvider()))
 
 
 @shared_task(bind=True, name="consistency.process_body_saved")
@@ -236,13 +247,21 @@ async def _extract_claims_async(task_id: str, run_id: int):
             )
 
             # Persist claims using actual ORM schema
+            # 解析 subject/object 的 entry_id：规则按 entry_id 分组，
+            # 不解析就等于关掉跨章节冲突检测。
+            linker = build_entity_linker()
             for claim_data in claims_data:
+                subject_entry_id, object_entry_id = await linker.link_claim(
+                    db, run.project_id, claim_data
+                )
                 claim = ConsistencyClaim(
                     project_id=run.project_id,
+                    subject_entry_id=subject_entry_id,
                     subject_text=claim_data["subject_text"],
                     predicate=claim_data["predicate"],
                     object_type=claim_data["object_type"],
                     object_value=claim_data.get("object_value"),
+                    object_entry_id=object_entry_id,
                     polarity=claim_data.get("polarity", "positive"),
                     certainty=claim_data.get("certainty", "explicit"),
                     source_kind="body",
@@ -266,6 +285,7 @@ async def _extract_claims_async(task_id: str, run_id: int):
                 "run_id": run_id,
                 "claims_count": len(claims_data),
                 "superseded_claims": superseded.rowcount,
+                "entity_linking": linker.stats.as_dict(),
             }
         except StaleRevisionError as exc:
             await db.rollback()
@@ -519,6 +539,7 @@ __all__ = [
     "EXTRACTOR_VERSION",
     "RunNotFoundError",
     "StaleRevisionError",
+    "build_entity_linker",
     "dispatch_outbox",
     "extract_claims",
     "generate_summary",

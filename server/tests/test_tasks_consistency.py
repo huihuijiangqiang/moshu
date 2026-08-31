@@ -36,6 +36,24 @@ def use_test_session(async_db_session, monkeypatch):
     return async_db_session
 
 
+@pytest.fixture(autouse=True)
+def alias_only_linker(monkeypatch):
+    """管道测试聚焦版本/事务行为，实体链接只用精确别名，不发网络请求。
+
+    实体链接本身的行为由 tests/test_entity_linking.py 覆盖。
+    """
+    from services.entity_linking import EntityLinker
+    from services.retrieval import ConsistencyRetrieval
+
+    monkeypatch.setattr(
+        tasks,
+        "build_entity_linker",
+        lambda: EntityLinker(
+            ConsistencyRetrieval(embedding_provider=None), use_vector_fallback=False
+        ),
+    )
+
+
 @pytest.fixture
 def fake_provider(monkeypatch):
     """替换 ConsistencyProvider，可控返回值与异常。"""
