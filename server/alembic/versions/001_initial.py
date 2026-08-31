@@ -46,22 +46,28 @@ def upgrade() -> None:
         "orgs",
         sa.Column("id", sa.String(length=32), nullable=False),
         sa.Column("name", sa.String(length=200), nullable=False),
-        sa.Column("slug", sa.String(length=100), nullable=False),
         sa.Column("plan", sa.String(length=50), nullable=False),
+        sa.Column("seats", sa.Integer(), nullable=False),
+        sa.Column("seats_used", sa.Integer(), nullable=False),
         sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.text("now()"), nullable=False),
         sa.Column("updated_at", sa.DateTime(timezone=True), server_default=sa.text("now()"), nullable=False),
         sa.PrimaryKeyConstraint("id"),
     )
-    op.create_index(op.f("ix_orgs_slug"), "orgs", ["slug"], unique=True)
 
     op.create_table(
         "style_profiles",
         sa.Column("id", sa.String(length=32), nullable=False),
         sa.Column("user_id", sa.String(length=32), nullable=False),
         sa.Column("name", sa.String(length=200), nullable=False),
-        sa.Column("fingerprint", postgresql.JSONB(astext_type=sa.Text()), nullable=False),
+        sa.Column("sample_words", sa.Integer(), nullable=False),
+        sa.Column("is_default", sa.Boolean(), nullable=False),
+        sa.Column("dimensions", postgresql.JSONB(astext_type=sa.Text()), nullable=False),
+        sa.Column("alignment", sa.Float(), nullable=False),
+        sa.Column("upload_url", sa.String(length=512), nullable=True),
+        sa.Column("status", sa.String(length=20), nullable=False),
         sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.text("now()"), nullable=False),
         sa.Column("updated_at", sa.DateTime(timezone=True), server_default=sa.text("now()"), nullable=False),
+        sa.ForeignKeyConstraint(["user_id"], ["users.id"], ondelete="CASCADE"),
         sa.PrimaryKeyConstraint("id"),
     )
     op.create_index(op.f("ix_style_profiles_user_id"), "style_profiles", ["user_id"])
@@ -90,13 +96,16 @@ def upgrade() -> None:
         sa.Column("id", sa.Integer(), autoincrement=True, nullable=False),
         sa.Column("org_id", sa.String(length=32), nullable=False),
         sa.Column("user_id", sa.String(length=32), nullable=False),
-        sa.Column("role", sa.String(length=50), nullable=False),
+        sa.Column("role", sa.String(length=20), nullable=False),
         sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.text("now()"), nullable=False),
         sa.Column("updated_at", sa.DateTime(timezone=True), server_default=sa.text("now()"), nullable=False),
         sa.ForeignKeyConstraint(["org_id"], ["orgs.id"], ondelete="CASCADE"),
+        sa.ForeignKeyConstraint(["user_id"], ["users.id"], ondelete="CASCADE"),
         sa.PrimaryKeyConstraint("id"),
         sa.UniqueConstraint("org_id", "user_id", name="uq_org_user"),
     )
+    op.create_index(op.f("ix_org_members_org_id"), "org_members", ["org_id"])
+    op.create_index(op.f("ix_org_members_user_id"), "org_members", ["user_id"])
 
     op.create_table(
         "volumes",
@@ -129,7 +138,6 @@ def upgrade() -> None:
         sa.PrimaryKeyConstraint("id"),
     )
     op.create_index(op.f("ix_chapters_project_id"), "chapters", ["project_id"])
-    op.create_index(op.f("ix_chapters_volume_id"), "chapters", ["volume_id"])
 
     op.create_table(
         "chapter_bodies",
@@ -163,12 +171,18 @@ def upgrade() -> None:
         sa.Column("id", sa.Integer(), autoincrement=True, nullable=False),
         sa.Column("chapter_id", sa.String(length=32), nullable=False),
         sa.Column("assigned_to", sa.String(length=32), nullable=False),
-        sa.Column("role", sa.String(length=50), nullable=False),
+        sa.Column("assigned_by", sa.String(length=32), nullable=False),
+        sa.Column("status", sa.String(length=20), nullable=False),
+        sa.Column("notes", sa.String(length=500), nullable=True),
         sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.text("now()"), nullable=False),
         sa.Column("updated_at", sa.DateTime(timezone=True), server_default=sa.text("now()"), nullable=False),
         sa.ForeignKeyConstraint(["chapter_id"], ["chapters.id"], ondelete="CASCADE"),
+        sa.ForeignKeyConstraint(["assigned_to"], ["users.id"], ondelete="CASCADE"),
+        sa.ForeignKeyConstraint(["assigned_by"], ["users.id"], ondelete="CASCADE"),
         sa.PrimaryKeyConstraint("id"),
     )
+    op.create_index(op.f("ix_chapter_assignments_chapter_id"), "chapter_assignments", ["chapter_id"])
+    op.create_index(op.f("ix_chapter_assignments_assigned_to"), "chapter_assignments", ["assigned_to"])
 
     # Codex tables
     op.create_table(
@@ -203,7 +217,7 @@ def upgrade() -> None:
         sa.PrimaryKeyConstraint("id"),
     )
     op.create_index(op.f("ix_codex_aliases_entry_id"), "codex_aliases", ["entry_id"])
-    op.create_index("ix_codex_alias_lookup", "codex_aliases", ["alias", "entry_id"])
+    op.create_index(op.f("ix_codex_aliases_alias"), "codex_aliases", ["alias"])
     op.create_index("ix_codex_aliases_alias_gin", "codex_aliases", ["alias"], postgresql_using="gin")
 
     op.create_table(
@@ -218,14 +232,17 @@ def upgrade() -> None:
     )
     op.create_index(op.f("ix_codex_refs_chapter_id"), "codex_refs", ["chapter_id"])
     op.create_index(op.f("ix_codex_refs_entry_id"), "codex_refs", ["entry_id"])
+    op.create_index("ix_codex_refs_chapter_entry", "codex_refs", ["chapter_id", "entry_id"], unique=True)
 
     op.create_table(
         "codex_relations",
-        sa.Column("id", sa.Integer(), autoincrement=True, nullable=False),
+        sa.Column("id", sa.String(length=32), nullable=False),
         sa.Column("from_id", sa.String(length=32), nullable=False),
         sa.Column("to_id", sa.String(length=32), nullable=False),
         sa.Column("relation_type", sa.String(length=50), nullable=False),
         sa.Column("description", sa.Text(), nullable=True),
+        sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.text("now()"), nullable=False),
+        sa.Column("updated_at", sa.DateTime(timezone=True), server_default=sa.text("now()"), nullable=False),
         sa.ForeignKeyConstraint(["from_id"], ["codex_entries.id"], ondelete="CASCADE"),
         sa.ForeignKeyConstraint(["to_id"], ["codex_entries.id"], ondelete="CASCADE"),
         sa.PrimaryKeyConstraint("id"),
@@ -237,13 +254,23 @@ def upgrade() -> None:
     op.create_table(
         "chapter_outline_states",
         sa.Column("chapter_id", sa.String(length=32), nullable=False),
-        sa.Column("outline_rev", sa.Integer(), nullable=False),
-        sa.Column("consistency_status", sa.String(length=20), nullable=False),
-        sa.Column("last_check_at", sa.DateTime(timezone=True), nullable=True),
+        sa.Column("revision", sa.Integer(), server_default="0", nullable=False),
+        sa.Column("note", sa.Text(), server_default="", nullable=False),
+        sa.Column("body_needs_revision", sa.Boolean(), server_default="false", nullable=False),
+        sa.Column("marked_outline_rev", sa.Integer(), nullable=True),
+        sa.Column("marked_body_rev", sa.Integer(), nullable=True),
         sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.text("now()"), nullable=False),
         sa.Column("updated_at", sa.DateTime(timezone=True), server_default=sa.text("now()"), nullable=False),
-        sa.CheckConstraint("consistency_status IN ('unknown', 'queued', 'checking', 'pass', 'has_issues')", name="ck_outline_state_consistency_status"),
-        sa.CheckConstraint("outline_rev > 0", name="ck_outline_state_outline_rev_positive"),
+        sa.CheckConstraint("revision >= 0", name="ck_outline_state_revision_nonnegative"),
+        sa.CheckConstraint(
+            "(body_needs_revision AND marked_outline_rev IS NOT NULL AND marked_body_rev IS NOT NULL) "
+            "OR (NOT body_needs_revision AND marked_outline_rev IS NULL AND marked_body_rev IS NULL)",
+            name="ck_outline_state_marker_consistent",
+        ),
+        sa.CheckConstraint(
+            "marked_outline_rev IS NULL OR marked_outline_rev <= revision",
+            name="ck_outline_state_marked_revision_valid",
+        ),
         sa.ForeignKeyConstraint(["chapter_id"], ["chapters.id"], ondelete="CASCADE"),
         sa.PrimaryKeyConstraint("chapter_id"),
     )
@@ -252,13 +279,23 @@ def upgrade() -> None:
         "chapter_outline_revisions",
         sa.Column("id", sa.BigInteger(), autoincrement=True, nullable=False),
         sa.Column("chapter_id", sa.String(length=32), nullable=False),
-        sa.Column("outline_rev", sa.Integer(), nullable=False),
-        sa.Column("outline_json", postgresql.JSONB(astext_type=sa.Text()), nullable=False),
-        sa.Column("author_id", sa.String(length=32), nullable=True),
+        sa.Column("revision", sa.Integer(), nullable=False),
+        sa.Column("title", sa.String(length=200), nullable=False),
+        sa.Column("nodes", postgresql.JSONB(astext_type=sa.Text()), nullable=False),
+        sa.Column("note", sa.Text(), nullable=False),
+        sa.Column("body_policy", sa.String(length=32), nullable=False),
+        sa.Column("body_rev_at_change", sa.Integer(), nullable=True),
+        sa.Column("created_by", sa.String(length=32), nullable=True),
         sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.text("now()"), nullable=False),
-        sa.CheckConstraint("outline_rev > 0", name="ck_outline_revision_outline_rev_positive"),
+        sa.CheckConstraint(
+            "body_policy IN ('plan_only', 'mark_body_for_revision')",
+            name="ck_body_policy_enum",
+        ),
+        sa.CheckConstraint("revision > 0", name="ck_outline_revision_positive"),
         sa.ForeignKeyConstraint(["chapter_id"], ["chapters.id"], ondelete="CASCADE"),
+        sa.ForeignKeyConstraint(["created_by"], ["users.id"], ondelete="SET NULL"),
         sa.PrimaryKeyConstraint("id"),
+        sa.UniqueConstraint("chapter_id", "revision", name="uq_chapter_outline_revision"),
     )
     op.create_index(op.f("ix_chapter_outline_revisions_chapter_id"), "chapter_outline_revisions", ["chapter_id"])
 
@@ -269,39 +306,50 @@ def upgrade() -> None:
         sa.Column("aggregate_id", sa.String(length=64), nullable=False),
         sa.Column("aggregate_rev", sa.Integer(), nullable=False),
         sa.Column("payload", postgresql.JSONB(astext_type=sa.Text()), nullable=False),
-        sa.Column("payload_hash", sa.String(length=64), nullable=False),
-        sa.Column("status", sa.String(length=20), nullable=False),
-        sa.Column("retry_count", sa.Integer(), nullable=False),
-        sa.Column("next_retry_at", sa.DateTime(timezone=True), nullable=True),
+        sa.Column("status", sa.String(length=20), server_default="pending", nullable=False),
+        sa.Column("attempts", sa.Integer(), server_default="0", nullable=False),
+        sa.Column("available_at", sa.DateTime(timezone=True), server_default=sa.text("now()"), nullable=False),
+        sa.Column("lease_owner", sa.String(length=100), nullable=True),
+        sa.Column("lease_token", sa.String(length=64), nullable=True),
         sa.Column("lease_until", sa.DateTime(timezone=True), nullable=True),
-        sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.text("now()"), nullable=False),
         sa.Column("sent_at", sa.DateTime(timezone=True), nullable=True),
-        sa.CheckConstraint("status IN ('pending', 'sent', 'dead')", name="ck_outbox_event_status"),
-        sa.CheckConstraint("retry_count >= 0", name="ck_outbox_retry_count_non_negative"),
+        sa.Column("last_error", sa.Text(), nullable=True),
+        sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.text("now()"), nullable=False),
+        sa.Column("updated_at", sa.DateTime(timezone=True), server_default=sa.text("now()"), nullable=False),
+        sa.CheckConstraint(
+            "status IN ('pending', 'dispatching', 'sent', 'failed', 'dead_letter')",
+            name="ck_outbox_status_enum",
+        ),
+        sa.CheckConstraint("attempts >= 0", name="ck_outbox_attempts_nonnegative"),
         sa.PrimaryKeyConstraint("id"),
-        sa.UniqueConstraint("topic", "aggregate_id", "aggregate_rev", "payload_hash", name="uq_outbox_event_key"),
+        sa.UniqueConstraint("topic", "aggregate_id", "aggregate_rev", name="uq_outbox_event_key"),
     )
+    op.create_index(op.f("ix_outbox_events_topic"), "outbox_events", ["topic"])
     op.create_index(op.f("ix_outbox_events_status"), "outbox_events", ["status"])
-    op.create_index("ix_outbox_pending_lease", "outbox_events", ["status", "next_retry_at", "lease_until"])
 
     op.create_table(
         "idempotency_records",
         sa.Column("id", sa.BigInteger(), autoincrement=True, nullable=False),
-        sa.Column("scope", sa.String(length=200), nullable=False),
-        sa.Column("key", sa.String(length=200), nullable=False),
+        sa.Column("scope", sa.String(length=100), nullable=False),
+        sa.Column("key", sa.String(length=100), nullable=False),
         sa.Column("request_hash", sa.String(length=64), nullable=False),
-        sa.Column("status", sa.String(length=20), nullable=False),
+        sa.Column("status", sa.String(length=20), server_default="pending", nullable=False),
         sa.Column("owner_token", sa.String(length=64), nullable=True),
         sa.Column("lease_until", sa.DateTime(timezone=True), nullable=True),
         sa.Column("response_status", sa.Integer(), nullable=True),
         sa.Column("response_body", postgresql.JSONB(astext_type=sa.Text()), nullable=True),
         sa.Column("expires_at", sa.DateTime(timezone=True), nullable=False),
         sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.text("now()"), nullable=False),
-        sa.CheckConstraint("status IN ('pending', 'completed')", name="ck_idempotency_status"),
+        sa.CheckConstraint("status IN ('pending', 'completed')", name="ck_idempotency_status_enum"),
+        sa.CheckConstraint(
+            "(status = 'pending' AND response_status IS NULL AND response_body IS NULL) OR "
+            "(status = 'completed' AND owner_token IS NULL AND lease_until IS NULL "
+            "AND response_status IS NOT NULL AND response_body IS NOT NULL)",
+            name="ck_idempotency_phase_consistent",
+        ),
         sa.PrimaryKeyConstraint("id"),
         sa.UniqueConstraint("scope", "key", name="uq_idempotency_scope_key"),
     )
-    op.create_index(op.f("ix_idempotency_records_scope"), "idempotency_records", ["scope"])
 
     # Consistency extended tables
     op.create_table(
@@ -486,7 +534,7 @@ def upgrade() -> None:
         sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.text("now()"), nullable=False),
         sa.Column("updated_at", sa.DateTime(timezone=True), server_default=sa.text("now()"), nullable=False),
         sa.CheckConstraint("status IN ('candidate', 'accepted', 'rejected', 'superseded')", name="ck_state_interval_status"),
-        sa.CheckConstraint("valid_to_order IS NULL OR valid_to_order > valid_from_order", name="ck_state_interval_valid_order"),
+        sa.CheckConstraint("valid_to_order IS NULL OR valid_to_order > valid_from_order", name="ck_state_interval_order_valid"),
         sa.ForeignKeyConstraint(["project_id"], ["projects.id"], ondelete="CASCADE"),
         sa.ForeignKeyConstraint(["entry_id"], ["codex_entries.id"], ondelete="CASCADE"),
         sa.ForeignKeyConstraint(["source_claim_id"], ["consistency_claims.id"], ondelete="CASCADE"),
@@ -497,7 +545,8 @@ def upgrade() -> None:
     op.create_index(op.f("ix_entity_state_intervals_state_key"), "entity_state_intervals", ["state_key"])
     op.create_index(op.f("ix_entity_state_intervals_timeline_id"), "entity_state_intervals", ["timeline_id"])
     op.create_index(op.f("ix_entity_state_intervals_status"), "entity_state_intervals", ["status"])
-    op.create_index("ix_state_interval_timeline_range", "entity_state_intervals", ["timeline_id", "entry_id", "state_key", "valid_from_order"])
+    op.create_index("ix_state_interval_timeline", "entity_state_intervals", ["timeline_id", "valid_from_order", "valid_to_order"])
+    op.create_index("ix_state_interval_entry_key", "entity_state_intervals", ["entry_id", "state_key", "status"])
 
     # Guard tables
     op.create_table(
@@ -581,21 +630,30 @@ def upgrade() -> None:
         sa.PrimaryKeyConstraint("id"),
     )
     op.create_index(op.f("ix_guard_issue_evidence_issue_id"), "guard_issue_evidence", ["issue_id"])
-    op.create_index(op.f("ix_guard_issue_evidence_claim_id"), "guard_issue_evidence", ["claim_id"])
     op.create_index("ix_evidence_issue_side", "guard_issue_evidence", ["issue_id", "side", "sort_order"])
 
     op.create_table(
         "guard_resolutions",
         sa.Column("id", sa.BigInteger(), autoincrement=True, nullable=False),
         sa.Column("issue_id", sa.String(length=32), nullable=False),
+        sa.Column("issue_rev", sa.Integer(), nullable=False),
         sa.Column("action", sa.String(length=50), nullable=False),
-        sa.Column("user_id", sa.String(length=32), nullable=True),
         sa.Column("note", sa.Text(), nullable=True),
+        sa.Column("created_by", sa.String(length=32), nullable=False),
         sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.text("now()"), nullable=False),
+        sa.Column("updated_at", sa.DateTime(timezone=True), server_default=sa.text("now()"), nullable=False),
+        sa.CheckConstraint(
+            "action IN ('accept_old_fact', 'accept_new_fact', 'intentional_exception', "
+            "'false_positive', 'fixed_in_body', 'defer')",
+            name="ck_resolution_action",
+        ),
+        sa.CheckConstraint("issue_rev > 0", name="ck_resolution_issue_rev_positive"),
         sa.ForeignKeyConstraint(["issue_id"], ["guard_issues.id"], ondelete="CASCADE"),
+        sa.ForeignKeyConstraint(["created_by"], ["users.id"], ondelete="CASCADE"),
         sa.PrimaryKeyConstraint("id"),
     )
     op.create_index(op.f("ix_guard_resolutions_issue_id"), "guard_resolutions", ["issue_id"])
+    op.create_index("ix_resolution_issue", "guard_resolutions", ["issue_id", "created_at"])
 
     op.create_table(
         "foreshadows",
@@ -624,50 +682,55 @@ def upgrade() -> None:
         sa.Column("id", sa.String(length=32), nullable=False),
         sa.Column("user_id", sa.String(length=32), nullable=False),
         sa.Column("project_id", sa.String(length=32), nullable=False),
-        sa.Column("chapter_id", sa.String(length=32), nullable=True),
-        sa.Column("trigger", sa.String(length=50), nullable=False),
-        sa.Column("model_id", sa.String(length=100), nullable=False),
+        sa.Column("chapter_id", sa.String(length=32), nullable=False),
+        sa.Column("task_type", sa.String(length=50), nullable=False),
+        sa.Column("model_tier", sa.String(length=20), nullable=False),
         sa.Column("prompt_tokens", sa.Integer(), nullable=False),
+        sa.Column("cached_tokens", sa.Integer(), nullable=False),
         sa.Column("completion_tokens", sa.Integer(), nullable=False),
-        sa.Column("quota_cost", sa.Integer(), nullable=False),
-        sa.Column("metadata", postgresql.JSONB(astext_type=sa.Text()), nullable=False),
+        sa.Column("generated_words", sa.Integer(), nullable=False),
+        sa.Column("accepted_words", sa.Integer(), nullable=False),
+        sa.Column("layer_report", postgresql.JSONB(astext_type=sa.Text()), nullable=False),
         sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.text("now()"), nullable=False),
+        sa.ForeignKeyConstraint(["user_id"], ["users.id"], ondelete="CASCADE"),
+        sa.ForeignKeyConstraint(["project_id"], ["projects.id"], ondelete="CASCADE"),
+        sa.ForeignKeyConstraint(["chapter_id"], ["chapters.id"], ondelete="CASCADE"),
         sa.PrimaryKeyConstraint("id"),
     )
     op.create_index(op.f("ix_generation_runs_user_id"), "generation_runs", ["user_id"])
     op.create_index(op.f("ix_generation_runs_project_id"), "generation_runs", ["project_id"])
+    op.create_index(op.f("ix_generation_runs_chapter_id"), "generation_runs", ["chapter_id"])
 
     op.create_table(
         "usage_logs",
         sa.Column("id", sa.BigInteger(), autoincrement=True, nullable=False),
         sa.Column("user_id", sa.String(length=32), nullable=False),
-        sa.Column("action", sa.String(length=100), nullable=False),
-        sa.Column("quota_delta", sa.Integer(), nullable=False),
-        sa.Column("quota_remaining", sa.Integer(), nullable=False),
-        sa.Column("metadata", postgresql.JSONB(astext_type=sa.Text()), nullable=False),
-        sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.text("now()"), nullable=False),
+        sa.Column("feature", sa.String(length=50), nullable=False),
+        sa.Column("credits", sa.Integer(), nullable=False),
+        sa.Column("timestamp", sa.DateTime(timezone=True), server_default=sa.text("now()"), nullable=False),
+        sa.ForeignKeyConstraint(["user_id"], ["users.id"], ondelete="CASCADE"),
         sa.PrimaryKeyConstraint("id"),
     )
     op.create_index(op.f("ix_usage_logs_user_id"), "usage_logs", ["user_id"])
-    op.create_index("ix_usage_logs_user_created", "usage_logs", ["user_id", "created_at"])
+    op.create_index(op.f("ix_usage_logs_timestamp"), "usage_logs", ["timestamp"])
 
     op.create_table(
         "ratio_reports",
-        sa.Column("id", sa.BigInteger(), autoincrement=True, nullable=False),
+        sa.Column("id", sa.String(length=32), nullable=False),
         sa.Column("project_id", sa.String(length=32), nullable=False),
-        sa.Column("report_date", sa.DateTime(timezone=True), nullable=False),
         sa.Column("total_words", sa.Integer(), nullable=False),
-        sa.Column("total_chapters", sa.Integer(), nullable=False),
-        sa.Column("ai_generated_words", sa.Integer(), nullable=False),
+        sa.Column("ai_raw_words", sa.Integer(), nullable=False),
         sa.Column("ai_edited_words", sa.Integer(), nullable=False),
-        sa.Column("ratio", sa.Numeric(5, 4), nullable=False),
-        sa.Column("breakdown", postgresql.JSONB(astext_type=sa.Text()), nullable=False),
+        sa.Column("human_words", sa.Integer(), nullable=False),
+        sa.Column("suspect_count", sa.Integer(), nullable=False),
+        sa.Column("paragraphs", postgresql.JSONB(astext_type=sa.Text()), nullable=False),
+        sa.Column("suspects", postgresql.JSONB(astext_type=sa.Text()), nullable=False),
         sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.text("now()"), nullable=False),
+        sa.Column("updated_at", sa.DateTime(timezone=True), server_default=sa.text("now()"), nullable=False),
         sa.ForeignKeyConstraint(["project_id"], ["projects.id"], ondelete="CASCADE"),
         sa.PrimaryKeyConstraint("id"),
     )
     op.create_index(op.f("ix_ratio_reports_project_id"), "ratio_reports", ["project_id"])
-    op.create_index("ix_ratio_reports_project_date", "ratio_reports", ["project_id", "report_date"])
 
 
 def downgrade() -> None:
