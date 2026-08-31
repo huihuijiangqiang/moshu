@@ -279,6 +279,48 @@ def test_run_uniqueness_prevents_duplicate_pipelines(migration_metadata):
     assert ("chapter_id", "body_rev", "pipeline_version") in keys
 
 
+def test_run_phase_columns_exist_with_their_checks(migration_metadata):
+    """三个阶段列及其取值约束必须在迁移里，否则生产查询报 UndefinedColumn。
+
+    完成判定完全依赖这三列：缺一列，`succeed_phase` 的 UPDATE 在 PostgreSQL 上直接
+    失败，整条管道停在 scanning。
+    """
+    from db.models_consistency_extended import RUN_PHASE_COLUMNS, RUN_PHASE_STATES
+
+    table = migration_metadata.tables["consistency_runs"]
+    checks = {
+        c.name: str(c.sqltext)
+        for c in table.constraints
+        if isinstance(c, CheckConstraint) and c.name
+    }
+    for column in RUN_PHASE_COLUMNS.values():
+        assert column in table.columns, f"迁移缺少阶段列 {column}"
+        assert table.columns[column].nullable is False, f"{column} 必须 NOT NULL"
+        name = f"ck_consistency_run_{column}"
+        assert name in checks, f"迁移缺少 {name}"
+        for state in RUN_PHASE_STATES:
+            assert f"'{state}'" in checks[name], f"{name} 不接受阶段状态 {state}"
+
+
+def test_completed_run_requires_every_phase_to_have_succeeded(migration_metadata):
+    """status='completed' 必须蕴含三阶段 succeeded —— 数据库兜底那条不变量。
+
+    没有这条约束，任何绕过 succeed_phase 的写入（修复脚本、未来新任务）都能造出
+    「显示完成、摘要其实没跑」的 run。
+    """
+    from db.models_consistency_extended import RUN_PHASE_COLUMNS
+
+    table = migration_metadata.tables["consistency_runs"]
+    check = next(
+        c for c in table.constraints
+        if isinstance(c, CheckConstraint) and c.name == "ck_consistency_run_completed_phases"
+    )
+    sql = str(check.sqltext)
+    assert "completed" in sql
+    for column in RUN_PHASE_COLUMNS.values():
+        assert f"{column} = 'succeeded'" in sql, f"约束没有要求 {column} 成功"
+
+
 def test_document_summary_uniqueness_key(migration_metadata):
     table = migration_metadata.tables["document_summaries"]
     keys = {

@@ -362,6 +362,9 @@ def upgrade() -> None:
         sa.Column("body_rev", sa.Integer(), nullable=False),
         sa.Column("pipeline_version", sa.String(length=50), nullable=False),
         sa.Column("status", sa.String(length=20), nullable=False),
+        sa.Column("extract_state", sa.String(length=20), server_default="pending", nullable=False),
+        sa.Column("summary_state", sa.String(length=20), server_default="pending", nullable=False),
+        sa.Column("scan_state", sa.String(length=20), server_default="pending", nullable=False),
         sa.Column("trigger", sa.String(length=50), nullable=False),
         sa.Column("started_at", sa.DateTime(timezone=True), nullable=True),
         sa.Column("finished_at", sa.DateTime(timezone=True), nullable=True),
@@ -372,6 +375,12 @@ def upgrade() -> None:
         sa.CheckConstraint("status IN ('pending', 'extracting', 'summarizing', 'scanning', 'completed', 'failed')", name="ck_consistency_run_status"),
         sa.CheckConstraint("trigger IN ('body_save', 'manual_scan', 'pipeline_upgrade', 'maintenance')", name="ck_consistency_run_trigger"),
         sa.CheckConstraint("body_rev > 0", name="ck_consistency_run_body_rev_positive"),
+        # 三条支线各自的状态；completed 必须蕴含三者全部 succeeded —— 摘要与扫描并行，
+        # 单支线成功不代表这一版正文处理完了。
+        sa.CheckConstraint("extract_state IN ('pending', 'running', 'succeeded', 'failed')", name="ck_consistency_run_extract_state"),
+        sa.CheckConstraint("summary_state IN ('pending', 'running', 'succeeded', 'failed')", name="ck_consistency_run_summary_state"),
+        sa.CheckConstraint("scan_state IN ('pending', 'running', 'succeeded', 'failed')", name="ck_consistency_run_scan_state"),
+        sa.CheckConstraint("status <> 'completed' OR (extract_state = 'succeeded' AND summary_state = 'succeeded' AND scan_state = 'succeeded')", name="ck_consistency_run_completed_phases"),
         sa.ForeignKeyConstraint(["project_id"], ["projects.id"], ondelete="CASCADE"),
         sa.ForeignKeyConstraint(["chapter_id"], ["chapters.id"], ondelete="CASCADE"),
         sa.PrimaryKeyConstraint("id"),

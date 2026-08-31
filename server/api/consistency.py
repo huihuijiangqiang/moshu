@@ -20,14 +20,30 @@ from services.outbox import OutboxService
 router = APIRouter(tags=["consistency"])
 
 
+class ConsistencyPhases(BaseModel):
+    """三条支线各自的状态（pending / running / succeeded / failed）。
+
+    单个 status 表达不了并行支线：扫描成功而摘要仍在跑时，run 既不是 completed 也
+    不是 failed。调用方要判断「摘要能不能用」必须看 summary，不能看 status。
+    """
+
+    extract: str
+    summary: str
+    scan: str
+
+
 class ConsistencyStatusResponse(BaseModel):
     chapter_id: str
     body_rev: int
     pipeline_version: str
     status: str
+    #: 三个阶段的独立状态；status=completed 蕴含三者都是 succeeded
+    phases: ConsistencyPhases
     started_at: Optional[str] = None
     finished_at: Optional[str] = None
     error_code: Optional[str] = None
+    #: 首个失败原因的详情（只保留根因，后发生的连带失败不覆盖它）
+    error_detail: Optional[str] = None
 
 
 class ScanRequest(BaseModel):
@@ -121,9 +137,15 @@ async def get_consistency_status(
         body_rev=run.body_rev,
         pipeline_version=run.pipeline_version,
         status=run.status,
+        phases=ConsistencyPhases(
+            extract=run.extract_state,
+            summary=run.summary_state,
+            scan=run.scan_state,
+        ),
         started_at=run.started_at.isoformat() if run.started_at else None,
         finished_at=run.finished_at.isoformat() if run.finished_at else None,
         error_code=run.error_code,
+        error_detail=run.error_detail,
     )
 
 

@@ -386,6 +386,7 @@ async def test_failed_run_blocks_summary(
     await tasks.fail_run(
         async_db_session,
         pipeline_setup.id,
+        phase="extract",
         error_code="extraction_error",
         error_detail="forced",
     )
@@ -433,6 +434,7 @@ async def test_failed_run_blocks_scan(
     await tasks.fail_run(
         async_db_session,
         pipeline_setup.id,
+        phase="extract",
         error_code="extraction_error",
         error_detail="forced",
     )
@@ -451,6 +453,7 @@ async def test_failed_run_keeps_its_original_error_code(
     await tasks.fail_run(
         async_db_session,
         pipeline_setup.id,
+        phase="extract",
         error_code="extraction_error",
         error_detail="gateway down",
     )
@@ -1460,16 +1463,24 @@ async def test_rerunning_summary_for_same_revision_updates_in_place(
 # --- 扫描 ---------------------------------------------------------------------
 
 
-async def test_scan_completes_the_run(
+async def test_scan_alone_does_not_complete_the_run(
     use_test_session, async_db_session, pipeline_setup, fake_provider
 ):
+    """扫描成功但摘要还没跑：绝不能写 completed / finished_at。
+
+    回归：原实现让扫描支线独占 status，扫描一成功就 completed —— 上下文构建方据此
+    去读一份根本不存在的摘要。
+    """
     result = await tasks._scan_rules_async("task-3", pipeline_setup.id)
 
     assert result["status"] == "success"
+    assert result["run_completed"] is False
     async_db_session.expunge_all()
     run = await tasks.load_run(async_db_session, pipeline_setup.id)
-    assert run.status == "completed"
-    assert run.finished_at is not None
+    assert run.scan_state == "succeeded"
+    assert run.summary_state == "pending", "摘要支线还没跑"
+    assert run.status == "scanning", "扫描完成不等于整个 run 完成"
+    assert run.finished_at is None, "摘要未完成就写 finished_at 是假完成"
 
 
 async def test_scan_finds_conflicts_from_persisted_claims(
@@ -1698,19 +1709,274 @@ async def test_stale_scan_does_not_commit_issues(
     assert issues == [], "过期扫描的告警不得落库"
 
 
-# --- 状态推进 -----------------------------------------------------------------
+# --- 阶段状态机 ---------------------------------------------------------------
+#
+# 摘要与扫描并行，一个 status 列表达不了两条支线。这里钉住的是真实数据库行为：
+# 两种完成顺序、单支线失败、双失败首错、重复投递幂等 —— 不是断言某个函数常量。
+
+
+async def phase_states(db, run_id: int) -> dict[str, str]:
+    """读回三个阶段列的当前值。"""
+    db.expunge_all()
+    run = await tasks.load_run(db, run_id)
+    return {
+        "extract": run.extract_state,
+        "summary": run.summary_state,
+        "scan": run.scan_state,
+    }
+
+
+async def run_all_three(run_id: int, *, order: tuple[str, ...]) -> dict[str, dict]:
+    """按给定顺序跑完三个阶段，返回各阶段的返回值。"""
+    runners = {
+        "extract": tasks._extract_claims_async,
+        "summary": tasks._generate_summary_async,
+        "scan": tasks._scan_rules_async,
+    }
+    return {phase: await runners[phase](f"task-{phase}", run_id) for phase in order}
+
+
+async def test_a_run_completes_only_after_both_parallel_branches_succeed(
+    use_test_session, async_db_session, pipeline_setup, fake_provider
+):
+    """扫描先、摘要后：最后完成的那一方写 completed。"""
+    results = await run_all_three(pipeline_setup.id, order=("extract", "scan", "summary"))
+
+    assert results["scan"]["run_completed"] is False, "扫描完成时摘要还没跑"
+    assert results["summary"]["run_completed"] is True, "摘要收尾时应当落 completed"
+
+    assert await phase_states(async_db_session, pipeline_setup.id) == {
+        "extract": "succeeded",
+        "summary": "succeeded",
+        "scan": "succeeded",
+    }
+    run = await tasks.load_run(async_db_session, pipeline_setup.id)
+    assert run.status == "completed"
+    assert run.finished_at is not None
+
+
+async def test_a_run_completes_in_the_other_branch_order_too(
+    use_test_session, async_db_session, pipeline_setup, fake_provider
+):
+    """摘要先、扫描后：换一个完成顺序，结论必须一样。
+
+    这是「两支线任意完成顺序」的另一半。用同一条 UPDATE 里比较另一列的写法，而不是
+    「先读对方状态再写自己」—— 后者在两支线同时收尾时会双双读到对方未完成，run 永远
+    停在 scanning。
+    """
+    results = await run_all_three(pipeline_setup.id, order=("extract", "summary", "scan"))
+
+    assert results["summary"]["run_completed"] is False
+    assert results["scan"]["run_completed"] is True
+
+    async_db_session.expunge_all()
+    run = await tasks.load_run(async_db_session, pipeline_setup.id)
+    assert run.status == "completed"
+    assert run.finished_at is not None
+
+
+async def test_summary_alone_does_not_complete_the_run(
+    use_test_session, async_db_session, pipeline_setup, fake_provider
+):
+    """摘要成功但扫描还没跑：同样不能 completed —— 告警才是作者直接消费的产物。"""
+    await tasks._generate_summary_async("task-2", pipeline_setup.id)
+
+    async_db_session.expunge_all()
+    run = await tasks.load_run(async_db_session, pipeline_setup.id)
+    assert run.summary_state == "succeeded"
+    assert run.scan_state == "pending"
+    assert run.status == "summarizing"
+    assert run.finished_at is None
+
+
+async def test_a_summary_failure_after_a_successful_scan_fails_the_run(
+    use_test_session, async_db_session, pipeline_setup, fake_provider
+):
+    """扫描成功之后摘要失败：run 最终必须是 failed，不是 completed。"""
+    await tasks._scan_rules_async("task-3", pipeline_setup.id)
+    fake_provider.summary_error = RuntimeError("summary gateway down")
+
+    with pytest.raises(RuntimeError):
+        await tasks._generate_summary_async("task-2", pipeline_setup.id)
+
+    async_db_session.expunge_all()
+    run = await tasks.load_run(async_db_session, pipeline_setup.id)
+    assert run.status == "failed", "任一支线失败最终就是 failed"
+    assert run.error_code == "summary_error"
+    assert run.scan_state == "succeeded", "已成功的支线状态保留下来，便于定位"
+    assert run.summary_state == "failed"
+
+
+async def test_a_scan_failure_after_a_successful_summary_fails_the_run(
+    use_test_session, async_db_session, pipeline_setup, fake_provider, monkeypatch
+):
+    """摘要成功之后扫描失败：另一个方向同样收敛到 failed。"""
+    await tasks._generate_summary_async("task-2", pipeline_setup.id)
+
+    class ExplodingScanner:
+        def __init__(self, rule_version):
+            pass
+
+        async def scan_chapter(self, **kwargs):
+            raise RuntimeError("scanner bug")
+
+    monkeypatch.setattr(tasks, "RuleScanner", ExplodingScanner)
+
+    with pytest.raises(RuntimeError):
+        await tasks._scan_rules_async("task-3", pipeline_setup.id)
+
+    async_db_session.expunge_all()
+    run = await tasks.load_run(async_db_session, pipeline_setup.id)
+    assert run.status == "failed"
+    assert run.error_code == "scan_error"
+    assert run.summary_state == "succeeded"
+    assert run.scan_state == "failed"
+
+
+async def test_a_double_failure_keeps_the_first_error_as_the_root_cause(
+    use_test_session, async_db_session, pipeline_setup, fake_provider, monkeypatch
+):
+    """两条支线都失败时，error_code/error_detail 必须停在第一个。
+
+    回归：无条件覆盖会把根因换成后发生的次要错误 —— 而后发生的那个往往只是「因为
+    前一条已经失败」的连带结果，排查时完全没用。这里让扫描先失败，再让摘要绕过
+    ensure_run_not_failed 直接失败（模拟并行支线几乎同时出错）。
+    """
+    class ExplodingScanner:
+        def __init__(self, rule_version):
+            pass
+
+        async def scan_chapter(self, **kwargs):
+            raise RuntimeError("scanner bug")
+
+    monkeypatch.setattr(tasks, "RuleScanner", ExplodingScanner)
+    with pytest.raises(RuntimeError):
+        await tasks._scan_rules_async("task-3", pipeline_setup.id)
+
+    async_db_session.expunge_all()
+    first = await tasks.load_run(async_db_session, pipeline_setup.id)
+    first_finished_at = first.finished_at
+
+    # 并行的摘要支线随后也失败（真实并发下它读到 failed 之前就已经在跑了）
+    await tasks.fail_run(
+        async_db_session,
+        pipeline_setup.id,
+        phase="summary",
+        error_code="summary_error",
+        error_detail="gateway down too",
+    )
+
+    async_db_session.expunge_all()
+    run = await tasks.load_run(async_db_session, pipeline_setup.id)
+    assert run.error_code == "scan_error", "根因被后发生的错误覆盖了"
+    assert "scanner bug" in run.error_detail
+    assert run.status == "failed"
+    assert run.scan_state == "failed"
+    assert run.summary_state == "failed", "两条支线的失败都要看得见"
+    assert run.finished_at == first_finished_at, "终态时刻取第一个"
+
+
+async def test_a_failure_does_not_overwrite_a_succeeded_phase(
+    use_test_session, async_db_session, pipeline_setup, fake_provider
+):
+    """已成功支线的阶段状态不被别人的失败改写 —— 它的产出确实已经落库了。"""
+    await tasks._scan_rules_async("task-3", pipeline_setup.id)
+
+    await tasks.fail_run(
+        async_db_session,
+        pipeline_setup.id,
+        phase="scan",
+        error_code="scan_error",
+        error_detail="迟到的失败",
+    )
+
+    async_db_session.expunge_all()
+    run = await tasks.load_run(async_db_session, pipeline_setup.id)
+    assert run.scan_state == "succeeded", "扫描的产出已落库，状态不能被翻成 failed"
+    assert run.status == "scanning", "也不该把 run 打成 failed"
+    assert run.error_code is None
+
+
+async def test_replaying_a_finished_pipeline_is_idempotent(
+    use_test_session, async_db_session, pipeline_setup, fake_provider
+):
+    """Celery 是至少一次投递：整条管道重放一遍，run 的终态与时刻都不变。"""
+    fake_provider.claims = [claim_payload("李长风", "fp_1")]
+    await run_all_three(pipeline_setup.id, order=("extract", "scan", "summary"))
+
+    async_db_session.expunge_all()
+    first = await tasks.load_run(async_db_session, pipeline_setup.id)
+    finished_at, status = first.finished_at, first.status
+
+    replay = await run_all_three(pipeline_setup.id, order=("extract", "summary", "scan"))
+
+    assert all(r["status"] == "success" for r in replay.values())
+    assert await phase_states(async_db_session, pipeline_setup.id) == {
+        "extract": "succeeded",
+        "summary": "succeeded",
+        "scan": "succeeded",
+    }
+    run = await tasks.load_run(async_db_session, pipeline_setup.id)
+    assert run.status == status == "completed"
+    assert run.finished_at == finished_at, "重放刷新了完成时刻"
+    assert len(await load_claims(async_db_session)) == 1, "重放不得复制 claim"
+
+
+async def test_replaying_one_branch_does_not_undo_completion(
+    use_test_session, async_db_session, pipeline_setup, fake_provider
+):
+    """单支线重放不得把 completed 打回 scanning。
+
+    start_phase 会把阶段标成 running；如果它也作用于已经 succeeded 的阶段，
+    ck_consistency_run_completed_phases 会直接拒绝这条 UPDATE（completed 蕴含三阶段
+    成功），重放的任务连启动都做不到。
+    """
+    await run_all_three(pipeline_setup.id, order=("extract", "summary", "scan"))
+
+    await tasks._scan_rules_async("task-3-retry", pipeline_setup.id)
+
+    async_db_session.expunge_all()
+    run = await tasks.load_run(async_db_session, pipeline_setup.id)
+    assert run.status == "completed"
+    assert run.scan_state == "succeeded"
+
+
+async def test_completed_status_cannot_exist_without_all_phases_succeeding(
+    use_test_session, async_db_session, pipeline_setup
+):
+    """数据库层面的兜底：手写 completed 而阶段没齐，CHECK 必须拒绝。
+
+    应用逻辑之外还需要这道约束：任何绕过 succeed_phase 的写入路径（数据修复脚本、
+    未来的新任务）都不能造出「显示完成、实际没跑完」的 run。
+    """
+    from sqlalchemy import update as sa_update
+    from sqlalchemy.exc import IntegrityError
+
+    with pytest.raises(IntegrityError):
+        await async_db_session.execute(
+            sa_update(tasks.ConsistencyRun)
+            .where(tasks.ConsistencyRun.id == pipeline_setup.id)
+            .values(status="completed")
+        )
+        await async_db_session.commit()
+    await async_db_session.rollback()
 
 
 async def test_status_does_not_regress_when_branches_run_out_of_order(
     use_test_session, async_db_session, pipeline_setup, fake_provider
 ):
-    """摘要与扫描并行：慢的一方不得把状态从 completed 打回 summarizing。"""
+    """摘要与扫描并行：慢的一方不得把粗粒度 status 打回 summarizing。"""
     await tasks._scan_rules_async("task-3", pipeline_setup.id)
     await tasks._generate_summary_async("task-2", pipeline_setup.id)
 
     async_db_session.expunge_all()
     run = await tasks.load_run(async_db_session, pipeline_setup.id)
-    assert run.status == "completed"
+    assert run.status not in ("summarizing", "pending"), "进度倒退了"
+    # extract 支线没跑过，所以还不能 completed —— 但也绝不能倒退
+    assert run.status == "scanning"
+    assert run.summary_state == "succeeded"
+    assert run.scan_state == "succeeded"
+    assert run.extract_state == "pending"
 
 
 async def test_advance_run_status_is_conditional(

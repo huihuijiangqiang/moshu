@@ -206,3 +206,76 @@ async def test_status_endpoint_uses_shared_pipeline_version(
 
     assert response.status_code == 200
     assert response.json()["pipeline_version"] == PIPELINE_VERSION
+
+
+async def test_status_endpoint_exposes_each_phase_separately(
+    app_client, async_db_session, seed_project, make_run, auth_headers
+):
+    """扫描完成、摘要仍在跑：status 说不清，phases 必须说清。
+
+    单个 status 列表达不了并行支线。前端要判断「摘要能不能用」只能看 phases.summary；
+    只暴露 status 的话，scanning 既可能是「摘要没开始」也可能是「摘要已好」。
+    """
+    from services.consistency import PIPELINE_VERSION
+
+    await seed_project()
+    async_db_session.add(
+        make_run(
+            project_id="proj_a",
+            chapter_id="ch_a",
+            body_rev=2,
+            pipeline_version=PIPELINE_VERSION,
+            status="scanning",
+            extract_state="succeeded",
+            summary_state="running",
+            scan_state="succeeded",
+        )
+    )
+    await async_db_session.commit()
+
+    response = await app_client.get(
+        "/consistency/status/ch_a/2", headers=auth_headers("user_a")
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "scanning"
+    assert body["phases"] == {
+        "extract": "succeeded",
+        "summary": "running",
+        "scan": "succeeded",
+    }
+
+
+async def test_status_endpoint_reports_the_root_cause_of_a_failure(
+    app_client, async_db_session, seed_project, make_run, auth_headers
+):
+    """失败时把首错的 code 与 detail 都交出去，并指明是哪一条支线失败的。"""
+    from services.consistency import PIPELINE_VERSION
+
+    await seed_project()
+    async_db_session.add(
+        make_run(
+            project_id="proj_a",
+            chapter_id="ch_a",
+            body_rev=2,
+            pipeline_version=PIPELINE_VERSION,
+            status="failed",
+            extract_state="succeeded",
+            summary_state="failed",
+            scan_state="succeeded",
+            error_code="summary_error",
+            error_detail="summary gateway down",
+        )
+    )
+    await async_db_session.commit()
+
+    response = await app_client.get(
+        "/consistency/status/ch_a/2", headers=auth_headers("user_a")
+    )
+
+    body = response.json()
+    assert body["error_code"] == "summary_error"
+    assert body["error_detail"] == "summary gateway down"
+    assert body["phases"]["summary"] == "failed", "看得出是哪一条支线拖垮了 run"
+    assert body["phases"]["scan"] == "succeeded"

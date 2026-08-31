@@ -27,20 +27,25 @@ Consistency Celery tasks - per-revision pipeline
   块内序号跨块没有共同标尺，被全项目范围的规则拿去排序就是另一种伪造。没有共同
   锚点时保持 NULL，claim 进待确认列表，不参与依赖时序的硬规则。
 
-关于 run.status：摘要与扫描并行，单个 status 列无法同时表达两条支线。约定
-status 跟踪扫描支线（告警是作者直接消费的产物），completed 由扫描步骤写入；
-摘要是否就绪单独查 document_summaries。任一支线失败都会把 status 覆盖为 failed。
+关于 run 状态：摘要与扫描并行，一个 status 列表达不了两条支线，所以 run 上有三个
+独立阶段列 extract_state / summary_state / scan_state（pending / running /
+succeeded / failed）。completed 与 finished_at 只在三个阶段**全部** succeeded 时落库，
+且由一条 UPDATE 的 CASE 判定 —— 「先读对方是否成功、再写自己成功」会让同时收尾的两
+条支线都以为对方没完成，run 永远停在 scanning。数据库另有
+ck_consistency_run_completed_phases 兜底：status='completed' 必须蕴含三阶段成功。
+任一支线失败即 failed，且 error_code/error_detail 只保留第一个 —— 双失败不覆盖根因。
 """
 import asyncio
 from datetime import datetime, timezone
 from typing import Optional
 
 from celery import chain, group, shared_task
-from sqlalchemy import func, select, update
+from sqlalchemy import and_, case, func, select, update
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from config import settings
 from db import ChapterBody, ChapterVersion, ConsistencyClaim, ConsistencyRun, DocumentSummary
+from db.models_consistency_extended import RUN_PHASE_COLUMNS, RUN_PHASES
 from providers.consistency import ConsistencyProvider
 from services.claim_set import replace_body_claim_set
 from services.consistency import (
@@ -182,7 +187,7 @@ async def ensure_run_is_current(db, run: ConsistencyRun, *, lock: bool = False) 
 
 
 async def advance_run_status(db, run_id: int, status: str, *, allowed_from: tuple[str, ...]) -> bool:
-    """条件推进 run 状态，返回是否真的改动了。
+    """条件推进粗粒度 status，返回是否真的改动了。
 
     条件 UPDATE 而不是 `run.status = ...`：摘要与扫描并行，无条件赋值会让慢的一方
     把状态从 scanning/completed 打回 summarizing，前端看到进度倒退。
@@ -196,23 +201,117 @@ async def advance_run_status(db, run_id: int, status: str, *, allowed_from: tupl
     return result.rowcount > 0
 
 
-async def fail_run(db, run_id: int, *, error_code: str, error_detail: str) -> None:
-    """回滚未提交的工作，再把 run 标记为 failed。
+#: 阶段进入 running 时对应的粗粒度 status，以及允许被它推进的前置 status。
+#: 粗粒度 status 只表达「进行到哪一步」，完成判定一律看三个阶段列。
+PHASE_PROGRESS: dict[str, tuple[str, tuple[str, ...]]] = {
+    "extract": ("extracting", ("pending",)),
+    "summary": ("summarizing", ("pending", "extracting")),
+    "scan": ("scanning", ("pending", "extracting", "summarizing")),
+}
 
-    先 rollback 是必须的：抛出 stale/异常时事务里通常已经堆了半成品（新 claim、
-    摘要行、supersede 过的旧行）。不回滚就提交失败标记，会把这些过期结论一起写进
-    数据库 —— 正是「旧 worker 覆盖新版本」的那个缺陷。
+
+def phase_column(phase: str):
+    """阶段状态列对应的 ORM 属性。"""
+    return getattr(ConsistencyRun, RUN_PHASE_COLUMNS[phase])
+
+
+async def start_phase(db, run_id: int, phase: str) -> None:
+    """把阶段标成 running，并顺带推进粗粒度 status（不倒退）。
+
+    已经 succeeded 的阶段不回退成 running：Celery 是至少一次投递，同一个任务会被
+    重放，而 ck_consistency_run_completed_phases 要求 completed 蕴含三阶段成功 ——
+    把 scan_state 打回 running 会让重放的任务直接撞 CHECK 约束。
     """
-    await db.rollback()
+    attr = phase_column(phase)
     await db.execute(
         update(ConsistencyRun)
         .where(ConsistencyRun.id == run_id)
         .values(
-            status="failed",
-            error_code=error_code,
-            error_detail=error_detail[:2000],
-            finished_at=datetime.now(timezone.utc),
-            updated_at=datetime.now(timezone.utc),
+            {
+                RUN_PHASE_COLUMNS[phase]: case((attr == "succeeded", "succeeded"), else_="running"),
+                "updated_at": datetime.now(timezone.utc),
+            }
+        )
+    )
+    coarse, allowed_from = PHASE_PROGRESS[phase]
+    await advance_run_status(db, run_id, coarse, allowed_from=allowed_from)
+
+
+async def succeed_phase(db, run_id: int, phase: str) -> bool:
+    """标记阶段成功；三阶段齐活时在同一条 UPDATE 里落 completed/finished_at。
+
+    返回 run 是否（已经）处于 completed。
+
+    为什么必须是同一条语句：如果先读「另外两条支线成功了吗」再写自己的成功，两条
+    支线几乎同时收尾时都会读到对方尚未成功，于是谁也不写 completed，run 永远停在
+    scanning。这里让数据库在写自己那一列的同时比较另外两列的当前值 —— 无论哪种完成
+    顺序，只有最后完成的那一方满足条件，且不需要额外的锁。
+
+    不在这里提交：本支线的产出必须和阶段状态在同一个事务里落库。产出提交了、状态没
+    提交，run 会永远等一条已经跑完的支线。
+    """
+    now = datetime.now(timezone.utc)
+    others_succeeded = and_(
+        *[phase_column(other) == "succeeded" for other in RUN_PHASES if other != phase]
+    )
+    # failed 是终态：即使本阶段重试成功，也不把 run 从 failed 翻成 completed。
+    # （正常路径下 ensure_run_not_failed 已经拦住了，这里把不变量写进语句本身。）
+    can_complete = and_(others_succeeded, ConsistencyRun.status != "failed")
+
+    await db.execute(
+        update(ConsistencyRun)
+        .where(ConsistencyRun.id == run_id)
+        .values(
+            {
+                RUN_PHASE_COLUMNS[phase]: "succeeded",
+                "status": case((can_complete, "completed"), else_=ConsistencyRun.status),
+                # 重放的任务不刷新 finished_at：第一次完成的时刻才是这一版的完成时刻
+                "finished_at": case(
+                    (can_complete, func.coalesce(ConsistencyRun.finished_at, now)),
+                    else_=ConsistencyRun.finished_at,
+                ),
+                "updated_at": now,
+            }
+        )
+    )
+
+    status = (
+        await db.execute(select(ConsistencyRun.status).where(ConsistencyRun.id == run_id))
+    ).scalar_one_or_none()
+    return status == "completed"
+
+
+async def fail_run(db, run_id: int, *, phase: str, error_code: str, error_detail: str) -> None:
+    """回滚未提交的工作，再把 run 与出错的阶段标记为 failed。
+
+    先 rollback 是必须的：抛出 stale/异常时事务里通常已经堆了半成品（新 claim、
+    摘要行、supersede 过的旧行）。不回滚就提交失败标记，会把这些过期结论一起写进
+    数据库 —— 正是「旧 worker 覆盖新版本」的那个缺陷。
+
+    error_code/error_detail 只写第一次：摘要与扫描并行，第二条支线往往是因为第一条
+    已经失败才连带失败（甚至只是重放），无条件覆盖会把根因换成后发生的次要错误。
+    finished_at 同理取第一个终态时刻。
+
+    已经 succeeded 的阶段不会被改成 failed：那条支线的产出已经落库并且对本 body_rev
+    仍然有效，重放的任务在网关抖动时失败不该把 completed 的 run 打回 failed。
+    """
+    await db.rollback()
+    now = datetime.now(timezone.utc)
+    first_failure = ConsistencyRun.error_code.is_(None)
+    await db.execute(
+        update(ConsistencyRun)
+        .where(ConsistencyRun.id == run_id, phase_column(phase) != "succeeded")
+        .values(
+            {
+                "status": "failed",
+                RUN_PHASE_COLUMNS[phase]: "failed",
+                "error_code": case((first_failure, error_code), else_=ConsistencyRun.error_code),
+                "error_detail": case(
+                    (first_failure, error_detail[:2000]), else_=ConsistencyRun.error_detail
+                ),
+                "finished_at": func.coalesce(ConsistencyRun.finished_at, now),
+                "updated_at": now,
+            }
         )
     )
     await db.commit()
@@ -222,7 +321,7 @@ def _revision_error_code(exc: Exception) -> str:
     return "body_not_found" if isinstance(exc, BodyRevisionMissingError) else "stale_revision"
 
 
-async def _prepare_step(db, run_id: int) -> tuple[ConsistencyRun, ChapterVersion]:
+async def _prepare_step(db, run_id: int, *, phase: str) -> tuple[ConsistencyRun, ChapterVersion]:
     """每个步骤开始时的公共前置：加载 run、拒绝已失败的 run、取快照、校验版本。"""
     run = await load_run(db, run_id)
     await ensure_run_not_failed(db, run_id)
@@ -231,7 +330,13 @@ async def _prepare_step(db, run_id: int) -> tuple[ConsistencyRun, ChapterVersion
         snapshot = await load_body_snapshot(db, run)
         await ensure_run_is_current(db, run)
     except (BodyRevisionMissingError, StaleRevisionError) as exc:
-        await fail_run(db, run_id, error_code=_revision_error_code(exc), error_detail=str(exc))
+        await fail_run(
+            db,
+            run_id,
+            phase=phase,
+            error_code=_revision_error_code(exc),
+            error_detail=str(exc),
+        )
         raise
 
     return run, snapshot
@@ -293,8 +398,8 @@ def extract_claims(self, run_id: int):
 
 async def _extract_claims_async(task_id: str, run_id: int):
     async with AsyncSessionLocal() as db:
-        run, snapshot = await _prepare_step(db, run_id)
-        await advance_run_status(db, run_id, "extracting", allowed_from=("pending",))
+        run, snapshot = await _prepare_step(db, run_id, phase="extract")
+        await start_phase(db, run_id, "extract")
 
         provider = ConsistencyProvider()
         try:
@@ -358,6 +463,8 @@ async def _extract_claims_async(task_id: str, run_id: int):
             # 提交前锁住头行再确认版本，确认通过后 claim 与 supersede 一起落库
             await ensure_run_is_current(db, run, lock=True)
             await ensure_run_not_failed(db, run_id)
+            # 阶段状态与产出同一事务提交：产出落库而状态没落库，run 会永远等这一步
+            completed = await succeed_phase(db, run_id, "extract")
             await db.commit()
 
             # 顺序不可靠的 claim 照常落库，但不进硬规则 —— 计数单独报出来，
@@ -368,6 +475,7 @@ async def _extract_claims_async(task_id: str, run_id: int):
                 "status": "success",
                 "task_id": task_id,
                 "run_id": run_id,
+                "run_completed": completed,
                 "claims_count": len(positioned),
                 "inserted_claims": diff.inserted,
                 "updated_claims": diff.updated,
@@ -379,13 +487,17 @@ async def _extract_claims_async(task_id: str, run_id: int):
                 "entity_linking": linker.stats.as_dict(),
             }
         except StaleRevisionError as exc:
-            await fail_run(db, run_id, error_code="stale_revision", error_detail=str(exc))
+            await fail_run(
+                db, run_id, phase="extract", error_code="stale_revision", error_detail=str(exc)
+            )
             raise
         except RunFailedError:
             await db.rollback()
             raise
         except Exception as exc:
-            await fail_run(db, run_id, error_code="extraction_error", error_detail=str(exc))
+            await fail_run(
+                db, run_id, phase="extract", error_code="extraction_error", error_detail=str(exc)
+            )
             raise
 
 
@@ -399,8 +511,8 @@ def generate_summary(self, run_id: int):
 
 async def _generate_summary_async(task_id: str, run_id: int):
     async with AsyncSessionLocal() as db:
-        run, snapshot = await _prepare_step(db, run_id)
-        await advance_run_status(db, run_id, "summarizing", allowed_from=("pending", "extracting"))
+        run, snapshot = await _prepare_step(db, run_id, phase="summary")
+        await start_phase(db, run_id, "summary")
 
         provider = ConsistencyProvider()
         try:
@@ -452,22 +564,28 @@ async def _generate_summary_async(task_id: str, run_id: int):
 
             await ensure_run_is_current(db, run, lock=True)
             await ensure_run_not_failed(db, run_id)
+            completed = await succeed_phase(db, run_id, "summary")
             await db.commit()
 
             return {
                 "status": "success",
                 "task_id": task_id,
                 "run_id": run_id,
+                "run_completed": completed,
                 "summary_length": len(summary_text),
             }
         except StaleRevisionError as exc:
-            await fail_run(db, run_id, error_code="stale_revision", error_detail=str(exc))
+            await fail_run(
+                db, run_id, phase="summary", error_code="stale_revision", error_detail=str(exc)
+            )
             raise
         except RunFailedError:
             await db.rollback()
             raise
         except Exception as exc:
-            await fail_run(db, run_id, error_code="summary_error", error_detail=str(exc))
+            await fail_run(
+                db, run_id, phase="summary", error_code="summary_error", error_detail=str(exc)
+            )
             raise
 
 
@@ -481,10 +599,8 @@ def scan_rules(self, run_id: int):
 
 async def _scan_rules_async(task_id: str, run_id: int):
     async with AsyncSessionLocal() as db:
-        run, _ = await _prepare_step(db, run_id)
-        await advance_run_status(
-            db, run_id, "scanning", allowed_from=("pending", "extracting", "summarizing")
-        )
+        run, _ = await _prepare_step(db, run_id, phase="scan")
+        await start_phase(db, run_id, "scan")
 
         scanner = RuleScanner(rule_version=RULE_VERSION)
         try:
@@ -499,31 +615,30 @@ async def _scan_rules_async(task_id: str, run_id: int):
             await ensure_run_is_current(db, run, lock=True)
             await ensure_run_not_failed(db, run_id)
 
-            await db.execute(
-                update(ConsistencyRun)
-                .where(ConsistencyRun.id == run_id)
-                .values(
-                    status="completed",
-                    finished_at=datetime.now(timezone.utc),
-                    updated_at=datetime.now(timezone.utc),
-                )
-            )
+            # 扫描成功不等于这一版处理完了：摘要支线可能还在跑，甚至随后失败。
+            # completed / finished_at 由 succeed_phase 在三阶段齐活时统一落库。
+            completed = await succeed_phase(db, run_id, "scan")
             await db.commit()
 
             return {
                 "status": "success",
                 "task_id": task_id,
                 "run_id": run_id,
+                "run_completed": completed,
                 "issues_found": len(issue_ids),
             }
         except StaleRevisionError as exc:
-            await fail_run(db, run_id, error_code="stale_revision", error_detail=str(exc))
+            await fail_run(
+                db, run_id, phase="scan", error_code="stale_revision", error_detail=str(exc)
+            )
             raise
         except RunFailedError:
             await db.rollback()
             raise
         except Exception as exc:
-            await fail_run(db, run_id, error_code="scan_error", error_detail=str(exc))
+            await fail_run(
+                db, run_id, phase="scan", error_code="scan_error", error_detail=str(exc)
+            )
             raise
 
 
@@ -577,6 +692,8 @@ async def _dispatch_outbox_async(task_id: str, batch_size: int):
 __all__ = [
     "BodyRevisionMissingError",
     "EXTRACTOR_VERSION",
+    "PHASE_PROGRESS",
+    "RUN_PHASES",
     "RunFailedError",
     "RunNotFoundError",
     "StaleRevisionError",
@@ -584,9 +701,13 @@ __all__ = [
     "build_entity_linker",
     "dispatch_outbox",
     "extract_claims",
+    "fail_run",
     "generate_summary",
     "head_revision",
     "lock_body_head",
+    "phase_column",
     "process_body_saved",
     "scan_rules",
+    "start_phase",
+    "succeed_phase",
 ]

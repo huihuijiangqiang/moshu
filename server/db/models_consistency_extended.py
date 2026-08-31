@@ -21,9 +21,46 @@ from sqlalchemy.orm import Mapped, mapped_column
 
 from db.base import Base, TimestampMixin
 
+#: 管道的三个阶段。抽取先跑，摘要与扫描随后**并行**。
+RUN_PHASES: tuple[str, ...] = ("extract", "summary", "scan")
+
+#: 每个阶段各自的状态取值。
+RUN_PHASE_STATES: tuple[str, ...] = ("pending", "running", "succeeded", "failed")
+
+#: 阶段状态列名，顺序与 RUN_PHASES 一致。
+RUN_PHASE_COLUMNS: dict[str, str] = {phase: f"{phase}_state" for phase in RUN_PHASES}
+
+
+def _phase_state_check(phase: str) -> CheckConstraint:
+    """阶段状态列的取值约束（名字里带列名，违约时能直接定位到阶段）。"""
+    column = RUN_PHASE_COLUMNS[phase]
+    values = ", ".join(f"'{state}'" for state in RUN_PHASE_STATES)
+    return CheckConstraint(f"{column} IN ({values})", name=f"ck_consistency_run_{column}")
+
+
+def _completed_requires_all_phases() -> CheckConstraint:
+    """completed 必须蕴含三个阶段全部成功 —— 由数据库兜底，不靠调用方自觉。
+
+    摘要与扫描并行，任一支线单独成功都不足以说明这一版正文处理完了。以前 status
+    只跟踪扫描支线，扫描一成功就写 completed/finished_at，摘要还在跑（甚至随后失败）
+    也照样显示完成 —— 上下文构建方据此去读根本不存在的摘要。
+    """
+    succeeded = " AND ".join(
+        f"{RUN_PHASE_COLUMNS[phase]} = 'succeeded'" for phase in RUN_PHASES
+    )
+    return CheckConstraint(
+        f"status <> 'completed' OR ({succeeded})",
+        name="ck_consistency_run_completed_phases",
+    )
+
 
 class ConsistencyRun(Base, TimestampMixin):
-    """记录一次章节正文版本的一致性处理状态"""
+    """记录一次章节正文版本的一致性处理状态。
+
+    status 是给人看的粗粒度进度（pending → extracting → summarizing/scanning →
+    completed/failed）；真正的完成判定靠 extract_state / summary_state / scan_state
+    三个独立阶段列，它们才是并行支线的可靠状态机。
+    """
 
     __tablename__ = "consistency_runs"
 
@@ -33,6 +70,16 @@ class ConsistencyRun(Base, TimestampMixin):
     body_rev: Mapped[int] = mapped_column(Integer, nullable=False)
     pipeline_version: Mapped[str] = mapped_column(String(50), nullable=False)
     status: Mapped[str] = mapped_column(String(20), server_default="pending", nullable=False, index=True)
+    # 三条支线各自的状态：completed / failed 都由它们推导，不再靠某一支线抢先写入
+    extract_state: Mapped[str] = mapped_column(
+        String(20), default="pending", server_default="pending", nullable=False
+    )
+    summary_state: Mapped[str] = mapped_column(
+        String(20), default="pending", server_default="pending", nullable=False
+    )
+    scan_state: Mapped[str] = mapped_column(
+        String(20), default="pending", server_default="pending", nullable=False
+    )
     trigger: Mapped[str] = mapped_column(String(50), nullable=False)
     started_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
     finished_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
@@ -50,6 +97,10 @@ class ConsistencyRun(Base, TimestampMixin):
             name="ck_consistency_run_trigger",
         ),
         CheckConstraint("body_rev > 0", name="ck_consistency_run_body_rev_positive"),
+        _phase_state_check("extract"),
+        _phase_state_check("summary"),
+        _phase_state_check("scan"),
+        _completed_requires_all_phases(),
     )
 
 
