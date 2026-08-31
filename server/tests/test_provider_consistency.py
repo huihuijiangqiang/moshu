@@ -13,6 +13,7 @@ from providers.consistency import (
     ProviderResponseError,
     claim_fingerprint,
 )
+from services.timeline import VALID_ORDER_BASES
 
 
 @pytest.fixture(autouse=True)
@@ -307,38 +308,62 @@ async def test_chapter_exceeding_max_chunks_raises_rather_than_truncating(monkey
         await provider.extract_claims(long_html(paragraph_count=40), "proj_a", "ch_a")
 
 
-# --- 叙事顺序字段（架构 4.3） -------------------------------------------------
+# --- 叙事顺序：模型报证据，服务定顺序（架构 4.3） -----------------------------
 #
-# 这组测试盯住的缺陷是：ClaimOutput 和抽取提示词里都没有 timeline_id /
-# story_order / valid_from_order / valid_to_order，模型根本没有渠道输出这些字段。
-# 结果管道只能自己「推导」顺序 —— 而任何推导（尤其用章节序号顶替）都会把正常的
-# 倒叙判成时序矛盾。字段必须可空、必须在提示词里说清「不确定就留 null」。
+# 这组测试盯住的是「换一种方式伪造顺序」：旧提示词让每个块自行编号（"use any
+# increasing numbers"），块与块之间没有共同标尺，而规则扫描是全项目范围的，会把
+# 这些局部序号直接排在一起比较。现在的契约是模型只报**可追溯到正文的时间证据**，
+# story_order 交给 services.timeline 按已确认的全局锚点分配。
 
 
-async def test_extraction_prompt_asks_for_the_order_fields():
-    """提示词必须把四个时间线字段都列进 JSON 结构，否则模型不会输出它们。"""
+async def test_extraction_prompt_asks_for_traceable_temporal_evidence():
+    """提示词必须要模型报时间证据，而不是顺序编号。"""
     gateway = RecordingGateway([claims_response()])
     provider = ConsistencyProvider(client=gateway.client())
 
     await provider.extract_claims("<p>短正文</p>", "proj_a", "ch_a")
 
     prompt = gateway.prompts[0]
-    for field in ("timeline_id", "story_order", "valid_from_order", "valid_to_order"):
+    for field in (
+        "timeline_id",
+        "temporal_anchor_text",
+        "temporal_anchor_value",
+        "temporal_relation",
+        "temporal_relation_ref",
+        "order_basis",
+        "order_confidence",
+    ):
         assert field in prompt, f"提示词缺少 {field}，模型无法输出这个字段"
+    assert "ISO-8601" in prompt, "没说清归一化成什么格式，值就无法解析"
 
 
-async def test_extraction_prompt_states_story_order_is_not_the_chapter_number():
-    """提示词必须明确 story_order 是故事世界顺序，不是章节号，并要求倒叙取更小值。"""
+async def test_extraction_prompt_forbids_inventing_order_numbers():
+    """提示词必须明确禁止编号，并说明理由（模型只看得到一个片段）。
+
+    回归的是这句被删掉的旧指令：「Only the relative order matters; use any
+    increasing numbers」。它让每个块各造一套标尺，下游当成全局序号比较。
+    """
     gateway = RecordingGateway([claims_response()])
     provider = ConsistencyProvider(client=gateway.client())
 
     await provider.extract_claims("<p>短正文</p>", "proj_a", "ch_a")
 
     prompt = gateway.prompts[0]
-    assert "STORY WORLD" in prompt
-    assert "NOT the chapter number" in prompt
-    assert "flashback" in prompt.lower()
-    assert "SMALLER story_order" in prompt
+    assert "DO NOT output any order numbers" in prompt
+    assert "increasing numbers" not in prompt, "提示词又开始让模型自行编号了"
+    assert "excerpt" in prompt, "没告诉模型它只看到一个片段，它就会以为能全局编号"
+
+
+async def test_extraction_prompt_lists_the_four_order_bases():
+    """四个依据都要出现，尤其 narration_local —— 模型得有办法诚实地说「只在本块内」。"""
+    gateway = RecordingGateway([claims_response()])
+    provider = ConsistencyProvider(client=gateway.client())
+
+    await provider.extract_claims("<p>短正文</p>", "proj_a", "ch_a")
+
+    prompt = gateway.prompts[0]
+    for basis in VALID_ORDER_BASES:
+        assert basis in prompt, f"提示词缺少 order_basis 取值 {basis}"
 
 
 async def test_extraction_prompt_forbids_guessing_the_order():
@@ -350,36 +375,46 @@ async def test_extraction_prompt_forbids_guessing_the_order():
 
     prompt = gateway.prompts[0]
     assert "DO NOT GUESS" in prompt
-    assert "order_basis" in prompt
-    assert "order_confidence" in prompt
+    assert "flashback" in prompt.lower(), "必须点名倒叙这个最容易出错的情形"
     assert "unknown" in prompt
 
 
-async def test_order_fields_round_trip_through_parsing():
-    """模型给出的顺序字段必须原样出现在解析结果里，不被丢掉也不被改写。"""
+async def test_extraction_prompt_forbids_cross_timeline_comparison():
+    """架构 4.3：多线叙事先按 timeline_id 隔离，没有已确认锚点不得跨线比较。"""
+    gateway = RecordingGateway([claims_response()])
+    provider = ConsistencyProvider(client=gateway.client())
+
+    await provider.extract_claims("<p>短正文</p>", "proj_a", "ch_a")
+
+    assert "Never compare events" in gateway.prompts[0]
+
+
+async def test_temporal_evidence_round_trips_through_parsing():
+    """模型报的时间证据必须原样留下 —— 它是后续解析和人工确认的唯一依据。"""
     gateway = RecordingGateway([
         claims_response(
             make_claim_payload(
                 "李长风",
                 timeline_id="thread_a",
-                story_order=12.5,
-                valid_from_order=12.5,
-                valid_to_order=30.0,
-                order_basis="explicit_time",
+                temporal_anchor_text="元和七年冬月初三",
+                temporal_anchor_value="0812-11-03",
+                temporal_relation="after",
+                temporal_relation_ref="李长风下山",
+                order_basis="absolute_datetime",
                 order_confidence=0.9,
             )
         )
     ])
     provider = ConsistencyProvider(client=gateway.client())
 
-    claims = await provider.extract_claims("<p>短正文</p>", "proj_a", "ch_a")
+    claim = (await provider.extract_claims("<p>短正文</p>", "proj_a", "ch_a"))[0]
 
-    claim = claims[0]
     assert claim["timeline_id"] == "thread_a"
-    assert claim["story_order"] == 12.5
-    assert claim["valid_from_order"] == 12.5
-    assert claim["valid_to_order"] == 30.0
-    assert claim["order_basis"] == "explicit_time"
+    assert claim["temporal_anchor_text"] == "元和七年冬月初三"
+    assert claim["temporal_anchor_value"] == "0812-11-03"
+    assert claim["temporal_relation"] == "after"
+    assert claim["temporal_relation_ref"] == "李长风下山"
+    assert claim["order_basis"] == "absolute_datetime"
     assert claim["order_confidence"] == 0.9
 
 
@@ -398,15 +433,20 @@ async def test_order_fields_default_to_null_when_the_model_omits_them():
         "valid_to_order",
         "order_basis",
         "order_confidence",
+        "temporal_anchor_text",
+        "temporal_anchor_value",
+        "temporal_relation",
+        "temporal_relation_ref",
     ):
         assert claim[field] is None, f"{field} 被填了默认值 {claim[field]!r}"
 
 
-async def test_unknown_order_basis_clears_the_order_values():
-    """order_basis=unknown 时顺序值被清空 —— 不让不可信的顺序流进硬规则。
+@pytest.mark.parametrize("basis", ["narration_local", "relative_to_anchor", "unknown"])
+async def test_order_values_without_a_global_anchor_are_dropped(basis):
+    """没有全局锚点时模型给的顺序值一律清空，不让它冒充全局序号。
 
-    模型常见的行为是「说自己不知道，同时还是填了个数」。这种数值必须在解析阶段
-    就丢掉，否则下游看到非空 story_order 就会拿它去排序。
+    narration_local 是最需要拦住的一类：数字在块内自洽，跨块毫无意义，而规则
+    扫描会跨块比较。模型常见的行为是「说自己只知道块内顺序，同时还是填了个数」。
     """
     gateway = RecordingGateway([
         claims_response(
@@ -416,8 +456,8 @@ async def test_unknown_order_basis_clears_the_order_values():
                 story_order=99.0,
                 valid_from_order=99.0,
                 valid_to_order=120.0,
-                order_basis="unknown",
-                order_confidence=0.1,
+                order_basis=basis,
+                order_confidence=0.9,
             )
         )
     ])
@@ -428,7 +468,30 @@ async def test_unknown_order_basis_clears_the_order_values():
     assert claim["story_order"] is None
     assert claim["valid_from_order"] is None
     assert claim["valid_to_order"] is None
-    assert claim["order_basis"] == "unknown", "依据本身保留，供观测抽取质量"
+    assert claim["order_basis"] == basis, "依据本身保留，供观测抽取质量"
+
+
+async def test_absolute_basis_without_a_parseable_anchor_is_dropped():
+    """模型自称绝对时间但值归一化不了时，同样不采信 —— 不看自述，看证据。"""
+    gateway = RecordingGateway([
+        claims_response(
+            make_claim_payload(
+                "李长风",
+                timeline_id="main",
+                story_order=5.0,
+                order_basis="absolute_datetime",
+                temporal_anchor_text="元和七年冬",
+                temporal_anchor_value="元和七年冬",
+                order_confidence=0.95,
+            )
+        )
+    ])
+    provider = ConsistencyProvider(client=gateway.client())
+
+    claim = (await provider.extract_claims("<p>短正文</p>", "proj_a", "ch_a"))[0]
+
+    assert claim["story_order"] is None
+    assert claim["temporal_anchor_text"] == "元和七年冬", "原文证据保留，供人工确认"
 
 
 async def test_inverted_interval_is_rejected():
@@ -437,10 +500,12 @@ async def test_inverted_interval_is_rejected():
         claims_response(
             make_claim_payload(
                 "李长风",
+                timeline_id="main",
                 story_order=10.0,
                 valid_from_order=30.0,
                 valid_to_order=10.0,
-                order_basis="explicit_time",
+                order_basis="absolute_datetime",
+                temporal_anchor_value="0812-11-03",
                 order_confidence=0.9,
             )
         )
@@ -453,10 +518,27 @@ async def test_inverted_interval_is_rejected():
     assert claim["valid_to_order"] is None
 
 
-async def test_invalid_order_basis_is_rejected():
-    """order_basis 只接受四个约定值，拼错必须报错而不是静默当成可信依据。"""
+@pytest.mark.parametrize("basis", ["i_guessed", "explicit_time", "sequential_narration"])
+async def test_invalid_order_basis_is_rejected(basis):
+    """order_basis 只接受四个约定值。
+
+    旧词表（explicit_time / sequential_narration）必须同样被拒：它们表达的是
+    「模型自己排的顺序可信」，而这正是被推翻的前提。悄悄放行会让旧抽取器的输出
+    重新被当成全局序号。
+    """
     gateway = RecordingGateway([
-        claims_response(make_claim_payload("李长风", order_basis="i_guessed"))
+        claims_response(make_claim_payload("李长风", order_basis=basis))
+    ])
+    provider = ConsistencyProvider(client=gateway.client())
+
+    with pytest.raises(ProviderResponseError):
+        await provider.extract_claims("<p>短正文</p>", "proj_a", "ch_a")
+
+
+async def test_invalid_temporal_relation_is_rejected():
+    """temporal_relation 同样只接受约定值，拼错不能静默通过。"""
+    gateway = RecordingGateway([
+        claims_response(make_claim_payload("李长风", temporal_relation="sometime_around"))
     ])
     provider = ConsistencyProvider(client=gateway.client())
 
@@ -465,19 +547,27 @@ async def test_invalid_order_basis_is_rejected():
 
 
 async def test_order_fields_do_not_change_the_fingerprint():
-    """指纹只由语义构成：同一事实在不同顺序判断下必须是同一行。
+    """指纹不含顺序判断：同一事实在不同顺序判断下必须是同一行。
 
     否则模型某次把 order_confidence 从 0.9 改成 0.85，指纹就变了，同一事实会
     在同一版本里插出两行，作者的处置记录也会失效。
     """
     gateway = RecordingGateway([
         claims_response(
-            make_claim_payload("李长风", story_order=1.0, order_basis="explicit_time",
-                               order_confidence=0.9),
+            make_claim_payload(
+                "李长风",
+                order_basis="absolute_datetime",
+                temporal_anchor_value="0812-11-03",
+                order_confidence=0.9,
+            ),
         ),
         claims_response(
-            make_claim_payload("李长风", story_order=77.0, order_basis="flashback",
-                               order_confidence=0.2),
+            make_claim_payload(
+                "李长风",
+                order_basis="relative_to_anchor",
+                temporal_anchor_text="三日后",
+                order_confidence=0.2,
+            ),
         ),
     ])
     provider = ConsistencyProvider(client=gateway.client())

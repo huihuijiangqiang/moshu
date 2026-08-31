@@ -19,10 +19,11 @@ Consistency Celery tasks - per-revision pipeline
   extractor_version)，同指纹重放就是同一行，跳过即幂等。
 * 摘要与扫描在抽取之后并行投递：扫描只依赖已落库的 claim，等摘要（一次或多次
   模型调用）纯属浪费，告警会被拖慢几十秒。
-* claim 的时间线字段只在模型能可靠判断时才落库。**绝不用 Chapter.idx 推导
-  story_order** —— 架构 4.3 明确 story_order 是故事世界事件顺序，不是「第几章」，
-  倒叙会被误判成时序矛盾。顺序不可靠时保持 NULL，claim 进待确认列表，不参与
-  依赖时序的硬规则。
+* story_order 只由 services.timeline 依据**已确认的全局锚点**分配，模型给的顺序值
+  一律被覆盖。**绝不用 Chapter.idx 推导 story_order**，也不采信模型的块内序号 ——
+  架构 4.3 明确 story_order 是故事世界事件顺序，不是「第几章」；而抽取逐块进行，
+  块内序号跨块没有共同标尺，被全项目范围的规则拿去排序就是另一种伪造。没有共同
+  锚点时保持 NULL，claim 进待确认列表，不参与依赖时序的硬规则。
 
 关于 run.status：摘要与扫描并行，单个 status 列无法同时表达两条支线。约定
 status 跟踪扫描支线（告警是作者直接消费的产物），completed 由扫描步骤写入；
@@ -54,6 +55,7 @@ from services.entity_linking import EntityLinker
 from services.outbox import OutboxService
 from services.retrieval import ConsistencyRetrieval
 from services.rule_scanner import RuleScanner
+from services.timeline import assign_story_orders
 
 # Create async engine for tasks
 engine = create_async_engine(settings.database_url, echo=False)
@@ -353,8 +355,14 @@ async def _extract_claims_async(task_id: str, run_id: int):
                     }
                 )
 
-            # 补齐可靠区间；不推导 story_order（架构 4.3：不是章节序号）
-            positioned = assign_narrative_positions(linked)
+            # story_order 只在这里产生：由时间线服务按**已确认的全局锚点**分配，
+            # 模型给的任何顺序值都被覆盖。抽取是逐块的，模型编出来的序号只在块内
+            # 有意义，而规则扫描是全项目范围的 —— 直接采信等于伪造顺序。
+            # 没有共同锚点的 claim 保持 story_order=None，只进待确认列表。
+            anchored = assign_story_orders(linked)
+
+            # 再对已经有全局顺序的状态型 claim 闭合有效区间
+            positioned = assign_narrative_positions(anchored)
 
             skipped = 0
             inserted = 0

@@ -18,6 +18,7 @@ from pydantic import BaseModel, Field, ValidationError, model_validator
 
 from config import settings
 from services.chunking import TextChunk, chunk_html
+from services.timeline import GLOBAL_ORDER_BASES, parse_absolute_anchor
 
 
 class ProviderResponseError(RuntimeError):
@@ -32,13 +33,19 @@ class ProviderResponseError(RuntimeError):
 class ClaimOutput(BaseModel):
     """Structured claim from LLM extraction
 
-    时间线字段（timeline_id / story_order / valid_*_order）全部可空，且**只在模型
-    能从正文可靠判断时才填**。架构 4.3 规定 story_order 是故事世界中的事件顺序，
-    不是「第几章」：倒叙、插叙、多线叙事里章节顺序与故事顺序会背离，用章节序号
-    顶替会把正常倒叙判成时序矛盾。
+    关于叙事顺序，这里的契约是「模型报证据，服务定顺序」（架构 4.3）：
 
-    因此这里不给任何默认值 —— 无法可靠确定时保持 None，claim 只进入待确认，
-    不参与依赖时序的硬规则（架构 4.3 第 124 行）。
+    抽取是逐块进行的，模型看不到整章，更看不到整个项目。让它直接给 story_order，
+    它只能在当前块内自行编号 —— 而规则扫描是全项目范围的，会把不同块给出的数字
+    直接放在一起排序。局部序号被当成全局序号，等于换一种方式伪造顺序。
+
+    所以模型只报**可追溯到正文的证据**：那句时间表述的原文、它归一化后的绝对
+    时间、或者它相对于哪个锚点的先后关系。story_order 由 services.timeline 依据
+    已确认的全局锚点统一分配；没有共同锚点就保持 NULL，claim 只进待确认列表。
+
+    story_order / valid_from_order / valid_to_order 仍然接受，但只在锚点全局可比
+    时才被采纳，且 story_order 一律由时间线服务按锚点重算 —— 见
+    ``_drop_locally_scoped_order``。
     """
 
     subject_text: str = Field(..., min_length=1, max_length=200)
@@ -54,30 +61,53 @@ class ClaimOutput(BaseModel):
     #: 才比较（架构 4.3）。模型不确定时留空，由调用方决定是否归入主线。
     timeline_id: Optional[str] = Field(None, max_length=32)
 
-    #: 同一时间线内的事件顺序。相对值，只要求同线内单调，不要求与章节顺序一致。
-    story_order: Optional[float] = Field(None)
+    #: 时间锚点的**原文**。可追溯性的关键：作者和后续人工确认都能拿它回正文核对。
+    temporal_anchor_text: Optional[str] = Field(None, max_length=200)
 
-    #: 事实有效区间。valid_to_order 为空表示「至今仍有效」。
-    valid_from_order: Optional[float] = Field(None)
-    valid_to_order: Optional[float] = Field(None)
+    #: 锚点归一化后的绝对时间（ISO-8601）。只有它能提供跨块可比的共同标尺。
+    #: 自然语言表述（「三日后的清晨」）无法归一化时必须留空。
+    temporal_anchor_value: Optional[str] = Field(None, max_length=64)
 
-    #: 模型对叙事顺序的判断依据；order_confidence 低于阈值时顺序不予采信。
+    #: 相对关系及其参照锚点 —— 相对表述的证据。MVP 不据此分配 story_order，
+    #: 但必须收下来，否则这条信息就永久丢失了。
+    temporal_relation: Optional[str] = Field(
+        None, pattern="^(before|after|simultaneous)$"
+    )
+    temporal_relation_ref: Optional[str] = Field(None, max_length=200)
+
+    #: 顺序依据。absolute_datetime 是 MVP 里唯一的全局锚点；
+    #: narration_local 明确表示「只在本块内有意义」，绝不能当全局序号用。
     order_basis: Optional[str] = Field(
-        None, pattern="^(explicit_time|sequential_narration|flashback|unknown)$"
+        None, pattern="^(absolute_datetime|relative_to_anchor|narration_local|unknown)$"
     )
     order_confidence: Optional[float] = Field(None, ge=0.0, le=1.0)
 
+    #: 顺序值。由 services.timeline 写入；模型给的值只在全局可比时才保留，
+    #: 且 story_order 会被按锚点重算。
+    story_order: Optional[float] = Field(None)
+    valid_from_order: Optional[float] = Field(None)
+    valid_to_order: Optional[float] = Field(None)
+
     @model_validator(mode="after")
-    def _drop_unreliable_order(self) -> "ClaimOutput":
-        """顺序不可靠时清空顺序字段，而不是让它带着 unknown 依据流下去。
+    def _drop_locally_scoped_order(self) -> "ClaimOutput":
+        """丢掉没有全局标尺的顺序值，而不是让它冒充全局序号流下去。
+
+        判据是 order_basis：只有 absolute_datetime 且带得动一个可解析的
+        temporal_anchor_value，才算全局可比。narration_local 是最需要拦住的一类
+        —— 它的数字在块内自洽，跨块毫无意义，而规则会跨块比较。
 
         宁可漏报也不误报：伪造的顺序会让倒叙被判成矛盾，而作者看到的是一条
         无法解释的高等级告警。清空后 claim 仍会落库，只是不进硬规则。
         """
-        if self.order_basis == "unknown":
+        globally_comparable = (
+            self.order_basis in GLOBAL_ORDER_BASES
+            and parse_absolute_anchor(self.temporal_anchor_value) is not None
+        )
+        if not globally_comparable:
             self.story_order = None
             self.valid_from_order = None
             self.valid_to_order = None
+            return self
         # 区间反了说明模型没算清楚，整段区间都不可信
         if (
             self.valid_from_order is not None
@@ -103,7 +133,12 @@ def claim_fingerprint(
     object_value: Optional[str],
     polarity: str,
 ) -> str:
-    """稳定的 claim 指纹（大小写、空白无关），用于跨块去重与数据库唯一键。"""
+    """稳定的 claim 指纹（大小写、空白无关），用于跨块去重与数据库唯一键。
+
+    顺序判断（order_basis / order_confidence / story_order）不参与：它是模型对
+    同一件事的时间位置的判断，不是事实的身份。纳入它会让模型每次改口都插出一
+    条新行，作者的处置记录随之失效。
+    """
     fingerprint_data = {
         "subject_text": subject_text.lower().strip(),
         "predicate": predicate.lower().strip(),
@@ -214,7 +249,10 @@ class ConsistencyProvider:
                         "role": "system",
                         "content": "Extract factual claims from narrative text. Return valid JSON only.",
                     },
-                    {"role": "user", "content": self._build_extraction_prompt(chunk.text)},
+                    {
+                        "role": "user",
+                        "content": self._build_extraction_prompt(chunk.text),
+                    },
                 ],
                 "temperature": 0.0,
                 "response_format": {"type": "json_object"},
@@ -358,9 +396,13 @@ class ConsistencyProvider:
     def _build_extraction_prompt(self, content: str) -> str:
         """Build extraction prompt with schema
 
-        时间线字段必须在提示词里说清「不确定就留 null」。模型天然倾向于把字段填满，
-        而伪造的 story_order 比留空危害大得多：倒叙会被判成时序矛盾，作者收到的是
-        无法解释的高等级告警。story_order 是故事世界顺序，不是章节顺序。
+        关于顺序：**绝不要求模型给顺序编号**。抽取逐块进行，模型看不到整章，任何
+        它编出来的数字都只在本块内自洽；而规则扫描是全项目范围的，会把不同块的
+        数字直接放在一起排序。旧提示词说「use any increasing numbers」，等于让每
+        个块各造一套标尺，再由下游当成全局序号比较 —— 换一种方式伪造顺序。
+
+        这里改成要模型报**可追溯的时间证据**：那句时间表述的原文、归一化后的绝对
+        时间、或相对关系。story_order 由 services.timeline 依据全局锚点统一分配。
         """
         return f"""Extract factual claims from this narrative text. Return JSON with this exact structure:
 
@@ -376,10 +418,11 @@ class ConsistencyProvider:
       "paragraph_id": "optional paragraph identifier",
       "confidence": 0.9,
       "timeline_id": "story timeline identifier, or null if unclear",
-      "story_order": null,
-      "valid_from_order": null,
-      "valid_to_order": null,
-      "order_basis": "explicit_time|sequential_narration|flashback|unknown",
+      "temporal_anchor_text": "the exact time expression quoted from the text, or null",
+      "temporal_anchor_value": "that time normalized as ISO-8601, or null",
+      "temporal_relation": "before|after|simultaneous, or null",
+      "temporal_relation_ref": "what the relation is measured against, or null",
+      "order_basis": "absolute_datetime|relative_to_anchor|narration_local|unknown",
       "order_confidence": 0.0
     }}
   ]
@@ -391,23 +434,36 @@ Valid certainty values: explicit, inferred, uncertain
 
 CRITICAL RULES FOR NARRATIVE ORDER:
 
-`story_order` is the order of events in the STORY WORLD, not the order they appear
-in the text, and NOT the chapter number. A flashback narrated late in the chapter
-happens EARLY in the story and must get a SMALLER story_order than the scene that
-frames it. Only the relative order matters; use any increasing numbers.
+DO NOT output any order numbers. You are reading one excerpt of a longer chapter
+and cannot see the rest, so any numbering you invent would only be meaningful
+inside this excerpt. Ordering is computed later from the evidence you report here.
 
-Set `order_basis` to how you determined the order:
-- "explicit_time": the text states a date, time, or explicit interval.
-- "sequential_narration": events are plainly narrated one after another in story time.
-- "flashback": this event is narrated out of order (memory, dream, retelling).
+Instead, report the time evidence the text actually gives:
+
+- `temporal_anchor_text`: quote the time expression verbatim ("三日后的清晨",
+  "元和七年冬"). This is what a human checks against the text later.
+- `temporal_anchor_value`: the SAME time normalized to ISO-8601
+  (e.g. "0812-11-03" or "2024-03-01T18:30"). Only fill this in if the text pins
+  down an actual date or time. If the text only says "three days later" with no
+  fixed date anywhere, leave this null and use `temporal_relation` instead.
+- `temporal_relation` / `temporal_relation_ref`: for relative statements, say
+  whether this event is before/after/simultaneous with what ("李长风下山之后").
+
+Set `order_basis` to the strongest evidence you have:
+- "absolute_datetime": the text states a date or time you normalized above.
+- "relative_to_anchor": only a relative expression, no absolute time.
+- "narration_local": you only know the order within THIS excerpt. This is not
+  usable for comparison across the chapter, so report it honestly as such.
 - "unknown": you cannot tell where this sits in story time.
 
-If `order_basis` is "unknown", set story_order, valid_from_order and valid_to_order
-to null. DO NOT GUESS. A wrong order produces a false contradiction shown to the
-author; a null order is handled safely as "needs confirmation".
+DO NOT GUESS. A wrong order produces a false contradiction shown to the author;
+absent order information is handled safely as "needs confirmation". In particular,
+a flashback narrated late happens early in the story -- if you cannot anchor it to
+an absolute time, say "relative_to_anchor" or "unknown" rather than inventing a
+position for it.
 
-Set `order_confidence` to how sure you are about the ordering (0.0-1.0). Use a low
-value when the text is ambiguous rather than inventing a confident order.
+Set `order_confidence` to how sure you are about the time evidence (0.0-1.0). Use a
+low value when the text is ambiguous rather than asserting a confident anchor.
 
 Use `timeline_id` to separate independent narrative threads (e.g. parallel POVs).
 Leave it null if the text does not make the thread clear. Never compare events

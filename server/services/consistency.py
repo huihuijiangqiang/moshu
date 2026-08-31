@@ -14,6 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from db.models_codex import CodexAlias, CodexEntry
 from db.models_consistency_extended import ConsistencyClaim, ConsistencyRun, DocumentSummary
+from services.timeline import is_globally_anchored
 
 #: 一致性管道版本。API、Celery 任务与 ConsistencyRun 的唯一键必须共用同一个值，
 #: 否则写入用一个版本、查询用另一个版本，状态查询会永远 404。
@@ -88,38 +89,22 @@ STATEFUL_PREDICATES = frozenset({"alive", "owns", "owned_by", "located_at", "has
 #: 而 alive / located_at 的对象是状态值本身，后一条直接取代前一条。
 OBJECT_SCOPED_PREDICATES = frozenset({"owns", "owned_by", "has_ability"})
 
-#: 可以采信的叙事顺序依据（架构 4.3）。
-#:
-#: explicit_time：正文给了明确时间/日期/间隔；
-#: sequential_narration：事件在故事时间里被明确顺叙。
-#: flashback 与 unknown 都**不可**采信 —— 倒叙的叙述位置与故事顺序背离，
-#: 除非有已确认的跨线锚点，否则无法定位它在故事时间里的位置。
-RELIABLE_ORDER_BASES = frozenset({"explicit_time", "sequential_narration"})
-
-#: 采信模型给出的顺序所需的最低置信度。低于它只进待确认，不进硬规则。
-MIN_ORDER_CONFIDENCE = 0.7
-
-
 def is_order_reliable(claim: dict) -> bool:
     """判断这条 claim 的叙事顺序能否用于依赖时序的硬规则。
 
     架构 4.3：「无法从正文可靠确定顺序时保持为空，只进入待确认列表，不运行依赖
-    时序的硬规则。」所以三个条件必须同时成立：
+    时序的硬规则。」
 
-    1. story_order 确实有值（不是我们编的）；
-    2. order_basis 属于可采信依据 —— flashback / unknown 一律不采信；
-    3. order_confidence 不低于阈值。
+    可靠的判据**不在这里**，而在 services.timeline：只有具备全局可比锚点的
+    claim 才会被分配 story_order。这里要做的是确认那一步已经发生 —— story_order
+    非空且锚点确实全局可比。两个条件都查，是因为 story_order 也可能来自旧数据。
 
-    order_basis 缺失时按不可靠处理：老版本抽取器没有这个字段，宁可漏报。
+    局部序号（order_basis="narration_local"）永远过不了这一关：它在块内自洽，
+    跨块无意义，而规则是跨块比较的。
     """
     if claim.get("story_order") is None:
         return False
-    if claim.get("order_basis") not in RELIABLE_ORDER_BASES:
-        return False
-    confidence = claim.get("order_confidence")
-    if confidence is None or confidence < MIN_ORDER_CONFIDENCE:
-        return False
-    return True
+    return is_globally_anchored(claim)
 
 
 def _interval_group_key(claim: dict) -> tuple:

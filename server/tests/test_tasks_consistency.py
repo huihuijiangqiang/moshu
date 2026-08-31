@@ -21,6 +21,7 @@
 tests/integration/（未跑过）。
 """
 import contextlib
+from datetime import datetime, timedelta, timezone
 
 import httpx
 import pytest
@@ -36,6 +37,7 @@ from services.consistency import (
     normalize_run_trigger,
     upsert_active_summary,
 )
+from services.timeline import parse_absolute_anchor
 from tasks import consistency as tasks
 
 
@@ -150,16 +152,36 @@ def claim_payload(subject: str, fingerprint: str, **overrides) -> dict:
     return payload
 
 
-def ordered_payload(subject: str, fingerprint: str, story_order: float, **overrides) -> dict:
-    """模型给出了**可靠**顺序的 claim。
+#: 测试里表示「正文写明了时间」的基准日。顺序值 N 表示这一天的第 N 秒 —— 具体
+#: 数值无关紧要，重要的是它来自一个**可解析的绝对时间**，而不是抽取顺序。
+ORDER_EPOCH = datetime(2024, 1, 1, tzinfo=timezone.utc)
 
-    可靠 = story_order 有值 + order_basis 属于可采信依据 + order_confidence 达标
-    + timeline_id 明确。只有这样的 claim 才会参与依赖时序的硬规则。
+
+def order_anchor(anchor_offset: float) -> str:
+    """把测试用的相对顺序值转成正文里可能出现的绝对时间（ISO-8601）。"""
+    return (ORDER_EPOCH + timedelta(seconds=anchor_offset)).strftime("%Y-%m-%dT%H:%M:%S")
+
+
+def expected_order(anchor_offset: float) -> float:
+    """时间线服务会依据该锚点分配的 story_order。"""
+    return parse_absolute_anchor(order_anchor(anchor_offset))
+
+
+def ordered_payload(subject: str, fingerprint: str, anchor_offset: float, **overrides) -> dict:
+    """正文写明了绝对时间、因此**能拿到全局顺序**的 claim。
+
+    payload 里刻意不含 story_order：模型逐块工作，编出来的序号跨块没有共同标尺，
+    所以它只报可追溯的时间锚点，story_order 由 services.timeline 依据锚点分配
+    （架构 4.3）。第三个参数是这个锚点在基准日内的秒偏移，方便测试表达先后 ——
+    落库后的实际值用 expected_order() 换算。
+
+    需要模拟「模型硬塞了一个序号」时，用 story_order= 覆盖 —— 它应当被覆盖掉。
     """
     payload = {
         "timeline_id": "main",
-        "story_order": story_order,
-        "order_basis": "explicit_time",
+        "order_basis": "absolute_datetime",
+        "temporal_anchor_text": f"基准日第 {anchor_offset:g} 秒",
+        "temporal_anchor_value": order_anchor(anchor_offset),
         "order_confidence": 0.95,
     }
     payload.update(overrides)
@@ -499,10 +521,13 @@ async def test_claims_are_persisted_with_run_revision(
     assert all(claim.status == "accepted" for claim in claims)
 
 
-async def test_reliable_model_order_is_persisted_verbatim(
+async def test_story_order_comes_from_the_absolute_anchor(
     use_test_session, async_db_session, pipeline_setup, fake_provider
 ):
-    """模型给出可靠顺序时原样落库 —— 管道不改写它，也不重新编号。"""
+    """正文写明时间时，story_order 由时间线服务按锚点算出并落库。
+
+    值本身就是那个绝对时间 —— 标尺来自正文，因此跨块跨章可比。
+    """
     fake_provider.claims = [
         ordered_payload("李长风", "fp_1", 10.0),
         ordered_payload("王二", "fp_2", 20.0),
@@ -511,8 +536,76 @@ async def test_reliable_model_order_is_persisted_verbatim(
     await tasks._extract_claims_async("task-1", pipeline_setup.id)
 
     claims = await load_claims(async_db_session)
-    assert [float(claim.story_order) for claim in claims] == [10.0, 20.0]
+    assert [float(claim.story_order) for claim in claims] == [
+        expected_order(10.0),
+        expected_order(20.0),
+    ]
     assert all(claim.timeline_id == "main" for claim in claims)
+
+
+async def test_model_supplied_story_order_is_overwritten_by_the_anchor(
+    use_test_session, async_db_session, pipeline_setup, fake_provider
+):
+    """模型自行编的序号不会被采信 —— 它只在块内有意义。
+
+    回归的是「换一种方式伪造顺序」：抽取逐块进行，模型给的 99.0 与别的块给的
+    数字之间没有共同标尺，而规则扫描是全项目范围的。
+    """
+    fake_provider.claims = [ordered_payload("李长风", "fp_1", 10.0, story_order=99.0)]
+
+    await tasks._extract_claims_async("task-1", pipeline_setup.id)
+
+    claim = (await load_claims(async_db_session))[0]
+    assert float(claim.story_order) == expected_order(10.0)
+    assert float(claim.story_order) != 99.0
+
+
+async def test_local_narration_order_never_becomes_a_global_order(
+    use_test_session, async_db_session, pipeline_setup, fake_provider
+):
+    """块内序号不会升格成全局序号：两条 narration_local claim 都拿不到顺序。
+
+    模型在块 0 里给了 2.0、在块 5 里给了 1.0，各自块内自洽。直接落库就会让规则
+    得出「块 5 的事件更早」这种凭空结论。
+    """
+    fake_provider.claims = [
+        ordered_payload("李长风", "fp_chunk0", 2.0, order_basis="narration_local",
+                        temporal_anchor_value=None, story_order=2.0),
+        ordered_payload("陆青", "fp_chunk5", 1.0, order_basis="narration_local",
+                        temporal_anchor_value=None, story_order=1.0),
+    ]
+
+    result = await tasks._extract_claims_async("task-1", pipeline_setup.id)
+
+    claims = await load_claims(async_db_session)
+    assert len(claims) == 2, "顺序不可用不影响落库"
+    assert all(claim.story_order is None for claim in claims)
+    assert result["pending_order_claims"] == 2
+
+
+async def test_relative_anchor_yields_no_order_but_keeps_the_claim(
+    use_test_session, async_db_session, pipeline_setup, fake_provider
+):
+    """MVP 限制：只有绝对时间能定位。相对表述保持 NULL，进待确认列表。"""
+    fake_provider.claims = [
+        ordered_payload(
+            "李长风",
+            "fp_rel",
+            5.0,
+            order_basis="relative_to_anchor",
+            temporal_anchor_text="三日后",
+            temporal_anchor_value=None,
+            temporal_relation="after",
+            temporal_relation_ref="李长风下山",
+        )
+    ]
+
+    result = await tasks._extract_claims_async("task-1", pipeline_setup.id)
+
+    claim = (await load_claims(async_db_session))[0]
+    assert claim.story_order is None
+    assert claim.timeline_id == "main", "线仍然记下来，只是没有顺序"
+    assert result["pending_order_claims"] == 1
 
 
 async def test_unknown_order_stays_null_and_claim_still_lands(
@@ -565,10 +658,11 @@ async def test_chapter_idx_is_never_used_as_story_order(
 async def test_unreliable_basis_drops_the_model_supplied_order(
     use_test_session, async_db_session, pipeline_setup, fake_provider
 ):
-    """倒叙 / 低置信度 / 缺依据都不采信，即使模型给了 story_order 数值。"""
+    """块内顺序 / 低置信度 / 缺依据都不采信，即使模型给了 story_order 数值。"""
     fake_provider.claims = [
-        ordered_payload("倒叙者", "fp_flashback", 5.0, order_basis="flashback"),
-        ordered_payload("模糊者", "fp_unsure", 6.0, order_confidence=0.3),
+        ordered_payload("块内者", "fp_local", 5.0, order_basis="narration_local",
+                        story_order=5.0),
+        ordered_payload("模糊者", "fp_unsure", 6.0, order_confidence=0.3, story_order=6.0),
         claim_payload("无依据者", "fp_nobasis", timeline_id="main", story_order=7.0),
     ]
 
@@ -611,9 +705,9 @@ async def test_stateful_predicate_intervals_are_closed(
     await tasks._extract_claims_async("task-1", pipeline_setup.id)
 
     first, second = await load_claims(async_db_session)
-    assert float(first.valid_from_order) == 10.0
-    assert float(first.valid_to_order) == 20.0, "前一条被后一条闭合"
-    assert float(second.valid_from_order) == 20.0
+    assert float(first.valid_from_order) == expected_order(10.0)
+    assert float(first.valid_to_order) == expected_order(20.0), "前一条被后一条闭合"
+    assert float(second.valid_from_order) == expected_order(20.0)
     assert second.valid_to_order is None, "最后一条一直有效"
 
 
@@ -653,15 +747,15 @@ async def test_distinct_owned_items_do_not_close_each_others_intervals(
 async def test_provider_supplied_positions_are_preserved(
     use_test_session, async_db_session, pipeline_setup, fake_provider
 ):
-    """模型自己算好的区间沿用，不被覆盖。"""
+    """模型自己算好的区间沿用，不被覆盖；story_order 仍由锚点决定。"""
     fake_provider.claims = [
         ordered_payload(
             "李长风",
             "fp_1",
-            3.5,
+            3.0,
             timeline_id="thread_b",
-            valid_from_order=3.5,
-            valid_to_order=9.0,
+            valid_from_order=expected_order(3.0),
+            valid_to_order=expected_order(9.0),
         )
     ]
 
@@ -669,8 +763,8 @@ async def test_provider_supplied_positions_are_preserved(
 
     claim = (await load_claims(async_db_session))[0]
     assert claim.timeline_id == "thread_b"
-    assert float(claim.story_order) == 3.5
-    assert float(claim.valid_to_order) == 9.0
+    assert float(claim.story_order) == expected_order(3.0)
+    assert float(claim.valid_to_order) == expected_order(9.0)
 
 
 async def test_subject_entry_id_is_resolved_and_persisted(
@@ -1272,14 +1366,16 @@ async def test_flashback_produces_no_hard_alert(
     """倒叙不出硬告警。
 
     这是伪造顺序最典型的受害场景：正文里先写「李长风已死」，随后倒叙他生前的
-    一幕。按叙述位置（章节序号）排序会得到「死→活」，判成高等级复活矛盾；按
-    故事顺序才是「活→死」，完全正常。order_basis=flashback 不可采信，所以两条
-    claim 的 story_order 保持 NULL，规则看不到它们。
+    一幕。按叙述位置（章节序号或块内序号）排序会得到「死→活」，判成高等级复活
+    矛盾；按故事顺序才是「活→死」，完全正常。倒叙那一幕没有绝对时间可锚定，
+    模型只能报 relative_to_anchor，于是 story_order 保持 NULL，规则看不到它们。
     """
     fake_provider.claims = [
         ordered_payload("李长风", "fp_dead", 10.0, object_value="false"),
         ordered_payload("李长风", "fp_alive", 20.0, object_value="true",
-                        order_basis="flashback"),
+                        order_basis="relative_to_anchor",
+                        temporal_anchor_text="那一年他还在山上",
+                        temporal_anchor_value=None),
     ]
     await tasks._extract_claims_async("task-1", pipeline_setup.id)
 
