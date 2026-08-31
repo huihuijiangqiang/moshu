@@ -9,7 +9,8 @@
 * 提交前锁住 ChapterBody 头行再校验版本，旧 worker 不会覆盖新版本结论；
 * 失败抛异常（Celery chain 才会中断），而不是返回 {"status": "error"}；
 * run 一旦 failed，摘要与扫描拒绝执行；
-* 同版本重放跳过已有指纹，一行都不删 —— 架构 4.3 要求旧 claim 只标 superseded；
+* 同版本重放是集合替换（存在的原地更新、缺失的标 superseded、新增的插入），
+  一行都不删 —— 架构 4.3 要求旧 claim 只标 superseded；
 * 新版本发布时旧 claim 原子作废；
 * 抽取之后摘要与扫描并行投递，扫描不等摘要；
 * 唯一键并发竞态用 SAVEPOINT 兜住（方言无关，SQLite 上也能验证）；
@@ -850,16 +851,16 @@ async def test_new_revision_supersedes_previous_claims(
     ]
 
 
-async def test_replaying_the_same_revision_keeps_the_existing_row(
+async def test_replaying_the_same_revision_updates_in_place(
     use_test_session, async_db_session, pipeline_setup, fake_provider
 ):
-    """同版本重放跳过已有指纹，**不删除**任何行。
+    """同版本重放原地更新已有行，**不删除**任何行。
 
     uq_claim_body_source 是 (chapter_id, body_rev, fingerprint, extractor_version)
     上的部分唯一索引，不含 status —— 所以重放不能盲插。早期实现在这里 DELETE 掉
     上一轮的行，但架构 4.3 要求「旧正文版本的 claim 不删除，标为 superseded，
     确保告警可追溯」，而且 GuardIssueEvidence.claim_id 是 ON DELETE SET NULL，
-    删 claim 会把已有告警的证据指针悄悄清空。同指纹本来就是同一行，跳过即幂等。
+    删 claim 会把已有告警的证据指针悄悄清空。
     """
     fake_provider.claims = [claim_payload("李长风", "fp_1")]
     await tasks._extract_claims_async("task-1", pipeline_setup.id)
@@ -867,12 +868,200 @@ async def test_replaying_the_same_revision_keeps_the_existing_row(
 
     result = await tasks._extract_claims_async("task-1-retry", pipeline_setup.id)
 
-    assert result["skipped_existing_claims"] == 1, "已有指纹被跳过"
+    assert result["updated_claims"] == 1, "已有指纹应当被原地更新"
     assert result["inserted_claims"] == 0
     claims = await load_claims(async_db_session)
     assert len(claims) == 1, "同 (body_rev, fingerprint) 只剩一行"
     assert claims[0].id == original_id, "行没有被删掉重建 —— 证据指针必须保持有效"
     assert claims[0].status == "accepted"
+
+
+# --- 同版本候选集替换：集合 diff ----------------------------------------------
+#
+# 一次抽取产出的是「这一版正文里的全部事实」，是一个集合。重放必须让库里的集合
+# 等于本次的集合，否则留下的是两次运行的并集：作者删掉的那句话，告警还在报。
+
+
+async def test_a_claim_missing_from_the_replay_is_superseded(
+    use_test_session, async_db_session, pipeline_setup, fake_provider
+):
+    """A/B -> 仅 A：B 不再出现，必须退出当前有效集合。
+
+    早期的「跳过已有指纹」策略在这里什么都不做，B 一直挂着 accepted 参与规则 ——
+    作者已经把那句话删了，告警却还在报，而且怎么改都消不掉。
+    """
+    fake_provider.claims = [
+        claim_payload("李长风", "fp_a"),
+        claim_payload("王二", "fp_b"),
+    ]
+    await tasks._extract_claims_async("task-1", pipeline_setup.id)
+    ids_before = {claim.fingerprint: claim.id for claim in await load_claims(async_db_session)}
+
+    fake_provider.claims = [claim_payload("李长风", "fp_a")]
+    result = await tasks._extract_claims_async("task-2", pipeline_setup.id)
+
+    assert result["dropped_claims"] == 1
+    assert result["updated_claims"] == 1
+    assert result["inserted_claims"] == 0
+
+    claims = {claim.fingerprint: claim for claim in await load_claims(async_db_session)}
+    assert set(claims) == {"fp_a", "fp_b"}, "缺失的 claim 被删掉了，可追溯性没了"
+    assert claims["fp_a"].status == "accepted"
+    assert claims["fp_b"].status == "superseded"
+    assert {fp: claim.id for fp, claim in claims.items()} == ids_before, "行 id 必须稳定"
+
+
+async def test_a_changed_claim_is_refreshed_in_place(
+    use_test_session, async_db_session, pipeline_setup, fake_provider
+):
+    """同一 fingerprint 的重算结果必须刷新：entry_id、timeline、order、confidence。
+
+    跳过已有指纹时这些字段永远停在第一次运行的值上：作者事后建了词条，claim 的
+    subject_entry_id 还是空的 —— 按 entry_id 分组的跨章节规则永远看不到它。
+    """
+    from db.models_codex import CodexAlias, CodexEntry
+
+    fake_provider.claims = [
+        ordered_payload("李长风", "fp_a", 10.0, timeline_id="line_a", confidence=0.6)
+    ]
+    await tasks._extract_claims_async("task-1", pipeline_setup.id)
+
+    first = (await load_claims(async_db_session))[0]
+    original_id = first.id
+    assert first.subject_entry_id is None, "前置条件：此时还没有词条可链接"
+    assert float(first.confidence) == pytest.approx(0.6)
+    assert float(first.story_order) == pytest.approx(expected_order(10.0))
+
+    # 作者补建了词条，正文时间也被改写 —— 重放必须把这些都刷进去
+    async_db_session.add(
+        CodexEntry(
+            id="cx_lee", project_id="proj_a", kind="character", name="李长风",
+            description="主角", attrs={},
+        )
+    )
+    await async_db_session.flush()
+    async_db_session.add(CodexAlias(entry_id="cx_lee", alias="李长风"))
+    await async_db_session.commit()
+
+    fake_provider.claims = [
+        ordered_payload("李长风", "fp_a", 99.0, timeline_id="line_b", confidence=0.95)
+    ]
+    result = await tasks._extract_claims_async("task-2", pipeline_setup.id)
+
+    assert result["updated_claims"] == 1
+    assert result["inserted_claims"] == 0
+    claims = await load_claims(async_db_session)
+    assert len(claims) == 1
+    refreshed = claims[0]
+    assert refreshed.id == original_id, "刷新必须原地进行，证据指针才不会失效"
+    assert refreshed.subject_entry_id == "cx_lee"
+    assert refreshed.timeline_id == "line_b"
+    assert float(refreshed.story_order) == pytest.approx(expected_order(99.0))
+    assert float(refreshed.confidence) == pytest.approx(0.95)
+    assert refreshed.status == "accepted"
+
+
+async def test_a_claim_that_disappears_and_returns_is_restored(
+    use_test_session, async_db_session, pipeline_setup, fake_provider
+):
+    """A 消失后再次出现：同一行恢复成 accepted，不是新插一行。
+
+    唯一键不含 status，superseded 的行仍然占着键位 —— 盲插会直接撞唯一键。
+    """
+    fake_provider.claims = [
+        claim_payload("李长风", "fp_a"),
+        claim_payload("王二", "fp_b"),
+    ]
+    await tasks._extract_claims_async("task-1", pipeline_setup.id)
+    ids_before = {claim.fingerprint: claim.id for claim in await load_claims(async_db_session)}
+
+    fake_provider.claims = [claim_payload("李长风", "fp_a")]
+    await tasks._extract_claims_async("task-2", pipeline_setup.id)
+
+    fake_provider.claims = [
+        claim_payload("李长风", "fp_a"),
+        claim_payload("王二", "fp_b"),
+    ]
+    result = await tasks._extract_claims_async("task-3", pipeline_setup.id)
+
+    assert result["restored_claims"] == 1
+    assert result["inserted_claims"] == 0, "复现的 claim 被当成新行插入了"
+    claims = {claim.fingerprint: claim for claim in await load_claims(async_db_session)}
+    assert len(claims) == 2, "同 fingerprint 出现了重复行"
+    assert claims["fp_b"].status == "accepted"
+    assert {fp: claim.id for fp, claim in claims.items()} == ids_before
+
+
+async def test_evidence_survives_a_claim_leaving_the_set(
+    use_test_session, async_db_session, pipeline_setup, fake_provider
+):
+    """claim 退出当前集合时，已有告警的证据指针必须还指着它。
+
+    这正是「删掉再重插」会毁掉的东西：GuardIssueEvidence.claim_id 是
+    ON DELETE SET NULL，删 claim 不报错，只让作者看到一条没有出处的告警。
+    """
+    from db.models_consistency_extended import GuardIssueEvidence
+
+    fake_provider.claims = [
+        ordered_payload("李长风", "fp_dead", 10.0, object_value="false"),
+        ordered_payload("李长风", "fp_alive", 20.0, object_value="true"),
+    ]
+    await tasks._extract_claims_async("task-1", pipeline_setup.id)
+    await tasks._scan_rules_async("task-scan", pipeline_setup.id)
+
+    evidence_before = list(
+        (await async_db_session.execute(select(GuardIssueEvidence))).scalars().all()
+    )
+    assert evidence_before, "前置条件：扫描必须写出证据行"
+    claim_ids_before = {row.claim_id for row in evidence_before}
+    assert None not in claim_ids_before
+
+    # 两条都从本次结果里消失 —— 集合替换会把它们标 superseded
+    fake_provider.claims = [claim_payload("新事实", "fp_other")]
+    result = await tasks._extract_claims_async("task-2", pipeline_setup.id)
+    assert result["dropped_claims"] == 2
+
+    async_db_session.expunge_all()
+    evidence_after = list(
+        (await async_db_session.execute(select(GuardIssueEvidence))).scalars().all()
+    )
+    assert {row.claim_id for row in evidence_after} == claim_ids_before
+    survivors = {claim.id: claim for claim in await load_claims(async_db_session)}
+    for claim_id in claim_ids_before:
+        assert claim_id in survivors, "被证据引用的 claim 行不见了"
+        assert survivors[claim_id].status == "superseded"
+
+
+async def test_an_author_rejection_is_not_overwritten_by_a_replay(
+    use_test_session, async_db_session, pipeline_setup, fake_provider
+):
+    """status='rejected' 是人的判断，重放不得把它改回 accepted 或降级成 superseded。
+
+    否则作者每否掉一条，下一次重跑管道就把它原样退回来，告警列表永远清不干净。
+    """
+    fake_provider.claims = [
+        claim_payload("李长风", "fp_a"),
+        claim_payload("王二", "fp_b"),
+    ]
+    await tasks._extract_claims_async("task-1", pipeline_setup.id)
+
+    claims = {claim.fingerprint: claim for claim in await load_claims(async_db_session)}
+    rejected_id = claims["fp_a"].id
+    dropped_id = claims["fp_b"].id
+    for fingerprint in ("fp_a", "fp_b"):
+        claims[fingerprint].status = "rejected"
+    async_db_session.add_all(list(claims.values()))
+    await async_db_session.commit()
+
+    # fp_a 本次仍然抽到，fp_b 消失了；两条都不该被动状态
+    fake_provider.claims = [claim_payload("李长风", "fp_a")]
+    result = await tasks._extract_claims_async("task-2", pipeline_setup.id)
+
+    assert result["kept_rejected_claims"] == 2
+    assert result["dropped_claims"] == 0
+    after = {claim.id: claim for claim in await load_claims(async_db_session)}
+    assert after[rejected_id].status == "rejected"
+    assert after[dropped_id].status == "rejected"
 
 
 async def test_replay_preserves_guard_issue_evidence_pointers(

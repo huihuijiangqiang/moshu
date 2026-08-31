@@ -8,7 +8,7 @@ tests/test_tasks_consistency.py 覆盖的是「锁 + 版本比较」这段逻辑
 1. `SELECT ... FOR UPDATE` —— SQLite 方言直接把它丢掉，不会真正互斥；
 2. 部分唯一索引（postgresql_where）—— tests/conftest.py 建表时把它们剔除了，
    所以同 revision 重放到底会不会撞索引，只有这里能证明；而且只有在真实索引下
-   才能证明「跳过已有指纹」这条路径不需要 DELETE。
+   才能证明集合替换（原地更新 + 恢复 accepted）不需要 DELETE。
 
 跑法见 tests/integration/conftest.py 的模块文档。
 """
@@ -128,43 +128,82 @@ async def test_marking_superseded_does_not_free_the_unique_key(seeded):
         await seeded.commit()
 
 
-async def test_skipping_the_known_fingerprint_avoids_the_unique_violation(seeded):
-    """抽取步骤实际采用的路径：读出已有指纹并跳过，一行都不删也不撞索引。
+def claim_data(**overrides) -> dict:
+    """抽取结果形态的 claim（喂给 replace_body_claim_set）。"""
+    data = {
+        "subject_text": "李长风",
+        "predicate": "alive",
+        "object_type": "scalar",
+        "object_value": "true",
+        "polarity": "positive",
+        "certainty": "explicit",
+        "confidence": 0.9,
+        "fingerprint": "fp_pg",
+    }
+    data.update(overrides)
+    return data
+
+
+PG_SCOPE = {
+    "project_id": "proj_pg",
+    "chapter_id": "ch_pg",
+    "body_rev": 1,
+    "extractor_version": "1.0.0",
+}
+
+
+async def test_the_set_diff_replay_never_hits_the_unique_index(seeded):
+    """抽取步骤实际采用的路径：集合替换，一行都不删也不撞索引。
 
     单元测试只能断言「重放后没有重复键」（SQLite 剔除了部分索引）；这里证明在
-    真实索引下这条路径确实不会被拒绝，而且原行的 id 保持不变 —— 已有 GuardIssue
-    的证据指针因此始终有效。
+    真实索引下 replace_body_claim_set 确实不会被拒绝，而且原行的 id 保持不变 ——
+    已有 GuardIssue 的证据指针因此始终有效。
     """
+    from services.claim_set import replace_body_claim_set
+
     original = claim_row()
     seeded.add(original)
     await seeded.commit()
     original_id = original.id
 
-    # 重放：先读本 revision 已有的指纹（生产代码做的就是这件事）
-    existing = set(
-        (
-            await seeded.execute(
-                select(ConsistencyClaim.fingerprint).where(
-                    ConsistencyClaim.chapter_id == "ch_pg",
-                    ConsistencyClaim.source_kind == "body",
-                    ConsistencyClaim.body_rev == 1,
-                    ConsistencyClaim.extractor_version == "1.0.0",
-                )
-            )
-        )
-        .scalars()
-        .all()
-    )
-    assert existing == {"fp_pg"}
-
-    replay = claim_row()
-    if replay.fingerprint not in existing:
-        seeded.add(replay)
+    diff = await replace_body_claim_set(seeded, claims=[claim_data()], **PG_SCOPE)
     await seeded.commit()  # 不该抛 IntegrityError
 
+    assert diff.updated == 1
+    assert diff.inserted == 0
     rows = list((await seeded.execute(select(ConsistencyClaim))).scalars().all())
     assert len(rows) == 1
     assert rows[0].id == original_id, "行被删掉重建了 —— 证据指针会被置空"
+    assert rows[0].status == "accepted"
+
+
+async def test_restoring_a_superseded_claim_needs_no_second_row(seeded):
+    """claim 消失后再次出现时原地恢复 —— 这是索引不含 status 的直接后果。
+
+    superseded 的行仍然占着唯一键（见上一条测试），所以「复现」只能是 UPDATE。
+    盲插会在真实索引上直接抛 IntegrityError，而这一点只有 PostgreSQL 能证明。
+    """
+    from services.claim_set import replace_body_claim_set
+
+    original = claim_row()
+    seeded.add(original)
+    await seeded.commit()
+    original_id = original.id
+
+    # 这一版没抽到它 -> superseded
+    diff = await replace_body_claim_set(seeded, claims=[], **PG_SCOPE)
+    await seeded.commit()
+    assert diff.superseded == 1
+
+    # 又抽到了 -> 同一行恢复 accepted，不是第二行
+    diff = await replace_body_claim_set(seeded, claims=[claim_data()], **PG_SCOPE)
+    await seeded.commit()  # 不该抛 IntegrityError
+
+    assert diff.restored == 1
+    assert diff.inserted == 0
+    rows = list((await seeded.execute(select(ConsistencyClaim))).scalars().all())
+    assert len(rows) == 1
+    assert rows[0].id == original_id
     assert rows[0].status == "accepted"
 
 

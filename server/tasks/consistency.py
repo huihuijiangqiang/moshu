@@ -12,11 +12,13 @@ Consistency Celery tasks - per-revision pipeline
 * 失败必须抛异常。早期实现返回 {"status": "error"}，Celery 视为成功，chain 会继续
   跑后续步骤，于是「抽取失败」后照样出摘要和扫描结论。
 * run 一旦 failed，后续步骤必须拒绝执行，否则失败的抽取之后仍会产出摘要与告警。
-* 同一版本重跑跳过已有指纹，**不删除**任何 claim 行。架构 4.3 要求「旧正文版本的
-  claim 不删除，标为 superseded，确保告警可追溯」；而且
-  GuardIssueEvidence.claim_id 是 ON DELETE SET NULL 的外键 —— 删 claim 会把已有
-  告警的证据指针悄悄清空。唯一键本就是 (chapter_id, body_rev, fingerprint,
-  extractor_version)，同指纹重放就是同一行，跳过即幂等。
+* 同一版本重跑是**集合替换**，用集合 diff 完成，**不删除**任何 claim 行：本次
+  存在的原地更新并恢复 accepted，缺失的标 superseded，新出现的插入（见
+  services.claim_set）。跳过已有指纹不成立 —— 那样上一次抽到、这一次没抽到的
+  事实会留在当前版本里，重算出来的 entry_id/order/confidence 也永远刷不进去。
+  删除同样不成立：架构 4.3 要求「旧正文版本的 claim 不删除，标为 superseded，
+  确保告警可追溯」，而且 GuardIssueEvidence.claim_id 是 ON DELETE SET NULL 的
+  外键 —— 删 claim 会把已有告警的证据指针悄悄清空。
 * 摘要与扫描在抽取之后并行投递：扫描只依赖已落库的 claim，等摘要（一次或多次
   模型调用）纯属浪费，告警会被拖慢几十秒。
 * story_order 只由 services.timeline 依据**已确认的全局锚点**分配，模型给的顺序值
@@ -40,6 +42,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from config import settings
 from db import ChapterBody, ChapterVersion, ConsistencyClaim, ConsistencyRun, DocumentSummary
 from providers.consistency import ConsistencyProvider
+from services.claim_set import replace_body_claim_set
 from services.consistency import (
     EXTRACTOR_VERSION,
     PIPELINE_VERSION,
@@ -304,7 +307,7 @@ async def _extract_claims_async(task_id: str, run_id: int):
             # 新版本发布：同章旧版本的 claim 在同一事务里作废，避免新旧共存误报。
             # 只标 superseded，绝不删除 —— 架构 4.3 要求「旧正文版本的 claim 不删除，
             # 标为 superseded，确保告警可追溯」。
-            superseded = await db.execute(
+            superseded_older = await db.execute(
                 update(ConsistencyClaim)
                 .where(
                     ConsistencyClaim.chapter_id == run.chapter_id,
@@ -313,30 +316,6 @@ async def _extract_claims_async(task_id: str, run_id: int):
                     ConsistencyClaim.status.in_(["candidate", "accepted"]),
                 )
                 .values(status="superseded", updated_at=datetime.now(timezone.utc))
-            )
-
-            # 同版本重放（重试、pipeline 重跑）：读出本版本已有的指纹，跳过它们。
-            #
-            # 早期实现在这里 DELETE 掉本版本的旧行，理由是 uq_claim_body_source 不含
-            # status、标 superseded 不释放唯一键。但删除违反架构 4.3 的可追溯性要求，
-            # 而且 GuardIssueEvidence.claim_id 是 ON DELETE SET NULL 的外键 —— 删掉
-            # claim 会把已有告警的证据指针悄悄清空，作者看到的是一条没有出处的告警。
-            #
-            # 正确做法是不产生重复行：唯一键就是 (chapter_id, body_rev, fingerprint,
-            # extractor_version)，同一指纹重放本来就该是同一行，跳过即幂等。
-            existing_fingerprints = set(
-                (
-                    await db.execute(
-                        select(ConsistencyClaim.fingerprint).where(
-                            ConsistencyClaim.chapter_id == run.chapter_id,
-                            ConsistencyClaim.source_kind == "body",
-                            ConsistencyClaim.body_rev == run.body_rev,
-                            ConsistencyClaim.extractor_version == EXTRACTOR_VERSION,
-                        )
-                    )
-                )
-                .scalars()
-                .all()
             )
 
             # 解析 subject/object 的 entry_id：规则按 entry_id 分组，
@@ -364,40 +343,17 @@ async def _extract_claims_async(task_id: str, run_id: int):
             # 再对已经有全局顺序的状态型 claim 闭合有效区间
             positioned = assign_narrative_positions(anchored)
 
-            skipped = 0
-            inserted = 0
-            for claim_data in positioned:
-                # 同版本重放时跳过已有指纹：同一指纹在同一版本就是同一行
-                if claim_data["fingerprint"] in existing_fingerprints:
-                    skipped += 1
-                    continue
-                inserted += 1
-                db.add(
-                    ConsistencyClaim(
-                        project_id=run.project_id,
-                        subject_entry_id=claim_data["subject_entry_id"],
-                        subject_text=claim_data["subject_text"],
-                        predicate=claim_data["predicate"],
-                        object_type=claim_data["object_type"],
-                        object_value=claim_data.get("object_value"),
-                        object_entry_id=claim_data["object_entry_id"],
-                        polarity=claim_data.get("polarity", "positive"),
-                        certainty=claim_data.get("certainty", "explicit"),
-                        source_kind="body",
-                        chapter_id=run.chapter_id,
-                        body_rev=run.body_rev,
-                        paragraph_id=claim_data.get("paragraph_id"),
-                        source_anchor=claim_data.get("source_anchor"),
-                        timeline_id=claim_data.get("timeline_id"),
-                        story_order=claim_data.get("story_order"),
-                        valid_from_order=claim_data.get("valid_from_order"),
-                        valid_to_order=claim_data.get("valid_to_order"),
-                        extractor_version=EXTRACTOR_VERSION,
-                        confidence=claim_data.get("confidence", 0.9),
-                        fingerprint=claim_data["fingerprint"],
-                        status="accepted",
-                    )
-                )
+            # 同版本重放（重试、pipeline 重跑、换模型）是**集合替换**，不是追加：
+            # 本次存在的原地更新、缺失的标 superseded、新出现的插入。
+            # 见 services.claim_set —— 那里解释了为什么删除和跳过都不成立。
+            diff = await replace_body_claim_set(
+                db,
+                project_id=run.project_id,
+                chapter_id=run.chapter_id,
+                body_rev=run.body_rev,
+                extractor_version=EXTRACTOR_VERSION,
+                claims=positioned,
+            )
 
             # 提交前锁住头行再确认版本，确认通过后 claim 与 supersede 一起落库
             await ensure_run_is_current(db, run, lock=True)
@@ -413,9 +369,12 @@ async def _extract_claims_async(task_id: str, run_id: int):
                 "task_id": task_id,
                 "run_id": run_id,
                 "claims_count": len(positioned),
-                "inserted_claims": inserted,
-                "superseded_claims": superseded.rowcount,
-                "skipped_existing_claims": skipped,
+                "inserted_claims": diff.inserted,
+                "updated_claims": diff.updated,
+                "restored_claims": diff.restored,
+                "dropped_claims": diff.superseded,
+                "kept_rejected_claims": diff.kept_rejected,
+                "superseded_claims": superseded_older.rowcount,
                 "pending_order_claims": pending_order,
                 "entity_linking": linker.stats.as_dict(),
             }
