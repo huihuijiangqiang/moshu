@@ -7,7 +7,7 @@
 
 **关键事实**：
 - ✅ 30 张表完整 Alembic baseline，pgvector extension/HALFVEC 列已在迁移中定义
-- ✅ 807 个单元/功能测试通过（SQLite in-memory，mock embedding/LLM）
+- ✅ 809 个单元/功能测试通过（SQLite in-memory，mock embedding/LLM）
 - ⚠️ 36 个集成测试全部 SKIP（本机无真实 PostgreSQL + pgvector，**未在真实数据库验证**）
 - ⚠️ Codex embedding 回填的持久失败可见性尚未实现
 - ⚠️ 评测夹具仅 10 个 smoke cases，硬编码 100% 指标不代表实际质量
@@ -137,6 +137,7 @@
 - ✅ timeout/transport error、HTTP 408/429/5xx 与半截流有限指数退避重试
 - ✅ `reasoning_effort`、请求超时和重试参数均可由环境变量配置
 - ✅ JSON 标量 `object_value` 规范化，单个布尔/数字值不会拖垮整章抽取
+- ✅ claims 逐条校验；单条畸形输出隔离，整批畸形仍显式失败
 - ✅ 真实首章链路验证：4699 可见字符、53 条 claims、2048 维 embedding
 
 #### RAG 检索 (`services/retrieval.py`)
@@ -213,9 +214,9 @@
 
 ### 5. 测试覆盖
 
-#### 单元测试（807 passed，SQLite in-memory，mock providers）
+#### 单元测试（809 passed，SQLite in-memory，mock providers）
 
-**全量测试结果**：807 passed, 36 skipped, 4 warnings
+**全量测试结果**：809 passed, 36 skipped, 4 warnings
 
 主要测试覆盖（不逐文件列举测试数量，以实际 pytest 结果为准）：
 - ✅ Codex 设定库：CRUD、别名规范化、可检索文本判据、两段式事务、deferred 降级、httpx 错误重试
@@ -511,8 +512,8 @@ baseline，增量实现 Codex embedding 回填、时间锚点解析、issue 生�
 - `server/tasks/consistency.py` - 一致性任务
 - `server/tasks/codex.py` - Codex 回填任务
 
-### 测试（807 passed, 36 skipped）
-- `server/tests/` - 单元/功能测试（807 passed）
+### 测试（809 passed, 36 skipped）
+- `server/tests/` - 单元/功能测试（809 passed）
 - `server/tests/integration/` - 集成测试（36 skipped，需真实 PostgreSQL）
 
 ### 文档（1 个文件）
@@ -522,7 +523,7 @@ baseline，增量实现 Codex embedding 回填、时间锚点解析、issue 生�
 
 ## 总结
 
-墨枢一致性后端已完成核心数据模型、服务层、API 端点和异步任务的实现，807 个单元/功能
+墨枢一致性后端已完成核心数据模型、服务层、API 端点和异步任务的实现，809 个单元/功能
 测试在 SQLite in-memory + mock providers 环境下通过。30 张表完整 Alembic baseline，
 pgvector extension 与 Vector 列已在迁移中定义，代码质量经 ruff 验证。
 

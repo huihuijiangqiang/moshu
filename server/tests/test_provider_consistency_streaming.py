@@ -170,6 +170,35 @@ async def test_sse_multiple_frames_extraction():
     assert claims[0]["subject_text"] == "角色A"
 
 
+async def test_one_malformed_claim_does_not_discard_valid_siblings(caplog):
+    malformed = make_claim_payload("错误事实", polarity="uncertain")
+    valid = make_claim_payload("有效事实")
+    claims_json = json.dumps({"claims": [malformed, valid]}, ensure_ascii=False)
+    provider = ConsistencyProvider(
+        client=httpx.AsyncClient(
+            transport=StreamingMockTransport(sse_frame(claims_json) + sse_done())
+        )
+    )
+
+    claims = await provider.extract_claims("<p>短文</p>", "proj_a", "ch_a")
+
+    assert [claim["subject_text"] for claim in claims] == ["有效事实"]
+    assert "dropped 1 malformed claim" in caplog.text
+
+
+async def test_all_malformed_claims_still_raise():
+    malformed = make_claim_payload("错误事实", polarity="uncertain")
+    claims_json = json.dumps({"claims": [malformed]}, ensure_ascii=False)
+    provider = ConsistencyProvider(
+        client=httpx.AsyncClient(
+            transport=StreamingMockTransport(sse_frame(claims_json) + sse_done())
+        )
+    )
+
+    with pytest.raises(ProviderResponseError, match="only malformed claims"):
+        await provider.extract_claims("<p>短文</p>", "proj_a", "ch_a")
+
+
 async def test_sse_survives_arbitrary_network_byte_boundaries():
     """字节流可在 UTF-8 字符和 JSON token 中间切开。"""
     claims_json = json.dumps(

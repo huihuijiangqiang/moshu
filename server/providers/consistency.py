@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import math
 import random
 from typing import TYPE_CHECKING, Any, Optional
@@ -31,6 +32,8 @@ from services.timeline import GLOBAL_ORDER_BASES, parse_absolute_anchor
 
 if TYPE_CHECKING:
     pass
+
+logger = logging.getLogger(__name__)
 
 #: 指纹计算只有一份实现（services.claim_identity），这里保留旧的导入位置。
 __all__ = [
@@ -260,7 +263,7 @@ class ClaimOutput(BaseModel):
 class ExtractionResponse(BaseModel):
     """Response from extraction endpoint"""
 
-    claims: list[ClaimOutput] = Field(default_factory=list)
+    claims: list[Any] = Field(default_factory=list)
 
 
 class ConsistencyProvider:
@@ -609,8 +612,27 @@ class ConsistencyProvider:
                 f"extraction chunk {chunk.index} returned unparseable payload: {exc}"
             ) from exc
 
+        parsed_claims: list[ClaimOutput] = []
+        invalid_indexes: list[int] = []
+        for index, raw_claim in enumerate(extraction.claims):
+            try:
+                parsed_claims.append(ClaimOutput.model_validate(raw_claim))
+            except ValidationError:
+                invalid_indexes.append(index)
+        if extraction.claims and not parsed_claims:
+            raise ProviderResponseError(
+                f"extraction chunk {chunk.index} returned only malformed claims"
+            )
+        if invalid_indexes:
+            logger.warning(
+                "extraction chunk %s dropped %s malformed claim(s) at indexes %s",
+                chunk.index,
+                len(invalid_indexes),
+                invalid_indexes,
+            )
+
         claims = []
-        for claim in extraction.claims:
+        for claim in parsed_claims:
             # 校验来源锚点：模型报的段落号必须真实存在于当前块
             if not _validate_source_anchor(claim.source_anchor, chunk.paragraph_positions):
                 claim.source_anchor = None  # 编造的段落号不能进指纹
