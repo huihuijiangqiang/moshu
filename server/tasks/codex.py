@@ -2,13 +2,15 @@
 Codex embedding 回填任务 - 指数退避 + 有界重试 + 逐批提交。
 
 架构 8：「失败采用指数退避和最大重试，永久失败进入 dead-letter 状态并在项目状态
-接口可见。锁只覆盖单章短事务，不在调用模型时持有数据库锁。」对应实现：
+接口可见。锁只覆盖单章短事务，不在调用模型时持有数据库锁。」部分实现：
 
 * 指数退避 + 有界重试：autoretry_for + retry_backoff + max_retries；
 * 逐批提交：commit_each_batch=True。重试时已完成的批次哈希已匹配，下一轮查询
   直接跳过 —— 重试因此是幂等的，不会重复烧网关配额；
-* 永久失败可见：耗尽重试后 count_stale_entries 不归零，
-  POST /codex/{project_id}/backfill-embeddings 的 remaining_count 就是那个信号。
+* **永久失败可见性尚未实现**：当前没有独立 dead-letter 状态表、没有失败次数/
+  最后错误/耗尽标记，也没有只读 GET 项目状态端点。任务耗尽重试后数据留在 stale，
+  但 POST /codex/{project_id}/backfill-embeddings 只返回该次调用后的瞬时快照
+  remaining_count，无法持续查询失败可见性。真正满足架构 8 需后续增加持久状态和 GET。
 
 分工：请求路径（api.codex）不重试，让作者的编辑不被网关抖动拖长；重试与合批
 都在这里。回填按项目一次 embed_batch 多条，比逐条 embed_text 便宜得多。
@@ -73,10 +75,12 @@ def backfill_codex_embeddings_task(self, project_id: str, batch_size: int = 32):
 
     Returns:
         {"status", "project_id", "embedded_count", "remaining_count"}
+        其中 remaining_count 是本次任务完成后的待重算快照。
 
     Raises:
-        EmbeddingProviderError / OSError: 网关不可用，Celery 按指数退避重试；
-            重试耗尽后条目留在待重算状态，remaining_count 会持续暴露欠账。
+        EmbeddingProviderError / OSError / httpx.HTTPError: 网关不可用，
+            Celery 按指数退避重试。重试耗尽后条目留在待重算状态，但当前无
+            持久 dead-letter 标记或独立状态查询接口，失败可见性待后续实现。
     """
     return run_async(_backfill_async(project_id, batch_size))
 

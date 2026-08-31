@@ -228,10 +228,12 @@ async def refresh_embedding_if_stale(
 
 
 async def count_stale_entries(db: AsyncSession, project_id: str) -> int:
-    """项目内待重算的条目数 —— 回填是否还欠账，接口据此可见。
+    """项目内待重算的条目数 —— 调用时的瞬时快照，非持续失败状态。
 
-    架构 8 要求永久失败可见。这里不另建 dead-letter 表：待重算计数本身就是那个
-    信号，回填任务耗尽重试后它不会归零。
+    架构 8 要求永久失败可见。当前实现不另建 dead-letter 表、无失败次数/最后错误/
+    耗尽标记，也无独立只读 GET 端点。回填任务耗尽重试后数据留在 stale，但此计数
+    无法区分「首次待补」与「永久失败」，也无法持续查询。真正满足架构 8 需后续
+    增加持久失败状态和专用查询接口。
     """
     subquery = select_stale_entries(project_id).subquery()
     result = await db.execute(select(func.count()).select_from(subquery))

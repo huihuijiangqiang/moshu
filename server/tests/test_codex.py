@@ -1043,7 +1043,7 @@ async def test_the_backfill_endpoint_requires_project_access(
 async def test_the_backfill_endpoint_reports_what_is_left(
     codex_client, async_db_session, seed_project, auth_headers
 ):
-    """回填后 remaining_count 归零 —— 这是「还欠多少账」的可见信号。"""
+    """回填后 remaining_count 归零 —— 这是本次成功响应时的待重算快照。"""
     await seed_project()
     for index in range(3):
         await create_entry(
@@ -1204,3 +1204,42 @@ async def test_the_backfill_task_propagates_httpx_error_for_retry(
     import httpx
 
     assert isinstance(exc_info.value, httpx.HTTPError)
+
+
+def test_documentation_accurately_reflects_missing_dead_letter_visibility():
+    """文档断言：确保相关文档明确当前无持久失败状态或持续查询接口。
+
+    架构 8 要求永久失败可见，但当前实现只有瞬时快照 remaining_count，无独立
+    dead-letter 表/失败次数/最后错误，也无只读 GET 端点。此测试守住文档准确性，
+    防止误导性表述（如「持续可见」「持续暴露」「就是那个信号」）重新进入代码。
+    """
+    from api.codex import backfill_codex_embeddings
+    from services.codex import count_stale_entries
+    from tasks.codex import backfill_codex_embeddings_task
+
+    # tasks/codex.py 模块文档必须说明可见性尚未实现
+    task_module_doc = backfill_codex_embeddings_task.__module__
+    import sys
+
+    task_module = sys.modules[task_module_doc]
+    assert "永久失败可见性尚未实现" in task_module.__doc__
+    assert "无法持续查询失败可见性" in task_module.__doc__
+    assert "真正满足架构 8 需后续增加持久状态和 GET" in task_module.__doc__
+
+    # tasks/codex.py 任务函数 docstring 必须说明无持久标记
+    assert "但当前无" in backfill_codex_embeddings_task.__doc__
+    assert "持久 dead-letter 标记" in backfill_codex_embeddings_task.__doc__
+    assert "失败可见性待后续实现" in backfill_codex_embeddings_task.__doc__
+
+    # api/codex.py 端点 docstring 必须说明是瞬时快照
+    api_doc = backfill_codex_embeddings.__doc__
+    assert "本次回填成功后的待重算快照" in api_doc
+    assert "而非持续可查询的失败状态" in api_doc
+    assert "无法持续监控" in api_doc
+
+    # services/codex.py count_stale_entries 必须说明是瞬时快照、无法区分
+    count_doc = count_stale_entries.__doc__
+    assert "瞬时快照" in count_doc
+    assert "非持续失败状态" in count_doc
+    assert "无法区分" in count_doc or "无法区分「首次待补」与「永久失败」" in count_doc
+    assert "真正满足架构 8 需后续" in count_doc
