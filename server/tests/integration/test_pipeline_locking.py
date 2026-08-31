@@ -7,7 +7,8 @@ tests/test_tasks_consistency.py 覆盖的是「锁 + 版本比较」这段逻辑
 
 1. `SELECT ... FOR UPDATE` —— SQLite 方言直接把它丢掉，不会真正互斥；
 2. 部分唯一索引（postgresql_where）—— tests/conftest.py 建表时把它们剔除了，
-   所以同 revision 重放到底会不会撞索引，只有这里能证明。
+   所以同 revision 重放到底会不会撞索引，只有这里能证明；而且只有在真实索引下
+   才能证明「跳过已有指纹」这条路径不需要 DELETE。
 
 跑法见 tests/integration/conftest.py 的模块文档。
 """
@@ -108,10 +109,12 @@ async def test_partial_unique_index_rejects_a_duplicate_body_claim(seeded):
 
 
 async def test_marking_superseded_does_not_free_the_unique_key(seeded):
-    """索引不含 status —— 这正是同 revision 重放必须 DELETE 而不是标记的原因。
+    """索引不含 status —— 标记 superseded 之后同键再插入仍会被拒绝。
 
-    单元测试只能断言「重放后没有重复键」；这里证明如果改回「标记 superseded
-    再插入」，数据库会直接拒绝。
+    这就是同 revision 重放不能盲插的原因。**但结论不是「必须 DELETE」**：架构
+    4.3 要求旧 claim 只标 superseded 以保证告警可追溯，而且
+    GuardIssueEvidence.claim_id 是 ON DELETE SET NULL，删行会静默清空证据指针。
+    正确做法是不产生重复行（见下一条）。这条测试固定住约束的真实形状。
     """
     first = claim_row()
     seeded.add(first)
@@ -125,24 +128,69 @@ async def test_marking_superseded_does_not_free_the_unique_key(seeded):
         await seeded.commit()
 
 
-async def test_deleting_the_old_row_does_free_the_unique_key(seeded):
-    """抽取步骤采用的 DELETE 路径在真实索引下可行。"""
-    seeded.add(claim_row())
-    await seeded.commit()
+async def test_skipping_the_known_fingerprint_avoids_the_unique_violation(seeded):
+    """抽取步骤实际采用的路径：读出已有指纹并跳过，一行都不删也不撞索引。
 
-    await seeded.execute(
-        ConsistencyClaim.__table__.delete().where(
-            ConsistencyClaim.chapter_id == "ch_pg",
-            ConsistencyClaim.source_kind == "body",
-            ConsistencyClaim.body_rev == 1,
-            ConsistencyClaim.extractor_version == "1.0.0",
-        )
-    )
-    seeded.add(claim_row())
+    单元测试只能断言「重放后没有重复键」（SQLite 剔除了部分索引）；这里证明在
+    真实索引下这条路径确实不会被拒绝，而且原行的 id 保持不变 —— 已有 GuardIssue
+    的证据指针因此始终有效。
+    """
+    original = claim_row()
+    seeded.add(original)
     await seeded.commit()
+    original_id = original.id
+
+    # 重放：先读本 revision 已有的指纹（生产代码做的就是这件事）
+    existing = set(
+        (
+            await seeded.execute(
+                select(ConsistencyClaim.fingerprint).where(
+                    ConsistencyClaim.chapter_id == "ch_pg",
+                    ConsistencyClaim.source_kind == "body",
+                    ConsistencyClaim.body_rev == 1,
+                    ConsistencyClaim.extractor_version == "1.0.0",
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    assert existing == {"fp_pg"}
+
+    replay = claim_row()
+    if replay.fingerprint not in existing:
+        seeded.add(replay)
+    await seeded.commit()  # 不该抛 IntegrityError
 
     rows = list((await seeded.execute(select(ConsistencyClaim))).scalars().all())
     assert len(rows) == 1
+    assert rows[0].id == original_id, "行被删掉重建了 —— 证据指针会被置空"
+    assert rows[0].status == "accepted"
+
+
+async def test_superseded_rows_survive_a_new_revision(seeded):
+    """新 revision 落库后旧行仍然在表里，只是 status=superseded（架构 4.3）。"""
+    seeded.add(claim_row(body_rev=1, fingerprint="fp_v1"))
+    await seeded.commit()
+
+    await seeded.execute(
+        ConsistencyClaim.__table__.update()
+        .where(
+            ConsistencyClaim.chapter_id == "ch_pg",
+            ConsistencyClaim.source_kind == "body",
+            ConsistencyClaim.body_rev < 2,
+        )
+        .values(status="superseded")
+    )
+    seeded.add(claim_row(body_rev=2, fingerprint="fp_v2"))
+    await seeded.commit()
+
+    rows = list(
+        (await seeded.execute(select(ConsistencyClaim).order_by(ConsistencyClaim.body_rev)))
+        .scalars()
+        .all()
+    )
+    assert [(row.body_rev, row.status) for row in rows] == [(1, "superseded"), (2, "accepted")]
 
 
 async def test_partial_index_is_scoped_by_source_kind(seeded):
