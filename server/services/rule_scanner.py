@@ -112,6 +112,18 @@ class RuleScanner:
         """主体的稳定身份：优先已解析的 entry_id，否则退回文本。"""
         return claim.subject_entry_id or f"text:{claim.subject_text.strip().lower()}"
 
+    @staticmethod
+    def _capped_severity(severity: str, claims: list[ConsistencyClaim]) -> str:
+        """按证据 claim 的确定性给严重级别设上限。
+
+        架构 7：「任一输入 claim 为 uncertain 时不得产生 high severity。」
+        uncertain 意味着正文本身没把这件事说定，据此出 high 会把作者的模糊表达
+        当成硬矛盾。降到 medium：仍然提示，但不占用「必须处理」的注意力。
+        """
+        if severity == "high" and any(c.certainty == "uncertain" for c in claims):
+            return "medium"
+        return severity
+
     async def _check_alive_conflicts(
         self,
         db: AsyncSession,
@@ -146,7 +158,7 @@ class RuleScanner:
                         next_claim.object_value == "true" and next_claim.polarity == "positive"):
                     issues.append({
                         "issue_type": "alive_conflict",
-                        "severity": "high",
+                        "severity": self._capped_severity("high", [current, next_claim]),
                         "confidence": 0.95,
                         "description": (
                             f"{next_claim.subject_text} marked as dead then alive without explanation"
@@ -195,8 +207,10 @@ class RuleScanner:
                 if self._subject_key(current) == self._subject_key(next_claim):
                     continue
 
-                # 区间重叠判定；valid_from_order 缺失时用 story_order 兜底，
-                # 否则 None 参与比较会直接抛 TypeError。
+                # 区间重叠判定。到这里 story_order 一定非空（上面已过滤），而
+                # assign_narrative_positions 只会给顺序可靠的状态型 claim 补
+                # valid_from_order，所以兜底取 story_order 不会引入伪造的顺序 ——
+                # 顺序不可靠的 claim 的 story_order 本身就是 NULL，进不到这里。
                 next_from = (
                     next_claim.valid_from_order
                     if next_claim.valid_from_order is not None
@@ -205,7 +219,7 @@ class RuleScanner:
                 if current.valid_to_order is None or current.valid_to_order > next_from:
                     issues.append({
                         "issue_type": "ownership_conflict",
-                        "severity": "high",
+                        "severity": self._capped_severity("high", [current, next_claim]),
                         "confidence": 0.90,
                         "description": "Item owned by different entities at overlapping times",
                         "evidence_claims": [current.id, next_claim.id],

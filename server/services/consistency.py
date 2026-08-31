@@ -28,13 +28,6 @@ EXTRACTOR_VERSION = "1.0.0"
 #: 摘要版本，参与 DocumentSummary 唯一键。
 SUMMARY_VERSION = "1.0.0"
 
-#: 抽取结果没给 timeline_id 时使用的主时间线。
-#:
-#: 三条 P0 规则都按 (subject, timeline_id) 分组，并且要求 story_order 非空才
-#: 参与排序判断。timeline_id 留 NULL、story_order 留 NULL 的 claim 永远不会
-#: 被任何规则看到 —— 落库了却检不出冲突，等于白抽。
-DEFAULT_TIMELINE_ID = "main"
-
 #: ConsistencyRun.trigger 的 CHECK 约束允许的取值。
 VALID_RUN_TRIGGERS = frozenset({"body_save", "manual_scan", "pipeline_upgrade", "maintenance"})
 
@@ -95,20 +88,38 @@ STATEFUL_PREDICATES = frozenset({"alive", "owns", "owned_by", "located_at", "has
 #: 而 alive / located_at 的对象是状态值本身，后一条直接取代前一条。
 OBJECT_SCOPED_PREDICATES = frozenset({"owns", "owned_by", "has_ability"})
 
+#: 可以采信的叙事顺序依据（架构 4.3）。
+#:
+#: explicit_time：正文给了明确时间/日期/间隔；
+#: sequential_narration：事件在故事时间里被明确顺叙。
+#: flashback 与 unknown 都**不可**采信 —— 倒叙的叙述位置与故事顺序背离，
+#: 除非有已确认的跨线锚点，否则无法定位它在故事时间里的位置。
+RELIABLE_ORDER_BASES = frozenset({"explicit_time", "sequential_narration"})
 
-def derive_story_order(chapter_idx: int, ordinal: int, total: int) -> float:
-    """把「章内第 ordinal 条声明」映射成全书叙事顺序。
+#: 采信模型给出的顺序所需的最低置信度。低于它只进待确认，不进硬规则。
+MIN_ORDER_CONFIDENCE = 0.7
 
-    Chapter.idx 是步长 1024 的稀疏序号，所以把章内偏移压进 (idx, idx+1) 区间即可
-    保证：同章内严格递增，且永远不会越到下一章前面。
 
-    story_order 是 Numeric(24,8)，8 位小数足够容纳一章内的数千条声明。
+def is_order_reliable(claim: dict) -> bool:
+    """判断这条 claim 的叙事顺序能否用于依赖时序的硬规则。
+
+    架构 4.3：「无法从正文可靠确定顺序时保持为空，只进入待确认列表，不运行依赖
+    时序的硬规则。」所以三个条件必须同时成立：
+
+    1. story_order 确实有值（不是我们编的）；
+    2. order_basis 属于可采信依据 —— flashback / unknown 一律不采信；
+    3. order_confidence 不低于阈值。
+
+    order_basis 缺失时按不可靠处理：老版本抽取器没有这个字段，宁可漏报。
     """
-    if total <= 0:
-        raise ValueError("total must be positive")
-    if not 0 <= ordinal < total:
-        raise ValueError(f"ordinal {ordinal} out of range for total {total}")
-    return round(chapter_idx + (ordinal + 1) / (total + 1), 8)
+    if claim.get("story_order") is None:
+        return False
+    if claim.get("order_basis") not in RELIABLE_ORDER_BASES:
+        return False
+    confidence = claim.get("order_confidence")
+    if confidence is None or confidence < MIN_ORDER_CONFIDENCE:
+        return False
+    return True
 
 
 def _interval_group_key(claim: dict) -> tuple:
@@ -121,41 +132,49 @@ def _interval_group_key(claim: dict) -> tuple:
     return (subject, predicate)
 
 
-def assign_narrative_positions(
-    claims: list[dict],
-    *,
-    chapter_idx: int,
-    timeline_id: str = DEFAULT_TIMELINE_ID,
-) -> list[dict]:
-    """给一章抽取出的 claim 补齐时间线与叙事位置字段。
+def assign_narrative_positions(claims: list[dict]) -> list[dict]:
+    """闭合可靠且同时间线的状态区间；顺序不可靠的 claim 一律保持 NULL。
 
-    抽取器只给出文本内容，timeline_id / story_order / valid_from_order /
-    valid_to_order 全是 NULL。而三条 P0 规则都要求 story_order 非空、按
-    (subject, timeline_id) 分组 —— 不补这些字段，claim 落库了也检不出任何冲突。
+    **不推导 story_order。** 早期实现把 Chapter.idx 压成 story_order，违反架构
+    4.3：story_order 是故事世界中的事件顺序，不是「第几章」。插叙、倒叙、多线
+    叙事里两者会背离 —— 用章节序号顶替，会把正常的倒叙判成「先死后活」这类
+    高等级时序矛盾，而作者根本无法解释这条告警。伪造顺序只是让规则「命中」，
+    并不代表检出了真实冲突。
 
-    模型若自己给了值就沿用（尊重更精确的抽取结果），否则按章内顺序推导。
-    状态型谓词的有效区间在同组内前后闭合：前一条的 valid_to_order 设为后一条的
-    valid_from_order，最后一条保持开区间（None = 一直有效）。
+    因此这里只做一件安全的事：对**已经可靠**的顺序（见 is_order_reliable）在
+    同一 timeline_id 内前后闭合有效区间。不可靠的 claim 保留 story_order=None，
+    照常落库进入待确认列表，但不参与依赖时序的硬规则。
 
-    返回的是新的 dict 列表，不修改入参。
+    timeline_id 也不再兜底填 "main"：把两条独立叙事线强行并进同一条时间线，
+    等于制造跨线比较，而架构要求「只有存在已确认的跨线锚点时才比较」。
+
+    返回新的 dict 列表，不修改入参。
     """
-    total = len(claims)
-    positioned = []
-    for ordinal, claim in enumerate(claims):
-        enriched = dict(claim)
-        enriched.setdefault("timeline_id", None)
-        if not enriched.get("timeline_id"):
-            enriched["timeline_id"] = timeline_id
-        if enriched.get("story_order") is None:
-            enriched["story_order"] = derive_story_order(chapter_idx, ordinal, total)
-        if enriched.get("valid_from_order") is None and enriched.get("predicate") in STATEFUL_PREDICATES:
-            enriched["valid_from_order"] = enriched["story_order"]
-        positioned.append(enriched)
+    positioned = [dict(claim) for claim in claims]
 
-    # 闭合同组内相邻状态区间
+    for claim in positioned:
+        claim.setdefault("timeline_id", None)
+        claim.setdefault("story_order", None)
+        claim.setdefault("valid_from_order", None)
+        claim.setdefault("valid_to_order", None)
+
+        if not is_order_reliable(claim):
+            # 顺序不可信 —— 连区间起点都不能给，否则 ownership 规则会拿它兜底比较
+            claim["story_order"] = None
+            claim["valid_from_order"] = None
+            claim["valid_to_order"] = None
+            continue
+
+        if claim.get("valid_from_order") is None and claim.get("predicate") in STATEFUL_PREDICATES:
+            claim["valid_from_order"] = claim["story_order"]
+
+    # 只在「顺序可靠 + 同一 timeline_id 非空」的组内闭合区间。
+    # timeline_id 为空表示叙事线未知，不能与任何 claim 比较先后。
     groups: dict[tuple, list[dict]] = {}
     for claim in positioned:
         if claim.get("predicate") not in STATEFUL_PREDICATES:
+            continue
+        if not is_order_reliable(claim) or not claim.get("timeline_id"):
             continue
         groups.setdefault((claim["timeline_id"],) + _interval_group_key(claim), []).append(claim)
 
