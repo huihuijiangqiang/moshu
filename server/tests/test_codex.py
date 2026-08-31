@@ -68,6 +68,20 @@ class FailingProvider(MockEmbeddingProvider):
         raise EmbeddingProviderError("gateway unavailable")
 
 
+class HttpxFailingProvider(MockEmbeddingProvider):
+    """网关返回 httpx.HTTPError（连接失败或状态码错误）。"""
+
+    async def embed_text(self, text, model=None):
+        import httpx
+
+        raise httpx.HTTPError("Connection timeout")
+
+    async def embed_batch(self, texts, model=None):
+        import httpx
+
+        raise httpx.HTTPError("Connection timeout")
+
+
 @pytest.fixture
 def provider():
     return CountingProvider()
@@ -406,6 +420,28 @@ async def test_a_gateway_failure_after_an_edit_never_leaves_a_matching_hash(
     assert status == "deferred"
     stored = await reload_entry(async_db_session, entry_id)
     assert stored.description == "改成了完全不同的设定"
+    assert stored.embedding_text_hash is None
+    assert await count_stale_entries(async_db_session, "proj_a") == 1
+
+
+async def test_httpx_error_is_treated_as_gateway_failure(
+    async_db_session, seed_project
+):
+    """httpx.HTTPError（连接失败、超时、状态码错误）同样不让作者的写入失败。"""
+    await seed_project()
+    entry = await create_entry(
+        async_db_session, project_id="proj_a", kind="character", name="李长风"
+    )
+    entry_id = entry.id
+    await async_db_session.commit()
+
+    status = await refresh_embedding_if_stale(async_db_session, HttpxFailingProvider(), entry)
+    await async_db_session.commit()
+
+    assert status == "deferred"
+    stored = await reload_entry(async_db_session, entry_id)
+    assert stored.name == "李长风"
+    assert stored.embedding is None
     assert stored.embedding_text_hash is None
     assert await count_stale_entries(async_db_session, "proj_a") == 1
 
@@ -809,6 +845,64 @@ async def test_updating_a_non_embedded_field_reports_fresh(
     assert provider.call_count == calls_before
 
 
+async def test_updating_attrs_on_deferred_entry_reports_deferred_not_fresh(
+    codex_client, async_db_session, seed_project, auth_headers, provider
+):
+    """条目已 deferred 时，改 attrs 不得谎报 fresh —— 必须依据真实 embedding/hash。
+
+    回归：旧实现的 _settle_embedding 在 stale=False 时直接返回 fresh，导致已经
+    deferred 的条目（向量为空、哈希为空）被错误标记成 fresh。改 attrs/resident、
+    或重复加同一别名都不使文本变脏，但也不该让 deferred 变成 fresh。
+    """
+    await seed_project()
+    entry = await create_entry(
+        async_db_session, project_id="proj_a", kind="character", name="李长风"
+    )
+    await async_db_session.commit()
+    # 第一次尝试补向量就失败 → deferred
+    await refresh_embedding_if_stale(async_db_session, FailingProvider(), entry)
+    await async_db_session.commit()
+    assert entry.embedding is None
+    assert entry.embedding_text_hash is None
+
+    # 改 attrs 不使可检索文本变脏，但条目仍是 deferred
+    response = await codex_client.patch(
+        f"/codex/proj_a/entries/{entry.id}",
+        json={"attrs": {"level": 5}},
+        headers=auth_headers("user_a"),
+    )
+
+    assert response.status_code == 200
+    # 必须报 updated（成功补齐）或 deferred（仍然失败），不能谎报 fresh
+    assert response.json()["embedding_status"] in ("updated", "deferred")
+    # 实际会是 updated，因为这次用的是真实 provider
+
+
+async def test_adding_duplicate_alias_on_deferred_entry_reports_status_correctly(
+    codex_client, async_db_session, seed_project, auth_headers, provider
+):
+    """重复添加同一别名不标脏，但 deferred 条目不能因此变 fresh。"""
+    await seed_project()
+    entry = await create_entry(
+        async_db_session, project_id="proj_a", kind="character", name="李长风", aliases=["长风"]
+    )
+    await async_db_session.commit()
+    await refresh_embedding_if_stale(async_db_session, FailingProvider(), entry)
+    await async_db_session.commit()
+    assert entry.embedding is None
+
+    response = await codex_client.post(
+        f"/codex/proj_a/entries/{entry.id}/aliases",
+        json={"alias": "长风"},
+        headers=auth_headers("user_a"),
+    )
+
+    assert response.status_code == 201
+    assert response.json()["changed"] is False
+    # 不能谎报 fresh —— 条目还是 deferred
+    assert response.json()["embedding_status"] in ("updated", "deferred")
+
+
 async def test_updating_the_name_recomputes_the_embedding(
     codex_client, async_db_session, seed_project, auth_headers, provider
 ):
@@ -1009,6 +1103,8 @@ async def test_the_backfill_endpoint_rejects_a_bad_batch_size(
 
 def test_the_backfill_task_retries_with_bounded_exponential_backoff():
     """架构 8 要求指数退避与最大重试 —— 这些是任务注册时就固定下来的配置。"""
+    import httpx
+
     from tasks.codex import RETRYABLE_ERRORS, backfill_codex_embeddings_task
 
     assert backfill_codex_embeddings_task.name == "codex.backfill_embeddings"
@@ -1017,6 +1113,8 @@ def test_the_backfill_task_retries_with_bounded_exponential_backoff():
     assert backfill_codex_embeddings_task.retry_backoff_max == 600
     assert backfill_codex_embeddings_task.retry_jitter is True
     assert EmbeddingProviderError in RETRYABLE_ERRORS
+    assert OSError in RETRYABLE_ERRORS
+    assert httpx.HTTPError in RETRYABLE_ERRORS
     assert set(backfill_codex_embeddings_task.autoretry_for) == set(RETRYABLE_ERRORS)
 
 
@@ -1077,3 +1175,32 @@ async def test_the_backfill_task_propagates_gateway_failure_for_retry(
 
     with pytest.raises(EmbeddingProviderError):
         await codex_tasks._backfill_async("proj_a", batch_size=2)
+
+
+async def test_the_backfill_task_propagates_httpx_error_for_retry(
+    async_db_session, seed_project, monkeypatch
+):
+    """httpx.HTTPError 同样必须冒泡，触发 Celery 重试。"""
+    import contextlib
+
+    from tasks import codex as codex_tasks
+
+    @contextlib.asynccontextmanager
+    async def _session_factory():
+        yield async_db_session
+
+    monkeypatch.setattr(codex_tasks, "AsyncSessionLocal", _session_factory)
+    monkeypatch.setattr(codex_tasks, "GatewayEmbeddingProvider", HttpxFailingProvider)
+
+    await seed_project()
+    await create_entry(
+        async_db_session, project_id="proj_a", kind="character", name="李长风"
+    )
+    await async_db_session.commit()
+
+    with pytest.raises(Exception) as exc_info:
+        await codex_tasks._backfill_async("proj_a", batch_size=2)
+
+    import httpx
+
+    assert isinstance(exc_info.value, httpx.HTTPError)

@@ -21,7 +21,6 @@ from db.models_codex import CODEX_STATUSES, CodexAlias, CodexEntry
 from db.models_core import User
 from db.session import get_db
 from services.codex import (
-    EMBEDDING_FRESH,
     add_alias,
     count_stale_entries,
     create_entry,
@@ -136,11 +135,11 @@ async def _settle_embedding(
 ) -> str:
     """第二段事务：补向量并提交。
 
-    stale=False（可检索文本没变）时连查询都不做，直接返回 fresh —— 这就是
-    「无变化不重算」在请求路径上的体现。
+    即使 stale=False（可检索文本没变），仍需调 refresh_embedding_if_stale 确认
+    条目真的 fresh：条目可能在之前的网关失败后留在 deferred 状态，改 attrs 不使其
+    变脏，但也不该谎报 fresh。refresh_embedding_if_stale 会检查哈希：真正 fresh 时
+    不调网关，deferred 时尝试补齐。
     """
-    if not stale:
-        return EMBEDDING_FRESH
     embedding_status = await refresh_embedding_if_stale(db, provider, entry)
     await db.commit()
     return embedding_status

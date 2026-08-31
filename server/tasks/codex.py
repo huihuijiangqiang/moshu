@@ -8,13 +8,14 @@ Codex embedding 回填任务 - 指数退避 + 有界重试 + 逐批提交。
 * 逐批提交：commit_each_batch=True。重试时已完成的批次哈希已匹配，下一轮查询
   直接跳过 —— 重试因此是幂等的，不会重复烧网关配额；
 * 永久失败可见：耗尽重试后 count_stale_entries 不归零，
-  GET/POST /codex/{project_id}/backfill-embeddings 的 remaining_count 就是那个信号。
+  POST /codex/{project_id}/backfill-embeddings 的 remaining_count 就是那个信号。
 
 分工：请求路径（api.codex）不重试，让作者的编辑不被网关抖动拖长；重试与合批
 都在这里。回填按项目一次 embed_batch 多条，比逐条 embed_text 便宜得多。
 """
 import asyncio
 
+import httpx
 from celery import shared_task
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
@@ -27,7 +28,7 @@ engine = create_async_engine(settings.database_url, echo=False)
 AsyncSessionLocal = async_sessionmaker(engine, expire_on_commit=False)
 
 #: 视为「网关暂时不可用、值得重试」的异常。httpx.HTTPError 覆盖连接与状态码错误。
-RETRYABLE_ERRORS = (EmbeddingProviderError, OSError)
+RETRYABLE_ERRORS = (EmbeddingProviderError, OSError, httpx.HTTPError)
 
 
 def run_async(coro):
