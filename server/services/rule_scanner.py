@@ -13,6 +13,9 @@ Rule Scanner - Persistent consistency checking with fingerprinted issues
 * actions 必须是 GuardResolution CHECK 约束允许的值，否则前端照着 actions 提交
   处置会被 422 拒掉。
 * 已被判为误报的 issue 不得因为再次命中就复活。
+* 相同实质证据的重复扫描必须完全幂等：不增 issue_rev、不删写 evidence。只有
+  claim ids / body_rev / source_anchor 等实质证据变化才 issue_rev+1 并重开。
+* resolved 和 stale 重现按同样的「证据是否变化」规则处理。
 """
 import hashlib
 import json
@@ -21,6 +24,7 @@ from datetime import datetime, timezone
 from typing import Any, Optional
 
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from db.models_consistency_extended import ConsistencyClaim, GuardIssueEvidence
@@ -64,6 +68,40 @@ class RuleScanner:
         )
         return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
+    def _merge_by_fingerprint(self, detected_issues: list[dict]) -> list[tuple[str, dict]]:
+        """把同指纹的多次命中合并成一条 issue，顺序确定。
+
+        必须合并，否则同一次扫描内就无法幂等：反复「死—活—死—活」会产生两对证据
+        claim，两者指纹相同 —— 逐条 upsert 会让同一行先写第一对、再被第二对覆盖，
+        下一次扫描又反向覆盖一遍，issue_rev 每扫一次涨两级，作者的处置永远对不上
+        当前 rev。
+
+        合并规则：保留**第一次**命中的锚点/描述/严重级别（claim 已按
+        (story_order, id) 排序，第一次命中就是故事里最早出问题的地方，也是作者该
+        先看的地方），证据 claim 取各次命中的有序并集 —— 后续几次的证据不丢。
+        """
+        merged: dict[str, dict] = {}
+        ordered_fingerprints: list[str] = []
+
+        for issue_data in detected_issues:
+            fingerprint = self.compute_issue_fingerprint(
+                issue_data["issue_type"], issue_data["identity_keys"]
+            )
+            if fingerprint not in merged:
+                merged[fingerprint] = {
+                    **issue_data,
+                    "evidence_claims": list(issue_data["evidence_claims"]),
+                }
+                ordered_fingerprints.append(fingerprint)
+                continue
+
+            claim_ids = merged[fingerprint]["evidence_claims"]
+            for claim_id in issue_data["evidence_claims"]:
+                if claim_id not in claim_ids:
+                    claim_ids.append(claim_id)
+
+        return [(fingerprint, merged[fingerprint]) for fingerprint in ordered_fingerprints]
+
     async def scan_chapter(
         self,
         db: AsyncSession,
@@ -77,6 +115,9 @@ class RuleScanner:
         Scan a chapter's claims and produce/update GuardIssue records
         Cross-chapter consistency: load all project claims for timeline analysis
 
+        同一版正文重复扫描是完全幂等的：实质证据没变的 issue 一个字段都不动
+        （不增 issue_rev、不改 run_id、不删写 evidence 行），见 _upsert_issue。
+
         Returns:
             List of issue IDs (new or updated)
         """
@@ -88,6 +129,7 @@ class RuleScanner:
             .order_by(ConsistencyClaim.id)
         )
         all_claims = list(result.scalars().all())
+        claims_by_id = {claim.id: claim for claim in all_claims}
 
         # Run rules on all project claims
         detected_issues = []
@@ -95,12 +137,19 @@ class RuleScanner:
         detected_issues.extend(await self._check_ownership_conflicts(db, project_id, all_claims))
         detected_issues.extend(await self._check_knowledge_boundary(db, project_id, all_claims))
 
-        # Upsert issues
+        # Upsert issues（同指纹先合并，一个指纹只写一次）
         issue_ids = []
-        for issue_data in detected_issues:
-            issue_id = await self._upsert_issue(db, run_id, project_id, chapter_id, issue_data)
-            if issue_id not in issue_ids:
-                issue_ids.append(issue_id)
+        for fingerprint, issue_data in self._merge_by_fingerprint(detected_issues):
+            issue_id = await self._upsert_issue(
+                db,
+                run_id=run_id,
+                project_id=project_id,
+                chapter_id=chapter_id,
+                fingerprint=fingerprint,
+                issue_data=issue_data,
+                claims_by_id=claims_by_id,
+            )
+            issue_ids.append(issue_id)
 
         # Mark stale issues
         await self._mark_stale_issues(db, run_id, project_id, chapter_id, issue_ids)
@@ -255,9 +304,12 @@ class RuleScanner:
                 if acquire_claim.story_order is None:
                     continue
 
-                # Same subject and same knowledge object?
+                # Same subject, same knowledge object, AND same timeline?
+                # 不同 timeline 的知情状态互不影响；timeline 为空或不同不比较。
                 if (self._subject_key(use_claim) == self._subject_key(acquire_claim) and
-                        use_claim.object_value == acquire_claim.object_value):
+                        use_claim.object_value == acquire_claim.object_value and
+                        use_claim.timeline_id is not None and
+                        use_claim.timeline_id == acquire_claim.timeline_id):
 
                     # Used before acquired?
                     if use_claim.story_order < acquire_claim.story_order:
@@ -281,58 +333,110 @@ class RuleScanner:
 
         return issues
 
-    async def _upsert_issue(
-        self,
-        db: AsyncSession,
-        run_id: int,
-        project_id: str,
-        chapter_id: str,
-        issue_data: dict,
-    ) -> str:
-        """Create or update GuardIssue, write GuardIssueEvidence"""
-        fingerprint = self.compute_issue_fingerprint(
-            issue_data["issue_type"], issue_data["identity_keys"]
-        )
-        anchor = issue_data["anchor"]
-        evidence_payload = {
-            "claim_ids": list(issue_data["evidence_claims"]),
-            "rule_version": self.rule_version,
-            "detected_in_chapter": anchor.get("chapter_id"),
-            "detected_in_body_rev": anchor.get("body_rev"),
-        }
-        actions = ISSUE_ACTIONS.get(issue_data["issue_type"], DEFAULT_ACTIONS)
+    @staticmethod
+    def _claim_versions(
+        claim_ids: list[int],
+        claims_by_id: dict[int, ConsistencyClaim],
+    ) -> list[dict[str, Any]]:
+        """证据 claim 的**版本身份**：决定 issue 是否真的换了证据。
 
-        # Check if issue exists
+        只有 claim id、来源章节/正文版本、来源锚点这些能证明「证据换了一版」的
+        字段才进来。confidence / story_order 这类每次重算都可能微调的派生值不进来
+        —— 否则一次无意义的重算就会把作者刚处置完的 issue 重新翻出来。
+        """
+        versions = []
+        for claim_id in claim_ids:
+            claim = claims_by_id.get(claim_id)
+            if claim is None:
+                versions.append({"claim_id": claim_id})
+                continue
+            versions.append(
+                {
+                    "claim_id": claim.id,
+                    "chapter_id": claim.chapter_id,
+                    "body_rev": claim.body_rev,
+                    "outline_rev": claim.outline_rev,
+                    "source_anchor": claim.source_anchor,
+                }
+            )
+        return versions
+
+    def _evidence_signature(
+        self,
+        claim_versions: list[dict[str, Any]],
+        anchor: dict[str, Any],
+    ) -> str:
+        """实质证据的签名：claim 版本身份 + 锚点 + 规则版本。
+
+        重复扫描的幂等性完全建立在这个签名上：签名相同就一个字段都不动。
+        """
+        canonical = json.dumps(
+            {
+                "claims": claim_versions,
+                "anchor": anchor,
+                "rule_version": self.rule_version,
+            },
+            sort_keys=True,
+            ensure_ascii=False,
+        )
+        return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+    @staticmethod
+    async def _select_issue(
+        db: AsyncSession,
+        project_id: str,
+        fingerprint: str,
+    ) -> Optional[GuardIssue]:
         result = await db.execute(
             select(GuardIssue)
             .where(GuardIssue.project_id == project_id)
             .where(GuardIssue.fingerprint == fingerprint)
         )
-        existing = result.scalar_one_or_none()
+        return result.scalar_one_or_none()
 
-        if existing:
-            issue_id = existing.id
-            # 作者已判定为误报的 issue 不复活，只刷新证据与锚点
-            if existing.false_positive or existing.status == "false_positive":
-                existing.anchor = anchor
-                existing.evidence = evidence_payload
-                existing.updated_at = datetime.now(timezone.utc)
-            else:
-                existing.run_id = run_id
-                existing.chapter_id = anchor.get("chapter_id") or chapter_id
-                existing.status = "open"
-                existing.resolved = False
-                existing.stale_at = None
-                existing.severity = issue_data["severity"]
-                existing.confidence = issue_data["confidence"]
-                existing.description = issue_data["description"]
-                existing.anchor = anchor
-                existing.evidence = evidence_payload
-                existing.actions = actions
-                existing.rule_version = self.rule_version
-                existing.issue_rev += 1
-                existing.updated_at = datetime.now(timezone.utc)
-        else:
+    async def _upsert_issue(
+        self,
+        db: AsyncSession,
+        *,
+        run_id: int,
+        project_id: str,
+        chapter_id: str,
+        fingerprint: str,
+        issue_data: dict,
+        claims_by_id: dict[int, ConsistencyClaim],
+    ) -> str:
+        """Create or update GuardIssue, write GuardIssueEvidence.
+
+        生命周期规则（每一条都对应一个被拒收的行为）：
+
+        * 实质证据签名不变 ⇒ **一个字段都不写**：不增 issue_rev、不改 run_id、
+          不动 evidence 行。否则每次保存正文都会让全项目的 issue 集体涨 rev，
+          作者手上的 issue_rev 立刻过期，处置接口一律 409。
+        * 签名变化 ⇒ issue_rev+1 并刷新证据；未被误报判定的 issue 同时重开。
+        * resolved：同一实质证据再扫描保持 resolved（那是作者对这份证据的判断）；
+          证据换版才重开。
+        * false_positive：永不复活；但证据换版时必须连同 issue_rev 一起更新，
+          不能悄悄把新证据塞进作者判过的那个 rev 里。
+        * stale：冲突重新出现就重开（stale 是系统观察，不是作者决定），
+          issue_rev 仍然只在证据变化时才涨。
+        """
+        anchor = issue_data["anchor"]
+        claim_ids = list(issue_data["evidence_claims"])
+        claim_versions = self._claim_versions(claim_ids, claims_by_id)
+        signature = self._evidence_signature(claim_versions, anchor)
+        evidence_payload = {
+            "claim_ids": claim_ids,
+            "claim_versions": claim_versions,
+            "rule_version": self.rule_version,
+            "detected_in_chapter": anchor.get("chapter_id"),
+            "detected_in_body_rev": anchor.get("body_rev"),
+            "evidence_signature": signature,
+        }
+        actions = ISSUE_ACTIONS.get(issue_data["issue_type"], DEFAULT_ACTIONS)
+
+        existing = await self._select_issue(db, project_id, fingerprint)
+
+        if existing is None:
             issue_id = f"gi_{secrets.token_hex(12)}"
             issue = GuardIssue(
                 id=issue_id,
@@ -354,53 +458,152 @@ class RuleScanner:
                 resolved=False,
                 false_positive=False,
             )
-            db.add(issue)
-            await db.flush()
+            try:
+                # uq_guard_issue_fingerprint(project_id, fingerprint) 上有并发窗口：
+                # 两个 worker 同时扫同一个项目时，「先查后插」之间另一方可能已经插入。
+                # SAVEPOINT 把撞键限制在这一条语句里，外层事务（本次扫描已经写好的
+                # 其他 issue）不受影响；回滚后改走「已存在」分支。
+                # 不用 PostgreSQL 的 ON CONFLICT：SQLite 上无法编译，这段逻辑就再也
+                # 没有单元测试能覆盖。
+                async with db.begin_nested():
+                    db.add(issue)
+                    await db.flush()
+            except IntegrityError:
+                existing = await self._select_issue(db, project_id, fingerprint)
+                if existing is None:
+                    raise
+            else:
+                await self._write_evidence(db, issue_id, claim_ids, claims_by_id)
+                return issue_id
 
-        # Write evidence records
-        await self._write_evidence(db, issue_id, issue_data["evidence_claims"])
+        stored_signature = (existing.evidence or {}).get("evidence_signature")
+        evidence_changed = stored_signature != signature
+        is_false_positive = existing.false_positive or existing.status == "false_positive"
+        # 误报不复活，所以误报的 issue 永远不进重开分支
+        needs_reopen = existing.status == "stale" and not is_false_positive
 
-        return issue_id
+        if not evidence_changed and not needs_reopen:
+            # 完全幂等：不碰任何字段，连 updated_at 都不动
+            return existing.id
+
+        if evidence_changed:
+            existing.chapter_id = anchor.get("chapter_id") or chapter_id
+            existing.severity = issue_data["severity"]
+            existing.confidence = issue_data["confidence"]
+            existing.description = issue_data["description"]
+            existing.anchor = anchor
+            existing.evidence = evidence_payload
+            existing.actions = actions
+            existing.rule_version = self.rule_version
+            existing.issue_rev += 1
+
+        if not is_false_positive:
+            existing.status = "open"
+            existing.stale_at = None
+            if evidence_changed:
+                # 换了一版证据，作者上一次的处置不再适用于当前 rev
+                existing.resolved = False
+                existing.resolution = None
+
+        # 只有真被本次扫描改动的 issue 才记到本次 run 上
+        existing.run_id = run_id
+        existing.updated_at = datetime.now(timezone.utc)
+
+        if evidence_changed:
+            await self._write_evidence(db, existing.id, claim_ids, claims_by_id)
+        await db.flush()
+
+        return existing.id
+
+    @staticmethod
+    def _evidence_row_values(
+        claim: ConsistencyClaim,
+        idx: int,
+    ) -> dict[str, Any]:
+        """一条证据行的全部内容字段（不含 issue_id / 主键）。"""
+        return {
+            "side": "expected" if idx == 0 else "actual",
+            "source_kind": "claim",
+            "claim_id": claim.id,
+            "chapter_id": claim.chapter_id,
+            "body_rev": claim.body_rev,
+            "outline_rev": claim.outline_rev,
+            "paragraph_id": claim.paragraph_id,
+            "quote": claim.subject_text,
+            "sort_order": idx,
+        }
 
     async def _write_evidence(
         self,
         db: AsyncSession,
         issue_id: str,
         claim_ids: list[int],
+        claims_by_id: dict[int, ConsistencyClaim],
     ):
-        """Write expected/actual GuardIssueEvidence records"""
-        # Delete old evidence for this issue
-        old_evidence = await db.execute(
-            select(GuardIssueEvidence).where(GuardIssueEvidence.issue_id == issue_id)
+        """Write expected/actual GuardIssueEvidence records.
+
+        逐行比对后只改真正不同的行，内容一致时一行都不动。之前的实现每次扫描都先
+        DELETE 再 INSERT：GuardIssueEvidence.id 是自增主键，重写会让证据行 id 全部
+        变化，前端拿着旧 id 请求就 404；而且删写发生在同一事务里，PostgreSQL 上等于
+        白白产生死行。
+        """
+        existing_rows = list(
+            (
+                await db.execute(
+                    select(GuardIssueEvidence)
+                    .where(GuardIssueEvidence.issue_id == issue_id)
+                    .order_by(GuardIssueEvidence.sort_order, GuardIssueEvidence.id)
+                )
+            )
+            .scalars()
+            .all()
         )
-        for ev in old_evidence.scalars():
-            await db.delete(ev)
-        await db.flush()
 
-        # Write new evidence
-        for idx, claim_id in enumerate(claim_ids):
-            claim_result = await db.execute(
-                select(ConsistencyClaim).where(ConsistencyClaim.id == claim_id)
+        # 缺失的 claim（已被删/不在 accepted 集合里）不写证据行，与旧行为一致
+        desired = [
+            self._evidence_row_values(claims_by_id[claim_id], idx)
+            for idx, claim_id in enumerate(
+                claim_id for claim_id in claim_ids if claim_id in claims_by_id
             )
-            claim = claim_result.scalar_one_or_none()
-            if not claim:
-                continue
+        ]
 
-            side = "expected" if idx == 0 else "actual"
-            evidence = GuardIssueEvidence(
-                issue_id=issue_id,
-                side=side,
-                source_kind="claim",
-                claim_id=claim.id,
-                chapter_id=claim.chapter_id,
-                body_rev=claim.body_rev,
-                outline_rev=claim.outline_rev,
-                paragraph_id=claim.paragraph_id,
-                quote=claim.subject_text,
-                sort_order=idx,
-            )
-            db.add(evidence)
-        await db.flush()
+        dirty = False
+        for row, values in zip(existing_rows, desired):
+            for field, value in values.items():
+                if getattr(row, field) != value:
+                    setattr(row, field, value)
+                    dirty = True
+
+        # 证据变多：补插；变少：删掉多出来的行
+        for values in desired[len(existing_rows):]:
+            db.add(GuardIssueEvidence(issue_id=issue_id, **values))
+            dirty = True
+        for row in existing_rows[len(desired):]:
+            await db.delete(row)
+            dirty = True
+
+        if dirty:
+            await db.flush()
+
+    @staticmethod
+    def _touches_chapter(issue: GuardIssue, chapter_id: str) -> bool:
+        """本次扫描是否**有能力**重新发现这条 issue。
+
+        判据是这条 issue 的证据里是否引用了被扫描的章节：锚点章节（issue.chapter_id）
+        或任何一条证据 claim 的来源章节。跨章冲突的锚点落在后出现的那一章，作者却
+        可能是改前一章把冲突解决的 —— 只按锚点章节判会让这条 issue 永远停在 open。
+
+        反过来，与被扫描章节完全无关的 issue 不进 stale 判定：它的证据这次根本没被
+        重新评估过（作者没有触发那一章的扫描），凭「这次没检出」把它标成 stale 就是
+        在替作者做没有依据的判断。
+        """
+        if issue.chapter_id == chapter_id:
+            return True
+        evidence = issue.evidence or {}
+        return any(
+            version.get("chapter_id") == chapter_id
+            for version in evidence.get("claim_versions") or []
+        )
 
     async def _mark_stale_issues(
         self,
@@ -410,18 +613,28 @@ class RuleScanner:
         chapter_id: str,
         current_issue_ids: list[str],
     ):
-        """Mark previously open issues as stale if not rediscovered"""
+        """Mark previously open issues as stale if not rediscovered.
+
+        只动真正被标成 stale 的那几行；已经不在本次检出结果里、但也与本章无关的
+        issue 一个字段都不碰（不写 run_id、不改 updated_at）。
+        """
         result = await db.execute(
             select(GuardIssue)
             .where(GuardIssue.project_id == project_id)
-            .where(GuardIssue.chapter_id == chapter_id)
             .where(GuardIssue.status == "open")
         )
         all_open = list(result.scalars().all())
 
+        dirty = False
         for issue in all_open:
-            if issue.id not in current_issue_ids:
-                issue.status = "stale"
-                issue.stale_at = datetime.now(timezone.utc)
-                issue.updated_at = datetime.now(timezone.utc)
-        await db.flush()
+            if issue.id in current_issue_ids:
+                continue
+            if not self._touches_chapter(issue, chapter_id):
+                continue
+            issue.status = "stale"
+            issue.stale_at = datetime.now(timezone.utc)
+            issue.updated_at = datetime.now(timezone.utc)
+            dirty = True
+
+        if dirty:
+            await db.flush()

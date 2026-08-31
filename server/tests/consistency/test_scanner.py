@@ -11,7 +11,7 @@ db.models_consistency_extended；scan_chapter 返回 list[str]（issue id）。
 import pytest
 from sqlalchemy import select
 
-from db.models_consistency_extended import GuardIssueEvidence
+from db.models_consistency_extended import ConsistencyClaim, GuardIssueEvidence
 from db.models_guard import GuardIssue
 from services.rule_scanner import ISSUE_ACTIONS, RuleScanner
 
@@ -97,6 +97,31 @@ async def run_scan(scanner, db, run, *, chapter_id="ch_a", body_rev=1):
 async def load_issues(db) -> list[GuardIssue]:
     result = await db.execute(select(GuardIssue).order_by(GuardIssue.id))
     return list(result.scalars().all())
+
+
+async def load_evidence(db, issue_id: str) -> list[GuardIssueEvidence]:
+    result = await db.execute(
+        select(GuardIssueEvidence)
+        .where(GuardIssueEvidence.issue_id == issue_id)
+        .order_by(GuardIssueEvidence.sort_order, GuardIssueEvidence.id)
+    )
+    return list(result.scalars().all())
+
+
+def issue_snapshot(issue: GuardIssue) -> dict:
+    """issue 上「重复扫描不该动」的那些字段。"""
+    return {
+        "issue_rev": issue.issue_rev,
+        "run_id": issue.run_id,
+        "status": issue.status,
+        "resolved": issue.resolved,
+        "resolution": issue.resolution,
+        "false_positive": issue.false_positive,
+        "stale_at": issue.stale_at,
+        "evidence": issue.evidence,
+        "anchor": issue.anchor,
+        "updated_at": issue.updated_at,
+    }
 
 
 # --- 规则 1：生死冲突 ----------------------------------------------------------
@@ -529,10 +554,14 @@ async def test_fingerprint_survives_reextraction_with_new_claim_rows(
     assert len(await load_issues(async_db_session)) == 1
 
 
-async def test_rediscovered_issue_bumps_issue_rev(
+async def test_rediscovered_issue_bumps_issue_rev_only_when_evidence_changes(
     scanner, async_db_session, scan_context, add_claim
 ):
-    """再次命中时 issue_rev 递增，客户端才能察觉内容变化。"""
+    """issue_rev 是「证据换了一版」的信号，不是「又扫了一次」的计数。
+
+    回归：早期实现每次命中都无条件 issue_rev += 1。作者保存正文触发扫描后，他手上
+    那个 issue_rev 立刻过期，resolve 接口按乐观锁一律回 409 —— 告警根本没法处置。
+    """
     await add_claim(
         subject_text="李长风",
         predicate="alive",
@@ -540,7 +569,7 @@ async def test_rediscovered_issue_bumps_issue_rev(
         timeline_id="main",
         story_order=10.0,
     )
-    await add_claim(
+    alive = await add_claim(
         subject_text="李长风",
         predicate="alive",
         object_value="true",
@@ -552,6 +581,21 @@ async def test_rediscovered_issue_bumps_issue_rev(
     await run_scan(scanner, async_db_session, scan_context)
     issues = await load_issues(async_db_session)
     assert issues[0].issue_rev == 1
+
+    # 同一份实质证据再扫一次：rev 不动
+    await run_scan(scanner, async_db_session, scan_context)
+    async_db_session.expunge_all()
+    issues = await load_issues(async_db_session)
+    assert issues[0].issue_rev == 1
+
+    # 证据换了一版（同一条 claim 的来源锚点变了）：rev 递增
+    alive = (
+        await async_db_session.execute(
+            select(ConsistencyClaim).where(ConsistencyClaim.id == alive.id)
+        )
+    ).scalar_one()
+    alive.source_anchor = "P7"
+    await async_db_session.flush()
 
     await run_scan(scanner, async_db_session, scan_context)
     async_db_session.expunge_all()
@@ -759,6 +803,532 @@ async def test_scan_is_scoped_to_project(
 
 async def test_empty_project_produces_no_issues(scanner, async_db_session, scan_context):
     assert await run_scan(scanner, async_db_session, scan_context) == []
+
+
+# --- 重复扫描的幂等性 ---------------------------------------------------------
+#
+# 「相同 evidence/anchor/rule_version 的重复扫描必须完全幂等」不是一句口号：作者每
+# 保存一次正文就触发一次全项目扫描，如果每次扫描都动 issue 行，作者手上的
+# issue_rev 立刻过期（resolve 接口按乐观锁回 409），证据行 id 也会全部漂移。
+
+
+@pytest.fixture
+def alive_conflict(add_claim):
+    """建一对「先死后活」的 claim，返回 (dead, alive)。"""
+
+    async def _build(**overrides):
+        dead = await add_claim(
+            subject_text="李长风",
+            predicate="alive",
+            object_value="false",
+            timeline_id="main",
+            story_order=10.0,
+            **overrides,
+        )
+        alive = await add_claim(
+            subject_text="李长风",
+            predicate="alive",
+            object_value="true",
+            timeline_id="main",
+            story_order=20.0,
+            fingerprint="fp_alive_true",
+            **overrides,
+        )
+        return dead, alive
+
+    return _build
+
+
+async def test_rescanning_identical_evidence_changes_nothing_at_all(
+    scanner, async_db_session, scan_context, alive_conflict
+):
+    """同一份实质证据重复扫描：issue 行的每个字段都保持原值。"""
+    await alive_conflict()
+
+    issue_ids = await run_scan(scanner, async_db_session, scan_context)
+    async_db_session.expunge_all()
+    before = issue_snapshot((await load_issues(async_db_session))[0])
+    evidence_before = [(row.id, row.claim_id, row.side) for row in
+                       await load_evidence(async_db_session, issue_ids[0])]
+
+    await run_scan(scanner, async_db_session, scan_context)
+
+    async_db_session.expunge_all()
+    after = issue_snapshot((await load_issues(async_db_session))[0])
+    assert after == before, "重复扫描动了 issue 字段"
+
+    evidence_after = [(row.id, row.claim_id, row.side) for row in
+                      await load_evidence(async_db_session, issue_ids[0])]
+    # 证据行 id 必须保持不变：之前的实现每次扫描都 DELETE + INSERT，自增主键全部漂移
+    assert evidence_after == evidence_before
+
+
+async def test_rescanning_does_not_bump_issue_rev_when_confidence_is_recomputed(
+    scanner, async_db_session, scan_context, alive_conflict
+):
+    """派生值（claim.confidence）重算不算证据变化。
+
+    只有 claim id / 来源章节 / body_rev / source_anchor 这类能证明「证据换了一版」
+    的字段才该触发 rev+1。把 confidence 之类每次抽取都可能微调的值算进去，等于
+    每重跑一次抽取就把作者刚处置完的告警全部翻出来。
+    """
+    dead, _ = await alive_conflict()
+
+    await run_scan(scanner, async_db_session, scan_context)
+    async_db_session.expunge_all()
+    before = issue_snapshot((await load_issues(async_db_session))[0])
+
+    reloaded = (
+        await async_db_session.execute(
+            select(ConsistencyClaim).where(ConsistencyClaim.id == dead.id)
+        )
+    ).scalar_one()
+    reloaded.confidence = 0.4321
+    await async_db_session.flush()
+
+    await run_scan(scanner, async_db_session, scan_context)
+
+    async_db_session.expunge_all()
+    assert issue_snapshot((await load_issues(async_db_session))[0]) == before
+
+
+# --- resolved / false_positive / stale 的重现规则 ------------------------------
+
+
+async def test_resolved_issue_stays_resolved_on_identical_evidence(
+    scanner, async_db_session, scan_context, alive_conflict
+):
+    """作者处置过的 issue，同一份证据再扫描保持 resolved。
+
+    resolved 是作者对**这份证据**的判断。凭「规则又检出一次」把它改回 open，
+    等于每次保存正文都把已经处理完的告警重新推给作者。
+    """
+    await alive_conflict()
+    await run_scan(scanner, async_db_session, scan_context)
+
+    issues = await load_issues(async_db_session)
+    issues[0].status = "resolved"
+    issues[0].resolved = True
+    issues[0].resolution = "intentional_exception"
+    await async_db_session.flush()
+    rev_before = issues[0].issue_rev
+
+    await run_scan(scanner, async_db_session, scan_context)
+
+    async_db_session.expunge_all()
+    refreshed = (await load_issues(async_db_session))[0]
+    assert refreshed.status == "resolved"
+    assert refreshed.resolved is True
+    assert refreshed.resolution == "intentional_exception"
+    assert refreshed.issue_rev == rev_before
+
+
+async def test_resolved_issue_reopens_when_the_evidence_version_changes(
+    scanner, async_db_session, scan_context, alive_conflict
+):
+    """证据换了一版：重开并 rev+1，作者的旧处置不再适用于新的 rev。"""
+    _, alive = await alive_conflict()
+    await run_scan(scanner, async_db_session, scan_context)
+
+    issues = await load_issues(async_db_session)
+    issues[0].status = "resolved"
+    issues[0].resolved = True
+    issues[0].resolution = "accept_new_fact"
+    await async_db_session.flush()
+    rev_before = issues[0].issue_rev
+
+    reloaded = (
+        await async_db_session.execute(
+            select(ConsistencyClaim).where(ConsistencyClaim.id == alive.id)
+        )
+    ).scalar_one()
+    reloaded.body_rev = 2
+    await async_db_session.flush()
+
+    await run_scan(scanner, async_db_session, scan_context, body_rev=2)
+
+    async_db_session.expunge_all()
+    refreshed = (await load_issues(async_db_session))[0]
+    assert refreshed.status == "open"
+    assert refreshed.resolved is False
+    assert refreshed.resolution is None
+    assert refreshed.issue_rev == rev_before + 1
+
+
+async def test_false_positive_evidence_is_not_silently_replaced(
+    scanner, async_db_session, scan_context, alive_conflict
+):
+    """误报 issue 在不增 rev 的情况下不得被换掉证据。
+
+    回归：旧实现对 false_positive 分支无条件覆盖 anchor/evidence 且不动 issue_rev。
+    作者看到的还是他判过的那个 rev，底下的证据却已经换成另一版正文的 —— 他的
+    「这是误报」等于被悄悄套用到了一份他没看过的证据上。
+    """
+    await alive_conflict()
+    await run_scan(scanner, async_db_session, scan_context)
+
+    issues = await load_issues(async_db_session)
+    issues[0].status = "false_positive"
+    issues[0].false_positive = True
+    issues[0].resolution = "false_positive"
+    await async_db_session.flush()
+
+    # 重新读一次再取快照：updated_at 带 onupdate=func.now()，flush 之后是过期状态，
+    # 直接读会触发同步惰性加载
+    async_db_session.expunge_all()
+    before = issue_snapshot((await load_issues(async_db_session))[0])
+
+    await run_scan(scanner, async_db_session, scan_context)
+
+    async_db_session.expunge_all()
+    assert issue_snapshot((await load_issues(async_db_session))[0]) == before
+
+
+async def test_false_positive_stays_false_positive_but_tracks_new_evidence_with_a_new_rev(
+    scanner, async_db_session, scan_context, alive_conflict
+):
+    """误报永不复活；但证据换版时必须连 issue_rev 一起更新。"""
+    _, alive = await alive_conflict()
+    await run_scan(scanner, async_db_session, scan_context)
+
+    issues = await load_issues(async_db_session)
+    issues[0].status = "false_positive"
+    issues[0].false_positive = True
+    issues[0].resolution = "false_positive"
+    await async_db_session.flush()
+    rev_before = issues[0].issue_rev
+    evidence_before = issues[0].evidence
+
+    reloaded = (
+        await async_db_session.execute(
+            select(ConsistencyClaim).where(ConsistencyClaim.id == alive.id)
+        )
+    ).scalar_one()
+    reloaded.source_anchor = "P9"
+    await async_db_session.flush()
+
+    await run_scan(scanner, async_db_session, scan_context)
+
+    async_db_session.expunge_all()
+    refreshed = (await load_issues(async_db_session))[0]
+    assert refreshed.status == "false_positive", "误报不得复活"
+    assert refreshed.false_positive is True
+    assert refreshed.resolved is False or refreshed.resolution == "false_positive"
+    assert refreshed.issue_rev == rev_before + 1, "换了证据就必须换 rev"
+    assert refreshed.evidence != evidence_before
+
+
+async def test_stale_issue_reopens_without_a_rev_bump_when_the_evidence_is_unchanged(
+    scanner, async_db_session, scan_context, alive_conflict
+):
+    """stale 重现同样按「证据是否变化」判 rev。
+
+    stale 是系统的观察（这次没检出），不是作者的决定，所以冲突回来就该重开；
+    但证据没换版时 rev 不能动，否则作者手上的 rev 又过期了。
+    """
+    dead, _ = await alive_conflict()
+    await run_scan(scanner, async_db_session, scan_context)
+    rev_before = (await load_issues(async_db_session))[0].issue_rev
+
+    dead.status = "superseded"
+    await async_db_session.flush()
+    await run_scan(scanner, async_db_session, scan_context)
+    async_db_session.expunge_all()
+    assert (await load_issues(async_db_session))[0].status == "stale"
+
+    dead = (
+        await async_db_session.execute(
+            select(ConsistencyClaim).where(ConsistencyClaim.id == dead.id)
+        )
+    ).scalar_one()
+    dead.status = "accepted"
+    await async_db_session.flush()
+    await run_scan(scanner, async_db_session, scan_context)
+
+    async_db_session.expunge_all()
+    refreshed = (await load_issues(async_db_session))[0]
+    assert refreshed.status == "open"
+    assert refreshed.stale_at is None
+    assert refreshed.issue_rev == rev_before, "证据没变，stale 重开不该涨 rev"
+
+
+async def test_stale_issue_reopens_with_a_rev_bump_when_the_evidence_changed(
+    scanner, async_db_session, scan_context, alive_conflict
+):
+    """冲突以另一版证据回来：重开且 rev+1。"""
+    dead, _ = await alive_conflict()
+    await run_scan(scanner, async_db_session, scan_context)
+    rev_before = (await load_issues(async_db_session))[0].issue_rev
+
+    dead.status = "superseded"
+    await async_db_session.flush()
+    await run_scan(scanner, async_db_session, scan_context)
+
+    dead.status = "accepted"
+    dead.source_anchor = "P11"
+    await async_db_session.flush()
+    await run_scan(scanner, async_db_session, scan_context)
+
+    async_db_session.expunge_all()
+    refreshed = (await load_issues(async_db_session))[0]
+    assert refreshed.status == "open"
+    assert refreshed.stale_at is None
+    assert refreshed.issue_rev == rev_before + 1
+
+
+async def test_a_cross_chapter_issue_goes_stale_when_the_cited_chapter_is_fixed(
+    scanner, async_db_session, scan_context, add_claim
+):
+    """跨章冲突的锚点在 ch_b，作者改 ch_a 解决它 —— 扫 ch_a 必须能把它标 stale。
+
+    回归：stale 判定曾按 GuardIssue.chapter_id == 被扫章节过滤。跨章冲突的
+    chapter_id 是后出现的那一章（ch_b），而作者是在 ch_a 把「死亡」那句删掉的；
+    只按锚点章节过滤，这条 issue 永远停在 open。
+    """
+    dead = await add_claim(
+        subject_text="李长风",
+        predicate="alive",
+        object_value="false",
+        chapter_id="ch_a",
+        timeline_id="main",
+        story_order=10.0,
+    )
+    await add_claim(
+        subject_text="李长风",
+        predicate="alive",
+        object_value="true",
+        chapter_id="ch_b",
+        timeline_id="main",
+        story_order=20.0,
+        fingerprint="fp_alive_true_b",
+    )
+    await run_scan(scanner, async_db_session, scan_context)
+
+    async_db_session.expunge_all()
+    issue = (await load_issues(async_db_session))[0]
+    assert issue.chapter_id == "ch_b", "前提：issue 归属在后出现的那一章"
+
+    dead = (
+        await async_db_session.execute(
+            select(ConsistencyClaim).where(ConsistencyClaim.id == dead.id)
+        )
+    ).scalar_one()
+    dead.status = "superseded"
+    await async_db_session.flush()
+
+    await run_scan(scanner, async_db_session, scan_context, chapter_id="ch_a")
+
+    async_db_session.expunge_all()
+    refreshed = (await load_issues(async_db_session))[0]
+    assert refreshed.status == "stale"
+    assert refreshed.stale_at is not None
+
+
+# --- run_id 与「只更新受影响 issue」 -------------------------------------------
+
+
+async def test_an_unchanged_issue_keeps_the_run_that_actually_found_it(
+    scanner, async_db_session, scan_context, alive_conflict, make_run
+):
+    """扫描是全项目的，但 run_id 只能记在真被本次扫描改动的 issue 上。
+
+    回归：旧实现把每次扫描检出的**所有** issue 的 run_id 改成本章的 run。扫第 900
+    章会把第 3 章的告警重新挂到第 900 章的 run 上，run 与 issue 的对应关系失去意义，
+    「这条告警是哪次运行发现的」再也答不出来。
+    """
+    await alive_conflict()
+    await run_scan(scanner, async_db_session, scan_context)
+
+    async_db_session.expunge_all()
+    issue = (await load_issues(async_db_session))[0]
+    first_run_id = issue.run_id
+    assert first_run_id == scan_context.id
+
+    later_run = make_run(project_id="proj_a", chapter_id="ch_b", body_rev=1)
+    async_db_session.add(later_run)
+    await async_db_session.flush()
+
+    # 扫另一章：同一个冲突会被再次检出（规则读全项目 claim），但证据没变
+    await run_scan(scanner, async_db_session, later_run, chapter_id="ch_b")
+
+    async_db_session.expunge_all()
+    refreshed = (await load_issues(async_db_session))[0]
+    assert refreshed.run_id == first_run_id, "未变化的 issue 不该被改挂到别的 run"
+    assert refreshed.issue_rev == 1
+
+
+async def test_a_changed_issue_moves_to_the_run_that_re_detected_it(
+    scanner, async_db_session, scan_context, alive_conflict, make_run
+):
+    """证据真的变了：issue 挂到重新检出它的那个 run。"""
+    _, alive = await alive_conflict()
+    await run_scan(scanner, async_db_session, scan_context)
+
+    later_run = make_run(project_id="proj_a", chapter_id="ch_b", body_rev=1)
+    async_db_session.add(later_run)
+    await async_db_session.flush()
+
+    reloaded = (
+        await async_db_session.execute(
+            select(ConsistencyClaim).where(ConsistencyClaim.id == alive.id)
+        )
+    ).scalar_one()
+    reloaded.source_anchor = "P13"
+    await async_db_session.flush()
+
+    await run_scan(scanner, async_db_session, later_run, chapter_id="ch_b")
+
+    async_db_session.expunge_all()
+    refreshed = (await load_issues(async_db_session))[0]
+    assert refreshed.run_id == later_run.id
+    assert refreshed.issue_rev == 2
+
+
+async def test_repeated_hits_of_one_conflict_do_not_bump_rev_twice_per_scan(
+    scanner, async_db_session, scan_context, add_claim
+):
+    """同一指纹在一次扫描里命中多次时只写一次。
+
+    回归：「死—活—死—活」产生两对证据 claim，指纹相同。逐条 upsert 会让同一行先被
+    第一对写、再被第二对覆盖，下一次扫描又反向覆盖一遍 —— issue_rev 每扫一次涨两级，
+    而且两次扫描之间证据来回抖动，永远达不到幂等。
+    """
+    for order, value, fingerprint in (
+        (10.0, "false", "fp_dead_1"),
+        (20.0, "true", "fp_alive_1"),
+        (30.0, "false", "fp_dead_2"),
+        (40.0, "true", "fp_alive_2"),
+    ):
+        await add_claim(
+            subject_text="李长风",
+            predicate="alive",
+            object_value=value,
+            timeline_id="main",
+            story_order=order,
+            fingerprint=fingerprint,
+        )
+
+    issue_ids = await run_scan(scanner, async_db_session, scan_context)
+    assert len(issue_ids) == 1
+
+    async_db_session.expunge_all()
+    before = issue_snapshot((await load_issues(async_db_session))[0])
+    assert before["issue_rev"] == 1
+    # 两次命中的证据 claim 合并进同一条 issue，后面几对证据不丢
+    assert len(before["evidence"]["claim_ids"]) == 4
+
+    await run_scan(scanner, async_db_session, scan_context)
+
+    async_db_session.expunge_all()
+    assert issue_snapshot((await load_issues(async_db_session))[0]) == before
+
+
+# --- 唯一键并发竞态 -----------------------------------------------------------
+
+
+async def test_a_concurrent_insert_of_the_same_fingerprint_is_absorbed(
+    scanner, async_db_session, scan_context, alive_conflict
+):
+    """uq_guard_issue_fingerprint 上的「先查后插」竞态由 SAVEPOINT 兜住。
+
+    模拟真实竞态：本 worker 查完发现没有，另一个 worker 在它插入之前先插进去了。
+    这里在「查完之后、插入之前」注入那一行 —— 撞键后必须回滚 SAVEPOINT 并改用
+    已存在的那条 issue，而不是把整个扫描打成 IntegrityError（那会让本次扫描已经
+    写好的其他告警一起丢掉）。
+    """
+    await alive_conflict()
+
+    real_select = scanner._select_issue
+    calls = {"n": 0}
+
+    async def racing_select(db, project_id, fingerprint):
+        found = await real_select(db, project_id, fingerprint)
+        calls["n"] += 1
+        if calls["n"] == 1 and found is None:
+            db.add(
+                GuardIssue(
+                    id="gi_raced",
+                    project_id=project_id,
+                    chapter_id="ch_a",
+                    run_id=scan_context.id,
+                    issue_type="alive_conflict",
+                    rule_version="1.0.0",
+                    fingerprint=fingerprint,
+                    severity="high",
+                    confidence=0.95,
+                    description="另一个 worker 先插入的同一条冲突",
+                    evidence={},
+                    anchor={},
+                    actions=["false_positive"],
+                    status="open",
+                    issue_rev=1,
+                    resolved=False,
+                    false_positive=False,
+                )
+            )
+            await db.flush()
+        return found
+
+    scanner._select_issue = racing_select
+
+    issue_ids = await run_scan(scanner, async_db_session, scan_context)
+
+    assert issue_ids == ["gi_raced"], "撞键后必须复用已存在的 issue"
+    async_db_session.expunge_all()
+    issues = await load_issues(async_db_session)
+    assert len(issues) == 1, "竞态不得产生两条 issue"
+    # 抢先插入的那行证据是空的，本 worker 必须把真实证据补上
+    assert issues[0].evidence["claim_ids"]
+    assert len(await load_evidence(async_db_session, "gi_raced")) == 2
+
+
+async def test_a_concurrent_resolution_is_not_overwritten_by_the_racing_scan(
+    scanner, async_db_session, scan_context, alive_conflict
+):
+    """竞态读回的是作者已判误报的那一行时，扫描不得把它改回 open。"""
+    await alive_conflict()
+
+    real_select = scanner._select_issue
+    calls = {"n": 0}
+
+    async def racing_select(db, project_id, fingerprint):
+        found = await real_select(db, project_id, fingerprint)
+        calls["n"] += 1
+        if calls["n"] == 1 and found is None:
+            db.add(
+                GuardIssue(
+                    id="gi_raced_fp",
+                    project_id=project_id,
+                    chapter_id="ch_a",
+                    run_id=scan_context.id,
+                    issue_type="alive_conflict",
+                    rule_version="1.0.0",
+                    fingerprint=fingerprint,
+                    severity="high",
+                    confidence=0.95,
+                    description="并发插入后立刻被判误报",
+                    evidence={},
+                    anchor={},
+                    actions=["false_positive"],
+                    status="false_positive",
+                    issue_rev=2,
+                    resolved=True,
+                    resolution="false_positive",
+                    false_positive=True,
+                )
+            )
+            await db.flush()
+        return found
+
+    scanner._select_issue = racing_select
+
+    await run_scan(scanner, async_db_session, scan_context)
+
+    async_db_session.expunge_all()
+    issues = await load_issues(async_db_session)
+    assert len(issues) == 1
+    assert issues[0].status == "false_positive"
+    assert issues[0].false_positive is True
 
 
 # --- 规则 2：归属冲突 ---------------------------------------------------------
@@ -1039,6 +1609,134 @@ async def test_knowledge_boundary_requires_same_fact(
     )
 
     assert await run_scan(scanner, async_db_session, scan_context) == []
+
+
+async def test_knowledge_boundary_requires_the_same_timeline(
+    scanner, async_db_session, scan_context, add_claim
+):
+    """不同 timeline 的知情状态互不影响。
+
+    回归：旧实现完全不看 timeline_id。回忆线/平行线里的「获知」被拿来和主线的
+    「使用」比顺序 —— 一段回忆的 story_order 排在主线之后，主线里正常的用法就被
+    报成知情越界。生死冲突与归属冲突都按 timeline 分组，知情边界不能是例外。
+    """
+    await add_claim(
+        subject_text="李长风",
+        predicate="uses_knowledge",
+        object_value="秘密身份",
+        timeline_id="main",
+        story_order=10.0,
+    )
+    await add_claim(
+        subject_text="李长风",
+        predicate="acquires_knowledge",
+        object_value="秘密身份",
+        timeline_id="flashback",
+        story_order=30.0,
+        fingerprint="fp_acquire_flashback",
+    )
+
+    assert await run_scan(scanner, async_db_session, scan_context) == []
+
+
+async def test_knowledge_boundary_does_not_compare_claims_without_a_timeline(
+    scanner, async_db_session, scan_context, add_claim
+):
+    """timeline 为空时不比较。
+
+    timeline_id 是 NULL 意味着这条事实归属哪条叙事线还没定（抽取没能判断）。
+    把两条「不知道属于哪条线」的 claim 拿来比先后，得到的告警没有依据 ——
+    宁可漏报也不能让作者去核对一条系统自己都说不清前提的告警。
+    """
+    await add_claim(
+        subject_text="李长风",
+        predicate="uses_knowledge",
+        object_value="秘密身份",
+        timeline_id=None,
+        story_order=10.0,
+    )
+    await add_claim(
+        subject_text="李长风",
+        predicate="acquires_knowledge",
+        object_value="秘密身份",
+        timeline_id=None,
+        story_order=30.0,
+        fingerprint="fp_acquire_no_timeline",
+    )
+
+    assert await run_scan(scanner, async_db_session, scan_context) == []
+
+
+async def test_knowledge_boundary_does_not_compare_a_null_timeline_against_a_named_one(
+    scanner, async_db_session, scan_context, add_claim
+):
+    """一边有 timeline、一边为空：同样不比较。"""
+    await add_claim(
+        subject_text="李长风",
+        predicate="uses_knowledge",
+        object_value="秘密身份",
+        timeline_id="main",
+        story_order=10.0,
+    )
+    await add_claim(
+        subject_text="李长风",
+        predicate="acquires_knowledge",
+        object_value="秘密身份",
+        timeline_id=None,
+        story_order=30.0,
+        fingerprint="fp_acquire_null_timeline",
+    )
+
+    assert await run_scan(scanner, async_db_session, scan_context) == []
+
+
+async def test_knowledge_boundary_is_still_reported_within_a_secondary_timeline(
+    scanner, async_db_session, scan_context, add_claim
+):
+    """timeline 相同就照常检测，不是只认 main。"""
+    await add_claim(
+        subject_text="李长风",
+        predicate="uses_knowledge",
+        object_value="秘密身份",
+        timeline_id="flashback",
+        story_order=10.0,
+    )
+    await add_claim(
+        subject_text="李长风",
+        predicate="acquires_knowledge",
+        object_value="秘密身份",
+        timeline_id="flashback",
+        story_order=30.0,
+        fingerprint="fp_acquire_same_flashback",
+    )
+
+    issue_ids = await run_scan(scanner, async_db_session, scan_context)
+
+    assert len(issue_ids) == 1
+    issues = await load_issues(async_db_session)
+    assert issues[0].issue_type == "knowledge_boundary"
+    # 指纹里带的是这条线的 timeline，不是 main
+    assert issues[0].fingerprint == scanner.compute_issue_fingerprint(
+        "knowledge_boundary",
+        ["text:李长风", "knowledge:秘密身份", "timeline:flashback"],
+    )
+
+
+async def test_knowledge_boundary_fingerprints_differ_per_timeline(
+    scanner, async_db_session, scan_context
+):
+    """同一主体、同一知识、不同 timeline ⇒ 两个独立指纹。
+
+    否则两条叙事线上的同名问题会合并成一条 issue，作者处置了一条就把另一条也
+    「处置」掉了。
+    """
+    main_fp = scanner.compute_issue_fingerprint(
+        "knowledge_boundary", ["text:李长风", "knowledge:秘密身份", "timeline:main"]
+    )
+    flashback_fp = scanner.compute_issue_fingerprint(
+        "knowledge_boundary", ["text:李长风", "knowledge:秘密身份", "timeline:flashback"]
+    )
+    assert main_fp != flashback_fp
 
 
 # --- 多规则同时命中 -----------------------------------------------------------

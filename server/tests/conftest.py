@@ -100,7 +100,18 @@ def build_sqlite_metadata() -> MetaData:
 
 @pytest_asyncio.fixture
 async def async_db_engine():
-    """内存 SQLite 引擎；StaticPool 让同一连接在整个测试内复用。"""
+    """内存 SQLite 引擎；StaticPool 让同一连接在整个测试内复用。
+
+    SAVEPOINT 语义（重要）：pysqlite 默认把 BEGIN 推迟到第一条 DML，而 SAVEPOINT
+    不算 DML —— 于是 `SAVEPOINT` 自己开启了一个 DBAPI 事务，`RELEASE SAVEPOINT`
+    把它一并提交，后续 rollback 再也回滚不掉这段写入。生产库是 asyncpg，SAVEPOINT
+    严格嵌套在外层事务里，没有这个问题。
+
+    并发 upsert（get_or_create_run / _upsert_issue）用 begin_nested() 兜唯一键
+    竞态，如果测试环境把 SAVEPOINT 当成隐式提交，「过期结论必须随事务回滚」这类
+    行为在 SQLite 上就测不出真实结果。按 SQLAlchemy 文档的做法接管事务控制：
+    关掉 pysqlite 的隐式 BEGIN，改由方言自己发 BEGIN。
+    """
     engine = create_async_engine(
         "sqlite+aiosqlite:///:memory:",
         echo=False,
@@ -113,6 +124,12 @@ async def async_db_engine():
         cursor = dbapi_conn.cursor()
         cursor.execute("PRAGMA foreign_keys=ON")
         cursor.close()
+        # 交出事务控制权，隐式 BEGIN 不再发生（见上面的 SAVEPOINT 说明）
+        dbapi_conn.isolation_level = None
+
+    @event.listens_for(engine.sync_engine, "begin")
+    def _emit_begin(conn):
+        conn.exec_driver_sql("BEGIN")
 
     async with engine.begin() as conn:
         await conn.run_sync(build_sqlite_metadata().create_all)
