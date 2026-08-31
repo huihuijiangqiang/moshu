@@ -6,9 +6,18 @@
 
 重点覆盖：
 * 读的是不可变快照 ChapterVersion，作者中途再存也不会串版本；
+* 提交前锁住 ChapterBody 头行再校验版本，旧 worker 不会覆盖新版本结论；
 * 失败抛异常（Celery chain 才会中断），而不是返回 {"status": "error"}；
+* run 一旦 failed，摘要与扫描拒绝执行；
+* 同版本重放删除旧 claim 行 —— 标记 superseded 不释放部分唯一索引；
 * 新版本发布时旧 claim 原子作废；
-* 摘要有效版本的原子切换与并发下的头版本校验。
+* 抽取之后摘要与扫描并行投递，扫描不等摘要；
+* 唯一键并发竞态用 SAVEPOINT 兜住（方言无关，SQLite 上也能验证）；
+* claim 的 entry_id / timeline_id / story_order / valid_*_order 全部落库。
+
+方言范围：ChapterBody 的 FOR UPDATE 行级锁在 SQLite 上被忽略，这里验证的是
+「锁 + 版本比较」这段逻辑本身；真正的并发互斥需要 PostgreSQL，见
+tests/integration/（未跑过）。
 """
 import contextlib
 
@@ -18,9 +27,15 @@ from sqlalchemy import select
 
 from config import settings
 from db.models_consistency_extended import ConsistencyClaim, DocumentSummary
-from db.models_core import ChapterVersion
+from db.models_core import Chapter, ChapterBody, ChapterVersion
 from db.models_guard import GuardIssue
-from services.consistency import PIPELINE_VERSION, normalize_run_trigger
+from services.consistency import (
+    DEFAULT_TIMELINE_ID,
+    PIPELINE_VERSION,
+    get_or_create_run,
+    normalize_run_trigger,
+    upsert_active_summary,
+)
 from tasks import consistency as tasks
 
 
@@ -89,8 +104,20 @@ def fake_provider(monkeypatch):
 
 @pytest.fixture
 async def pipeline_setup(async_db_session, seed_project, make_run):
-    """project + chapter + 一版不可变快照 + 一个 run。"""
+    """project + chapter + 一版不可变快照 + ChapterBody 头行 + 一个 run。
+
+    最后 commit：真实流程里派发任务的请求事务早已提交，worker 才看到 run。
+    这里也必须提交，否则 fail_run 的「先 rollback」会把夹具数据一起回滚掉。
+    """
     await seed_project(chapter_ids=("ch_a",))
+    async_db_session.add(
+        ChapterBody(
+            chapter_id="ch_a",
+            content_html="<p>第一版正文</p>",
+            content_json={"type": "doc"},
+            rev=1,
+        )
+    )
     async_db_session.add(
         ChapterVersion(
             chapter_id="ch_a",
@@ -104,7 +131,7 @@ async def pipeline_setup(async_db_session, seed_project, make_run):
     await async_db_session.flush()
     run = make_run(project_id="proj_a", chapter_id="ch_a", body_rev=1)
     async_db_session.add(run)
-    await async_db_session.flush()
+    await async_db_session.commit()
     return run
 
 
@@ -124,6 +151,7 @@ def claim_payload(subject: str, fingerprint: str, **overrides) -> dict:
 
 
 async def add_version(db, *, rev: int, html: str):
+    """写入新的不可变快照并推进 ChapterBody 头行版本号（模拟一次真实保存）。"""
     db.add(
         ChapterVersion(
             chapter_id="ch_a",
@@ -134,7 +162,28 @@ async def add_version(db, *, rev: int, html: str):
             content_hash=f"hash{rev}",
         )
     )
+    body = (
+        await db.execute(select(ChapterBody).where(ChapterBody.chapter_id == "ch_a"))
+    ).scalar_one_or_none()
+    if body:
+        body.rev = rev
+        body.content_html = html
+    else:
+        db.add(
+            ChapterBody(
+                chapter_id="ch_a",
+                content_html=html,
+                content_json={"type": "doc"},
+                rev=rev,
+            )
+        )
     await db.flush()
+
+
+async def load_claims(db) -> list[ConsistencyClaim]:
+    db.expunge_all()
+    result = await db.execute(select(ConsistencyClaim).order_by(ConsistencyClaim.id))
+    return list(result.scalars().all())
 
 
 # --- trigger 归一化 -----------------------------------------------------------
@@ -165,17 +214,75 @@ async def test_extraction_reads_the_immutable_snapshot(
 
 
 async def test_extraction_uses_the_runs_revision_not_the_latest(
-    use_test_session, pipeline_setup, fake_provider, make_run
+    use_test_session, pipeline_setup, fake_provider
 ):
     """回归：读可变的 ChapterBody 会拿到最新正文，却按旧 body_rev 记账。"""
     await add_version(use_test_session, rev=2, html="<p>第二版正文</p>")
-    run_for_rev_1 = pipeline_setup
 
     # rev 1 的 run 已经过时，必须失败而不是拿第二版正文冒充第一版
     with pytest.raises(tasks.StaleRevisionError):
-        await tasks._extract_claims_async("task-1", run_for_rev_1.id)
+        await tasks._extract_claims_async("task-1", pipeline_setup.id)
 
     assert fake_provider.seen_html == []
+
+
+async def test_body_head_revision_alone_marks_the_run_stale(
+    use_test_session, async_db_session, pipeline_setup, fake_provider
+):
+    """只有 ChapterBody 头行推进（快照还没落库）也必须判为过期。
+
+    保存流程可能先更新头行再写快照；只看 max(ChapterVersion.rev) 会漏掉这个窗口。
+    """
+    body = (
+        await async_db_session.execute(
+            select(ChapterBody).where(ChapterBody.chapter_id == "ch_a")
+        )
+    ).scalar_one()
+    body.rev = 2
+    await async_db_session.flush()
+
+    with pytest.raises(tasks.StaleRevisionError):
+        await tasks._extract_claims_async("task-1", pipeline_setup.id)
+
+
+async def test_head_revision_reads_both_sources(
+    use_test_session, async_db_session, pipeline_setup
+):
+    """head_revision 取头行与快照表的较大者。"""
+    assert await tasks.head_revision(async_db_session, "ch_a") == 1
+
+    async_db_session.add(
+        ChapterVersion(
+            chapter_id="ch_a",
+            content_html="<p>v7</p>",
+            content_json={"type": "doc"},
+            rev=7,
+            trigger="manual",
+            content_hash="hash7",
+        )
+    )
+    await async_db_session.flush()
+    assert await tasks.head_revision(async_db_session, "ch_a") == 7, "快照更新"
+
+    body = (
+        await async_db_session.execute(
+            select(ChapterBody).where(ChapterBody.chapter_id == "ch_a")
+        )
+    ).scalar_one()
+    body.rev = 9
+    await async_db_session.flush()
+    assert await tasks.head_revision(async_db_session, "ch_a") == 9, "头行更新"
+
+
+async def test_lock_body_head_returns_the_head_row(
+    use_test_session, async_db_session, pipeline_setup
+):
+    """提交前锁的是 ChapterBody 头行（每章唯一的可变行、rev 乐观锁载体）。"""
+    locked = await tasks.lock_body_head(async_db_session, "ch_a")
+
+    assert locked is not None
+    assert locked.chapter_id == "ch_a"
+    assert locked.rev == 1
 
 
 async def test_missing_snapshot_fails_the_run(
@@ -184,13 +291,14 @@ async def test_missing_snapshot_fails_the_run(
     await seed_project(chapter_ids=("ch_a",))
     run = make_run(project_id="proj_a", chapter_id="ch_a", body_rev=5)
     async_db_session.add(run)
-    await async_db_session.flush()
+    await async_db_session.commit()
+    run_id = run.id
 
     with pytest.raises(tasks.BodyRevisionMissingError):
-        await tasks._extract_claims_async("task-1", run.id)
+        await tasks._extract_claims_async("task-1", run_id)
 
     async_db_session.expunge_all()
-    refreshed = await tasks.load_run(async_db_session, run.id)
+    refreshed = await tasks.load_run(async_db_session, run_id)
     assert refreshed.status == "failed"
     assert refreshed.error_code == "body_not_found"
 
@@ -201,7 +309,7 @@ async def test_unknown_run_id_raises(use_test_session, fake_provider):
         await tasks._extract_claims_async("task-1", 999999)
 
 
-# --- 失败必须抛异常 -----------------------------------------------------------
+# --- 失败必须抛异常，且失败后不得继续 -----------------------------------------
 
 
 async def test_provider_failure_raises_and_marks_run_failed(
@@ -229,8 +337,92 @@ async def test_failed_extraction_persists_no_claims(
     with pytest.raises(RuntimeError):
         await tasks._extract_claims_async("task-1", pipeline_setup.id)
 
-    result = await async_db_session.execute(select(ConsistencyClaim))
-    assert list(result.scalars().all()) == []
+    assert await load_claims(async_db_session) == []
+
+
+async def test_failed_run_blocks_summary(
+    use_test_session, async_db_session, pipeline_setup, fake_provider
+):
+    """抽取失败后摘要必须拒绝执行，否则失败的 run 仍会产出摘要。"""
+    await tasks.fail_run(
+        async_db_session,
+        pipeline_setup.id,
+        error_code="extraction_error",
+        error_detail="forced",
+    )
+
+    with pytest.raises(tasks.RunFailedError):
+        await tasks._generate_summary_async("task-2", pipeline_setup.id)
+
+    summaries = list(
+        (await async_db_session.execute(select(DocumentSummary))).scalars().all()
+    )
+    assert summaries == []
+
+
+async def test_failed_run_blocks_scan(
+    use_test_session, async_db_session, pipeline_setup, fake_provider, make_claim
+):
+    """抽取失败后扫描必须拒绝执行，否则会基于半套 claim 报告告警。"""
+    async_db_session.add(
+        make_claim(
+            project_id="proj_a",
+            chapter_id="ch_a",
+            subject_text="李长风",
+            predicate="alive",
+            object_value="false",
+            timeline_id="main",
+            story_order=10.0,
+            fingerprint="fp_dead",
+            status="accepted",
+        )
+    )
+    async_db_session.add(
+        make_claim(
+            project_id="proj_a",
+            chapter_id="ch_a",
+            subject_text="李长风",
+            predicate="alive",
+            object_value="true",
+            timeline_id="main",
+            story_order=20.0,
+            fingerprint="fp_alive",
+            status="accepted",
+        )
+    )
+    await async_db_session.commit()
+    await tasks.fail_run(
+        async_db_session,
+        pipeline_setup.id,
+        error_code="extraction_error",
+        error_detail="forced",
+    )
+
+    with pytest.raises(tasks.RunFailedError):
+        await tasks._scan_rules_async("task-3", pipeline_setup.id)
+
+    issues = list((await async_db_session.execute(select(GuardIssue))).scalars().all())
+    assert issues == [], "冲突确实存在，但 run 已失败，不得产出告警"
+
+
+async def test_failed_run_keeps_its_original_error_code(
+    use_test_session, async_db_session, pipeline_setup, fake_provider
+):
+    """下游拒绝执行时不覆盖最初的失败原因。"""
+    await tasks.fail_run(
+        async_db_session,
+        pipeline_setup.id,
+        error_code="extraction_error",
+        error_detail="gateway down",
+    )
+
+    with pytest.raises(tasks.RunFailedError):
+        await tasks._scan_rules_async("task-3", pipeline_setup.id)
+
+    async_db_session.expunge_all()
+    run = await tasks.load_run(async_db_session, pipeline_setup.id)
+    assert run.error_code == "extraction_error"
+    assert run.error_detail == "gateway down"
 
 
 async def test_summary_failure_raises_and_marks_run_failed(
@@ -268,7 +460,7 @@ async def test_scan_failure_raises_and_marks_run_failed(
     assert run.error_code == "scan_error"
 
 
-# --- claim 落库与作废 ---------------------------------------------------------
+# --- claim 落库、字段完整性与作废 ---------------------------------------------
 
 
 async def test_claims_are_persisted_with_run_revision(
@@ -282,15 +474,161 @@ async def test_claims_are_persisted_with_run_revision(
     result = await tasks._extract_claims_async("task-1", pipeline_setup.id)
 
     assert result["claims_count"] == 2
-    claims = list(
-        (await async_db_session.execute(select(ConsistencyClaim))).scalars().all()
-    )
+    claims = await load_claims(async_db_session)
     assert len(claims) == 2
     assert {claim.subject_text for claim in claims} == {"李长风", "王二"}
     assert all(claim.chapter_id == "ch_a" for claim in claims)
     assert all(claim.body_rev == 1 for claim in claims)
     assert all(claim.source_kind == "body" for claim in claims)
     assert all(claim.status == "accepted" for claim in claims)
+
+
+async def test_claims_get_timeline_and_narrative_order(
+    use_test_session, async_db_session, pipeline_setup, fake_provider
+):
+    """回归：timeline_id/story_order 留 NULL 时三条规则都看不到 claim。"""
+    fake_provider.claims = [
+        claim_payload("李长风", "fp_1"),
+        claim_payload("王二", "fp_2"),
+    ]
+
+    await tasks._extract_claims_async("task-1", pipeline_setup.id)
+
+    claims = await load_claims(async_db_session)
+    assert all(claim.timeline_id == DEFAULT_TIMELINE_ID for claim in claims)
+    assert all(claim.story_order is not None for claim in claims)
+    assert float(claims[0].story_order) < float(claims[1].story_order), "章内严格递增"
+
+
+async def test_story_order_stays_inside_the_chapters_slot(
+    use_test_session, async_db_session, pipeline_setup, fake_provider
+):
+    """章内偏移压在 (Chapter.idx, idx+1) 内，不会越到下一章前面。
+
+    Chapter.idx 是步长 1024 的稀疏序号，seed_project 给 ch_a 的是 1024。
+    """
+    fake_provider.claims = [claim_payload(f"角色{i}", f"fp_{i}") for i in range(5)]
+
+    await tasks._extract_claims_async("task-1", pipeline_setup.id)
+
+    chapter_idx = (
+        await async_db_session.execute(select(Chapter.idx).where(Chapter.id == "ch_a"))
+    ).scalar_one()
+    claims = await load_claims(async_db_session)
+    orders = [float(claim.story_order) for claim in claims]
+    assert all(chapter_idx < order < chapter_idx + 1 for order in orders)
+    assert orders == sorted(orders)
+
+
+async def test_stateful_predicate_intervals_are_closed(
+    use_test_session, async_db_session, pipeline_setup, fake_provider
+):
+    """状态型谓词的有效区间在同组内前后闭合，最后一条保持开区间。
+
+    不闭合 valid_to_order，ownership 规则的区间重叠判定就永远成立（恒真误报）。
+    """
+    fake_provider.claims = [
+        claim_payload("李长风", "fp_1", predicate="alive", object_value="true"),
+        claim_payload("李长风", "fp_2", predicate="alive", object_value="false"),
+    ]
+
+    await tasks._extract_claims_async("task-1", pipeline_setup.id)
+
+    first, second = await load_claims(async_db_session)
+    assert float(first.valid_from_order) == float(first.story_order)
+    assert float(first.valid_to_order) == float(second.story_order), "前一条被后一条闭合"
+    assert float(second.valid_from_order) == float(second.story_order)
+    assert second.valid_to_order is None, "最后一条一直有效"
+
+
+async def test_distinct_owned_items_do_not_close_each_others_intervals(
+    use_test_session, async_db_session, pipeline_setup, fake_provider
+):
+    """同时拥有剑和盾并不冲突，闭合区间必须按对象分组。"""
+    fake_provider.claims = [
+        claim_payload("李长风", "fp_sword", predicate="owns", object_type="entity", object_value="长剑"),
+        claim_payload("李长风", "fp_shield", predicate="owns", object_type="entity", object_value="铁盾"),
+    ]
+
+    await tasks._extract_claims_async("task-1", pipeline_setup.id)
+
+    claims = await load_claims(async_db_session)
+    assert all(claim.valid_to_order is None for claim in claims), "不同物品互不终止"
+
+
+async def test_provider_supplied_positions_are_preserved(
+    use_test_session, async_db_session, pipeline_setup, fake_provider
+):
+    """模型给出更精确的时间线/顺序时沿用它，不被默认推导覆盖。"""
+    fake_provider.claims = [
+        claim_payload("李长风", "fp_1", timeline_id="flashback", story_order=3.5)
+    ]
+
+    await tasks._extract_claims_async("task-1", pipeline_setup.id)
+
+    claim = (await load_claims(async_db_session))[0]
+    assert claim.timeline_id == "flashback"
+    assert float(claim.story_order) == 3.5
+
+
+async def test_subject_entry_id_is_resolved_and_persisted(
+    use_test_session, async_db_session, pipeline_setup, fake_provider
+):
+    """subject_entry_id 必须落库：规则按 entry_id 分组，NULL 等于关掉跨章检测。"""
+    from db.models_codex import CodexAlias, CodexEntry
+
+    async_db_session.add(
+        CodexEntry(
+            id="cx_lee",
+            project_id="proj_a",
+            kind="character",
+            name="李长风",
+            description="主角",
+            attrs={},
+        )
+    )
+    await async_db_session.flush()
+    async_db_session.add(CodexAlias(entry_id="cx_lee", alias="李长风"))
+    await async_db_session.flush()
+
+    fake_provider.claims = [claim_payload("李长风", "fp_1")]
+
+    await tasks._extract_claims_async("task-1", pipeline_setup.id)
+
+    claim = (await load_claims(async_db_session))[0]
+    assert claim.subject_entry_id == "cx_lee"
+
+
+async def test_object_entry_id_is_resolved_and_persisted(
+    use_test_session, async_db_session, pipeline_setup, fake_provider
+):
+    """object_entry_id 必须落库：ownership 规则按被拥有物的 entry_id 分组。"""
+    from db.models_codex import CodexAlias, CodexEntry
+
+    async_db_session.add(
+        CodexEntry(
+            id="cx_sword",
+            project_id="proj_a",
+            kind="item",
+            name="长剑",
+            description="主角的佩剑",
+            attrs={},
+        )
+    )
+    await async_db_session.flush()
+    async_db_session.add(CodexAlias(entry_id="cx_sword", alias="长剑"))
+    await async_db_session.flush()
+
+    fake_provider.claims = [
+        claim_payload(
+            "李长风", "fp_1", predicate="owns", object_type="entity", object_value="长剑"
+        )
+    ]
+
+    await tasks._extract_claims_async("task-1", pipeline_setup.id)
+
+    claim = (await load_claims(async_db_session))[0]
+    assert claim.object_entry_id == "cx_sword"
 
 
 async def test_new_revision_supersedes_previous_claims(
@@ -309,49 +647,85 @@ async def test_new_revision_supersedes_previous_claims(
     result = await tasks._extract_claims_async("task-2", run2.id)
 
     assert result["superseded_claims"] == 1
-    async_db_session.expunge_all()
-    claims = list(
-        (
-            await async_db_session.execute(
-                select(ConsistencyClaim).order_by(ConsistencyClaim.body_rev)
-            )
-        )
-        .scalars()
-        .all()
-    )
+    claims = await load_claims(async_db_session)
     assert [(claim.body_rev, claim.status) for claim in claims] == [
         (1, "superseded"),
         (2, "accepted"),
     ]
 
 
-async def test_rerunning_same_revision_is_idempotent(
+async def test_replaying_the_same_revision_deletes_the_previous_attempt(
     use_test_session, async_db_session, pipeline_setup, fake_provider
 ):
-    """同一版本重跑不会留下两组 accepted claim。"""
+    """回归：uq_claim_body_source 不含 status —— 标记 superseded 不释放唯一键。
+
+    (chapter_id, body_rev, fingerprint, extractor_version) 的部分唯一索引意味着
+    同版本重放必须删掉上一轮的行，否则第二次插入直接撞索引。
+    """
     fake_provider.claims = [claim_payload("李长风", "fp_1")]
     await tasks._extract_claims_async("task-1", pipeline_setup.id)
-    await tasks._extract_claims_async("task-1-retry", pipeline_setup.id)
 
-    async_db_session.expunge_all()
-    accepted = list(
-        (
-            await async_db_session.execute(
-                select(ConsistencyClaim).where(ConsistencyClaim.status == "accepted")
-            )
-        )
-        .scalars()
-        .all()
-    )
-    assert len(accepted) == 1
+    result = await tasks._extract_claims_async("task-1-retry", pipeline_setup.id)
+
+    assert result["replaced_claims"] == 1, "旧行被删除而不是留着占用唯一键"
+    claims = await load_claims(async_db_session)
+    assert len(claims) == 1, "同 (body_rev, fingerprint) 只剩一行"
+    assert claims[0].status == "accepted"
+
+
+async def test_replay_leaves_no_row_that_would_violate_the_unique_index(
+    use_test_session, async_db_session, pipeline_setup, fake_provider
+):
+    """重放三次后，(body_rev, fingerprint, extractor_version) 依然唯一。
+
+    在 PostgreSQL 上重复的行会被部分唯一索引直接拒绝；SQLite 上索引被剔除，
+    所以这里显式断言重复计数，等价地覆盖同一条约束。
+    """
+    fake_provider.claims = [
+        claim_payload("李长风", "fp_1"),
+        claim_payload("王二", "fp_2"),
+    ]
+    for attempt in range(3):
+        await tasks._extract_claims_async(f"task-{attempt}", pipeline_setup.id)
+
+    claims = await load_claims(async_db_session)
+    keys = [
+        (claim.chapter_id, claim.body_rev, claim.fingerprint, claim.extractor_version)
+        for claim in claims
+    ]
+    assert len(keys) == len(set(keys)), f"重放产生了重复唯一键: {keys}"
+    assert len(claims) == 2
+
+
+async def test_replay_after_supersede_does_not_resurrect_old_rows(
+    use_test_session, async_db_session, pipeline_setup, fake_provider, make_run
+):
+    """旧版本被作废后，同章新版本重放不会把旧行改回 accepted。"""
+    fake_provider.claims = [claim_payload("李长风", "fp_1")]
+    await tasks._extract_claims_async("task-1", pipeline_setup.id)
+
+    await add_version(async_db_session, rev=2, html="<p>v2</p>")
+    run2 = make_run(project_id="proj_a", chapter_id="ch_a", body_rev=2)
+    async_db_session.add(run2)
+    await async_db_session.flush()
+    fake_provider.claims = [claim_payload("李长风", "fp_1")]
+    await tasks._extract_claims_async("task-2", run2.id)
+    await tasks._extract_claims_async("task-2-retry", run2.id)
+
+    claims = await load_claims(async_db_session)
+    by_rev = {claim.body_rev: claim.status for claim in claims}
+    assert by_rev == {1: "superseded", 2: "accepted"}
 
 
 async def test_superseding_is_scoped_to_the_chapter(
-    use_test_session, async_db_session, seed_project, make_claim, pipeline_setup, fake_provider, make_run
+    use_test_session,
+    async_db_session,
+    make_claim,
+    pipeline_setup,
+    fake_provider,
+    make_run,
 ):
     """作废只针对本章，别的章节的 claim 不受影响。"""
-    from db.models_core import Chapter
-
     async_db_session.add(
         Chapter(
             id="ch_b",
@@ -364,15 +738,16 @@ async def test_superseding_is_scoped_to_the_chapter(
         )
     )
     await async_db_session.flush()
-    other = make_claim(
-        project_id="proj_a",
-        chapter_id="ch_b",
-        body_rev=1,
-        subject_text="别章角色",
-        fingerprint="fp_other",
-        status="accepted",
+    async_db_session.add(
+        make_claim(
+            project_id="proj_a",
+            chapter_id="ch_b",
+            body_rev=1,
+            subject_text="别章角色",
+            fingerprint="fp_other",
+            status="accepted",
+        )
     )
-    async_db_session.add(other)
     await async_db_session.flush()
 
     await add_version(async_db_session, rev=2, html="<p>第二版</p>")
@@ -413,14 +788,75 @@ async def test_extraction_aborts_if_a_newer_revision_lands_mid_flight(
     with pytest.raises(tasks.StaleRevisionError):
         await tasks._extract_claims_async("task-1", run_id)
 
-    claims = list(
-        (await async_db_session.execute(select(ConsistencyClaim))).scalars().all()
-    )
-    assert claims == []
-    async_db_session.expunge_all()
+    assert await load_claims(async_db_session) == [], "旧 worker 的过期结论不得落库"
     run = await tasks.load_run(async_db_session, run_id)
     assert run.status == "failed"
     assert run.error_code == "stale_revision"
+
+
+async def test_stale_extraction_does_not_commit_the_supersede(
+    use_test_session,
+    async_db_session,
+    pipeline_setup,
+    fake_provider,
+    make_claim,
+    monkeypatch,
+):
+    """回归：stale 之前不 rollback，会把已作废的旧 claim 一起提交。
+
+    旧 worker 已经把上一版 claim 标成 superseded；如果直接提交失败标记而不回滚，
+    这次作废就生效了 —— 上一版结论凭空消失，而新版本的 claim 还没写进来。
+    """
+    async_db_session.add(
+        make_claim(
+            project_id="proj_a",
+            chapter_id="ch_a",
+            body_rev=1,
+            subject_text="上一版角色",
+            fingerprint="fp_previous",
+            status="accepted",
+        )
+    )
+    await async_db_session.flush()
+    await add_version(async_db_session, rev=2, html="<p>v2</p>")
+    await async_db_session.commit()
+
+    from db.models_consistency_extended import ConsistencyRun
+
+    run2 = ConsistencyRun(
+        project_id="proj_a",
+        chapter_id="ch_a",
+        body_rev=2,
+        pipeline_version=PIPELINE_VERSION,
+        status="pending",
+        trigger="body_save",
+    )
+    async_db_session.add(run2)
+    await async_db_session.commit()
+
+    class RacingProvider:
+        extractor_version = "1.0.0"
+
+        async def extract_claims(self, *, content_html, project_id, chapter_id):
+            # rev 2 的 worker 干活期间，作者又存了 rev 3
+            await add_version(async_db_session, rev=3, html="<p>v3</p>")
+            return [claim_payload("新角色", "fp_new")]
+
+        async def generate_summary(self, *, content_html, summary_type="chapter"):
+            return ("摘要", 1)
+
+    monkeypatch.setattr(tasks, "ConsistencyProvider", RacingProvider)
+
+    with pytest.raises(tasks.StaleRevisionError):
+        await tasks._extract_claims_async("task-2", run2.id)
+
+    async_db_session.expunge_all()
+    previous = (
+        await async_db_session.execute(
+            select(ConsistencyClaim).where(ConsistencyClaim.fingerprint == "fp_previous")
+        )
+    ).scalar_one()
+    assert previous.status == "accepted", "过期 worker 的作废操作必须被回滚"
 
 
 # --- 摘要 ---------------------------------------------------------------------
@@ -435,9 +871,7 @@ async def test_summary_is_persisted_with_configured_model(
 
     await tasks._generate_summary_async("task-2", pipeline_setup.id)
 
-    summary = (
-        await async_db_session.execute(select(DocumentSummary))
-    ).scalar_one()
+    summary = (await async_db_session.execute(select(DocumentSummary))).scalar_one()
     assert summary.content == "这一章的摘要"
     assert summary.model_id == "custom-summary-model"
     assert summary.token_count == 88
@@ -532,6 +966,28 @@ async def test_late_summary_does_not_overwrite_a_newer_active_summary(
     assert [s.content for s in active] == ["新版摘要"]
 
 
+async def test_late_summary_leaves_no_partial_row(
+    use_test_session, async_db_session, pipeline_setup, fake_provider, make_run
+):
+    """迟到的旧版本摘要不留任何行 —— 判定发生在写入之前，且失败前回滚。"""
+    await add_version(async_db_session, rev=2, html="<p>v2</p>")
+    run2 = make_run(project_id="proj_a", chapter_id="ch_a", body_rev=2)
+    async_db_session.add(run2)
+    await async_db_session.flush()
+    fake_provider.summary = ("新版摘要", 20)
+    await tasks._generate_summary_async("task-3", run2.id)
+
+    fake_provider.summary = ("旧版摘要", 10)
+    with pytest.raises(tasks.StaleRevisionError):
+        await tasks._generate_summary_async("task-2", pipeline_setup.id)
+
+    async_db_session.expunge_all()
+    summaries = list(
+        (await async_db_session.execute(select(DocumentSummary))).scalars().all()
+    )
+    assert [s.source_rev for s in summaries] == [2], "不留 rev 1 的半成品行"
+
+
 async def test_rerunning_summary_for_same_revision_updates_in_place(
     use_test_session, async_db_session, pipeline_setup, fake_provider
 ):
@@ -603,18 +1059,321 @@ async def test_scan_finds_conflicts_from_persisted_claims(
     assert issues[0].issue_type == "alive_conflict"
 
 
+async def test_end_to_end_extraction_feeds_the_scanner(
+    use_test_session, async_db_session, pipeline_setup, fake_provider
+):
+    """抽取补齐的 timeline/story_order 足以让规则检出冲突（字段真的够用）。"""
+    fake_provider.claims = [
+        claim_payload("李长风", "fp_dead", object_value="false"),
+        claim_payload("李长风", "fp_alive", object_value="true"),
+    ]
+    await tasks._extract_claims_async("task-1", pipeline_setup.id)
+
+    result = await tasks._scan_rules_async("task-3", pipeline_setup.id)
+
+    assert result["issues_found"] == 1, "抽取写入的字段必须足够让规则排序判断"
+    issues = list((await async_db_session.execute(select(GuardIssue))).scalars().all())
+    assert issues[0].issue_type == "alive_conflict"
+
+
 async def test_scan_aborts_when_revision_advanced(
     use_test_session, async_db_session, pipeline_setup, fake_provider
 ):
+    run_id = pipeline_setup.id
     await add_version(async_db_session, rev=2, html="<p>新版</p>")
+
+    with pytest.raises(tasks.StaleRevisionError):
+        await tasks._scan_rules_async("task-3", run_id)
+
+    async_db_session.expunge_all()
+    run = await tasks.load_run(async_db_session, run_id)
+    assert run.status == "failed"
+    assert run.error_code == "stale_revision"
+
+
+async def test_stale_scan_does_not_commit_issues(
+    use_test_session, async_db_session, pipeline_setup, fake_provider, make_claim, monkeypatch
+):
+    """扫描期间版本推进 → 已生成的 issue 必须随事务回滚。"""
+    async_db_session.add(
+        make_claim(
+            project_id="proj_a",
+            chapter_id="ch_a",
+            subject_text="李长风",
+            predicate="alive",
+            object_value="false",
+            timeline_id="main",
+            story_order=10.0,
+            fingerprint="fp_dead",
+            status="accepted",
+        )
+    )
+    async_db_session.add(
+        make_claim(
+            project_id="proj_a",
+            chapter_id="ch_a",
+            subject_text="李长风",
+            predicate="alive",
+            object_value="true",
+            timeline_id="main",
+            story_order=20.0,
+            fingerprint="fp_alive",
+            status="accepted",
+        )
+    )
+    await async_db_session.flush()
+    await async_db_session.commit()
+
+    real_scanner_cls = tasks.RuleScanner
+
+    class RacingScanner(real_scanner_cls):
+        async def scan_chapter(self, **kwargs):
+            issue_ids = await super().scan_chapter(**kwargs)
+            # 扫描完成、提交之前作者又存了一版
+            await add_version(async_db_session, rev=2, html="<p>扫描途中的新版</p>")
+            return issue_ids
+
+    monkeypatch.setattr(tasks, "RuleScanner", RacingScanner)
 
     with pytest.raises(tasks.StaleRevisionError):
         await tasks._scan_rules_async("task-3", pipeline_setup.id)
 
     async_db_session.expunge_all()
+    issues = list((await async_db_session.execute(select(GuardIssue))).scalars().all())
+    assert issues == [], "过期扫描的告警不得落库"
+
+
+# --- 状态推进 -----------------------------------------------------------------
+
+
+async def test_status_does_not_regress_when_branches_run_out_of_order(
+    use_test_session, async_db_session, pipeline_setup, fake_provider
+):
+    """摘要与扫描并行：慢的一方不得把状态从 completed 打回 summarizing。"""
+    await tasks._scan_rules_async("task-3", pipeline_setup.id)
+    await tasks._generate_summary_async("task-2", pipeline_setup.id)
+
+    async_db_session.expunge_all()
     run = await tasks.load_run(async_db_session, pipeline_setup.id)
-    assert run.status == "failed"
-    assert run.error_code == "stale_revision"
+    assert run.status == "completed"
+
+
+async def test_advance_run_status_is_conditional(
+    use_test_session, async_db_session, pipeline_setup
+):
+    changed = await tasks.advance_run_status(
+        async_db_session, pipeline_setup.id, "extracting", allowed_from=("pending",)
+    )
+    assert changed is True
+
+    unchanged = await tasks.advance_run_status(
+        async_db_session, pipeline_setup.id, "summarizing", allowed_from=("pending",)
+    )
+    assert unchanged is False, "不在 allowed_from 内的状态不得被改写"
+
+    async_db_session.expunge_all()
+    run = await tasks.load_run(async_db_session, pipeline_setup.id)
+    assert run.status == "extracting"
+
+
+# --- 唯一键并发幂等 -----------------------------------------------------------
+
+
+async def test_get_or_create_run_returns_the_same_run(
+    use_test_session, async_db_session, seed_project
+):
+    """同 (chapter, body_rev, pipeline_version) 始终是同一个 run。"""
+    await seed_project(chapter_ids=("ch_a",))
+
+    first = await get_or_create_run(
+        async_db_session,
+        project_id="proj_a",
+        chapter_id="ch_a",
+        body_rev=3,
+        pipeline_version=PIPELINE_VERSION,
+        trigger="body_save",
+    )
+    await async_db_session.commit()
+
+    second = await get_or_create_run(
+        async_db_session,
+        project_id="proj_a",
+        chapter_id="ch_a",
+        body_rev=3,
+        pipeline_version=PIPELINE_VERSION,
+        trigger="manual_scan",
+    )
+    await async_db_session.commit()
+
+    assert first == second
+
+    from db.models_consistency_extended import ConsistencyRun
+
+    async_db_session.expunge_all()
+    runs = list(
+        (await async_db_session.execute(select(ConsistencyRun))).scalars().all()
+    )
+    assert len(runs) == 1, "不得为同一版本建两个 run"
+
+
+async def test_get_or_create_run_survives_a_concurrent_insert(
+    use_test_session, async_db_session, seed_project, monkeypatch
+):
+    """并发插入撞 uq_consistency_run_key 时读回已存在的 run，而不是抛错。
+
+    模拟真实竞态：本 worker 查完发现没有，另一个 worker 在它插入之前先插进去了。
+    这里在「查完之后、插入之前」注入那一行。
+    """
+    from db.models_consistency_extended import ConsistencyRun
+    from services import consistency as consistency_service
+
+    await seed_project(chapter_ids=("ch_a",))
+
+    original_select = consistency_service._select_run_id
+    calls = {"n": 0}
+
+    async def racing_select(db, **kwargs):
+        result = await original_select(db, **kwargs)
+        calls["n"] += 1
+        if calls["n"] == 1 and result is None:
+            # 另一个 worker 抢先插入了同一个 run
+            db.add(
+                ConsistencyRun(
+                    project_id="proj_a",
+                    chapter_id="ch_a",
+                    body_rev=4,
+                    pipeline_version=PIPELINE_VERSION,
+                    status="pending",
+                    trigger="body_save",
+                )
+            )
+            await db.flush()
+        return result
+
+    monkeypatch.setattr(consistency_service, "_select_run_id", racing_select)
+
+    run_id = await get_or_create_run(
+        async_db_session,
+        project_id="proj_a",
+        chapter_id="ch_a",
+        body_rev=4,
+        pipeline_version=PIPELINE_VERSION,
+        trigger="body_save",
+    )
+    await async_db_session.commit()
+
+    async_db_session.expunge_all()
+    runs = list(
+        (
+            await async_db_session.execute(
+                select(ConsistencyRun).where(ConsistencyRun.body_rev == 4)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    assert len(runs) == 1, "竞态不得产生两个 run"
+    assert runs[0].id == run_id, "返回的是实际存在的那个 run"
+
+
+async def test_upsert_active_summary_updates_in_place(
+    use_test_session, async_db_session, seed_project
+):
+    """同 (owner, source_rev, summary_version) 只有一行。"""
+    await seed_project(chapter_ids=("ch_a",))
+
+    await upsert_active_summary(
+        async_db_session,
+        owner_type="chapter",
+        owner_id="ch_a",
+        source_rev=1,
+        summary_version="1.0.0",
+        content="第一次写",
+        model_id="model-a",
+        token_count=10,
+    )
+    await async_db_session.commit()
+
+    await upsert_active_summary(
+        async_db_session,
+        owner_type="chapter",
+        owner_id="ch_a",
+        source_rev=1,
+        summary_version="1.0.0",
+        content="第二次写",
+        model_id="model-b",
+        token_count=20,
+    )
+    await async_db_session.commit()
+
+    async_db_session.expunge_all()
+    summaries = list(
+        (await async_db_session.execute(select(DocumentSummary))).scalars().all()
+    )
+    assert len(summaries) == 1, "只有一行，不是两行"
+    assert summaries[0].content == "第二次写"
+    assert summaries[0].model_id == "model-b"
+
+
+async def test_upsert_active_summary_survives_a_concurrent_insert(
+    use_test_session, async_db_session, seed_project, monkeypatch
+):
+    """并发插入撞 uq_document_summary_key 时读回已存在行并继续更新，而不是抛错。
+
+    模拟真实竞态：本 worker 查完发现没有，另一个 worker 在它插入之前先提交了同一
+    个键。在「查完之后、插入之前」注入并提交那一行，本 worker 的插入就会真的撞键。
+    """
+    from services import consistency as consistency_service
+
+    await seed_project(chapter_ids=("ch_a",))
+    await async_db_session.commit()
+
+    original_select = consistency_service._select_summary_row
+    calls = {"n": 0}
+
+    async def racing_select(db, **kwargs):
+        row = await original_select(db, **kwargs)
+        calls["n"] += 1
+        if calls["n"] == 1 and row is None:
+            # 另一个 worker 抢先写入并提交了同一 (owner, source_rev, version)
+            db.add(
+                DocumentSummary(
+                    owner_type="chapter",
+                    owner_id="ch_a",
+                    source_rev=1,
+                    summary_version="1.0.0",
+                    content="抢先写入",
+                    model_id="model-race",
+                    token_count=1,
+                    status="active",
+                )
+            )
+            await db.commit()
+        return row
+
+    monkeypatch.setattr(consistency_service, "_select_summary_row", racing_select)
+
+    summary = await upsert_active_summary(
+        async_db_session,
+        owner_type="chapter",
+        owner_id="ch_a",
+        source_rev=1,
+        summary_version="1.0.0",
+        content="本 worker 的摘要",
+        model_id="model-mine",
+        token_count=5,
+    )
+    await async_db_session.commit()
+
+    assert calls["n"] == 2, "撞键后必须重新读一次"
+    async_db_session.expunge_all()
+    summaries = list(
+        (await async_db_session.execute(select(DocumentSummary))).scalars().all()
+    )
+    assert len(summaries) == 1, "竞态不得产生两行"
+    assert summaries[0].id == summary.id, "返回的是实际存在的那一行"
+    assert summaries[0].content == "本 worker 的摘要", "读回已存在行后继续更新"
+    assert summaries[0].model_id == "model-mine"
 
 
 # --- 管道调度 -----------------------------------------------------------------
@@ -627,8 +1386,8 @@ async def test_dispatch_reuses_existing_run_for_same_revision(
     dispatched = []
 
     class FakeChain:
-        def __init__(self, *signatures):
-            dispatched.append(signatures)
+        def __init__(self, *args):
+            dispatched.append(args)
 
         def apply_async(self):
             return None
@@ -648,7 +1407,6 @@ async def test_dispatch_reuses_existing_run_for_same_revision(
     assert result["run_id"] == pipeline_setup.id
     assert result["status"] == "dispatched"
     assert len(dispatched) == 1
-    assert len(dispatched[0]) == 3
 
 
 async def test_dispatch_creates_run_with_shared_pipeline_version(
@@ -657,7 +1415,7 @@ async def test_dispatch_creates_run_with_shared_pipeline_version(
     await seed_project(chapter_ids=("ch_a",))
 
     class FakeChain:
-        def __init__(self, *signatures):
+        def __init__(self, *args):
             pass
 
         def apply_async(self):
@@ -667,10 +1425,58 @@ async def test_dispatch_creates_run_with_shared_pipeline_version(
 
     result = await tasks._process_body_saved_async(
         "task-0",
-        {"project_id": "proj_a", "chapter_id": "ch_a", "body_rev": 3, "trigger": "manual_scan"},
+        {
+            "project_id": "proj_a",
+            "chapter_id": "ch_a",
+            "body_rev": 3,
+            "trigger": "manual_scan",
+        },
     )
 
     run = await tasks.load_run(async_db_session, result["run_id"])
     assert run.pipeline_version == PIPELINE_VERSION
     assert run.trigger == "manual_scan"
     assert run.body_rev == 3
+
+
+async def test_summary_and_scan_are_dispatched_in_parallel(
+    use_test_session, async_db_session, pipeline_setup, monkeypatch
+):
+    """回归：扫描只依赖已落库的 claim，串在摘要后面会白等几十秒模型调用。"""
+    calls = []
+
+    class RecordingChain:
+        def __init__(self, *args):
+            calls.append(("chain", args))
+
+        def apply_async(self):
+            return None
+
+    class RecordingGroup:
+        def __init__(self, *args):
+            calls.append(("group", args))
+
+        def apply_async(self):
+            return None
+
+    monkeypatch.setattr(tasks, "chain", RecordingChain)
+    monkeypatch.setattr(tasks, "group", RecordingGroup)
+
+    await tasks._process_body_saved_async(
+        "task-0",
+        {
+            "project_id": "proj_a",
+            "chapter_id": "ch_a",
+            "body_rev": 1,
+            "trigger": "body_save",
+        },
+    )
+
+    kinds = [kind for kind, _ in calls]
+    assert kinds == ["group", "chain"], "先构造并行组，再串到 extract 之后"
+
+    group_args = next(args for kind, args in calls if kind == "group")
+    assert len(group_args) == 2, "摘要与扫描在同一个并行组内"
+
+    chain_args = next(args for kind, args in calls if kind == "chain")
+    assert len(chain_args) == 2, "chain 只有两段：extract，然后并行组"

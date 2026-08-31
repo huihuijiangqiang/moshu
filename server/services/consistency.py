@@ -8,10 +8,11 @@ from typing import Optional
 
 from sqlalchemy import select, update
 from sqlalchemy.dialects.postgresql import insert
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from db.models_codex import CodexAlias, CodexEntry
-from db.models_consistency_extended import ConsistencyClaim, ConsistencyRun
+from db.models_consistency_extended import ConsistencyClaim, ConsistencyRun, DocumentSummary
 
 #: 一致性管道版本。API、Celery 任务与 ConsistencyRun 的唯一键必须共用同一个值，
 #: 否则写入用一个版本、查询用另一个版本，状态查询会永远 404。
@@ -25,6 +26,13 @@ EXTRACTOR_VERSION = "1.0.0"
 
 #: 摘要版本，参与 DocumentSummary 唯一键。
 SUMMARY_VERSION = "1.0.0"
+
+#: 抽取结果没给 timeline_id 时使用的主时间线。
+#:
+#: 三条 P0 规则都按 (subject, timeline_id) 分组，并且要求 story_order 非空才
+#: 参与排序判断。timeline_id 留 NULL、story_order 留 NULL 的 claim 永远不会
+#: 被任何规则看到 —— 落库了却检不出冲突，等于白抽。
+DEFAULT_TIMELINE_ID = "main"
 
 #: ConsistencyRun.trigger 的 CHECK 约束允许的取值。
 VALID_RUN_TRIGGERS = frozenset({"body_save", "manual_scan", "pipeline_upgrade", "maintenance"})
@@ -77,6 +85,105 @@ def compute_claim_fingerprint(
     return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
 
 
+#: 状态型谓词：同一主体的后一条声明会终止前一条的有效区间。
+#: 规则用 valid_from_order / valid_to_order 判定区间重叠，不闭合区间就永远重叠。
+STATEFUL_PREDICATES = frozenset({"alive", "owns", "owned_by", "located_at", "has_ability"})
+
+#: 这些谓词的「状态」是按对象区分的：一个人同时拥有剑和盾并不冲突，
+#: 所以闭合区间时必须把对象一起纳入分组键。
+#: 而 alive / located_at 的对象是状态值本身，后一条直接取代前一条。
+OBJECT_SCOPED_PREDICATES = frozenset({"owns", "owned_by", "has_ability"})
+
+
+def derive_story_order(chapter_idx: int, ordinal: int, total: int) -> float:
+    """把「章内第 ordinal 条声明」映射成全书叙事顺序。
+
+    Chapter.idx 是步长 1024 的稀疏序号，所以把章内偏移压进 (idx, idx+1) 区间即可
+    保证：同章内严格递增，且永远不会越到下一章前面。
+
+    story_order 是 Numeric(24,8)，8 位小数足够容纳一章内的数千条声明。
+    """
+    if total <= 0:
+        raise ValueError("total must be positive")
+    if not 0 <= ordinal < total:
+        raise ValueError(f"ordinal {ordinal} out of range for total {total}")
+    return round(chapter_idx + (ordinal + 1) / (total + 1), 8)
+
+
+def _interval_group_key(claim: dict) -> tuple:
+    """闭合有效区间时的分组键。"""
+    subject = claim.get("subject_entry_id") or f"text:{(claim.get('subject_text') or '').strip().lower()}"
+    predicate = claim.get("predicate")
+    if predicate in OBJECT_SCOPED_PREDICATES:
+        object_key = claim.get("object_entry_id") or (claim.get("object_value") or "").strip().lower()
+        return (subject, predicate, object_key)
+    return (subject, predicate)
+
+
+def assign_narrative_positions(
+    claims: list[dict],
+    *,
+    chapter_idx: int,
+    timeline_id: str = DEFAULT_TIMELINE_ID,
+) -> list[dict]:
+    """给一章抽取出的 claim 补齐时间线与叙事位置字段。
+
+    抽取器只给出文本内容，timeline_id / story_order / valid_from_order /
+    valid_to_order 全是 NULL。而三条 P0 规则都要求 story_order 非空、按
+    (subject, timeline_id) 分组 —— 不补这些字段，claim 落库了也检不出任何冲突。
+
+    模型若自己给了值就沿用（尊重更精确的抽取结果），否则按章内顺序推导。
+    状态型谓词的有效区间在同组内前后闭合：前一条的 valid_to_order 设为后一条的
+    valid_from_order，最后一条保持开区间（None = 一直有效）。
+
+    返回的是新的 dict 列表，不修改入参。
+    """
+    total = len(claims)
+    positioned = []
+    for ordinal, claim in enumerate(claims):
+        enriched = dict(claim)
+        enriched.setdefault("timeline_id", None)
+        if not enriched.get("timeline_id"):
+            enriched["timeline_id"] = timeline_id
+        if enriched.get("story_order") is None:
+            enriched["story_order"] = derive_story_order(chapter_idx, ordinal, total)
+        if enriched.get("valid_from_order") is None and enriched.get("predicate") in STATEFUL_PREDICATES:
+            enriched["valid_from_order"] = enriched["story_order"]
+        positioned.append(enriched)
+
+    # 闭合同组内相邻状态区间
+    groups: dict[tuple, list[dict]] = {}
+    for claim in positioned:
+        if claim.get("predicate") not in STATEFUL_PREDICATES:
+            continue
+        groups.setdefault((claim["timeline_id"],) + _interval_group_key(claim), []).append(claim)
+
+    for group in groups.values():
+        ordered = sorted(group, key=lambda c: c["story_order"])
+        for earlier, later in zip(ordered, ordered[1:]):
+            if earlier.get("valid_to_order") is None:
+                earlier["valid_to_order"] = later["valid_from_order"]
+
+    return positioned
+
+
+async def _select_run_id(
+    db: AsyncSession,
+    *,
+    chapter_id: str,
+    body_rev: int,
+    pipeline_version: str,
+) -> Optional[int]:
+    result = await db.execute(
+        select(ConsistencyRun.id).where(
+            ConsistencyRun.chapter_id == chapter_id,
+            ConsistencyRun.body_rev == body_rev,
+            ConsistencyRun.pipeline_version == pipeline_version,
+        )
+    )
+    return result.scalar_one_or_none()
+
+
 async def get_or_create_run(
     db: AsyncSession,
     *,
@@ -86,35 +193,119 @@ async def get_or_create_run(
     pipeline_version: str,
     trigger: str,
 ) -> int:
-    """获取或创建 consistency run 记录"""
-    stmt = (
-        insert(ConsistencyRun)
-        .values(
-            project_id=project_id,
-            chapter_id=chapter_id,
-            body_rev=body_rev,
-            pipeline_version=pipeline_version,
-            status="pending",
-            trigger=trigger,
+    """获取或创建 consistency run 记录（并发安全、方言无关）。
+
+    唯一键是 uq_consistency_run_key(chapter_id, body_rev, pipeline_version)：
+    两个 worker 同时处理同一次保存时，「先查后插」之间存在竞态窗口，后插的一方
+    会撞唯一键。这里把插入放进 SAVEPOINT，撞键后回滚该 SAVEPOINT 并改读已存在
+    的行 —— 外层事务不受影响，调用方拿到的始终是同一个 run_id。
+
+    不用 PostgreSQL 的 ON CONFLICT：那条语句在 SQLite 上无法编译，会让这段逻辑
+    彻底无法被单元测试覆盖。
+    """
+    existing = await _select_run_id(
+        db, chapter_id=chapter_id, body_rev=body_rev, pipeline_version=pipeline_version
+    )
+    if existing is not None:
+        return existing
+
+    run = ConsistencyRun(
+        project_id=project_id,
+        chapter_id=chapter_id,
+        body_rev=body_rev,
+        pipeline_version=pipeline_version,
+        status="pending",
+        trigger=normalize_run_trigger(trigger),
+        started_at=datetime.now(timezone.utc),
+    )
+    try:
+        async with db.begin_nested():
+            db.add(run)
+            await db.flush()
+    except IntegrityError:
+        # 并发插入已经建好了同一个 run；读回它而不是把错误抛给调用方
+        raced = await _select_run_id(
+            db, chapter_id=chapter_id, body_rev=body_rev, pipeline_version=pipeline_version
         )
-        .on_conflict_do_nothing(index_elements=["chapter_id", "body_rev", "pipeline_version"])
-        .returning(ConsistencyRun.id)
+        if raced is None:
+            raise
+        return raced
+
+    return run.id
+
+
+async def _select_summary_row(
+    db: AsyncSession,
+    *,
+    owner_type: str,
+    owner_id: str,
+    source_rev: int,
+    summary_version: str,
+) -> Optional[DocumentSummary]:
+    """按唯一键读回摘要行；找不到返回 None。"""
+    result = await db.execute(
+        select(DocumentSummary).where(
+            DocumentSummary.owner_type == owner_type,
+            DocumentSummary.owner_id == owner_id,
+            DocumentSummary.source_rev == source_rev,
+            DocumentSummary.summary_version == summary_version,
+        )
     )
+    return result.scalar_one_or_none()
 
-    result = await db.execute(stmt)
-    run_id = result.scalar_one_or_none()
 
-    if run_id:
-        return run_id
+async def upsert_active_summary(
+    db: AsyncSession,
+    *,
+    owner_type: str,
+    owner_id: str,
+    source_rev: int,
+    summary_version: str,
+    content: str,
+    model_id: str,
+    token_count: Optional[int],
+) -> DocumentSummary:
+    """写入/更新某个来源版本的摘要行（并发安全、方言无关）。
 
-    # 冲突，查询已存在的
-    select_stmt = select(ConsistencyRun.id).where(
-        ConsistencyRun.chapter_id == chapter_id,
-        ConsistencyRun.body_rev == body_rev,
-        ConsistencyRun.pipeline_version == pipeline_version,
-    )
-    result = await db.execute(select_stmt)
-    return result.scalar_one()
+    唯一键是 uq_document_summary_key(owner_type, owner_id, source_rev,
+    summary_version)。同版本重跑必须原地更新而不是再插一行，并发插入撞键时读回
+    已存在的行继续更新 —— 否则重试一次就把整个任务打成 IntegrityError。
+    """
+    key = {
+        "owner_type": owner_type,
+        "owner_id": owner_id,
+        "source_rev": source_rev,
+        "summary_version": summary_version,
+    }
+    existing = await _select_summary_row(db, **key)
+
+    if existing is None:
+        summary = DocumentSummary(
+            **key,
+            content=content,
+            model_id=model_id,
+            token_count=token_count,
+            status="active",
+        )
+        try:
+            async with db.begin_nested():
+                db.add(summary)
+                await db.flush()
+            return summary
+        except IntegrityError:
+            # 另一个 worker 抢先插入了同一个键。SAVEPOINT 回滚已把我们这行逐出会话，
+            # 读回它那行继续更新，而不是把整个任务打成失败。
+            existing = await _select_summary_row(db, **key)
+            if existing is None:
+                raise
+
+    existing.content = content
+    existing.model_id = model_id
+    existing.token_count = token_count
+    existing.status = "active"
+    existing.updated_at = datetime.now(timezone.utc)
+    await db.flush()
+    return existing
 
 
 async def resolve_entity_by_alias(
