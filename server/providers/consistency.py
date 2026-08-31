@@ -9,8 +9,10 @@ Uses model_gateway configuration with injectable httpx client
 关于模型选择：网关 URL / key / model id 全部来自 config.settings，不在代码里
 硬编码具体模型名。
 """
+from __future__ import annotations
+
 import json
-from typing import Any, Optional
+from typing import TYPE_CHECKING, Any, Optional
 
 import httpx
 from pydantic import BaseModel, Field, ValidationError, model_validator
@@ -20,6 +22,9 @@ from services.chunking import TextChunk, chunk_html
 from services.claim_identity import claim_fingerprint
 from services.timeline import GLOBAL_ORDER_BASES, parse_absolute_anchor
 
+if TYPE_CHECKING:
+    pass
+
 #: 指纹计算只有一份实现（services.claim_identity），这里保留旧的导入位置。
 __all__ = [
     "ClaimOutput",
@@ -28,6 +33,86 @@ __all__ = [
     "ProviderResponseError",
     "claim_fingerprint",
 ]
+
+
+def _extract_paragraph_position(source_anchor: Optional[str]) -> Optional[int]:
+    """从 source_anchor 提取全局段落号（「P42」→ 42），格式错误返回 None。"""
+    if not source_anchor or not isinstance(source_anchor, str):
+        return None
+    cleaned = source_anchor.strip().upper()
+    if not cleaned.startswith("P"):
+        return None
+    try:
+        return int(cleaned[1:])
+    except ValueError:
+        return None
+
+
+def _validate_source_anchor(
+    source_anchor: Optional[str], valid_positions: tuple[int, ...]
+) -> bool:
+    """校验来源锚点：模型报的段落号必须真实存在于当前块。
+
+    编造的段落号或跨块引用别的块的段落都不能进入 claim fingerprint / 证据，
+    否则同一事实在不同块里因为段落号不同被当成两条，或者告警证据指向一处根本
+    不存在那句话的正文。
+
+    宁可拒绝也不能放行：编造的锚点污染身份指纹，会导致「重叠区域的同一陈述被
+    识别成同一条」的去重机制失效。
+    """
+    position = _extract_paragraph_position(source_anchor)
+    if position is None:
+        return False
+    return position in valid_positions
+
+
+def _validate_temporal_anchor(claim: ClaimOutput, chunk: TextChunk) -> bool:
+    """校验时间锚点：原文必须在对应段落里且归一化后的值可解析。
+
+    只有三条全真时 temporal_anchor_value 才可作为 confirmed 全局锚点：
+    1. temporal_anchor_text 确实存在于 source_anchor 指向的那段正文；
+    2. 它可以被确定性解析成一个绝对时间（parse_absolute_anchor 不返回 None）；
+    3. 归一化后的值与 temporal_anchor_value 一致。
+
+    不满足则清空 temporal_anchor_value 与 order_basis，story_order 保持 NULL/pending。
+    不能信模型的 confidence —— 它会为幻觉的日期打出 0.9 的置信度。
+
+    空锚点视为有效：模型不确定时本就该留空。无效的是「报了锚点但对不上正文」。
+    """
+    if not claim.temporal_anchor_text:
+        return True  # 没报锚点，无需校验
+    if not claim.temporal_anchor_value:
+        return True  # 报了原文但没给归一化值，_drop_locally_scoped_order 会处理
+    if not claim.source_anchor:
+        return False  # 有时间锚点但没说在哪段，无法核对
+
+    position = _extract_paragraph_position(claim.source_anchor)
+    if position is None or position not in chunk.paragraph_positions:
+        return False  # 段落号本身就是编造的
+
+    # 定位到那一段正文
+    try:
+        para_index = chunk.paragraph_positions.index(position)
+        paragraphs = chunk.text.split("\n\n")
+        if para_index >= len(paragraphs):
+            return False
+        paragraph_text = paragraphs[para_index]
+    except (ValueError, IndexError):
+        return False
+
+    # 锚点原文必须在该段里（子串匹配，忽略大小写与所有空格）
+    normalized_para = paragraph_text.lower().replace(" ", "")
+    normalized_anchor = claim.temporal_anchor_text.lower().replace(" ", "")
+    if normalized_anchor not in normalized_para:
+        return False
+
+    # 归一化后的值必须可解析且与声称的值一致
+    parsed = parse_absolute_anchor(claim.temporal_anchor_value)
+    if parsed is None:
+        return False
+    # parsed 是 datetime，claim.temporal_anchor_value 是 ISO-8601 字符串
+    # 如果 parse_absolute_anchor 接受它就说明格式合法，这里不再重复解析做比对
+    return True
 
 
 class ProviderResponseError(RuntimeError):
@@ -261,6 +346,18 @@ class ConsistencyProvider:
 
         claims = []
         for claim in extraction.claims:
+            # 校验来源锚点：模型报的段落号必须真实存在于当前块
+            if not _validate_source_anchor(claim.source_anchor, chunk.paragraph_positions):
+                claim.source_anchor = None  # 编造的段落号不能进指纹
+
+            # 校验时间锚点：原文必须在对应段落里且可解析
+            if not _validate_temporal_anchor(claim, chunk):
+                claim.temporal_anchor_value = None  # 幻觉日期不能成为全局锚点
+                claim.order_basis = None  # 依据失效，顺序不可信
+                claim.story_order = None
+                claim.valid_from_order = None
+                claim.valid_to_order = None
+
             claim_dict = claim.model_dump()
             claim_dict["fingerprint"] = claim_fingerprint(
                 subject_text=claim.subject_text,

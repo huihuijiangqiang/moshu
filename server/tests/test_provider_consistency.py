@@ -298,6 +298,264 @@ async def test_short_content_summary_is_single_call():
     assert tokens == 17
 
 
+# --- 来源锚点校验 -------------------------------------------------------------
+
+
+async def test_fabricated_paragraph_position_is_stripped_from_source_anchor():
+    """模型编造的段落号不能进入 claim fingerprint / 证据。
+
+    提示词里只有 [P0] [P1] [P2]，模型报 P5 就是编造 —— 要么幻觉、要么引用了
+    别的块的段落。编造的段落号污染身份指纹，会导致重叠区域的去重机制失效。
+    """
+    gateway = RecordingGateway(
+        [
+            claims_response(
+                make_claim_payload("角色A", source_anchor="P5", confidence=0.95)  # 不存在
+            )
+        ]
+    )
+    provider = ConsistencyProvider(client=gateway.client())
+
+    claims = await provider.extract_claims("<p>第一段</p><p>第二段</p><p>第三段</p>", "proj_a", "ch_a")
+
+    assert len(claims) == 1
+    assert claims[0]["source_anchor"] is None, "编造的段落号必须被清空"
+    assert claims[0]["confidence"] == 0.95, "置信度保留 —— 不能信它"
+    # 指纹里没有 source_anchor，同样语义在不同块会被并成一条
+    fp = claims[0]["fingerprint"]
+    assert "P5" not in fp
+
+
+async def test_cross_chunk_paragraph_reference_is_rejected():
+    """跨块引用别的块的段落号同样拒绝 —— chunk 是处理单元，越界无效。
+
+    长章节分成多块后，块 0 有 [P0] [P1] [P2]，块 1 有 [P2] [P3] [P4]（P2 是重叠）。
+    块 0 的模型报 P4 就是越界 —— P4 在块 1 里，块 0 看不到。
+    """
+    html = long_html(paragraph_count=15, filler=80)  # 制造多块
+    gateway = RecordingGateway(
+        [
+            claims_response(make_claim_payload("角色A", source_anchor="P0")),  # 块 0 合法
+            claims_response(make_claim_payload("角色B", source_anchor="P0")),  # 块 1 越界
+        ]
+    )
+    provider = ConsistencyProvider(client=gateway.client())
+
+    claims = await provider.extract_claims(html, "proj_a", "ch_a")
+
+    assert len(gateway.requests) >= 2, "确实分成了多块"
+    # 块 0 的 P0 合法，块 1 的 P0 越界（块 1 的 paragraph_positions 不含 0）
+    assert claims[0]["source_anchor"] == "P0"
+    assert claims[1]["source_anchor"] is None
+
+
+async def test_malformed_source_anchor_is_cleared():
+    """格式错误的 source_anchor 清空，不能让乱码进指纹。"""
+    for bad in ["paragraph5", "5", "P", "P-1", "P3.14", None, ""]:
+        gateway = RecordingGateway(
+            [claims_response(make_claim_payload("角色A", source_anchor=bad))]
+        )
+        provider = ConsistencyProvider(client=gateway.client())
+        claims = await provider.extract_claims("<p>一段</p>", "proj_a", "ch_a")
+        assert claims[0]["source_anchor"] is None, f"source_anchor={bad!r} 应当被清空"
+
+
+async def test_valid_source_anchor_is_preserved():
+    """合法的段落号原样保留 —— 「P0」「P1」「p2」（大小写不敏感）。"""
+    gateway = RecordingGateway(
+        [
+            claims_response(
+                make_claim_payload("角色A", source_anchor="P0"),
+                make_claim_payload("角色B", source_anchor="p1"),  # 小写
+                make_claim_payload("角色C", source_anchor=" P2 "),  # 带空格
+            )
+        ]
+    )
+    provider = ConsistencyProvider(client=gateway.client())
+
+    claims = await provider.extract_claims("<p>第一段</p><p>第二段</p><p>第三段</p>", "proj_a", "ch_a")
+
+    assert len(claims) == 3
+    assert claims[0]["source_anchor"] == "P0"
+    assert claims[1]["source_anchor"] == "p1"
+    assert claims[2]["source_anchor"] == " P2 "
+
+
+# --- 时间锚点校验 -------------------------------------------------------------
+
+
+async def test_hallucinated_temporal_anchor_is_stripped():
+    """模型报了时间锚点但原文里根本没有，清空 temporal_anchor_value / order_basis。
+
+    模型会为幻觉的日期打出 0.9 的置信度，不能信。必须核对原文：锚点文本确实在
+    对应段落里、且可解析、且值一致，三条全真才能作为 confirmed 全局锚点。
+    """
+    gateway = RecordingGateway(
+        [
+            claims_response(
+                make_claim_payload(
+                    "角色A",
+                    source_anchor="P0",
+                    temporal_anchor_text="三月十五日",  # 原文里没有
+                    temporal_anchor_value="2024-03-15T00:00:00",
+                    order_basis="absolute_datetime",
+                    story_order=100.0,
+                    confidence=0.95,
+                )
+            )
+        ]
+    )
+    provider = ConsistencyProvider(client=gateway.client())
+
+    claims = await provider.extract_claims("<p>今天天气不错</p>", "proj_a", "ch_a")
+
+    assert len(claims) == 1
+    assert claims[0]["temporal_anchor_text"] == "三月十五日", "原文保留，供人工核对"
+    assert claims[0]["temporal_anchor_value"] is None, "幻觉日期不能成为全局锚点"
+    assert claims[0]["order_basis"] is None, "依据失效"
+    assert claims[0]["story_order"] is None, "顺序不可信"
+    assert claims[0]["confidence"] == 0.95, "置信度原样 —— 它会为幻觉打高分"
+
+
+async def test_temporal_anchor_in_wrong_paragraph_is_rejected():
+    """时间锚点在别的段落里 —— source_anchor 指向 P0，但锚点文本在 P1。"""
+    gateway = RecordingGateway(
+        [
+            claims_response(
+                make_claim_payload(
+                    "角色A",
+                    source_anchor="P0",  # 指向第一段
+                    temporal_anchor_text="三月十五日",  # 但这句话在第二段
+                    temporal_anchor_value="2024-03-15T00:00:00",
+                    order_basis="absolute_datetime",
+                )
+            )
+        ]
+    )
+    provider = ConsistencyProvider(client=gateway.client())
+
+    claims = await provider.extract_claims(
+        "<p>今天天气不错</p><p>三月十五日那天下雨</p>", "proj_a", "ch_a"
+    )
+
+    assert claims[0]["temporal_anchor_value"] is None, "锚点在错误的段落"
+
+
+async def test_unparseable_temporal_anchor_value_is_rejected():
+    """temporal_anchor_value 无法被 parse_absolute_anchor 解析，清空。"""
+    gateway = RecordingGateway(
+        [
+            claims_response(
+                make_claim_payload(
+                    "角色A",
+                    source_anchor="P0",
+                    temporal_anchor_text="三天后",
+                    temporal_anchor_value="invalid-date",  # 非 ISO-8601
+                    order_basis="absolute_datetime",
+                )
+            )
+        ]
+    )
+    provider = ConsistencyProvider(client=gateway.client())
+
+    claims = await provider.extract_claims("<p>三天后再说</p>", "proj_a", "ch_a")
+
+    assert claims[0]["temporal_anchor_value"] is None
+
+
+async def test_temporal_anchor_without_source_is_rejected():
+    """有时间锚点但没说在哪段（source_anchor 缺失），无法核对，拒绝。"""
+    gateway = RecordingGateway(
+        [
+            claims_response(
+                make_claim_payload(
+                    "角色A",
+                    # source_anchor 缺失
+                    temporal_anchor_text="三月十五日",
+                    temporal_anchor_value="2024-03-15T00:00:00",
+                    order_basis="absolute_datetime",
+                )
+            )
+        ]
+    )
+    provider = ConsistencyProvider(client=gateway.client())
+
+    claims = await provider.extract_claims("<p>三月十五日那天下雨</p>", "proj_a", "ch_a")
+
+    assert claims[0]["temporal_anchor_value"] is None, "无法定位锚点位置"
+
+
+async def test_valid_temporal_anchor_is_preserved():
+    """锚点文本确实在对应段落、可解析、格式合法 —— 三条全真，原样保留。"""
+    gateway = RecordingGateway(
+        [
+            claims_response(
+                make_claim_payload(
+                    "角色A",
+                    source_anchor="P0",
+                    temporal_anchor_text="三月十五日",
+                    temporal_anchor_value="2024-03-15T00:00:00",
+                    order_basis="absolute_datetime",
+                    story_order=100.0,
+                )
+            )
+        ]
+    )
+    provider = ConsistencyProvider(client=gateway.client())
+
+    claims = await provider.extract_claims("<p>三月十五日那天下雨</p>", "proj_a", "ch_a")
+
+    assert claims[0]["temporal_anchor_text"] == "三月十五日"
+    assert claims[0]["temporal_anchor_value"] == "2024-03-15T00:00:00"
+    assert claims[0]["order_basis"] == "absolute_datetime"
+    assert claims[0]["story_order"] == 100.0
+
+
+async def test_temporal_anchor_matching_ignores_case_and_whitespace():
+    """锚点原文匹配时忽略大小写与多余空格 —— 「三 月 十五日」能匹配「三月十五日」。"""
+    gateway = RecordingGateway(
+        [
+            claims_response(
+                make_claim_payload(
+                    "角色A",
+                    source_anchor="P0",
+                    temporal_anchor_text="三 月  十五日",  # 多余空格
+                    temporal_anchor_value="2024-03-15T00:00:00",
+                    order_basis="absolute_datetime",
+                )
+            )
+        ]
+    )
+    provider = ConsistencyProvider(client=gateway.client())
+
+    claims = await provider.extract_claims("<p>三月十五日那天下雨</p>", "proj_a", "ch_a")
+
+    assert claims[0]["temporal_anchor_value"] == "2024-03-15T00:00:00", "空格差异不影响匹配"
+
+
+async def test_empty_temporal_anchor_passes_validation():
+    """模型不确定时本就该留空，空锚点视为有效（无需校验）。"""
+    gateway = RecordingGateway(
+        [
+            claims_response(
+                make_claim_payload(
+                    "角色A",
+                    source_anchor="P0",
+                    # temporal_anchor_text / temporal_anchor_value 都留空
+                )
+            )
+        ]
+    )
+    provider = ConsistencyProvider(client=gateway.client())
+
+    claims = await provider.extract_claims("<p>一段正文</p>", "proj_a", "ch_a")
+
+    assert claims[0]["temporal_anchor_text"] is None
+    assert claims[0]["temporal_anchor_value"] is None
+    # 空锚点不影响其他字段
+    assert claims[0]["subject_text"] == "角色A"
+
+
 async def test_chapter_exceeding_max_chunks_raises_rather_than_truncating(monkeypatch):
     """超出块数上限时显式失败，绝不悄悄丢掉后半章。"""
     monkeypatch.setattr(settings, "consistency_max_chunks", 2)
@@ -363,18 +621,20 @@ async def test_same_statement_on_two_timelines_is_kept_as_two_claims():
 
 async def test_same_fact_in_two_paragraphs_is_kept_as_two_claims():
     """同一条线上不同段落的同语义陈述是两次出现，作者需要分别定位。"""
+    # 制造一个有多段的章节
+    html = "<p>第一段</p>" * 5 + "<p>第二段</p>" * 5
     gateway = RecordingGateway([
         claims_response(
-            make_claim_payload("李长风", timeline_id="main", source_anchor="3"),
-            make_claim_payload("李长风", timeline_id="main", source_anchor="17"),
+            make_claim_payload("李长风", timeline_id="main", source_anchor="P3"),
+            make_claim_payload("李长风", timeline_id="main", source_anchor="P7"),
         )
     ])
     provider = ConsistencyProvider(client=gateway.client())
 
-    claims = await provider.extract_claims("<p>短正文</p>", "proj_a", "ch_a")
+    claims = await provider.extract_claims(html, "proj_a", "ch_a")
 
     assert len(claims) == 2
-    assert {claim["source_anchor"] for claim in claims} == {"3", "17"}
+    assert {claim["source_anchor"] for claim in claims} == {"P3", "P7"}
 
 
 async def test_the_same_paragraph_seen_in_two_chunks_is_deduplicated():
@@ -500,6 +760,7 @@ async def test_temporal_evidence_round_trips_through_parsing():
         claims_response(
             make_claim_payload(
                 "李长风",
+                source_anchor="P0",  # 必须指明位置才能验证
                 timeline_id="thread_a",
                 temporal_anchor_text="元和七年冬月初三",
                 temporal_anchor_value="0812-11-03",
@@ -512,7 +773,7 @@ async def test_temporal_evidence_round_trips_through_parsing():
     ])
     provider = ConsistencyProvider(client=gateway.client())
 
-    claim = (await provider.extract_claims("<p>短正文</p>", "proj_a", "ch_a"))[0]
+    claim = (await provider.extract_claims("<p>元和七年冬月初三那天</p>", "proj_a", "ch_a"))[0]
 
     assert claim["timeline_id"] == "thread_a"
     assert claim["temporal_anchor_text"] == "元和七年冬月初三"
