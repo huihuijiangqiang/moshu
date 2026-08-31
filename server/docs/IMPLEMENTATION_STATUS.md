@@ -6,8 +6,8 @@
 所有声明基于实际代码与测试结果，不夸大、不省略已知缺口。
 
 **关键事实**：
-- ✅ 30 张表完整 Alembic baseline，pgvector extension/Vector 列已在迁移中定义
-- ✅ 765 个单元/功能测试通过（SQLite in-memory，mock embedding/LLM）
+- ✅ 30 张表完整 Alembic baseline，pgvector extension/HALFVEC 列已在迁移中定义
+- ✅ 768 个单元/功能测试通过（SQLite in-memory，mock embedding/LLM）
 - ⚠️ 36 个集成测试全部 SKIP（本机无真实 PostgreSQL + pgvector，**未在真实数据库验证**）
 - ⚠️ Codex embedding 回填的持久失败可见性尚未实现
 - ⚠️ 评测夹具仅 10 个 smoke cases，硬编码 100% 指标不代表实际质量
@@ -27,7 +27,7 @@
 - `chapter_versions` - 章节版本历史
 
 #### 设定库 (4 张)
-- `codex_entries` - 设定条目（Vector(1536) embedding 列）
+- `codex_entries` - 设定条目（HALFVEC(2048) embedding 列）
 - `codex_aliases` - 条目别名
 - `codex_refs` - 章节对设定的引用
 - `codex_relations` - 设定条目间关系
@@ -40,7 +40,7 @@
 
 #### 一致性扩展 (8 张)
 - `consistency_runs` - 一致性检查运行记录（三阶段状态机）
-- `document_summaries` - 章节/卷摘要（带 Vector(1536) embedding）
+- `document_summaries` - 章节/卷摘要
 - `consistency_claims` - 结构化事实声称（4 个部分唯一索引）
 - `story_events` - 故事事件时间线
 - `entity_state_intervals` - 实体状态区间
@@ -61,8 +61,9 @@
 - `foreshadows` - 伏笔倒计时
 
 **Alembic 与 pgvector 状态**：
-- ✅ **代码与迁移已实现**：`001_initial.py` 包含 `CREATE EXTENSION IF NOT EXISTS vector`、
-  Vector(1536) 列、部分唯一索引（`postgresql_where` 子句）、完整 `downgrade()`
+- ✅ **代码与迁移已实现**：`001_initial.py` 建立 baseline，
+  `002_embedding_halfvec_2048.py` 清理旧向量并迁移到 HALFVEC(2048)，以
+  `halfvec_cosine_ops` 重建 HNSW 索引；upgrade/downgrade 均会要求重新回填向量
 - ✅ `alembic upgrade head --sql` 与 `alembic downgrade -1 --sql` 语法验证通过
 - ⚠️ **真实 PostgreSQL + pgvector 未验证**：36 个集成测试因本机无真实数据库而跳过，
   pgvector `<=>` 余弦距离、部分唯一索引的并发去重、HNSW 索引性能等**未在真实环境验证**
@@ -125,8 +126,8 @@
   - 叙述局部序号（`narration_local`）与未知（`unknown`）保持 story_order=NULL
 
 #### Embedding Provider (`services/embedding.py`)
-- ✅ `GatewayEmbeddingProvider`：调用 OpenAI-compatible 网关
-- ✅ `embed_text` / `embed_batch`（text-embedding-3-small, 1536 维）
+- ✅ `GatewayEmbeddingProvider`：调用独立 OpenAI-compatible embedding 网关
+- ✅ `embed_text` / `embed_batch`（doubao-embedding-vision, 2048 维）
 - ✅ 异常分类：`EmbeddingProviderError` 用于重试判断
 - ✅ httpx 超时与错误处理
 
@@ -204,9 +205,9 @@
 
 ### 5. 测试覆盖
 
-#### 单元测试（765 passed，SQLite in-memory，mock providers）
+#### 单元测试（768 passed，SQLite in-memory，mock providers）
 
-**全量测试结果**：765 passed, 36 skipped, 4 warnings
+**全量测试结果**：768 passed, 36 skipped, 4 warnings
 
 主要测试覆盖（不逐文件列举测试数量，以实际 pytest 结果为准）：
 - ✅ Codex 设定库：CRUD、别名规范化、可检索文本判据、两段式事务、deferred 降级、httpx 错误重试
@@ -502,8 +503,8 @@ baseline，增量实现 Codex embedding 回填、时间锚点解析、issue 生�
 - `server/tasks/consistency.py` - 一致性任务
 - `server/tasks/codex.py` - Codex 回填任务
 
-### 测试（765 passed, 36 skipped）
-- `server/tests/` - 单元/功能测试（765 passed）
+### 测试（768 passed, 36 skipped）
+- `server/tests/` - 单元/功能测试（768 passed）
 - `server/tests/integration/` - 集成测试（36 skipped，需真实 PostgreSQL）
 
 ### 文档（1 个文件）
@@ -513,7 +514,7 @@ baseline，增量实现 Codex embedding 回填、时间锚点解析、issue 生�
 
 ## 总结
 
-墨枢一致性后端已完成核心数据模型、服务层、API 端点和异步任务的实现，765 个单元/功能
+墨枢一致性后端已完成核心数据模型、服务层、API 端点和异步任务的实现，768 个单元/功能
 测试在 SQLite in-memory + mock providers 环境下通过。30 张表完整 Alembic baseline，
 pgvector extension 与 Vector 列已在迁移中定义，代码质量经 ruff 验证。
 

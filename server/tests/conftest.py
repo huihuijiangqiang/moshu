@@ -2,11 +2,11 @@
 共享测试夹具。
 
 方言策略（重要）：
-生产库是 PostgreSQL，模型里用了 JSONB / pgvector.Vector / 部分唯一索引 /
+生产库是 PostgreSQL，模型里用了 JSONB / pgvector.HALFVEC / 部分唯一索引 /
 GIN / HNSW —— 这些在 SQLite 上无法编译。本地没有 PostgreSQL，所以单元测试
 跑在 SQLite 上，做法是：
 
-1. 为 JSONB / Vector 注册 SQLite 编译规则（JSON / TEXT）；
+1. 为 JSONB / HALFVEC 注册 SQLite 编译规则（JSON / TEXT）；
 2. 把 Base.metadata 复制一份再删掉 PostgreSQL 专属索引，
    不去改动全局 Base.metadata（否则会污染 Alembic 与生产代码）。
 
@@ -27,6 +27,11 @@ _ENV_DEFAULTS = {
     "MODEL_GATEWAY_MAIN_KEY": "test-main-key",
     "MODEL_GATEWAY_PREMIUM_URL": "http://gateway.invalid/v1/chat/completions",
     "MODEL_GATEWAY_PREMIUM_KEY": "test-premium-key",
+    # 测试进程绝不能继承开发机 .env 的真实 embedding 凭据并产生计费请求。
+    "EMBEDDING_GATEWAY_URL": "http://embedding.invalid/v1",
+    "EMBEDDING_GATEWAY_KEY": "test-embedding-key",
+    "EMBEDDING_MODEL": "test-embedding-model",
+    "EMBEDDING_DIMENSIONS": "2048",
     "S3_ENDPOINT": "http://s3.invalid",
     "S3_ACCESS_KEY": "test-access",
     "S3_SECRET_KEY": "test-secret",
@@ -38,7 +43,7 @@ from collections.abc import AsyncGenerator  # noqa: E402
 
 import pytest  # noqa: E402
 import pytest_asyncio  # noqa: E402
-from pgvector.sqlalchemy import Vector  # noqa: E402
+from pgvector.sqlalchemy import HALFVEC, Vector  # noqa: E402
 from sqlalchemy import BigInteger, MetaData, event  # noqa: E402
 from sqlalchemy.dialects.postgresql import JSONB  # noqa: E402
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine  # noqa: E402
@@ -58,6 +63,12 @@ def _compile_jsonb_sqlite(type_, compiler, **kw):
 @compiles(Vector, "sqlite")
 def _compile_vector_sqlite(type_, compiler, **kw):
     """SQLite 没有 pgvector；存成 TEXT，仅用于建表，不做向量检索。"""
+    return "TEXT"
+
+
+@compiles(HALFVEC, "sqlite")
+def _compile_halfvec_sqlite(type_, compiler, **kw):
+    """SQLite 没有 pgvector halfvec；存成 TEXT，仅用于建表。"""
     return "TEXT"
 
 

@@ -3,7 +3,7 @@
 """
 from typing import TYPE_CHECKING, Optional
 
-from pgvector.sqlalchemy import Vector
+from pgvector.sqlalchemy import HALFVEC
 from sqlalchemy import CheckConstraint, ForeignKey, Index, Integer, String, Text
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -59,7 +59,8 @@ class CodexEntry(Base, TimestampMixin):
     conflicts: Mapped[list[str]] = mapped_column(JSONB, default=list)  # 冲突的 guard_issue id
     planted_at: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)  # 伏笔埋在哪一章
     expected_by: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)  # 期望在哪一章回收
-    embedding: Mapped[Optional[list[float]]] = mapped_column(Vector(1536), nullable=True)  # pgvector
+    # 2048 维超过 pgvector Vector 的 HNSW 2000 维上限；HALFVEC 支持 4000 维。
+    embedding: Mapped[Optional[list[float]]] = mapped_column(HALFVEC(2048), nullable=True)
     #: 生成当前 embedding 的那段可检索文本的 sha256（见 services.codex_embedding）。
     #: 有它才能回答两个问题：这次改动要不要重算（哈希没变就不调网关），以及哪些
     #: 条目的向量已经过时（NULL = 待重算，回填任务据此挑行）。只有写入成功才落哈希。
@@ -75,7 +76,12 @@ class CodexEntry(Base, TimestampMixin):
     )
 
     __table_args__ = (
-        Index("ix_codex_entries_embedding", "embedding", postgresql_using="hnsw"),
+        Index(
+            "ix_codex_entries_embedding",
+            "embedding",
+            postgresql_using="hnsw",
+            postgresql_ops={"embedding": "halfvec_cosine_ops"},
+        ),
         # status 只有受控取值。API 的 Literal 是第一道防线，但直连数据库的迁移、
         # 回填脚本和后台任务绕不过 CHECK —— 一旦写进第三种状态，检索的
         # 「只认 confirmed」过滤会静默把这些条目全部排除，没人看得出原因。

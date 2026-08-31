@@ -10,9 +10,10 @@ import json
 
 import httpx
 import pytest
+from pydantic import ValidationError
 from sqlalchemy import select
 
-from config import settings
+from config import Settings, settings
 from db.models_codex import CodexAlias, CodexEntry
 from services.codex_embedding import (
     build_embedding_text,
@@ -25,8 +26,10 @@ from services.providers import MockEmbeddingProvider
 
 @pytest.fixture(autouse=True)
 def small_dimensions(monkeypatch):
-    """把维度调小，测试里不必构造 1536 维向量。"""
+    """把维度调小，并隔离开发机 .env 中的真实独立网关配置。"""
     monkeypatch.setattr(settings, "embedding_dimensions", 4)
+    monkeypatch.setattr(settings, "embedding_gateway_url", None)
+    monkeypatch.setattr(settings, "embedding_gateway_key", None)
 
 
 class RecordingEmbeddingGateway:
@@ -50,6 +53,13 @@ def embeddings_response(*vectors, shuffle_indexes: bool = False) -> httpx.Respon
     if shuffle_indexes:
         data = list(reversed(data))
     return httpx.Response(200, json={"data": data, "model": "test-embed"})
+
+
+def test_settings_reject_dimension_that_does_not_match_database(monkeypatch):
+    monkeypatch.setenv("EMBEDDING_DIMENSIONS", "1536")
+
+    with pytest.raises(ValidationError, match="HALFVEC\\(2048\\)"):
+        Settings(_env_file=None)
 
 
 # --- GatewayEmbeddingProvider ---------------------------------------------------
@@ -86,6 +96,43 @@ async def test_embed_endpoint_can_be_overridden():
     provider = GatewayEmbeddingProvider(endpoint="http://gw.invalid/custom/embed")
 
     assert provider.endpoint == "http://gw.invalid/custom/embed"
+
+
+async def test_embed_uses_dedicated_gateway_base_url_and_credentials(monkeypatch):
+    monkeypatch.setattr(settings, "embedding_gateway_url", "http://embed.invalid/api/v3/")
+    monkeypatch.setattr(settings, "embedding_gateway_key", "embed-key")
+    gateway = RecordingEmbeddingGateway([embeddings_response([1.0, 0.0, 0.0, 0.0])])
+    provider = GatewayEmbeddingProvider(client=gateway.client())
+
+    await provider.embed_text("角色A")
+
+    assert str(gateway.requests[0].url) == "http://embed.invalid/api/v3/embeddings"
+    assert gateway.requests[0].headers["Authorization"] == "Bearer embed-key"
+
+
+async def test_dedicated_gateway_accepts_full_embeddings_endpoint(monkeypatch):
+    monkeypatch.setattr(
+        settings,
+        "embedding_gateway_url",
+        "http://embed.invalid/api/v3/embeddings",
+    )
+    monkeypatch.setattr(settings, "embedding_gateway_key", "embed-key")
+    provider = GatewayEmbeddingProvider()
+
+    assert provider.endpoint == "http://embed.invalid/api/v3/embeddings"
+
+
+@pytest.mark.parametrize(
+    ("url", "key"),
+    [("http://embed.invalid/v1", None), (None, "embed-key")],
+)
+def test_dedicated_gateway_rejects_partial_credentials(monkeypatch, url, key):
+    monkeypatch.setattr(settings, "embedding_gateway_url", url)
+    monkeypatch.setattr(settings, "embedding_gateway_key", key)
+    provider = GatewayEmbeddingProvider()
+
+    with pytest.raises(EmbeddingProviderError, match="must be configured together"):
+        _ = provider.endpoint
 
 
 async def test_embed_uses_configured_tier_credentials(monkeypatch):
@@ -128,7 +175,7 @@ async def test_empty_input_text_is_rejected():
 
 
 async def test_dimension_mismatch_raises_instead_of_persisting_bad_vector():
-    """维度不符必须抛错 —— 写进 Vector(1536) 列会在 PostgreSQL 上直接报错。"""
+    """维度不符必须抛错 —— 写进定长 HALFVEC 列会在 PostgreSQL 上直接报错。"""
     gateway = RecordingEmbeddingGateway([embeddings_response([0.1, 0.2])])
     provider = GatewayEmbeddingProvider(client=gateway.client())
 

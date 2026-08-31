@@ -16,7 +16,7 @@ from tests.integration.conftest import requires_postgres
 
 pytestmark = [pytest.mark.postgres, requires_postgres]
 
-DIMENSIONS = 1536
+DIMENSIONS = 2048
 
 
 def unit_vector(index: int) -> list[float]:

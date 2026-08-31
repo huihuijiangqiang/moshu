@@ -46,7 +46,22 @@ class _OpRecorder:
         self.dropped_tables.append(table_name)
 
     def drop_index(self, index_name: str, **kw: Any) -> None:
-        pass
+        table_name = kw.get("table_name")
+        tables = (
+            [self.metadata.tables[table_name]]
+            if table_name
+            else self.metadata.tables.values()
+        )
+        for table in tables:
+            index = next((item for item in table.indexes if item.name == index_name), None)
+            if index is not None:
+                table.indexes.discard(index)
+                return
+
+    def alter_column(self, table_name: str, column_name: str, **kw: Any) -> None:
+        type_ = kw.get("type_")
+        if type_ is not None:
+            self.metadata.tables[table_name].columns[column_name].type = type_
 
     def execute(self, sql: Any, **kw: Any) -> None:
         self.executed_sql.append(str(sql))

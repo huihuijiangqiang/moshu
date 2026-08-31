@@ -260,6 +260,22 @@ def test_embedding_index_uses_hnsw(migration_metadata):
     table = migration_metadata.tables["codex_entries"]
     index = next(i for i in table.indexes if i.name == "ix_codex_entries_embedding")
     assert index.dialect_options["postgresql"].get("using") == "hnsw"
+    assert index.dialect_options["postgresql"].get("ops") == {
+        "embedding": "halfvec_cosine_ops"
+    }
+
+
+def test_embedding_column_is_2048_dimension_halfvec(migration_metadata):
+    column_type = migration_metadata.tables["codex_entries"].c.embedding.type
+
+    assert str(column_type) == "HALFVEC(2048)"
+
+
+def test_embedding_dimension_migration_invalidates_old_vectors(recorder):
+    assert any(
+        "UPDATE codex_entries SET embedding = NULL, embedding_text_hash = NULL" in sql
+        for sql in recorder.executed_sql
+    )
 
 
 def test_alias_index_uses_gin(migration_metadata):

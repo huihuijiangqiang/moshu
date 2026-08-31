@@ -3,6 +3,7 @@
 """
 from typing import Optional
 
+from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -49,13 +50,25 @@ class Settings(BaseSettings):
     consistency_gateway_tier: str = "main"  # cheap, main, premium
     consistency_extraction_model: str = "gpt-4o-mini"
     consistency_summary_model: str = "gpt-4o-mini"
-    embedding_model: str = "text-embedding-3-small"
-    embedding_dimensions: int = 1536
+    embedding_gateway_url: Optional[str] = None
+    embedding_gateway_key: Optional[str] = None
+    embedding_model: str = "doubao-embedding-vision"
+    # 数据库列是 HALFVEC(2048)；换维度必须先做 schema migration。
+    embedding_dimensions: int = 2048
 
     # 分块参数：长章节必须切块后全量处理，不能截断丢尾部
     consistency_chunk_chars: int = 6000
     consistency_chunk_overlap_chars: int = 400
     consistency_max_chunks: int = 40
+
+    @field_validator("embedding_dimensions")
+    @classmethod
+    def validate_embedding_dimensions(cls, value: int) -> int:
+        if value != 2048:
+            raise ValueError(
+                "embedding_dimensions must be 2048 for the HALFVEC(2048) schema"
+            )
+        return value
 
     @property
     def cors_origins_list(self) -> list[str]:

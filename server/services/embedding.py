@@ -4,6 +4,7 @@
 之前只有 MockEmbeddingProvider，检索层永远拿不到真实向量，RAG 写入路径
 （codex 条目落库时生成 embedding）也完全缺失。这里补上真实实现：
 
+* embedding 可使用独立网关；未配置时兼容旧部署，从模型网关推导；
 * 网关 URL/key/model/维度全部来自 config.settings，不硬编码；
 * 响应结构异常一律抛错，绝不返回零向量 —— 零向量会让 cosine_distance 变成
   常量，把任意条目都判成「相似」；
@@ -45,23 +46,41 @@ class GatewayEmbeddingProvider(EmbeddingProvider):
     def endpoint(self) -> str:
         """embeddings 端点。
 
-        网关配置里给的是 chat/completions 地址，这里把末段替换成 embeddings，
-        避免再引入一份重复配置。
+        独立配置既可给 base URL，也可给完整 /embeddings 端点。未配置时从旧的
+        chat/completions 地址推导，确保现有部署升级后仍能启动。
         """
         if self._endpoint:
             return self._endpoint
-        base = settings.gateway_url(self._gateway_tier)
+        dedicated = self._dedicated_credentials()
+        base = dedicated[0] if dedicated else settings.gateway_url(self._gateway_tier)
+        base = base.rstrip("/")
+        if base.endswith("/embeddings"):
+            return base
         for suffix in ("/chat/completions", "/completions"):
             if base.endswith(suffix):
                 return base[: -len(suffix)] + "/embeddings"
-        return base.rstrip("/") + "/embeddings"
+        return base + "/embeddings"
 
     @property
     def headers(self) -> dict[str, str]:
+        dedicated = self._dedicated_credentials()
+        api_key = dedicated[1] if dedicated else settings.gateway_key(self._gateway_tier)
         return {
-            "Authorization": f"Bearer {settings.gateway_key(self._gateway_tier)}",
+            "Authorization": f"Bearer {api_key}",
             "Content-Type": "application/json",
         }
+
+    @staticmethod
+    def _dedicated_credentials() -> Optional[tuple[str, str]]:
+        url = settings.embedding_gateway_url
+        key = settings.embedding_gateway_key
+        if bool(url) != bool(key):
+            raise EmbeddingProviderError(
+                "EMBEDDING_GATEWAY_URL and EMBEDDING_GATEWAY_KEY must be configured together"
+            )
+        if url and key:
+            return url, key
+        return None
 
     async def _get_client(self) -> httpx.AsyncClient:
         if self._client:

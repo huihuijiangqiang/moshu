@@ -7,7 +7,7 @@ AI 网文写作平台后端服务
 - **Python 3.12+**
 - **FastAPI** - 异步 Web 框架
 - **SQLAlchemy 2.0** (async) - ORM
-- **PostgreSQL 16** + **pgvector** - 关系数据与向量检索
+- **PostgreSQL 16** + **pgvector 0.7+** - 关系数据与 2048 维 halfvec 向量检索
 - **Redis 7** - 缓存与任务队列
 - **Celery** - 异步任务（守卫、摘要、风格抽取）
 - **uv** - 依赖管理
@@ -65,8 +65,12 @@ pip install -e .
 
 ```bash
 cp .env.example .env
-# 编辑 .env，填入数据库连接、Redis URL、模型网关密钥等
+# 编辑 .env，分别填入生成模型网关和 embedding 网关的 URL/key
 ```
+
+`EMBEDDING_GATEWAY_URL` 可以是 base URL 或完整 `/embeddings` 端点；URL 与 key
+必须同时配置。当前数据库 schema 固定为 `HALFVEC(2048)`，更换不同维度的模型前
+必须先新增数据库迁移，不能只改 `EMBEDDING_DIMENSIONS`。
 
 ### 3. 启动数据库
 
