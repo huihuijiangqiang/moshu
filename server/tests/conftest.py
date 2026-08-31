@@ -123,6 +123,45 @@ async def async_db_session(async_db_engine) -> AsyncGenerator[AsyncSession, None
             await session.rollback()
 
 
+@pytest_asyncio.fixture
+async def app_client(async_db_session) -> AsyncGenerator[object, None]:
+    """真实 ASGI 客户端，get_db 覆盖为测试会话（不发真实网络请求）。"""
+    from httpx import ASGITransport, AsyncClient
+
+    from db.session import get_db
+    from main import app
+
+    async def _override_get_db():
+        yield async_db_session
+
+    app.dependency_overrides[get_db] = _override_get_db
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        yield client
+    app.dependency_overrides.clear()
+
+
+def make_access_token(user_id: str) -> str:
+    """用生产同一套 secret/algorithm 签发真实 JWT。"""
+    from jose import jwt
+
+    from config import settings
+
+    return jwt.encode({"sub": user_id}, settings.jwt_secret_key, algorithm=settings.jwt_algorithm)
+
+
+@pytest.fixture
+def auth_headers():
+    """为指定用户生成 Bearer 头。"""
+
+    def _headers(user_id: str, **extra):
+        headers = {"Authorization": f"Bearer {make_access_token(user_id)}"}
+        headers.update(extra)
+        return headers
+
+    return _headers
+
+
 @pytest.fixture
 def make_user():
     """按真实 User 字段构造用户（name/plan/quota_*，没有 username/password）。"""
