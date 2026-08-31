@@ -17,7 +17,7 @@ Successfully corrected 9 critical blocking defects and completed MVP-level imple
 
 ### 1. services/body.py - IdempotencyService API Misuse ✅
 **Issue**: Used non-existent `check_and_reserve()` method
-**Fix**: 
+**Fix**:
 - Implemented correct two-phase API: `reserve() → {action, owner_token}` and `complete(owner_token=...)`
 - Handle replay/wait/execute actions properly
 - Carry owner_token through to completion

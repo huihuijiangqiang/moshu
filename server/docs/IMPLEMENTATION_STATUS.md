@@ -352,7 +352,7 @@
 
 ## 提交历史（本轮 worktree）
 
-本 worktree 在分支 `worktree-moshu-consistency-backend-v2` 上，基于主仓库已有的 30 张表 
+本 worktree 在分支 `worktree-moshu-consistency-backend-v2` 上，基于主仓库已有的 30 张表
 baseline，增量实现 Codex embedding 回填、时间锚点解析、issue 生命周期、run 状态机、文档修正等功能。
 
 ### Group 1: Issue 生命周期幂等强化

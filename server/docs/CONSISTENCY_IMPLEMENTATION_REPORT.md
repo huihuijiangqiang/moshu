@@ -74,7 +74,7 @@
   - Content hash 幂等性、键顺序无关、Unicode 保持
   - Paragraph ID 提取、空内容处理
   - CodexRef 提取（节点级、标记级、多重引用）
-  
+
 - ✅ `test_consistency.py` (11 tests)
   - Claim fingerprint 规范化、大小写不敏感
   - 规则逻辑概念验证
@@ -85,7 +85,7 @@
   - 3 个正例（覆盖三条规则）
   - 5 个 hard negatives（易混淆但不冲突）
   - 2 个 easy negatives（明显不相关）
-  
+
 - ✅ `test_eval.py` - 评测 runner
   - 指标计算：recall, false_positive_rate, hard_negative_precision
   - 详细报告生成
