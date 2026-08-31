@@ -39,7 +39,7 @@ from collections.abc import AsyncGenerator  # noqa: E402
 import pytest  # noqa: E402
 import pytest_asyncio  # noqa: E402
 from pgvector.sqlalchemy import Vector  # noqa: E402
-from sqlalchemy import MetaData, event  # noqa: E402
+from sqlalchemy import BigInteger, MetaData, event  # noqa: E402
 from sqlalchemy.dialects.postgresql import JSONB  # noqa: E402
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine  # noqa: E402
 from sqlalchemy.ext.compiler import compiles  # noqa: E402
@@ -59,6 +59,16 @@ def _compile_jsonb_sqlite(type_, compiler, **kw):
 def _compile_vector_sqlite(type_, compiler, **kw):
     """SQLite 没有 pgvector；存成 TEXT，仅用于建表，不做向量检索。"""
     return "TEXT"
+
+
+@compiles(BigInteger, "sqlite")
+def _compile_bigint_sqlite(type_, compiler, **kw):
+    """SQLite 只对 `INTEGER PRIMARY KEY` 自增（rowid 别名），BIGINT 不会自增。
+
+    生产环境是 PostgreSQL BIGSERIAL；这里降级为 INTEGER 才能让
+    autoincrement 主键在 SQLite 上正常工作。
+    """
+    return "INTEGER"
 
 
 #: 无法在 SQLite 上创建、因此只能由 PostgreSQL 集成测试覆盖的索引。
@@ -160,6 +170,37 @@ def auth_headers():
         return headers
 
     return _headers
+
+
+@pytest_asyncio.fixture
+async def seed_project(async_db_session, make_user, make_project, make_chapter):
+    """按外键顺序逐层 flush，建好 user -> project -> chapter。
+
+    必须逐层 flush：ConsistencyRun / GuardIssue 与 Chapter 之间没有 ORM
+    relationship，SQLAlchemy 的 flush 排序只看 mapper 之间的依赖关系，
+    因此同一批 add 里 run 可能先于 chapter 落库，触发外键失败。
+    """
+
+    async def _seed(
+        *,
+        user_id: str = "user_a",
+        project_id: str = "proj_a",
+        chapter_ids: tuple[str, ...] = ("ch_a",),
+        **project_overrides,
+    ):
+        async_db_session.add(make_user(user_id))
+        await async_db_session.flush()
+        async_db_session.add(make_project(project_id, owner_id=user_id, **project_overrides))
+        await async_db_session.flush()
+        chapters = []
+        for offset, chapter_id in enumerate(chapter_ids):
+            chapter = make_chapter(chapter_id, project_id=project_id, idx=1024 * (offset + 1))
+            async_db_session.add(chapter)
+            chapters.append(chapter)
+        await async_db_session.flush()
+        return chapters
+
+    return _seed
 
 
 @pytest.fixture

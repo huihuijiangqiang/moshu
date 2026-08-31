@@ -13,6 +13,16 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from db.models_codex import CodexAlias, CodexEntry
 from db.models_consistency_extended import ConsistencyClaim, ConsistencyRun
 
+#: 一致性管道版本。API、Celery 任务与 ConsistencyRun 的唯一键必须共用同一个值，
+#: 否则写入用一个版本、查询用另一个版本，状态查询会永远 404。
+PIPELINE_VERSION = "1.0.0"
+
+#: 规则扫描版本，写入 GuardIssue.rule_version。
+RULE_VERSION = "1.0.0"
+
+#: claim 抽取器版本，参与 claim 唯一键。
+EXTRACTOR_VERSION = "1.0.0"
+
 
 def compute_claim_fingerprint(
     subject_text: str,

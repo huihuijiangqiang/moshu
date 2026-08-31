@@ -2,18 +2,19 @@
 Consistency API - status, scan, issues, resolutions with authentication
 """
 from datetime import datetime, timezone
-from typing import Optional
+from typing import Literal, Optional, get_args
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from api.auth import get_current_user, verify_project_access
 from db.models_consistency_extended import ConsistencyRun, GuardResolution
-from db.models_core import User
+from db.models_core import Chapter, User
 from db.models_guard import GuardIssue
 from db.session import get_db
+from services.consistency import PIPELINE_VERSION, get_or_create_run
 from services.outbox import OutboxService
 
 router = APIRouter(tags=["consistency"])
@@ -71,8 +72,20 @@ class IssueDetailResponse(BaseModel):
     false_positive: bool
 
 
+#: GuardResolution.action 的 CHECK 约束允许值，必须与 ORM 保持一致。
+ResolutionAction = Literal[
+    "accept_old_fact",
+    "accept_new_fact",
+    "intentional_exception",
+    "false_positive",
+    "fixed_in_body",
+    "defer",
+]
+VALID_RESOLUTION_ACTIONS: tuple[str, ...] = get_args(ResolutionAction)
+
+
 class ResolveIssueRequest(BaseModel):
-    action: str
+    action: ResolutionAction
     note: Optional[str] = None
     issue_rev: int
 
@@ -81,7 +94,7 @@ class ResolveIssueRequest(BaseModel):
 async def get_consistency_status(
     chapter_id: str,
     body_rev: int,
-    pipeline_version: str = "v1",
+    pipeline_version: str = PIPELINE_VERSION,
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
@@ -122,7 +135,6 @@ async def trigger_consistency_scan(
 ):
     """触发一致性扫描"""
     # Get chapter and verify access
-    from db.models_core import Chapter
     result = await db.execute(select(Chapter).where(Chapter.id == request.chapter_id))
     chapter = result.scalar_one_or_none()
     if not chapter:
@@ -130,24 +142,24 @@ async def trigger_consistency_scan(
 
     await verify_project_access(chapter.project_id, user, db)
 
-    # Get or create run
-    from services.consistency import get_or_create_run
-    run = await get_or_create_run(
+    # get_or_create_run 返回 run_id(int)，且 pipeline_version 是必填参数
+    run_id = await get_or_create_run(
         db,
         project_id=chapter.project_id,
         chapter_id=request.chapter_id,
         body_rev=request.body_rev,
+        pipeline_version=PIPELINE_VERSION,
         trigger=request.trigger,
     )
 
-    # Enqueue work
-    outbox_service = OutboxService(db)
-    await outbox_service.enqueue(
+    # OutboxService.enqueue 是 staticmethod，db 为第一个位置参数
+    await OutboxService.enqueue(
+        db,
         topic="consistency.manual_scan",
         aggregate_id=f"{request.chapter_id}:{request.body_rev}",
         aggregate_rev=request.body_rev,
         payload={
-            "run_id": run.id,
+            "run_id": run_id,
             "project_id": chapter.project_id,
             "chapter_id": request.chapter_id,
             "body_rev": request.body_rev,
@@ -155,9 +167,13 @@ async def trigger_consistency_scan(
     )
     await db.commit()
 
+    status_result = await db.execute(
+        select(ConsistencyRun.status).where(ConsistencyRun.id == run_id)
+    )
+
     return ScanResponse(
-        run_id=run.id,
-        status=run.status,
+        run_id=run_id,
+        status=status_result.scalar_one(),
     )
 
 
@@ -250,40 +266,58 @@ async def resolve_issue(
     """处置一致性问题 - 使用 issue_rev 乐观锁"""
     await verify_project_access(project_id, user, db)
 
-    result = await db.execute(
-        select(GuardIssue).where(
+    # 用带 issue_rev 条件的原子 UPDATE 实现乐观并发控制：
+    # 并发的两个相同 issue_rev 请求里，只有一个能命中 rowcount==1。
+    update_result = await db.execute(
+        update(GuardIssue)
+        .where(
             GuardIssue.id == issue_id,
             GuardIssue.project_id == project_id,
+            GuardIssue.issue_rev == request.issue_rev,
+        )
+        .values(
+            status="false_positive" if request.action == "false_positive" else "resolved",
+            resolved=True,
+            resolution=request.action,
+            false_positive=request.action == "false_positive",
+            issue_rev=GuardIssue.issue_rev + 1,
+            updated_at=datetime.now(timezone.utc),
         )
     )
-    issue = result.scalar_one_or_none()
 
-    if not issue:
-        raise HTTPException(status_code=404, detail="Issue not found")
-
-    # Optimistic locking check
-    if issue.issue_rev != request.issue_rev:
+    if update_result.rowcount == 0:
+        # 要么 issue 不存在（404），要么 issue_rev 不匹配（409）
+        existing = await db.execute(
+            select(GuardIssue.issue_rev).where(
+                GuardIssue.id == issue_id,
+                GuardIssue.project_id == project_id,
+            )
+        )
+        current_rev = existing.scalar_one_or_none()
+        if current_rev is None:
+            await db.rollback()
+            raise HTTPException(status_code=404, detail="Issue not found")
+        await db.rollback()
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
-            detail=f"Issue revision mismatch: expected {request.issue_rev}, current {issue.issue_rev}",
+            detail=f"Issue revision mismatch: expected {request.issue_rev}, current {current_rev}",
         )
 
-    # Create resolution record
-    resolution = GuardResolution(
-        issue_id=issue.id,
-        action=request.action,
-        user_id=user.id,
-        note=request.note,
+    # 处置记录绑定被处置的那个 issue_rev，created_by 是 ORM 的真实字段名
+    db.add(
+        GuardResolution(
+            issue_id=issue_id,
+            issue_rev=request.issue_rev,
+            action=request.action,
+            note=request.note,
+            created_by=user.id,
+        )
     )
-    db.add(resolution)
-
-    # Update issue
-    issue.status = "resolved"
-    issue.resolved = True
-    issue.resolution = request.action
-    issue.issue_rev += 1
-    issue.updated_at = datetime.now(timezone.utc)
 
     await db.commit()
 
-    return {"status": "resolved", "action": request.action, "new_issue_rev": issue.issue_rev}
+    return {
+        "status": "resolved",
+        "action": request.action,
+        "new_issue_rev": request.issue_rev + 1,
+    }
