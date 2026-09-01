@@ -67,6 +67,13 @@ class Settings(BaseSettings):
     consistency_max_retries: int = 3
     consistency_retry_base_delay: float = 1.0  # 秒
 
+    # Novel generation.  The model falls back to the configured consistency
+    # summary model so deployments keep one source of truth unless overridden.
+    generation_gateway_tier: str = "main"
+    generation_model: Optional[str] = None
+    generation_reasoning_effort: str = "low"
+    generation_request_timeout: float = 600.0
+
     @field_validator("embedding_dimensions")
     @classmethod
     def validate_embedding_dimensions(cls, value: int) -> int:
@@ -87,6 +94,10 @@ class Settings(BaseSettings):
     def gateway_key(self, tier: Optional[str] = None) -> str:
         """按 tier 取网关 key。"""
         return self._gateway_pair(tier)[1]
+
+    @property
+    def resolved_generation_model(self) -> str:
+        return self.generation_model or self.consistency_summary_model
 
     def _gateway_pair(self, tier: Optional[str]) -> tuple[str, str]:
         resolved = (tier or self.consistency_gateway_tier).lower()

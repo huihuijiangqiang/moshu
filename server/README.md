@@ -111,10 +111,16 @@ uvicorn main:app --reload --host 0.0.0.0 --port 8000
 ### 核心模块
 - ✅ **四层上下文装配器** (`memory/assembler.py`)
   - Layer 1: 常驻设定（按 id 排序保证字节稳定，命中 prompt cache）
-  - Layer 2: 检索条目（实体抽取 → 精确命中 → 向量兜底，待完善）
-  - Layer 3: 前情摘要（待完善）
-  - Layer 4: 相邻原文（待完善）
+  - Layer 2: 章纲名称/别名精确命中 → pgvector 向量兜底，排除常驻重复项
+  - Layer 3: 更早卷摘要 + 当前卷最近 20 条有效章摘要（允许中间章节尚未生成摘要）
+  - Layer 4: 最近两章已有正文，超预算时优先保留章末
   - 预算裁剪：25k 上限，layer4→3→2 顺序削减，layer1 永不削
+
+- ✅ **真实生成链路** (`api/generate.py`, `services/generation.py`)
+  - 版本化运行时写作 Skill：基础 → 题材 → 任务 → 场景 → 作者风格
+  - `gpt-5.6-sol` 等具体模型由环境变量配置，代码不保存网关凭据
+  - 章节/行内生成均使用带鉴权的 SSE，可中断并返回 Skill 与四层 token 报告
+  - 成功运行写入 `generation_runs`，上游错误通过结构化 SSE 返回且不改正文
 
 - ✅ **乐观锁保存** (`api/chapters.py`)
   - 带 `base_rev` 的 PUT 请求
@@ -135,6 +141,9 @@ uvicorn main:app --reload --host 0.0.0.0 --port 8000
 - ✅ `PUT /chapters/:id/outline` - 保存章纲（带独立乐观锁）
 - ✅ `GET /chapters/:id/outline/revisions` - 章纲版本历史
 - ✅ `POST /chapters/:id/body-revision/resolve` - 作者确认正文调整状态
+- ✅ `GET /generate/context/:chapterId` - 预览四层上下文与自动选择的 Skill
+- ✅ `POST /generate/chapter` - 按章纲流式生成候选整章
+- ✅ `POST /generate/inline` - 续写/扩写/润色/语气/作者风格行内生成
 
 ## 待实现（优先级排序）
 
@@ -154,11 +163,11 @@ uvicorn main:app --reload --host 0.0.0.0 --port 8000
 - [ ] 实体抽取器（`guard/extractor.py`）
 
 ### Week 5-6: 生成链路
-- [ ] ★ `POST /generate/chapter` SSE 接口
+- [x] ★ `POST /generate/chapter` SSE 接口
 - [ ] 开书向导四步：`POST /generate/wizard/:step`
-- [ ] 行内 AI：`POST /generate/inline`
+- [x] 行内 AI：`POST /generate/inline`
 - [ ] Celery 摘要链路：`tasks/summarize.py`
-- [ ] 完善 layer2/3/4 装配逻辑
+- [x] 完善 layer2/3/4 装配逻辑
 
 ### Week 7-8: 一致性守卫（MVP 成败点）
 - [ ] ★ 冲突判定两阶段：规则前置 + LLM 判定

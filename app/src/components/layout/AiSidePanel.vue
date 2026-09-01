@@ -1,11 +1,11 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { contentApi } from '@/api/content'
 import { useProjectStore } from '@/stores/project'
 import { useCodexStore } from '@/stores/codex'
 import { useGuardStore } from '@/stores/guard'
-import { CODEX_KIND_LABEL, type ContextLayer } from '@/types'
+import { CODEX_KIND_LABEL, type ContextLayer, type GenerationControls } from '@/types'
 import { useProjectNavigation } from '@/composables/use-project-navigation'
 
 /**
@@ -13,8 +13,8 @@ import { useProjectNavigation } from '@/composables/use-project-navigation'
  * 生成会带什么进去（四层预算）、生成前有什么没解决（守卫提醒）。
  * 四层预算是产品的硬约束，必须逐层可见 —— 作者要知道 25k 被谁吃掉了。
  */
-const props = defineProps<{ generating?: boolean }>()
-const emit = defineEmits<{ generate: []; stop: [] }>()
+const props = defineProps<{ generating?: boolean; generationError?: string }>()
+const emit = defineEmits<{ generate: [options: GenerationControls]; stop: [] }>()
 
 const router = useRouter()
 const project = useProjectStore()
@@ -26,12 +26,37 @@ const layers = ref<ContextLayer[]>([])
 const tab = ref<'ai' | 'refs' | 'notes'>('ai')
 const targetWords = ref(3000)
 const model = ref<'basic' | 'advanced'>('basic')
+const loadingContext = ref(false)
+const contextError = ref('')
 
 const BUDGET = 25000
 
-onMounted(async () => {
-  layers.value = await contentApi.getContextLayers()
-})
+watch(
+  () => [project.project?.id, project.activeId] as const,
+  async ([projectId, chapterId]) => {
+    if (!projectId || !chapterId) return
+    loadingContext.value = true
+    contextError.value = ''
+    try {
+      layers.value = await contentApi.getContextLayers(projectId, chapterId)
+    } catch (error) {
+      layers.value = []
+      contextError.value = error instanceof Error ? error.message : '上下文加载失败'
+    } finally {
+      loadingContext.value = false
+    }
+  },
+  { immediate: true }
+)
+
+function requestGeneration() {
+  emit('generate', {
+    targetWords: Math.max(200, Math.min(20000, targetWords.value || 3000)),
+    model: model.value,
+    useStyleProfile: true,
+    dialogueDensity: 'high'
+  })
+}
 
 const total = computed(() => layers.value.reduce((s, l) => s + l.tokens, 0))
 const over = computed(() => total.value > BUDGET)
@@ -96,8 +121,11 @@ const refs = computed(() => {
           class="wk-btn wk-btn-block"
           type="button"
           data-primary="true"
-          @click="emit('generate')"
+          @click="requestGeneration"
         >按章纲生成整章</button>
+        <p v-if="props.generationError" :style="{ margin: 'var(--u2) 0 0', color: 'var(--alert-ink)', fontSize: 'var(--fs-sm)', lineHeight: 1.6 }">
+          {{ props.generationError }}
+        </p>
       </section>
 
       <!-- 生成参数 -->
@@ -153,6 +181,8 @@ const refs = computed(() => {
             </div>
           </div>
         </div>
+        <p v-if="loadingContext" :style="{ margin: 'var(--u2) 0 0', color: 'var(--ink-3)', fontSize: 'var(--fs-sm)' }">正在装配本章上下文…</p>
+        <p v-else-if="contextError" :style="{ margin: 'var(--u2) 0 0', color: 'var(--alert-ink)', fontSize: 'var(--fs-sm)' }">{{ contextError }}</p>
       </section>
 
       <!-- 守卫提醒：只取最紧要的三条 -->

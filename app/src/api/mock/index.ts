@@ -168,7 +168,7 @@ export const mockApi = {
     if (i) i.resolved = true
   },
 
-  async getContextLayers(): Promise<ContextLayer[]> {
+  async getContextLayers(_projectId?: string, _chapterId?: string): Promise<ContextLayer[]> {
     await delay(150)
     return structuredClone(seed.contextLayers)
   },

@@ -1,6 +1,6 @@
 import { USE_MOCK, request } from './http'
 import { mockApi } from './mock'
-import type { Chapter, ChapterPlanPatch, CodexEntry, CodexKind, Project } from '@/types'
+import type { Chapter, ChapterPlanPatch, CodexEntry, CodexKind, ContextLayer, Project } from '@/types'
 
 interface ProjectDto {
   id: string
@@ -229,7 +229,10 @@ const realApi = {
   },
   async listGuardIssues() { return [] },
   async resolveGuardIssue() {},
-  async getContextLayers() { return [] },
+  async getContextLayers(_projectId: string, chapterId: string): Promise<ContextLayer[]> {
+    const result = await request<{ layers: ContextLayer[] }>(`/generate/context/${chapterId}`)
+    return result.layers
+  },
   draftParagraphs: []
 }
 

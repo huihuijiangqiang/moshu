@@ -115,8 +115,8 @@
           <tr>
             <td><strong>P0</strong></td>
             <td>一键成章</td>
-            <td>基于章纲 + 设定库 + 前情摘要生成整章正文，流式输出，可中断、可重生成、可只重写某段；生成结果先进入候选草稿。</td>
-            <td>3000 字章节首字延迟 &lt; 3s，全章 &lt; 90s；重生成保留已锁定段落；失败时保留已生成内容并给出重试动作。</td>
+            <td>基于章纲 + 设定库 + 前情摘要 + 相邻原文生成整章正文；按题材、当前任务与场景动态加载版本化写作 Skill，可注入作者风格档。正文通过带鉴权的 SSE 流式输出，可中断、可重生成，并支持续写、扩写、润色、改写语气和按作者风格五种行内任务；结果先进入候选草稿。</td>
+            <td>3000 字章节首字延迟 &lt; 3s，全章 &lt; 90s；前端选择的模型档位、目标字数与风格开关真实下发；每次生成返回所用 Skill、四层 token 报告与运行 id；失败时保留已生成内容并显示可理解的错误，重生成保留已锁定段落。</td>
           </tr>
           <tr style="background: var(--color-accent-100);">
             <td><strong>P0</strong> <span style="color: var(--color-accent);">★</span></td>
@@ -221,6 +221,11 @@
     <div style="margin-top: 40px; padding: 36px 40px; background: var(--color-accent); color: #fff;">
       <div style="font-family: var(--font-heading); font-size: 12px; font-weight: 700; letter-spacing: 0.18em; text-transform: uppercase; opacity: 0.85; margin-bottom: 16px;">设计约束</div>
       <p style="margin: 0; font-family: var(--font-heading); font-size: 26px; font-weight: 700; line-height: 1.35; max-width: 52ch;">单次生成上下文硬上限 25k token。任何功能不得突破——突破了成本模型就崩了，而且长上下文并不会让输出更好，只会更贵更慢。</p>
+    </div>
+    <div style="margin-top: 2px; padding: 30px 40px; background: var(--color-neutral-100); border-left: 4px solid var(--color-accent);">
+      <div style="font-family: var(--font-heading); font-size: 18px; font-weight: 700; margin-bottom: 12px;">生成提示词与写作 Skill 装配顺序</div>
+      <p style="margin: 0 0 12px; font-size: 14px; line-height: 1.7;"><strong>基础约束 → 题材 Skill → 任务 Skill → 场景 Skill → 作者风格 → 四层作品上下文 → 本章章纲 → 当前指令。</strong>每个 Skill 必须有稳定 id、版本、优先级、适用条件与回归测试；题材、任务或章纲相同的请求必须得到相同选择结果。</p>
+      <p style="margin: 0; font-size: 14px; line-height: 1.7;">四层上下文只读取作者确认的设定：常驻层按稳定 id 排序；检索层先匹配名称/别名，再用 embedding 语义召回兜底；摘要层读取更早卷摘要和本卷历史章摘要；相邻层读取前两章正文并在超预算时优先保留章末。风格档只影响表达统计特征，不能覆盖已确认事实、章纲或人物动机。</p>
     </div>
   </div>
 

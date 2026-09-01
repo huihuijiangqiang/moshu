@@ -142,4 +142,21 @@ export interface GenerateOptions {
   model: 'basic' | 'advanced'
   useStyleProfile: boolean
   dialogueDensity: 'low' | 'mid' | 'high'
+  instruction?: string
+}
+
+export interface InlineGenerateOptions extends GenerateOptions {
+  action: '续写' | '扩写' | '润色' | '改写语气' | '按我的风格'
+  selectedText: string
+  nearbyText: string
+}
+
+export type GenerationControls = Omit<GenerateOptions, 'chapterId'>
+
+export interface GenerationMeta {
+  skills: string[]
+  scene: string
+  layers: Record<string, unknown>
+  promptTokens: number
+  model: string
 }

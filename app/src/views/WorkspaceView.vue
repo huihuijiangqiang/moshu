@@ -12,7 +12,8 @@ import { useAutosave } from '@/composables/use-autosave'
 import { useProjectNavigation } from '@/composables/use-project-navigation'
 import { useProjectStore } from '@/stores/project'
 import { useShellStore } from '@/stores/shell'
-import { streamChapter } from '@/api/generation'
+import { streamChapter, streamInline } from '@/api/generation'
+import type { GenerationControls, InlineGenerateOptions } from '@/types'
 
 defineOptions({ name: 'WorkspaceView' })
 
@@ -24,8 +25,10 @@ const { toProject } = useProjectNavigation()
 const html = ref(store.active?.content ?? '')
 const chapterId = computed(() => store.activeId)
 const generating = ref(false)
+const generationError = ref('')
 const paneTab = ref<'body' | 'outline'>('body')
 let abort: (() => void) | null = null
+let disposed = false
 
 const editor = useNovelEditor(html.value, (next, chars) => {
   html.value = next
@@ -45,11 +48,13 @@ watch(
       : activeId
     if (!id) return
     await store.openChapter(id)
-    if (store.activeId !== id) return
+    if (disposed || store.activeId !== id) return
 
     const content = store.chapters.find((chapter) => chapter.id === id)?.content ?? ''
     markClean(id, content)
-    editor.value?.commands.setContent(content, { emitUpdate: false })
+    const currentEditor = editor.value
+    if (!currentEditor || currentEditor.isDestroyed) return
+    currentEditor.commands.setContent(content, { emitUpdate: false })
     html.value = content
 
     // 查询参数只负责一次跨页定位，消费后移除，避免用户在章节栏切换时被拉回旧章节。
@@ -101,7 +106,12 @@ onMounted(() => {
   window.addEventListener('resize', syncViewport)
 })
 
-onBeforeUnmount(() => window.removeEventListener('resize', syncViewport))
+onBeforeUnmount(() => {
+  disposed = true
+  abort?.()
+  abort = null
+  window.removeEventListener('resize', syncViewport)
+})
 
 /** 折叠不用 display:none —— 改列宽，编辑器实例保持挂载 */
 const cols = computed(() => {
@@ -129,16 +139,22 @@ const saveLabel = computed(() => {
 
 const readMinutes = computed(() => Math.max(1, Math.round((store.active?.words ?? 0) / 350)))
 
-function generate() {
+function generate(options: GenerationControls) {
   if (!editor.value || generating.value) return
+  if (!store.activeId) return
+  generationError.value = ''
   generating.value = true
   editor.value.chain().focus('end').insertAiDraft().run()
   abort = streamChapter(
-    { chapterId: store.activeId ?? '', targetWords: 3000, model: 'basic', useStyleProfile: true, dialogueDensity: 'high' },
+    { chapterId: store.activeId, ...options },
     {
       onChunk: (t) => editor.value?.commands.appendDraftText(t),
       onDone: () => { editor.value?.commands.setDraftStatus('pending'); generating.value = false },
-      onError: () => { generating.value = false }
+      onError: (error) => {
+        generationError.value = error instanceof Error ? error.message : '生成失败，请重试'
+        editor.value?.commands.setDraftStatus('pending')
+        generating.value = false
+      }
     }
   )
 }
@@ -151,9 +167,41 @@ function stop() {
 }
 
 function runInline(action: string) {
-  // 真实实现：把选区文本 + 上下文送到 /api/generate/inline，结果同样落进 aiDraft
-  if (!editor.value) return
-  editor.value.chain().focus().insertAiDraft().appendDraftText(`（${action}：此处接后端行内生成）`).setDraftStatus('pending').run()
+  if (!editor.value || !store.activeId || generating.value) return
+  const { from, to } = editor.value.state.selection
+  const selectedText = editor.value.state.doc.textBetween(from, to, '\n')
+  const contextFrom = Math.max(0, from - 6000)
+  const contextTo = Math.min(editor.value.state.doc.content.size, to + 3000)
+  const nearbyText = editor.value.state.doc.textBetween(contextFrom, contextTo, '\n')
+  const inlineAction = action as InlineGenerateOptions['action']
+  const targetWords = inlineAction === '续写'
+    ? 800
+    : Math.max(300, Math.min(3000, selectedText.length * (inlineAction === '扩写' ? 2 : 1)))
+
+  generationError.value = ''
+  generating.value = true
+  editor.value.chain().focus().insertAiDraft().run()
+  abort = streamInline(
+    {
+      chapterId: store.activeId,
+      targetWords,
+      model: 'basic',
+      useStyleProfile: inlineAction === '按我的风格',
+      dialogueDensity: 'mid',
+      action: inlineAction,
+      selectedText,
+      nearbyText
+    },
+    {
+      onChunk: (text) => editor.value?.commands.appendDraftText(text),
+      onDone: () => { editor.value?.commands.setDraftStatus('pending'); generating.value = false },
+      onError: (error) => {
+        generationError.value = error instanceof Error ? error.message : '行内生成失败，请重试'
+        editor.value?.commands.setDraftStatus('pending')
+        generating.value = false
+      }
+    }
+  )
 }
 
 function editChapterPlan() {
@@ -251,7 +299,13 @@ function editChapterPlan() {
       <button class="panel-mobile-close" type="button" title="关闭 AI 面板" aria-label="关闭 AI 面板" @click="shell.rightOpen = false">
         <AppIcon name="close" />
       </button>
-      <AiSidePanel v-if="shell.rightOpen" :generating="generating" @generate="generate" @stop="stop" />
+      <AiSidePanel
+        v-if="shell.rightOpen"
+        :generating="generating"
+        :generation-error="generationError"
+        @generate="generate"
+        @stop="stop"
+      />
       <button v-else class="wk-stub" type="button" title="展开 AI 面板 ⌘J" @click="shell.rightOpen = true">
         AI 面板
       </button>
