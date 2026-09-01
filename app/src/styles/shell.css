@@ -470,7 +470,6 @@ body { font-family: var(--font-ui); font-size: var(--fs); }
    .ai-bar / .suggest / .ai-draft / .codex-ref 的结构不动（TipTap 节点视图依赖类名），
    只把颜色换到新 token 上。 */
 .ai-bar {
-  bottom: 22px;
   border: var(--hair) solid var(--line-strong);
   background: var(--panel);
   box-shadow: 0 6px 20px rgb(0 0 0 / 10%);
@@ -895,6 +894,16 @@ body { font-family: var(--font-ui); font-size: var(--fs); }
 }
 
 @media (max-width: 460px) {
+  .ai-bar {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    width: 100%;
+    white-space: normal;
+  }
+  .ai-bar button { width: 100%; }
+  .ai-bar button:nth-child(odd) { border-left: 0; }
+  .ai-bar button:nth-child(n + 3) { border-top: var(--hair) solid var(--line); }
+  .ai-bar button:last-child { grid-column: 1 / -1; }
   .library-main-head .wk-btn { width: 34px; padding: 0; font-size: 0; }
   .library-main-head .wk-btn svg { width: 16px; height: 16px; }
   .paper-bar-tab:nth-of-type(3) { display: none; }

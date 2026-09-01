@@ -221,6 +221,7 @@ function editChapterPlan() {
       <!-- v-show 而非 v-if：编辑器不能因为切标签被卸载 -->
       <div v-show="paneTab === 'body'" class="prose">
         <EditorContent :editor="editor" />
+        <AiFloatingBar @run="runInline" />
       </div>
 
       <div v-if="paneTab === 'outline'" class="prose" :style="{ paddingTop: 'var(--u6)' }">
@@ -243,8 +244,6 @@ function editChapterPlan() {
           {{ store.active.outlineNote }}
         </p>
       </div>
-
-      <AiFloatingBar v-show="paneTab === 'body'" @run="runInline" />
     </main>
 
     <!-- 右：AI -->
