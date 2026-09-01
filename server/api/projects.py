@@ -3,10 +3,15 @@
 """
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
-from sqlalchemy import select
+from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from api.auth import get_current_user
 from db import Chapter, Project, Volume
+from db.models_codex import CodexEntry
+from db.models_core import User
+from db.models_guard import GuardIssue
+from db.models_org import OrgMember
 from db.session import get_db
 
 router = APIRouter()
@@ -51,6 +56,115 @@ class ChapterListItem(BaseModel):
 
     class Config:
         from_attributes = True
+
+
+class ProjectListItem(BaseModel):
+    id: str
+    title: str
+    genre: str | None
+    status: str
+    words: int
+    chapters: int
+    codex_count: int
+    guard_open: int
+    last_chapter_title: str | None
+    updated_at: str
+    target_words_daily: int
+
+
+@router.get("", response_model=list[ProjectListItem])
+async def list_projects(
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """列出当前用户可访问的真实作品及书架摘要。"""
+    org_ids = select(OrgMember.org_id).where(OrgMember.user_id == user.id)
+    chapter_count = (
+        select(func.count(Chapter.id))
+        .where(Chapter.project_id == Project.id)
+        .correlate(Project)
+        .scalar_subquery()
+    )
+    word_count = (
+        select(func.coalesce(func.sum(Chapter.words), 0))
+        .where(Chapter.project_id == Project.id)
+        .correlate(Project)
+        .scalar_subquery()
+    )
+    codex_count = (
+        select(func.count(CodexEntry.id))
+        .where(CodexEntry.project_id == Project.id)
+        .correlate(Project)
+        .scalar_subquery()
+    )
+    guard_open = (
+        select(func.count(GuardIssue.id))
+        .where(GuardIssue.project_id == Project.id, GuardIssue.status == "open")
+        .correlate(Project)
+        .scalar_subquery()
+    )
+    latest_chapter_title = (
+        select(Chapter.title)
+        .where(Chapter.project_id == Project.id)
+        .order_by(Chapter.updated_at.desc(), Chapter.idx.desc())
+        .limit(1)
+        .correlate(Project)
+        .scalar_subquery()
+    )
+    latest_chapter_updated = (
+        select(func.max(Chapter.updated_at))
+        .where(Chapter.project_id == Project.id)
+        .correlate(Project)
+        .scalar_subquery()
+    )
+
+    rows = (
+        await db.execute(
+            select(
+                Project,
+                word_count.label("words"),
+                chapter_count.label("chapters"),
+                codex_count.label("codex_count"),
+                guard_open.label("guard_open"),
+                latest_chapter_title.label("last_chapter_title"),
+                latest_chapter_updated.label("last_chapter_updated"),
+            )
+            .where(
+                or_(
+                    Project.owner_id == user.id,
+                    Project.org_id.in_(org_ids),
+                )
+            )
+            .order_by(Project.updated_at.desc(), Project.id)
+        )
+    ).all()
+
+    return [
+        ProjectListItem(
+            id=project.id,
+            title=project.title,
+            genre=project.genre,
+            status=project.status,
+            words=int(words),
+            chapters=int(chapters),
+            codex_count=int(entry_count),
+            guard_open=int(issue_count),
+            last_chapter_title=last_title,
+            updated_at=max(
+                project.updated_at, chapter_updated or project.updated_at
+            ).isoformat(),
+            target_words_daily=project.target_words_daily,
+        )
+        for (
+            project,
+            words,
+            chapters,
+            entry_count,
+            issue_count,
+            last_title,
+            chapter_updated,
+        ) in rows
+    ]
 
 
 @router.get("/{project_id}", response_model=ProjectOut)

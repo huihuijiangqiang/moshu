@@ -11,6 +11,7 @@ export interface ShelfBook {
   guardOpen: number
   lastTouched: string
   targetWords: number
+  dailyGoal?: number
   progress: number
   todayWords: number
   coverTone: 'mountain' | 'city' | 'river' | 'spring' | 'space'

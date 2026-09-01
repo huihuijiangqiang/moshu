@@ -1,6 +1,6 @@
 import { USE_MOCK, request } from './http'
 import { mockApi } from './mock'
-import type { Chapter, ChapterPlanPatch, Project } from '@/types'
+import type { Chapter, ChapterPlanPatch, CodexEntry, CodexKind, Project } from '@/types'
 
 interface ProjectDto {
   id: string
@@ -25,7 +25,112 @@ interface ChapterDto extends ChapterListDto {
   rev: number
 }
 
+export interface CodexDto {
+  id: string
+  project_id: string
+  kind: 'character' | 'location' | 'item' | 'faction' | 'event' | 'rule'
+  name: string
+  description: string
+  aliases: string[]
+  attrs: Record<string, unknown>
+  resident: boolean
+  status: 'confirmed' | 'pending'
+  ref_chapters: string[]
+  conflicts: string[]
+  planted_at: string | null
+  expected_by: string | null
+}
+
+const CODEX_KIND_FROM_DTO: Record<CodexDto['kind'], CodexKind> = {
+  character: 'character',
+  location: 'place',
+  item: 'item',
+  faction: 'faction',
+  event: 'foreshadow',
+  rule: 'system'
+}
+
 const revisions = new Map<string, number>()
+const codexProjectIds = new Map<string, string>()
+
+function chapterNumber(value: string | null): number | undefined {
+  if (!value) return undefined
+  const match = value.match(/(\d+)$/)
+  return match ? Number(match[1]) : undefined
+}
+
+function stringValue(value: unknown): string | undefined {
+  return typeof value === 'string' && value.trim() ? value : undefined
+}
+
+export function codexFromDto(dto: CodexDto): CodexEntry {
+  const nestedCharacter = dto.attrs.character
+  const characterAttrs = nestedCharacter && typeof nestedCharacter === 'object'
+    ? { ...dto.attrs, ...(nestedCharacter as Record<string, unknown>) }
+    : dto.attrs
+  const facts = Array.isArray(dto.attrs.facts)
+    ? dto.attrs.facts.flatMap((fact) => {
+      if (!fact || typeof fact !== 'object') return []
+      const row = fact as Record<string, unknown>
+      const label = stringValue(row.label)
+      const value = stringValue(row.value)
+      return label && value ? [{ label, value }] : []
+    })
+    : undefined
+  const relations = Array.isArray(dto.attrs.relations)
+    ? dto.attrs.relations.flatMap((relation) => {
+      if (!relation || typeof relation !== 'object') return []
+      const row = relation as Record<string, unknown>
+      const name = stringValue(row.name)
+      const relationName = stringValue(row.relation)
+      const note = stringValue(row.note)
+      if (!name || !relationName || !note) return []
+      return [{
+        targetId: stringValue(row.target_id) ?? stringValue(row.targetId),
+        name,
+        relation: relationName,
+        note
+      }]
+    })
+    : undefined
+  const plantedAt = chapterNumber(dto.planted_at)
+  const expectedChapter = chapterNumber(dto.expected_by)
+
+  return {
+    id: dto.id,
+    kind: CODEX_KIND_FROM_DTO[dto.kind],
+    name: dto.name,
+    aliases: dto.aliases,
+    summary: dto.description,
+    resident: dto.resident,
+    refChapters: dto.ref_chapters.flatMap((chapterId) => chapterNumber(chapterId) ?? []),
+    status: dto.status,
+    conflicts: dto.conflicts.length,
+    character: dto.kind === 'character' ? {
+      role: stringValue(characterAttrs.role),
+      age: stringValue(characterAttrs.age),
+      personality: Array.isArray(characterAttrs.personality)
+        ? characterAttrs.personality.filter((value): value is string => typeof value === 'string')
+        : undefined,
+      ability: stringValue(characterAttrs.ability) ?? stringValue(characterAttrs.skills),
+      limitation: stringValue(characterAttrs.limitation) ?? stringValue(characterAttrs.limits),
+      desire: stringValue(characterAttrs.desire),
+      motivation: stringValue(characterAttrs.motivation),
+      flaw: stringValue(characterAttrs.flaw),
+      fear: stringValue(characterAttrs.fear),
+      appearance: stringValue(characterAttrs.appearance),
+      speech: stringValue(characterAttrs.speech),
+      background: stringValue(characterAttrs.background),
+      currentState: stringValue(characterAttrs.current_state) ?? stringValue(characterAttrs.currentState)
+    } : undefined,
+    facts,
+    relations,
+    plantedAt,
+    expectedBy: dto.expected_by
+      ? expectedChapter ? `第 ${expectedChapter} 章` : dto.expected_by
+      : undefined
+  }
+}
 
 function projectFromDto(dto: ProjectDto): Project {
   return {
@@ -106,9 +211,22 @@ const realApi = {
     throw new Error('real_chapter_create_not_connected')
   },
 
-  async listCodex() { return [] },
-  async confirmCodexEntry() {},
-  async dropCodexEntry() {},
+  async listCodex(projectId = 'p1'): Promise<CodexEntry[]> {
+    const rows = await request<CodexDto[]>(`/codex/${projectId}/entries`)
+    rows.forEach((row) => codexProjectIds.set(row.id, projectId))
+    return rows.map(codexFromDto)
+  },
+  async confirmCodexEntry(id: string): Promise<void> {
+    const projectId = codexProjectIds.get(id)
+    if (!projectId) throw new Error('codex_entry_not_loaded')
+    await request(`/codex/${projectId}/entries/${id}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ status: 'confirmed' })
+    })
+  },
+  async dropCodexEntry(): Promise<void> {
+    throw new Error('real_codex_drop_not_connected')
+  },
   async listGuardIssues() { return [] },
   async resolveGuardIssue() {},
   async getContextLayers() { return [] },

@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
-import { shelfApi, type ShelfBook } from '@/api/mock/shelf'
+import { shelfApi, type ShelfBook } from '@/api/shelf'
 import AppIcon from '@/components/ui/AppIcon.vue'
 import { useShellStore } from '@/stores/shell'
 import { projectPath } from '@/router/project-route'
@@ -49,8 +49,12 @@ const filtered = computed(() => {
 const currentBook = computed(() => filtered.value.find((book) => book.status === 'ongoing') ?? filtered.value[0] ?? null)
 const otherBooks = computed(() => filtered.value.filter((book) => book.id !== currentBook.value?.id))
 const totalToday = computed(() => books.value.reduce((sum, book) => sum + book.todayWords, 0))
-const dailyGoal = 6000
-const dailyPct = computed(() => Math.min(100, Math.round((totalToday.value / dailyGoal) * 100)))
+const dailyGoal = computed(() => books.value.reduce((sum, book) => sum + (book.dailyGoal ?? 0), 0) || 6000)
+const dailyPct = computed(() => Math.min(100, Math.round((totalToday.value / dailyGoal.value) * 100)))
+const todayLabel = new Intl.DateTimeFormat('zh-CN', { year: 'numeric', month: 'long', day: 'numeric' }).format(new Date())
+const primaryBookId = computed(() => currentBook.value?.id ?? books.value[0]?.id ?? null)
+const guardTotal = computed(() => books.value.reduce((sum, book) => sum + book.guardOpen, 0))
+const codexTotal = computed(() => books.value.reduce((sum, book) => sum + book.codexCount, 0))
 
 const statusLabel: Record<ShelfBook['status'], string> = {
   ongoing: '正在写',
@@ -99,16 +103,16 @@ function formatWords(words: number) {
         <span class="studio-section-label">写作计划</span>
         <div class="studio-goal-copy"><strong>{{ totalToday.toLocaleString() }}</strong><span>/ {{ dailyGoal.toLocaleString() }} 字</span></div>
         <span class="studio-progress"><span :style="{ width: dailyPct + '%' }" /></span>
-        <p>今天已完成 {{ dailyPct }}%，还差 {{ (dailyGoal - totalToday).toLocaleString() }} 字。</p>
+        <p>今天已完成 {{ dailyPct }}%，还差 {{ Math.max(0, dailyGoal - totalToday).toLocaleString() }} 字。</p>
       </section>
 
       <section class="studio-sidebar-section studio-reminder-block">
         <span class="studio-section-label">需要留意</span>
-        <button type="button" @click="router.push(projectPath('p1', 'guard'))">
-          <span class="reminder-mark">3</span><span><strong>一致性问题</strong><small>《剑起山河》有 3 条待处理</small></span>
+        <button type="button" :disabled="!primaryBookId" @click="primaryBookId && router.push(projectPath(primaryBookId, 'guard'))">
+          <span class="reminder-mark">{{ guardTotal }}</span><span><strong>一致性问题</strong><small>{{ guardTotal ? `${guardTotal} 条待处理` : '当前没有待处理问题' }}</small></span>
         </button>
-        <button type="button" @click="router.push(projectPath('p1', 'codex'))">
-          <span class="reminder-mark reminder-mark-muted">5</span><span><strong>新设定待确认</strong><small>写作前确认可提升生成准确度</small></span>
+        <button type="button" :disabled="!primaryBookId" @click="primaryBookId && router.push(projectPath(primaryBookId, 'codex'))">
+          <span class="reminder-mark reminder-mark-muted">{{ codexTotal }}</span><span><strong>设定库</strong><small>{{ codexTotal }} 条人物与世界设定</small></span>
         </button>
       </section>
 
@@ -119,13 +123,13 @@ function formatWords(words: number) {
 
     <main class="studio-main">
       <header class="studio-main-head">
-        <div><span class="studio-kicker">2026 年 8 月 30 日</span><h2>继续你的故事</h2></div>
+        <div><span class="studio-kicker">{{ todayLabel }}</span><h2>继续你的故事</h2></div>
         <button class="wk-btn" data-primary="true" type="button" @click="router.push('/projects/new')"><AppIcon name="plus" :size="15" />新建作品</button>
       </header>
 
       <section v-if="currentBook" class="featured-manuscript">
         <button class="featured-cover" :data-tone="currentBook.coverTone" type="button" @click="open(currentBook)">
-          <span class="cover-series">长篇小说</span><strong>{{ currentBook.title }}</strong><span class="cover-author">沈砚 著</span>
+          <span class="cover-series">长篇小说</span><strong>{{ currentBook.title }}</strong><span class="cover-author">创作中</span>
         </button>
 
         <div class="featured-copy">

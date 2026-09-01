@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, watch } from 'vue'
-import { RouterView, useRoute } from 'vue-router'
+import { RouterView, useRoute, useRouter } from 'vue-router'
+import { ApiError } from '@/api/http'
 import AppShell from '@/components/layout/AppShell.vue'
 import CommandPalette from '@/components/layout/CommandPalette.vue'
 import { useProjectStore } from '@/stores/project'
@@ -9,6 +10,7 @@ import { useGuardStore } from '@/stores/guard'
 import { useShellStore } from '@/stores/shell'
 
 const route = useRoute()
+const router = useRouter()
 const project = useProjectStore()
 const codex = useCodexStore()
 const guard = useGuardStore()
@@ -23,9 +25,17 @@ shell.initTheme()
 watch(
   () => route.params.projectId,
   async (value) => {
-    const projectId = typeof value === 'string' ? value : (project.loadedProjectId ?? 'p1')
-    await Promise.all([project.load(projectId), codex.load(projectId), guard.load(projectId)])
-    if (project.activeId) await project.openChapter(project.activeId)
+    if (typeof value !== 'string' || route.meta.scope !== 'project') return
+    try {
+      await Promise.all([project.load(value), codex.load(value), guard.load(value)])
+      if (project.activeId) await project.openChapter(project.activeId)
+    } catch (error) {
+      if (error instanceof ApiError && error.status === 404) {
+        await router.replace('/')
+        return
+      }
+      console.error('加载作品失败', error)
+    }
   },
   { immediate: true }
 )

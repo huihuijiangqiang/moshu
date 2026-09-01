@@ -102,6 +102,10 @@ class EntryResponse(BaseModel):
     attrs: dict
     resident: bool
     status: str
+    ref_chapters: list[str]
+    conflicts: list[str]
+    planted_at: str | None
+    expected_by: str | None
     embedding_status: EmbeddingStatus
 
 
@@ -169,8 +173,71 @@ async def _entry_response(
         attrs=entry.attrs,
         resident=entry.resident,
         status=entry.status,
+        ref_chapters=entry.ref_chapters,
+        conflicts=entry.conflicts,
+        planted_at=entry.planted_at,
+        expected_by=entry.expected_by,
         embedding_status=embedding_status,
     )
+
+
+@router.get("/{project_id}/entries", response_model=list[EntryResponse])
+async def list_codex_entries(
+    project_id: str,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """列出当前作品的设定，供写作工作台与 @ 引用共同使用。"""
+    await verify_project_access(project_id, user, db)
+
+    entries = list(
+        (
+            await db.execute(
+                select(CodexEntry)
+                .where(CodexEntry.project_id == project_id)
+                .order_by(CodexEntry.kind, CodexEntry.name, CodexEntry.id)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    if not entries:
+        return []
+
+    alias_rows = (
+        await db.execute(
+            select(CodexAlias.entry_id, CodexAlias.alias)
+            .where(CodexAlias.entry_id.in_([entry.id for entry in entries]))
+            .order_by(CodexAlias.entry_id, CodexAlias.alias)
+        )
+    ).all()
+    aliases_by_entry: dict[str, list[str]] = {}
+    for entry_id, alias in alias_rows:
+        aliases_by_entry.setdefault(entry_id, []).append(alias)
+
+    return [
+        EntryResponse(
+            id=entry.id,
+            project_id=entry.project_id,
+            kind=entry.kind,
+            name=entry.name,
+            description=entry.description,
+            aliases=aliases_by_entry.get(entry.id, []),
+            attrs=entry.attrs,
+            resident=entry.resident,
+            status=entry.status,
+            ref_chapters=entry.ref_chapters,
+            conflicts=entry.conflicts,
+            planted_at=entry.planted_at,
+            expected_by=entry.expected_by,
+            embedding_status=(
+                "fresh"
+                if entry.embedding is not None and entry.embedding_text_hash is not None
+                else "deferred"
+            ),
+        )
+        for entry in entries
+    ]
 
 
 @router.post(

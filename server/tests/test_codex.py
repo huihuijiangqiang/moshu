@@ -605,6 +605,89 @@ def failing_codex_client(app_client):
     app.dependency_overrides.pop(get_embedding_provider, None)
 
 
+async def test_listing_entries_requires_authentication(app_client):
+    response = await app_client.get("/codex/proj_a/entries")
+
+    assert response.status_code in (401, 403)
+
+
+async def test_listing_entries_is_project_scoped_and_returns_evidence_fields(
+    app_client, async_db_session, seed_project, make_project, auth_headers
+):
+    await seed_project()
+    async_db_session.add(make_project("proj_other", owner_id="user_a"))
+    mine = CodexEntry(
+        id="cx_mine",
+        project_id="proj_a",
+        kind="character",
+        name="许知微",
+        description="女主",
+        attrs={"role": "女主"},
+        resident=True,
+        status="confirmed",
+        ref_chapters=["ch_a"],
+        conflicts=["gi_1"],
+        planted_at=None,
+        expected_by=None,
+    )
+    async_db_session.add(mine)
+    async_db_session.add(
+        CodexEntry(
+            id="cx_other",
+            project_id="proj_other",
+            kind="rule",
+            name="不应返回",
+            description="另一本书",
+            attrs={},
+            resident=False,
+            status="confirmed",
+            ref_chapters=[],
+            conflicts=[],
+        )
+    )
+    await async_db_session.flush()
+    async_db_session.add(CodexAlias(entry_id=mine.id, alias="知微"))
+    await async_db_session.commit()
+
+    response = await app_client.get(
+        "/codex/proj_a/entries", headers=auth_headers("user_a")
+    )
+
+    assert response.status_code == 200
+    assert response.json() == [
+        {
+            "id": "cx_mine",
+            "project_id": "proj_a",
+            "kind": "character",
+            "name": "许知微",
+            "description": "女主",
+            "aliases": ["知微"],
+            "attrs": {"role": "女主"},
+            "resident": True,
+            "status": "confirmed",
+            "ref_chapters": ["ch_a"],
+            "conflicts": ["gi_1"],
+            "planted_at": None,
+            "expected_by": None,
+            "embedding_status": "deferred",
+        }
+    ]
+
+
+async def test_listing_entries_in_someone_elses_project_is_denied(
+    app_client, async_db_session, seed_project, make_user, auth_headers
+):
+    await seed_project()
+    async_db_session.add(make_user("user_b"))
+    await async_db_session.commit()
+
+    response = await app_client.get(
+        "/codex/proj_a/entries", headers=auth_headers("user_b")
+    )
+
+    assert response.status_code == 403
+
+
 async def test_creating_an_entry_requires_authentication(codex_client):
     response = await codex_client.post(
         "/codex/proj_a/entries", json={"kind": "character", "name": "李长风"}
