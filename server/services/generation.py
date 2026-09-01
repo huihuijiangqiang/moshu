@@ -79,6 +79,25 @@ def count_generated_words(text: str) -> int:
     return cjk + latin
 
 
+def provider_error_detail(response: httpx.Response, body: bytes) -> str:
+    """Extract a bounded provider message without reflecting HTML error pages."""
+    content_type = response.headers.get("content-type", "").lower()
+    if "json" not in content_type:
+        return "上游服务暂时不可用"
+    try:
+        payload = json.loads(body)
+    except json.JSONDecodeError:
+        return "上游服务返回了无效错误响应"
+    if not isinstance(payload, dict):
+        return "上游服务返回了错误响应"
+    error = payload.get("error")
+    if isinstance(error, dict):
+        detail = error.get("message") or error.get("detail") or error.get("title")
+    else:
+        detail = payload.get("detail") or payload.get("message") or payload.get("title")
+    return str(detail)[:500] if detail else "上游服务返回了错误响应"
+
+
 class GenerationService:
     def __init__(self, db: AsyncSession, *, assembler: Optional[ContextAssembler] = None):
         self.db = db
@@ -223,7 +242,12 @@ class GenerationGateway:
                 },
                 json=payload,
             ) as response:
-                response.raise_for_status()
+                if response.is_error:
+                    body = await response.aread()
+                    detail = provider_error_detail(response, body)
+                    raise GenerationProviderError(
+                        f"模型网关返回 HTTP {response.status_code}: {detail}"
+                    )
                 seen_done = False
                 async for raw_line in response.aiter_lines():
                     line = raw_line.strip()
@@ -251,10 +275,6 @@ class GenerationGateway:
                             yield StreamEvent("chunk", text=content)
                 if not seen_done:
                     raise GenerationProviderError("模型生成流在完成前中断")
-        except httpx.HTTPStatusError as exc:
-            body = await exc.response.aread()
-            detail = body.decode("utf-8", errors="replace")[:500]
-            raise GenerationProviderError(f"模型网关返回 HTTP {exc.response.status_code}: {detail}") from exc
         except (httpx.TimeoutException, httpx.TransportError) as exc:
             raise GenerationProviderError(f"模型网关连接失败：{exc}") from exc
         finally:
