@@ -25,6 +25,21 @@
   recall / 证据定位 / hard-negative precision 均为 100%
 - ⚠️ 上述结构化 claim 评测不覆盖正文抽取、LLM 仲裁质量和 P1 其余四类规则，不能据此宣称全链路生产就绪
 
+### 性能基准（可重复）
+
+已加入 `server/scripts/benchmark_consistency.py`，用于在固定合成负载下比较确定性
+规则 CPU 路径和上下文 HTML 转文本/分词开销。运行方式：
+
+```powershell
+cd server
+..\.venv\Scripts\python.exe scripts\benchmark_consistency.py --sizes 10000 30000 100000 --repeats 5
+```
+
+脚本输出 JSON，包含 claim 数、规则扫描中位数/p95、上下文处理耗时和 tracemalloc
+峰值内存。它明确不伪造网络指标：正文抽取、摘要、embedding、LLM 仲裁以及
+PostgreSQL/pgvector 检索必须在真实部署上单独压测；该脚本只覆盖 RuleScanner 的
+确定性规则和 ContextAssembler 的纯 CPU 热点。
+
 ---
 
 ## 已完成模块
