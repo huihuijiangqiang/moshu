@@ -54,9 +54,23 @@ async function mockStream(signal: AbortSignal, h: StreamHandlers) {
 async function responseError(res: Response): Promise<GenerationError> {
   const text = await res.text()
   try {
-    const payload = JSON.parse(text) as { detail?: string | { message?: string } }
-    const detail = typeof payload.detail === 'string' ? payload.detail : payload.detail?.message
-    return new GenerationError('http_error', detail || `生成请求失败（${res.status}）`, res.status)
+    const payload = JSON.parse(text) as {
+      detail?: string | { code?: string; message?: string; required?: number; remaining?: number }
+    }
+    const detail = payload.detail
+    if (typeof detail === 'object' && detail?.code === 'INSUFFICIENT_CREDITS') {
+      return new GenerationError(
+        detail.code,
+        `积分不足：本次最多需要 ${detail.required ?? 0}，当前剩余 ${detail.remaining ?? 0}。`,
+        res.status
+      )
+    }
+    const message = typeof detail === 'string' ? detail : detail?.message
+    return new GenerationError(
+      typeof detail === 'object' && detail?.code ? detail.code : 'http_error',
+      message || `生成请求失败（${res.status}）`,
+      res.status
+    )
   } catch {
     return new GenerationError('http_error', text || `生成请求失败（${res.status}）`, res.status)
   }
@@ -107,6 +121,7 @@ async function sseStream(
         else if (event.type === 'done') {
           completed = true
           h.onDone?.(event)
+          window.dispatchEvent(new CustomEvent('moshu:usage-changed'))
         } else if (event.type === 'error') {
           throw new GenerationError(
             typeof event.code === 'string' ? event.code : 'stream_error',

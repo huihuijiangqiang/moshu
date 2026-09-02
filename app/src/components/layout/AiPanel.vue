@@ -3,12 +3,14 @@ import { computed, onMounted, ref } from 'vue'
 import { mockApi } from '@/api/mock'
 import { useProjectStore } from '@/stores/project'
 import { useGuardStore } from '@/stores/guard'
+import { useUsageStore } from '@/stores/usage'
 import type { ContextLayer } from '@/types'
 
 const emit = defineEmits<{ generate: [] }>()
 
 const store = useProjectStore()
 const guard = useGuardStore()
+const usage = useUsageStore()
 const layers = ref<ContextLayer[]>([])
 const tab = ref<'ai' | 'refs' | 'notes'>('ai')
 
@@ -83,7 +85,7 @@ const fmt = (n: number) => (n / 1000).toFixed(1) + 'k'
 
       <section :style="{ padding: '16px', fontSize: '13px' }" class="row-between">
         <span class="muted">本月积分</span>
-        <span><strong>2,840</strong> <span class="muted">/ 5,000</span></span>
+        <span><strong>{{ usage.remaining.toLocaleString() }}</strong> <span class="muted">/ {{ usage.quota.toLocaleString() }}</span></span>
       </section>
     </template>
 

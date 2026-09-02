@@ -58,15 +58,36 @@ class GenerationRun(Base):
 
 
 class UsageLog(Base):
-    """用量日志表 - 按功能聚合"""
+    """Immutable billing event with an explicit reservation lifecycle."""
 
     __tablename__ = "usage_logs"
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
     user_id: Mapped[str] = mapped_column(String(32), ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    project_id: Mapped[Optional[str]] = mapped_column(
+        String(32), ForeignKey("projects.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    run_id: Mapped[Optional[str]] = mapped_column(
+        String(32),
+        ForeignKey("generation_runs.id", ondelete="SET NULL"),
+        nullable=True,
+        unique=True,
+        index=True,
+    )
     feature: Mapped[str] = mapped_column(String(50))  # generate_chapter, inline, guard, export等
-    credits: Mapped[int] = mapped_column(Integer)  # 扣除的积分，export为0
+    model: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
+    prompt_tokens: Mapped[int] = mapped_column(Integer, default=0)
+    cached_tokens: Mapped[int] = mapped_column(Integer, default=0)
+    completion_tokens: Mapped[int] = mapped_column(Integer, default=0)
+    reserved_credits: Mapped[int] = mapped_column(Integer, default=0)
+    credits: Mapped[int] = mapped_column(Integer, default=0)
+    status: Mapped[str] = mapped_column(String(20), default="completed", index=True)
+    detail: Mapped[dict] = mapped_column(JSONB, default=dict)
     timestamp: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), index=True)
+    reservation_expires_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True, index=True
+    )
+    finalized_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
 
     # 关系
     user: Mapped["User"] = relationship()

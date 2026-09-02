@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, onMounted, onUnmounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import AppIcon from '@/components/ui/AppIcon.vue'
 import type { IconName } from '@/components/ui/icons'
@@ -7,6 +7,7 @@ import { useProjectStore } from '@/stores/project'
 import { useCodexStore } from '@/stores/codex'
 import { useGuardStore } from '@/stores/guard'
 import { useShellStore } from '@/stores/shell'
+import { useUsageStore } from '@/stores/usage'
 import { projectPath, routeProjectId } from '@/router/project-route'
 import { authApi } from '@/api/auth'
 import { getSessionUser } from '@/api/session'
@@ -25,6 +26,7 @@ const project = useProjectStore()
 const codex = useCodexStore()
 const guard = useGuardStore()
 const shell = useShellStore()
+const usage = useUsageStore()
 const sessionUser = getSessionUser()
 const isAdmin = ['admin', 'super_admin'].includes(sessionUser?.system_role ?? 'user')
 
@@ -74,6 +76,13 @@ const goalPct = computed(() => {
 const remaining = computed(() =>
   Math.max(0, (project.project?.dailyGoal ?? 0) - (project.project?.dailyWords ?? 0))
 )
+
+const refreshUsage = () => { void usage.load(true).catch(() => undefined) }
+onMounted(() => {
+  void usage.load().catch(() => undefined)
+  window.addEventListener('moshu:usage-changed', refreshUsage)
+})
+onUnmounted(() => window.removeEventListener('moshu:usage-changed', refreshUsage))
 
 function isCurrent(to: string) {
   return to === '/' ? route.path === '/' : route.path.startsWith(to)
@@ -178,7 +187,7 @@ async function signOut() {
         <span v-else>守卫无告警</span>
         <span id="statusbar-slot" class="row" :style="{ gap: 'var(--u4)' }" />
         <span class="statusbar-push">距今日目标 {{ remaining.toLocaleString() }} 字</span>
-        <span>积分 <b>2,840</b> / 5,000</span>
+        <span>积分 <b>{{ usage.remaining.toLocaleString() }}</b> / {{ usage.quota.toLocaleString() }}</span>
       </footer>
     </div>
   </div>

@@ -124,3 +124,36 @@ async def test_admin_can_disable_public_registration(
     )
     assert registered.status_code == 403
     assert registered.json()["detail"]["code"] == "REGISTRATION_DISABLED"
+
+
+async def test_super_admin_can_update_credit_rates(
+    app_client, async_db_session, make_user, auth_headers
+):
+    async_db_session.add(make_user("billing_admin", system_role="super_admin"))
+    await async_db_session.commit()
+
+    response = await app_client.patch(
+        "/admin/settings",
+        json={
+            "basic_input_credits": 2,
+            "basic_output_credits": 3,
+            "advanced_input_credits": 6,
+            "advanced_output_credits": 12,
+            "cached_input_percent": 10,
+        },
+        headers=auth_headers("billing_admin"),
+    )
+
+    assert response.status_code == 200
+    assert response.json()["credit_rates"] == {
+        "basic_input": 2,
+        "basic_output": 3,
+        "advanced_input": 6,
+        "advanced_output": 12,
+        "cached_percent": 10,
+    }
+    audit = await async_db_session.scalar(
+        select(AdminAuditLog).where(AdminAuditLog.action == "settings.update")
+    )
+    assert audit is not None
+    assert audit.detail["advanced_output_credits"] == 12

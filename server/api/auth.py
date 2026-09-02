@@ -19,6 +19,7 @@ from db.models_admin import AuthSession, SystemSetting
 from db.models_core import Project, User
 from db.models_org import OrgMember
 from db.session import get_db
+from services.usage import next_month_start
 
 router = APIRouter()
 security = HTTPBearer(auto_error=False)
@@ -218,6 +219,7 @@ async def register(request: RegisterRequest, db: AsyncSession = Depends(get_db))
         is_active=True,
         quota_remaining=max(0, default_quota),
         quota_total=max(0, default_quota),
+        quota_resets_at=next_month_start(datetime.now(UTC)),
     )
     db.add(user)
     await db.flush()

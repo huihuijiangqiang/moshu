@@ -49,6 +49,36 @@ class _OpRecorder:
         kw.pop("schema", None)
         self.metadata.tables[table_name].append_column(column)
 
+    def create_foreign_key(
+        self,
+        constraint_name: str,
+        source_table: str,
+        referent_table: str,
+        local_cols: list[str],
+        remote_cols: list[str],
+        **kw: Any,
+    ) -> None:
+        source = self.metadata.tables[source_table]
+        remote = [f"{referent_table}.{column}" for column in remote_cols]
+        source.append_constraint(
+            sa.ForeignKeyConstraint(local_cols, remote, name=constraint_name, **kw)
+        )
+
+    def drop_constraint(
+        self,
+        constraint_name: str,
+        table_name: str,
+        **kw: Any,
+    ) -> None:
+        kw.pop("type_", None)
+        table = self.metadata.tables[table_name]
+        constraint = next(
+            (item for item in table.constraints if item.name == constraint_name),
+            None,
+        )
+        if constraint is not None:
+            table.constraints.discard(constraint)
+
     def drop_table(self, table_name: str, **kw: Any) -> None:
         self.dropped_tables.append(table_name)
 

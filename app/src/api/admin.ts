@@ -17,6 +17,7 @@ export interface AdminUser {
   is_active: boolean
   quota_remaining: number
   quota_total: number
+  quota_resets_at: string | null
   created_at: string
 }
 
@@ -29,6 +30,24 @@ export interface AdminSettings {
   embedding_model: string
   generation_gateway_configured: boolean
   embedding_gateway_configured: boolean
+  credit_rates: {
+    basic_input: number
+    basic_output: number
+    advanced_input: number
+    advanced_output: number
+    cached_percent: number
+  }
+}
+
+export interface AdminSettingsPatch {
+  registration_enabled: boolean
+  default_plan: AdminSettings['default_plan']
+  default_monthly_quota: number
+  basic_input_credits: number
+  basic_output_credits: number
+  advanced_input_credits: number
+  advanced_output_credits: number
+  cached_input_percent: number
 }
 
 export const adminApi = {
@@ -37,6 +56,6 @@ export const adminApi = {
   updateUser: (id: string, patch: Partial<Pick<AdminUser, 'plan' | 'system_role' | 'is_active' | 'quota_remaining' | 'quota_total'>>) =>
     request<AdminUser>(`/admin/users/${id}`, { method: 'PATCH', body: JSON.stringify(patch) }),
   settings: () => request<AdminSettings>('/admin/settings'),
-  updateSettings: (patch: Pick<AdminSettings, 'registration_enabled' | 'default_plan' | 'default_monthly_quota'>) =>
+  updateSettings: (patch: AdminSettingsPatch) =>
     request<AdminSettings>('/admin/settings', { method: 'PATCH', body: JSON.stringify(patch) })
 }

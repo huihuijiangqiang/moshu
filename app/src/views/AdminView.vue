@@ -56,7 +56,12 @@ async function saveSettings() {
     settings.value = await adminApi.updateSettings({
       registration_enabled: settings.value.registration_enabled,
       default_plan: settings.value.default_plan,
-      default_monthly_quota: settings.value.default_monthly_quota
+      default_monthly_quota: settings.value.default_monthly_quota,
+      basic_input_credits: settings.value.credit_rates.basic_input,
+      basic_output_credits: settings.value.credit_rates.basic_output,
+      advanced_input_credits: settings.value.credit_rates.advanced_input,
+      advanced_output_credits: settings.value.credit_rates.advanced_output,
+      cached_input_percent: settings.value.credit_rates.cached_percent
     })
     message.value = '运行配置已保存'
   } catch (error) {
@@ -121,6 +126,12 @@ onMounted(() => {
         <label class="admin-field"><span>开放注册</span><input v-model="settings.registration_enabled" type="checkbox"></label>
         <label class="admin-field"><span>默认套餐</span><select v-model="settings.default_plan"><option value="free">免费</option><option value="author">作者</option><option value="studio">工作室</option></select></label>
         <label class="admin-field"><span>每月默认额度</span><input v-model.number="settings.default_monthly_quota" type="number" min="0"></label>
+        <h2 class="admin-subhead">生成计价 · 每千 token</h2>
+        <label class="admin-field"><span>基础档输入</span><input v-model.number="settings.credit_rates.basic_input" type="number" min="0"></label>
+        <label class="admin-field"><span>基础档输出</span><input v-model.number="settings.credit_rates.basic_output" type="number" min="0"></label>
+        <label class="admin-field"><span>高级档输入</span><input v-model.number="settings.credit_rates.advanced_input" type="number" min="0"></label>
+        <label class="admin-field"><span>高级档输出</span><input v-model.number="settings.credit_rates.advanced_output" type="number" min="0"></label>
+        <label class="admin-field"><span>缓存输入折算</span><span><input v-model.number="settings.credit_rates.cached_percent" type="number" min="0" max="100"> %</span></label>
         <button class="wk-btn" data-primary="true" type="button" @click="saveSettings">保存运行配置</button>
       </section>
       <section>
@@ -162,6 +173,7 @@ onMounted(() => {
 .admin-toggle { display: inline-flex; align-items: center; gap: 6px; }
 .admin-settings { display: grid; grid-template-columns: minmax(280px, 440px) minmax(320px, 1fr); gap: 56px; }
 .admin-settings h2 { margin: 0 0 20px; font-size: 17px; }
+.admin-settings .admin-subhead { margin: 30px 0 8px; font-size: 14px; }
 .admin-field { min-height: 48px; display: grid; grid-template-columns: 150px 1fr; align-items: center; border-top: var(--hair) solid var(--line); }
 .admin-definition { margin: 0; border-top: var(--hair) solid var(--line); }
 .admin-definition div { min-height: 44px; display: grid; grid-template-columns: 130px 1fr; align-items: center; border-bottom: var(--hair) solid var(--line); }

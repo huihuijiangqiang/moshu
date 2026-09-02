@@ -6,14 +6,15 @@
 所有声明基于实际代码与测试结果，不夸大、不省略已知缺口。
 
 **关键事实**：
-- ✅ 30 张表完整 Alembic baseline，`004_auth_admin_rbac` 再增加 3 张安全与管理表
-- ✅ 897 个单元/功能测试通过（SQLite in-memory，mock embedding/LLM）
-- ✅ 前端 55 个测试、TypeScript 类型检查和生产构建通过
+- ✅ 30 张表完整 Alembic baseline，增量迁移已到 `006_usage_reservation_expiry`
+- ✅ 907 个单元/功能测试通过（SQLite in-memory，mock embedding/LLM）
+- ✅ 前端 57 个测试、TypeScript 类型检查和生产构建通过
 - ✅ 36 个集成测试已在本机真实 PostgreSQL + pgvector 环境通过
 - ✅ 已完成真实账号认证、作品创建、分卷章纲编辑与章节插入的首轮产品闭环
 - ✅ Refresh session 持久化轮换、防重放、注销即时吊销，系统管理员与项目 RBAC 已接通
 - ✅ 工作室成员管理、角色调整和作品共享已有真实 API 与 UI
 - ✅ TXT/Markdown/DOCX/EPUB、分章 ZIP、完整 JSON 备份与非覆盖恢复已接通真实数据库
+- ✅ 作者生成已接通真实用量台账、原子额度预留、按实际 token 结算、失败退款和过期预留回收
 - ✅ Docker Compose 已接通 PostgreSQL、Redis、Celery worker/dispatcher/beat 与 transactional outbox
 - ✅ Guard 已接入项目扫描、运行状态、真实告警证据与乐观锁处置
 - ⚠️ Codex embedding 回填的持久失败可见性尚未实现
@@ -81,7 +82,7 @@
   `halfvec_cosine_ops` 重建 HNSW 索引；upgrade/downgrade 均会要求重新回填向量
 - ✅ `alembic upgrade head --sql` 与 `alembic downgrade -1 --sql` 语法验证通过
 - ✅ 36 个集成测试已在本机真实 PostgreSQL + pgvector 运行通过；当前审核数据库已真实执行
-  `003_product_workflows -> 004_auth_admin_rbac` 并到达 head
+  `004_auth_admin_rbac -> 005_usage_ledger -> 006_usage_reservation_expiry` 并到达 head
 
 ---
 
@@ -175,6 +176,14 @@
 - ✅ 服务端与浏览器均限制 100 MB 备份，并区分文件、格式、权限与服务错误
 - ✅ 真实 `p1` 验收：32 章、34,638 字、24 条设定，TXT/DOCX/EPUB/1.45 MB 备份均生成成功
 
+#### 用量与额度 (`services/usage.py`)
+- ✅ 生成前锁定用户行并按最大输出预留积分，并发请求不能透支同一余额
+- ✅ 生成完成后使用网关真实 prompt/cached/completion token 结算并退回差额
+- ✅ 网关失败、内部错误和浏览器中断释放预留；进程崩溃遗留预留在一小时后惰性回收
+- ✅ 每月额度按 `quota_resets_at` 惰性重置，不依赖单点定时任务
+- ✅ 基础/高级输入输出费率及缓存折算比例可由管理员配置，历史记录保留计价快照
+- ⚠️ 自动一致性抽取、摘要和 embedding 是平台后台任务，目前不扣作者积分，也尚未进入统一成本台账
+
 ---
 
 ### 3. API 端点（全部需认证 + 项目权限）
@@ -202,6 +211,11 @@
 - ✅ `GET /projects/{id}/backup` - 下载可移植的完整 JSON 备份
 - ✅ `POST /projects/restore-backup` - 校验备份并恢复为当前用户的新作品
 - ✅ 所有下载均执行项目 `export` 动作权限检查，跨租户请求返回 403
+
+#### 用量 (`api/usage.py`)
+- ✅ `GET /usage/summary` - 当前真实余额、本期已结算用量、按功能聚合、14 天序列及最近 20 笔
+- ✅ 仅返回当前认证用户数据；released/reserved 与上月记录不计入本期实际消费
+- ✅ 余额不足在模型请求前返回 402，包含本次最大需求和当前余额
 
 #### 项目 (`api/projects.py`)
 - ✅ `POST /projects` - 创建作品、分卷、首章和初始设定条目
@@ -272,9 +286,9 @@
 
 ### 5. 测试覆盖
 
-#### 单元测试（897 passed，SQLite in-memory，mock providers）
+#### 单元测试（907 passed，SQLite in-memory，mock providers）
 
-**全量测试结果**：897 passed, 36 skipped（未设置集成测试 URL 时）, 4 warnings；前端 55 passed
+**全量测试结果**：907 passed, 36 skipped（未设置集成测试 URL 时）, 4 warnings；前端 57 passed
 
 主要测试覆盖（不逐文件列举测试数量，以实际 pytest 结果为准）：
 - ✅ Codex 设定库：CRUD、别名规范化、可检索文本判据、两段式事务、deferred 降级、httpx 错误重试
@@ -299,7 +313,7 @@
 
 #### 集成测试（36 tests，真实 PostgreSQL + pgvector 已通过）
 - ✅ Docker PostgreSQL + pgvector 环境已执行 36 个测试并全部通过
-- ✅ 审核数据库已执行 `004_auth_admin_rbac` 到 Alembic head
+- ✅ 审核数据库已执行 `006_usage_reservation_expiry` 到 Alembic head
 - 覆盖内容：
   - 部分唯一索引（`postgresql_where`）的并发 upsert 去重
   - pgvector `<=>` 余弦距离与 HNSW 索引
@@ -338,9 +352,9 @@
 ### 2. 产品功能仍有占位实现
 **状态**：进行中
 
-真实认证、作品创建、分卷章纲、章节插入、正文保存保护、Guard、导出和备份恢复已经接通；
+真实认证、作品创建、分卷章纲、章节插入、正文保存保护、Guard、导出、备份恢复和作者生成用量已经接通；
 以下用户可见页面仍有 mock 或静态展示：
-- 文风、AI 占比、用量页面尚未接入真实后端
+- 文风、AI 占比页面尚未接入真实后端
 
 **风险**：当前不能称为功能完整 MVP，也不能把所有页面展示视为真实数据。
 
@@ -499,10 +513,9 @@ baseline，增量实现 Codex embedding 回填、时间锚点解析、issue 生�
 ## 下一步优先级
 
 ### 立即行动（阻塞生产部署）
-1. **真实用量台账与额度控制**
-   - 所有模型调用统一记录输入、输出、模型、费用和业务来源
-   - 生成前原子预留额度，完成后按实际用量结算，失败时释放预留
-   - 管理端可调整套餐与额度，作者端只展示真实聚合数据
+1. **真实风格档与 AI 来源追踪**
+   - 风格档 CRUD、样文抽取状态、生成时显式选择
+   - 记录 AI 插入区间和之后的人工修改，只提供可解释来源统计
 
 2. **扩充评测数据集**
    - 扩充至 100+ 正例 + 50+ hard negatives
@@ -510,16 +523,12 @@ baseline，增量实现 Codex embedding 回填、时间锚点解析、issue 生�
    - 用真实小说场景替换合成案例
 
 ### 短期优先级（1-2 周）
-1. **真实风格档与 AI 来源追踪**
-   - 风格档 CRUD、样文抽取状态、生成时显式选择
-   - 记录 AI 插入区间和之后的人工修改，只提供可解释来源统计
-
-2. **实现 Codex Embedding 持久失败可见性**
+1. **实现 Codex Embedding 持久失败可见性**
    - 增加 `codex_backfill_failures` 表
    - 增加 `GET /codex/{project_id}/embedding-status` 端点
    - 更新 `backfill_codex_embeddings_task` 记录耗尽失败
 
-3. **实现 LLM 结构化仲裁**
+2. **实现 LLM 结构化仲裁**
    - `providers/llm.py` 增加 `arbitrate_conflict` 方法
    - RuleScanner 输出传递给 LLM
    - 低置信度 issue 标记为 `needs_review`
@@ -547,7 +556,7 @@ baseline，增量实现 Codex embedding 回填、时间锚点解析、issue 生�
 - `server/db/models_org.py` - 组织 3 张表
 - `server/db/models_admin.py` - 会话、运行设置与审计 3 张表
 
-### 服务层（11 个文件）
+### 服务层（12 个文件）
 - `server/services/codex.py` - 设定库 CRUD
 - `server/services/codex_embedding.py` - Embedding 生命周期
 - `server/services/outlines.py` - 章纲服务
@@ -559,8 +568,9 @@ baseline，增量实现 Codex embedding 回填、时间锚点解析、issue 生�
 - `server/services/embedding.py` - Embedding provider
 - `server/services/outbox.py` - Outbox 服务
 - `server/services/idempotency.py` - 幂等服务
+- `server/services/usage.py` - 用量预留、结算、退款与月度额度
 
-### API 端点（10 个文件）
+### API 端点（11 个文件）
 - `server/api/auth.py` - 认证与授权
 - `server/api/projects.py` - 项目管理
 - `server/api/chapters.py` - 章节读写
@@ -570,6 +580,7 @@ baseline，增量实现 Codex embedding 回填、时间锚点解析、issue 生�
 - `server/api/admin.py` - 系统管理、账号与运行设置
 - `server/api/orgs.py` - 工作室成员与作品共享
 - `server/api/exports.py` - 全量导出、备份与恢复
+- `server/api/usage.py` - 真实余额、聚合和逐笔用量
 - `server/main.py` - FastAPI 入口
 
 ### 异步任务（3 个文件）
@@ -577,9 +588,9 @@ baseline，增量实现 Codex embedding 回填、时间锚点解析、issue 生�
 - `server/tasks/consistency.py` - 一致性任务
 - `server/tasks/codex.py` - Codex 回填任务
 
-### 测试（897 passed；另有 36 个真实 PostgreSQL 测试通过）
-- `server/tests/` - 单元/功能测试（897 passed）
-- `app/src/**/*.spec.ts` - 前端测试（55 passed）
+### 测试（907 passed；另有 36 个真实 PostgreSQL 测试通过）
+- `server/tests/` - 单元/功能测试（907 passed）
+- `app/src/**/*.spec.ts` - 前端测试（57 passed）
 - `server/tests/integration/` - 集成测试（36 passed，需设置真实 PostgreSQL URL）
 
 ### 文档（1 个文件）
@@ -589,13 +600,13 @@ baseline，增量实现 Codex embedding 回填、时间锚点解析、issue 生�
 
 ## 总结
 
-墨枢一致性后端已完成核心数据模型、服务层、API 端点和异步任务定义，897 个单元/功能
+墨枢一致性后端已完成核心数据模型、服务层、API 端点和异步任务定义，907 个单元/功能
 测试在 SQLite in-memory + mock providers 环境下通过，另有 36 个集成测试在真实
 PostgreSQL + pgvector 环境通过。真实认证、可吊销会话、管理员、工作室 RBAC、作品创建、
-分卷章纲、章节插入、全量导出与非覆盖备份恢复已经接通，前端 55 个测试与生产构建通过。
+分卷章纲、章节插入、全量导出、非覆盖备份恢复与作者生成用量台账已经接通，前端 57 个测试与生产构建通过。
 
 **关键限制**：
-1. 文风、AI 占比、用量仍有 mock 或静态实现
+1. 文风、AI 占比仍有 mock 或静态实现；后台模型成本尚未进入统一台账
 2. Codex embedding 回填的持久失败可见性尚未实现
 3. 评测夹具仅 10 个 smoke cases，硬编码 100% 指标**不代表实际质量**
 4. 时间锚点自然语言解析、增量影响集、LLM 仲裁未实现

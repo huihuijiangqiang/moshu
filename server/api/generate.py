@@ -25,6 +25,13 @@ from services.generation import (
     count_generated_words,
     retryable_stream,
 )
+from services.usage import (
+    InsufficientCreditsError,
+    UsageReservation,
+    release_reservation,
+    reserve_generation,
+    settle_generation,
+)
 from services.writing_skills import select_writing_skills
 
 router = APIRouter()
@@ -95,10 +102,12 @@ def _generation_response(
     user: User,
     db: AsyncSession,
     gateway: GenerationGateway,
+    reservation: UsageReservation,
 ) -> StreamingResponse:
     async def event_stream() -> AsyncIterator[str]:
         usage: dict = {}
         chunks: list[str] = []
+        finalized = False
         yield _sse(
             {
                 "type": "meta",
@@ -136,7 +145,17 @@ def _generation_response(
                 layer_report=package.layer_report,
             )
             db.add(run)
+            await db.flush()
+            charged = await settle_generation(
+                db,
+                reservation,
+                run_id=run.id,
+                prompt_tokens=prompt_tokens,
+                cached_tokens=run.cached_tokens,
+                completion_tokens=completion_tokens,
+            )
             await db.commit()
+            finalized = True
             yield _sse(
                 {
                     "type": "done",
@@ -146,15 +165,22 @@ def _generation_response(
                         "promptTokens": prompt_tokens,
                         "completionTokens": completion_tokens,
                         "cachedTokens": run.cached_tokens,
+                        "credits": charged,
                     },
                 }
             )
             yield "data: [DONE]\n\n"
         except GenerationProviderError as exc:
             await db.rollback()
+            await release_reservation(db, reservation, reason="provider_error")
+            await db.commit()
+            finalized = True
             yield _sse({"type": "error", "code": "generation_provider_error", "message": str(exc)})
         except Exception:
             await db.rollback()
+            await release_reservation(db, reservation, reason="internal_error")
+            await db.commit()
+            finalized = True
             yield _sse(
                 {
                     "type": "error",
@@ -162,6 +188,11 @@ def _generation_response(
                     "message": "生成服务内部错误，请稍后重试。",
                 }
             )
+        finally:
+            if not finalized:
+                await db.rollback()
+                await release_reservation(db, reservation, reason="stream_interrupted")
+                await db.commit()
 
     return StreamingResponse(
         event_stream(),
@@ -218,7 +249,8 @@ async def generate_chapter(
     gateway: GenerationGateway = Depends(get_generation_gateway),
 ):
     package = await _prepare(request, user, db)
-    return _generation_response(package, user, db, gateway)
+    reservation = await _reserve(package, request, user, db)
+    return _generation_response(package, user, db, gateway, reservation)
 
 
 @router.post("/inline")
@@ -229,4 +261,33 @@ async def generate_inline(
     gateway: GenerationGateway = Depends(get_generation_gateway),
 ):
     package = await _prepare(request, user, db)
-    return _generation_response(package, user, db, gateway)
+    reservation = await _reserve(package, request, user, db)
+    return _generation_response(package, user, db, gateway, reservation)
+
+
+async def _reserve(
+    package: PromptPackage,
+    request: ChapterGenerationRequest,
+    user: User,
+    db: AsyncSession,
+) -> UsageReservation:
+    try:
+        return await reserve_generation(
+            db,
+            user_id=user.id,
+            project_id=package.project.id,
+            feature="generate_chapter" if package.task == "chapter" else "generate_inline",
+            model=package.model_id,
+            model_tier=package.model_tier,
+            prompt_tokens=package.prompt_tokens,
+            target_words=request.target_words,
+        )
+    except InsufficientCreditsError as exc:
+        raise HTTPException(
+            status_code=402,
+            detail={
+                "code": "INSUFFICIENT_CREDITS",
+                "required": exc.required,
+                "remaining": exc.remaining,
+            },
+        ) from exc

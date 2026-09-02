@@ -30,6 +30,7 @@ class User(Base, TimestampMixin):
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     quota_remaining: Mapped[int] = mapped_column(Integer, default=0)
     quota_total: Mapped[int] = mapped_column(Integer, default=0)
+    quota_resets_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
 
     # 关系
     projects: Mapped[list["Project"]] = relationship(back_populates="owner", cascade="all, delete-orphan")

@@ -15,6 +15,7 @@ from db.models_consistency_extended import ConsistencyRun
 from db.models_core import Project, User
 from db.models_guard import GuardIssue
 from db.session import get_db
+from services.usage import DEFAULT_CREDIT_RATES, get_credit_rates
 
 router = APIRouter()
 
@@ -28,6 +29,7 @@ class AdminUserOut(BaseModel):
     is_active: bool
     quota_remaining: int
     quota_total: int
+    quota_resets_at: str | None
     created_at: str
 
 
@@ -48,12 +50,18 @@ class AdminSettingsOut(BaseModel):
     embedding_model: str
     generation_gateway_configured: bool
     embedding_gateway_configured: bool
+    credit_rates: dict[str, int]
 
 
 class AdminSettingsPatch(BaseModel):
     registration_enabled: bool | None = None
     default_plan: Literal["free", "author", "studio"] | None = None
     default_monthly_quota: int | None = Field(default=None, ge=0, le=100_000_000)
+    basic_input_credits: int | None = Field(default=None, ge=0, le=100_000)
+    basic_output_credits: int | None = Field(default=None, ge=0, le=100_000)
+    advanced_input_credits: int | None = Field(default=None, ge=0, le=100_000)
+    advanced_output_credits: int | None = Field(default=None, ge=0, le=100_000)
+    cached_input_percent: int | None = Field(default=None, ge=0, le=100)
 
 
 def _user_out(user: User) -> AdminUserOut:
@@ -66,6 +74,7 @@ def _user_out(user: User) -> AdminUserOut:
         is_active=user.is_active,
         quota_remaining=user.quota_remaining,
         quota_total=user.quota_total,
+        quota_resets_at=user.quota_resets_at.isoformat() if user.quota_resets_at else None,
         created_at=user.created_at.isoformat(),
     )
 
@@ -166,6 +175,7 @@ async def get_settings(
     _admin: User = Depends(require_admin),
     db: AsyncSession = Depends(get_db),
 ) -> AdminSettingsOut:
+    credit_rates = await get_credit_rates(db)
     return AdminSettingsOut(
         registration_enabled=await _setting(db, "registration_enabled", "enabled", True),
         default_plan=await _setting(db, "account_defaults", "plan", "free"),
@@ -175,6 +185,7 @@ async def get_settings(
         embedding_model=settings.embedding_model,
         generation_gateway_configured=bool(settings.model_gateway_main_url and settings.model_gateway_main_key),
         embedding_gateway_configured=bool(settings.embedding_gateway_url and settings.embedding_gateway_key),
+        credit_rates=credit_rates,
     )
 
 
@@ -203,6 +214,24 @@ async def update_settings(
         if "default_monthly_quota" in changed:
             value["monthly_quota"] = changed["default_monthly_quota"]
         row.value = value
+        row.updated_by = admin.id
+    rate_fields = {
+        "basic_input_credits": "basic_input",
+        "basic_output_credits": "basic_output",
+        "advanced_input_credits": "advanced_input",
+        "advanced_output_credits": "advanced_output",
+        "cached_input_percent": "cached_percent",
+    }
+    if any(field in changed for field in rate_fields):
+        row = await db.get(SystemSetting, "credit_rates")
+        if row is None:
+            row = SystemSetting(key="credit_rates", value={}, updated_by=admin.id)
+            db.add(row)
+        rates = {**DEFAULT_CREDIT_RATES, **(row.value or {})}
+        for field, key in rate_fields.items():
+            if field in changed:
+                rates[key] = changed[field]
+        row.value = rates
         row.updated_by = admin.id
     if changed:
         db.add(_audit(admin, "settings.update", "system", None, changed))
