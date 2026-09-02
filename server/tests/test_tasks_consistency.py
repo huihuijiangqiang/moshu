@@ -21,13 +21,17 @@
 「锁 + 版本比较」这段逻辑本身；真正的并发互斥需要 PostgreSQL，见
 tests/integration/（未跑过）。
 """
+import asyncio
 import contextlib
 from datetime import datetime, timedelta, timezone
+from types import SimpleNamespace
 
 import httpx
 import pytest
+from billiard.exceptions import SoftTimeLimitExceeded
 from sqlalchemy import select
 
+from celery_app import celery_app
 from config import settings
 from db.models_consistency_extended import ConsistencyClaim, DocumentSummary
 from db.models_core import Chapter, ChapterBody, ChapterVersion
@@ -40,6 +44,56 @@ from services.consistency import (
 )
 from services.timeline import parse_absolute_anchor
 from tasks import consistency as tasks
+
+
+def test_long_model_tasks_are_routed_away_from_outbox_dispatch():
+    routes = celery_app.conf.task_routes
+    assert routes["consistency.dispatch_outbox"]["queue"] == "outbox"
+    assert routes["consistency.extract_claims"]["queue"] == "consistency"
+    assert routes["consistency.generate_summary"]["queue"] == "consistency"
+
+
+def test_run_step_task_persists_soft_timeout(monkeypatch):
+    calls = []
+
+    async def step(task_id, run_id):
+        return {"task_id": task_id, "run_id": run_id}
+
+    async def record_timeout(run_id, phase):
+        calls.append((run_id, phase))
+
+    run_count = 0
+
+    def fake_run_async(coro):
+        nonlocal run_count
+        run_count += 1
+        if run_count == 1:
+            coro.close()
+            raise SoftTimeLimitExceeded()
+        return asyncio.run(coro)
+
+    monkeypatch.setattr(tasks, "run_async", fake_run_async)
+    monkeypatch.setattr(tasks, "cancel_pending_async_work", lambda: calls.append("cancelled"))
+    monkeypatch.setattr(tasks, "_fail_timed_out_step", record_timeout)
+
+    with pytest.raises(SoftTimeLimitExceeded):
+        tasks.run_step_task(
+            task_id="task-1", run_id=42, phase="extract", step=step
+        )
+
+    assert calls == ["cancelled", (42, "extract")]
+
+
+@pytest.mark.asyncio
+async def test_fail_timed_out_step_marks_run_failed(
+    use_test_session, pipeline_setup
+):
+    await tasks._fail_timed_out_step(pipeline_setup.id, "summary")
+
+    await use_test_session.refresh(pipeline_setup)
+    assert pipeline_setup.status == "failed"
+    assert pipeline_setup.summary_state == "failed"
+    assert pipeline_setup.error_code == "summary_timeout"
 
 
 @pytest.fixture
@@ -2301,3 +2355,62 @@ async def test_summary_and_scan_are_dispatched_in_parallel(
 
     chain_args = next(args for kind, args in calls if kind == "chain")
     assert len(chain_args) == 2, "chain 只有两段：extract，然后并行组"
+
+
+async def test_dispatch_outbox_routes_manual_scan_to_existing_run(
+    use_test_session, monkeypatch
+):
+    event = SimpleNamespace(
+        id=7,
+        topic="consistency.manual_scan",
+        payload={"run_id": 42},
+        lease_token="lease-7",
+    )
+    dispatched: list[int] = []
+    sent: list[tuple[int, str]] = []
+
+    async def fake_lease_batch(db, owner_id, batch_size, lease_duration_seconds):
+        return [event]
+
+    async def fake_mark_sent(db, event_id, lease_token):
+        sent.append((event_id, lease_token))
+        return True
+
+    monkeypatch.setattr(tasks.OutboxService, "lease_batch", fake_lease_batch)
+    monkeypatch.setattr(tasks.OutboxService, "mark_sent", fake_mark_sent)
+    monkeypatch.setattr(tasks, "dispatch_run_pipeline", dispatched.append)
+
+    result = await tasks._dispatch_outbox_async("dispatcher-1", 20)
+
+    assert result["dispatched"] == 1
+    assert result["failed"] == 0
+    assert dispatched == [42]
+    assert sent == [(7, "lease-7")]
+
+
+async def test_dispatch_outbox_acknowledges_outline_refresh_without_false_dead_letter(
+    use_test_session, monkeypatch
+):
+    event = SimpleNamespace(
+        id=8,
+        topic="chapter.outline_updated",
+        payload={"chapter_id": "ch_a", "outline_revision": 2},
+        lease_token="lease-8",
+    )
+    sent: list[tuple[int, str]] = []
+
+    async def fake_lease_batch(db, owner_id, batch_size, lease_duration_seconds):
+        return [event]
+
+    async def fake_mark_sent(db, event_id, lease_token):
+        sent.append((event_id, lease_token))
+        return True
+
+    monkeypatch.setattr(tasks.OutboxService, "lease_batch", fake_lease_batch)
+    monkeypatch.setattr(tasks.OutboxService, "mark_sent", fake_mark_sent)
+
+    result = await tasks._dispatch_outbox_async("dispatcher-2", 20)
+
+    assert result["dispatched"] == 1
+    assert result["failed"] == 0
+    assert sent == [(8, "lease-8")]

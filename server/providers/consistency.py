@@ -505,6 +505,8 @@ class ConsistencyProvider:
                         "upstream",
                         "overload",
                         "rate limit",
+                        "concurrency limit",
+                        "too many requests",
                     )
                     error_type = (
                         StreamingError

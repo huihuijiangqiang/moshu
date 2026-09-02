@@ -323,6 +323,19 @@ async def test_stream_read_error_frame_is_retried(monkeypatch):
     assert claims[0]["subject_text"] == "角色A"
 
 
+async def test_concurrency_limit_error_frame_is_retried(monkeypatch):
+    monkeypatch.setattr(settings, "consistency_max_retries", 1, raising=False)
+    transport = StreamingMockTransport(
+        sse_error("Concurrency limit exceeded for user") + sse_done()
+    )
+    provider = ConsistencyProvider(client=httpx.AsyncClient(transport=transport))
+
+    with pytest.raises(StreamingError, match="Concurrency limit exceeded"):
+        await provider.extract_claims("<p>短文</p>", "proj_a", "ch_a")
+
+    assert len(transport.requests) == 2
+
+
 async def test_sse_role_frame_without_content_is_skipped():
     """delta 没有 content 的帧（如 role 帧）必须跳过，不能报错。"""
     claims_json = json.dumps({"claims": [make_claim_payload("角色A")]})

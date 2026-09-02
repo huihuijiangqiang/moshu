@@ -36,9 +36,11 @@ ck_consistency_run_completed_phases 兜底：status='completed' 必须蕴含三�
 任一支线失败即 failed，且 error_code/error_detail 只保留第一个 —— 双失败不覆盖根因。
 """
 import asyncio
+import logging
 from datetime import datetime, timezone
-from typing import Optional
+from typing import Awaitable, Callable, Optional, TypeVar
 
+from billiard.exceptions import SoftTimeLimitExceeded
 from celery import chain, group, shared_task
 from sqlalchemy import and_, case, func, select, update
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
@@ -68,6 +70,8 @@ from services.timeline import assign_story_orders
 # Create async engine for tasks
 engine = create_async_engine(settings.database_url, echo=False)
 AsyncSessionLocal = async_sessionmaker(engine, expire_on_commit=False)
+logger = logging.getLogger(__name__)
+TaskResult = TypeVar("TaskResult")
 
 
 class RunNotFoundError(RuntimeError):
@@ -90,6 +94,54 @@ def run_async(coro):
     """Helper to run async functions in sync Celery tasks"""
     loop = asyncio.get_event_loop()
     return loop.run_until_complete(coro)
+
+
+def cancel_pending_async_work() -> None:
+    """Cancel the coroutine left behind when a signal interrupts run_until_complete."""
+    loop = asyncio.get_event_loop()
+    pending = asyncio.all_tasks(loop)
+    for task in pending:
+        task.cancel()
+    if pending:
+        loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
+
+
+async def _fail_timed_out_step(run_id: int, phase: str) -> None:
+    """Persist a Celery soft timeout so the run never remains visibly active forever."""
+    async with AsyncSessionLocal() as db:
+        await fail_run(
+            db,
+            run_id,
+            phase=phase,
+            error_code=f"{phase}_timeout",
+            error_detail=f"{phase} exceeded the worker soft time limit",
+        )
+
+
+def run_step_task(
+    *,
+    task_id: str,
+    run_id: int,
+    phase: str,
+    step: Callable[[str, int], Awaitable[TaskResult]],
+) -> TaskResult:
+    """Run one async pipeline step and make process-level timeouts observable.
+
+    Celery delivers ``SoftTimeLimitExceeded`` to the synchronous task wrapper while
+    the event loop is blocked in ``run_until_complete``.  The coroutine's ordinary
+    ``except Exception`` block therefore cannot reliably persist the failure.
+    """
+    try:
+        return run_async(step(task_id, run_id))
+    except SoftTimeLimitExceeded:
+        cancel_pending_async_work()
+        try:
+            run_async(_fail_timed_out_step(run_id, phase))
+        except Exception:
+            logger.exception(
+                "failed to persist %s timeout for consistency run %s", phase, run_id
+            )
+        raise
 
 
 async def load_run(db, run_id: int) -> ConsistencyRun:
@@ -374,11 +426,7 @@ async def _process_body_saved_async(task_id: str, payload: dict):
 
         # 抽取必须先完成（摘要与扫描都读它的产物），之后两条支线并行投递：
         # 扫描只依赖已落库的 claim，没有理由等摘要的模型调用。
-        pipeline = chain(
-            extract_claims.si(run_id),
-            group(generate_summary.si(run_id), scan_rules.si(run_id)),
-        )
-        pipeline.apply_async()
+        dispatch_run_pipeline(run_id)
 
         return {
             "status": "dispatched",
@@ -388,12 +436,29 @@ async def _process_body_saved_async(task_id: str, payload: dict):
         }
 
 
+def dispatch_run_pipeline(run_id: int) -> None:
+    """投递指定 run 的抽取、摘要和扫描链路。
+
+    正文保存和手工重扫共用这一入口，避免两个 topic 的编排方式逐渐分叉。
+    """
+    pipeline = chain(
+        extract_claims.si(run_id),
+        group(generate_summary.si(run_id), scan_rules.si(run_id)),
+    )
+    pipeline.apply_async()
+
+
 @shared_task(bind=True, name="consistency.extract_claims")
 def extract_claims(self, run_id: int):
     """
     Step 1: Extract structured claims from the body revision
     """
-    return run_async(_extract_claims_async(self.request.id, run_id))
+    return run_step_task(
+        task_id=self.request.id,
+        run_id=run_id,
+        phase="extract",
+        step=_extract_claims_async,
+    )
 
 
 async def _extract_claims_async(task_id: str, run_id: int):
@@ -506,7 +571,12 @@ def generate_summary(self, run_id: int):
     """
     Step 2a: Generate and persist the document summary (与扫描并行)
     """
-    return run_async(_generate_summary_async(self.request.id, run_id))
+    return run_step_task(
+        task_id=self.request.id,
+        run_id=run_id,
+        phase="summary",
+        step=_generate_summary_async,
+    )
 
 
 async def _generate_summary_async(task_id: str, run_id: int):
@@ -594,7 +664,12 @@ def scan_rules(self, run_id: int):
     """
     Step 2b: Execute rule scanning (与摘要并行；只依赖已落库的 claim)
     """
-    return run_async(_scan_rules_async(self.request.id, run_id))
+    return run_step_task(
+        task_id=self.request.id,
+        run_id=run_id,
+        phase="scan",
+        step=_scan_rules_async,
+    )
 
 
 async def _scan_rules_async(task_id: str, run_id: int):
@@ -668,6 +743,16 @@ async def _dispatch_outbox_async(task_id: str, batch_size: int):
                     process_body_saved.delay(event.payload)
                     await OutboxService.mark_sent(db, event.id, event.lease_token)
                     dispatched += 1
+                elif event.topic == "consistency.manual_scan":
+                    dispatch_run_pipeline(int(event.payload["run_id"]))
+                    await OutboxService.mark_sent(db, event.id, event.lease_token)
+                    dispatched += 1
+                elif event.topic == "chapter.outline_updated":
+                    # Outline retrieval reads the authoritative database rows
+                    # directly; there is no materialized cache to refresh yet.
+                    # Acknowledge the event so it does not become a false DLQ.
+                    await OutboxService.mark_sent(db, event.id, event.lease_token)
+                    dispatched += 1
                 else:
                     # Unknown topic
                     await OutboxService.mark_failed(
@@ -699,6 +784,7 @@ __all__ = [
     "StaleRevisionError",
     "advance_run_status",
     "build_entity_linker",
+    "dispatch_run_pipeline",
     "dispatch_outbox",
     "extract_claims",
     "fail_run",

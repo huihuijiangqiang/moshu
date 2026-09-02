@@ -1,9 +1,13 @@
 """
 一致性 API 的行为测试：issue 处置的乐观并发、动作校验与处置记录落库。
 """
+from datetime import datetime, timedelta, timezone
+
 from sqlalchemy import select
 
-from db.models_consistency_extended import GuardResolution
+from db.models_consistency import OutboxEvent
+from db.models_consistency_extended import GuardIssueEvidence, GuardResolution
+from db.models_core import ChapterBody
 from db.models_guard import GuardIssue
 
 
@@ -186,6 +190,170 @@ async def test_resolve_is_denied_across_tenants(
         await async_db_session.execute(select(GuardIssue).where(GuardIssue.id == "gi_1"))
     ).scalar_one()
     assert issue.status == "open"
+
+
+async def test_project_scan_queues_current_body_and_overview_exposes_runtime(
+    app_client, async_db_session, seed_project, auth_headers
+):
+    await seed_project()
+    async_db_session.add(
+        ChapterBody(chapter_id="ch_a", content_html="<p>正文</p>", content_json={"type": "doc"}, rev=2)
+    )
+    await async_db_session.commit()
+
+    response = await app_client.post(
+        "/consistency/projects/proj_a/scan", headers=auth_headers("user_a")
+    )
+    assert response.status_code == 200
+    assert response.json()["queued"] == 1
+
+    event = (
+        await async_db_session.execute(
+            select(OutboxEvent).where(OutboxEvent.topic == "consistency.manual_scan")
+        )
+    ).scalar_one()
+    assert event.payload["project_id"] == "proj_a"
+    assert event.payload["body_rev"] == 2
+
+    overview = await app_client.get(
+        "/consistency/projects/proj_a/overview", headers=auth_headers("user_a")
+    )
+    assert overview.status_code == 200
+    body = overview.json()
+    assert body["status"] == "queued"
+    assert body["queued"] == 1
+    assert body["outbox_pending"] == 1
+    assert body["runs"][0]["chapter_id"] == "ch_a"
+    assert body["runs"][0]["body_rev"] == 2
+
+
+async def test_project_scan_and_overview_are_denied_across_tenants(
+    app_client, async_db_session, seed_project, make_user, auth_headers
+):
+    await seed_project()
+    async_db_session.add(make_user("user_intruder"))
+    await async_db_session.commit()
+
+    scan = await app_client.post(
+        "/consistency/projects/proj_a/scan", headers=auth_headers("user_intruder")
+    )
+    overview = await app_client.get(
+        "/consistency/projects/proj_a/overview", headers=auth_headers("user_intruder")
+    )
+    assert scan.status_code == 403
+    assert overview.status_code == 403
+
+
+async def test_project_scan_resets_failed_current_revision_for_retry(
+    app_client, async_db_session, seed_project, make_run, auth_headers
+):
+    await seed_project()
+    async_db_session.add(
+        ChapterBody(chapter_id="ch_a", content_html="<p>正文</p>", content_json={"type": "doc"}, rev=2)
+    )
+    run = make_run(
+        project_id="proj_a",
+        chapter_id="ch_a",
+        body_rev=2,
+        status="failed",
+        extract_state="failed",
+        summary_state="pending",
+        scan_state="pending",
+        error_code="extraction_error",
+        error_detail="gateway overloaded",
+    )
+    async_db_session.add(run)
+    await async_db_session.commit()
+
+    response = await app_client.post(
+        "/consistency/projects/proj_a/scan", headers=auth_headers("user_a")
+    )
+    assert response.status_code == 200
+    await async_db_session.refresh(run)
+    assert run.status == "pending"
+    assert run.extract_state == "pending"
+    assert run.error_code is None
+    assert run.error_detail is None
+
+    repeated = await app_client.post(
+        "/consistency/projects/proj_a/scan", headers=auth_headers("user_a")
+    )
+    assert repeated.status_code == 200
+    assert repeated.json()["queued"] == 0, "fresh pending run must not be queued twice"
+
+
+async def test_project_scan_only_recovers_active_runs_after_the_worker_hard_limit(
+    app_client, async_db_session, seed_project, make_run, auth_headers
+):
+    await seed_project()
+    async_db_session.add(
+        ChapterBody(chapter_id="ch_a", content_html="<p>正文</p>", content_json={"type": "doc"}, rev=2)
+    )
+    run = make_run(
+        project_id="proj_a",
+        chapter_id="ch_a",
+        body_rev=2,
+        status="extracting",
+        extract_state="running",
+        summary_state="pending",
+        scan_state="pending",
+    )
+    run.updated_at = datetime.now(timezone.utc) - timedelta(minutes=10)
+    async_db_session.add(run)
+    await async_db_session.commit()
+
+    still_valid = await app_client.post(
+        "/consistency/projects/proj_a/scan", headers=auth_headers("user_a")
+    )
+    assert still_valid.status_code == 200
+    assert still_valid.json()["queued"] == 0
+
+    run.updated_at = datetime.now(timezone.utc) - timedelta(minutes=32)
+    await async_db_session.commit()
+    recovered = await app_client.post(
+        "/consistency/projects/proj_a/scan", headers=auth_headers("user_a")
+    )
+    assert recovered.status_code == 200
+    assert recovered.json()["queued"] == 1
+    await async_db_session.refresh(run)
+    assert run.status == "pending"
+    assert run.extract_state == "pending"
+
+
+async def test_issue_list_includes_chapter_evidence_actions_and_revision(
+    app_client, async_db_session, seed_project, make_run, auth_headers
+):
+    issue = await seed_issue(async_db_session, seed_project, make_run)
+    async_db_session.add(
+        GuardIssueEvidence(
+            issue_id=issue.id,
+            side="actual",
+            source_kind="body",
+            chapter_id="ch_a",
+            body_rev=1,
+            paragraph_id="p-2",
+            quote="她亲眼看见已经死去的人推门而入。",
+            sort_order=1,
+        )
+    )
+    await async_db_session.commit()
+
+    response = await app_client.get(
+        "/consistency/issues/proj_a", headers=auth_headers("user_a")
+    )
+    assert response.status_code == 200
+    row = response.json()[0]
+    assert row["chapter_index"] == 1024
+    assert row["chapter_title"] == "Chapter ch_a"
+    assert row["issue_rev"] == 1
+    assert row["actions"] == ["accept_old_fact", "accept_new_fact"]
+    assert row["evidence"] == [{
+        "label": "本次正文",
+        "text": "她亲眼看见已经死去的人推门而入。",
+        "accent": True,
+        "chapter_id": "ch_a",
+        "paragraph_id": "p-2",
+    }]
 
 
 async def test_status_endpoint_uses_shared_pipeline_version(

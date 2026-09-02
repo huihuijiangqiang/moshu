@@ -18,11 +18,31 @@ celery_app.conf.update(
     timezone="UTC",
     enable_utc=True,
     task_track_started=True,
-    task_time_limit=300,  # 5 minutes
-    task_soft_time_limit=270,  # 4.5 minutes
+    # A long chapter may require multiple 180-second streamed requests and retries.
+    # Keep a finite ceiling, but do not kill valid chunked work after one slow retry.
+    task_time_limit=1800,
+    task_soft_time_limit=1740,
+    task_acks_late=True,
+    task_reject_on_worker_lost=True,
     worker_prefetch_multiplier=1,
     worker_max_tasks_per_child=1000,
+    imports=("tasks.consistency", "tasks.codex"),
+    task_routes={
+        "consistency.dispatch_outbox": {"queue": "outbox"},
+        "consistency.process_body_saved": {"queue": "consistency"},
+        "consistency.extract_claims": {"queue": "consistency"},
+        "consistency.generate_summary": {"queue": "consistency"},
+        "consistency.scan_rules": {"queue": "consistency"},
+        "codex.backfill_embeddings": {"queue": "consistency"},
+    },
+    beat_schedule={
+        "dispatch-consistency-outbox": {
+            "task": "consistency.dispatch_outbox",
+            "schedule": 2.0,
+            "kwargs": {"batch_size": 20},
+        }
+    },
 )
 
-# Auto-discover tasks
-celery_app.autodiscover_tasks(["tasks"])
+# Tasks are registered explicitly through ``imports`` above.  Using
+# autodiscover_tasks(["tasks"]) would look for a Django-style tasks.tasks module.

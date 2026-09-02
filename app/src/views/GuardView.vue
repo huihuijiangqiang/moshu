@@ -38,11 +38,28 @@ const rows = computed<GuardIssue[]>(() =>
 
 const selected = computed(() => rows.value.find((i) => i.id === selectedId.value) ?? rows.value[0] ?? null)
 
+const runtimeLabel = computed(() => ({
+  idle: '尚未扫描',
+  queued: '等待任务',
+  running: '正在扫描',
+  completed: '扫描完成',
+  failed: '扫描失败'
+}[guard.overview.status]))
+
+// A pending run and its not-yet-dispatched outbox event describe the same work.
+const queuedCount = computed(() => Math.max(guard.overview.queued, guard.overview.outboxPending))
+
+const activityText = computed(() => {
+  if (!guard.overview.latestActivityAt) return '暂无运行记录'
+  const value = new Date(guard.overview.latestActivityAt)
+  return Number.isNaN(value.getTime()) ? '已有运行记录' : value.toLocaleString('zh-CN', { hour12: false })
+})
+
 watch(rows, (list) => {
   if (!list.some((i) => i.id === selectedId.value)) selectedId.value = list[0]?.id ?? null
 }, { immediate: true })
 
-function act(issue: GuardIssue, action: string) {
+function act(issue: GuardIssue, action: string, index: number) {
   if (action.includes('查看时间线')) {
     router.push(toProject('outline'))
     return
@@ -53,7 +70,7 @@ function act(issue: GuardIssue, action: string) {
   }
 
   // 更新设定、确认忽略等动作由 mock API 记录为已处置；正文修改必须由作者完成后再消警。
-  guard.resolve(issue.id)
+  void guard.resolve(issue.id, issue.actionCodes?.[index] ?? 'defer')
 }
 
 function openIssueChapter(issue: GuardIssue) {
@@ -106,11 +123,11 @@ function openIssueChapter(issue: GuardIssue) {
 
       <div class="guard-scan" :style="{ background: 'var(--panel-sunken)', padding: 'var(--u3) var(--u4)', display: 'grid', alignContent: 'center', gap: '6px' }">
         <span :style="{ fontSize: 'var(--fs-sm)', color: 'var(--ink-3)', whiteSpace: 'nowrap' }">
-          上次全量扫描 · 8 月 27 日 23:10<br>
-          {{ project.totalChapters }} 章 / {{ (project.totalWords / 10000).toFixed(1) }} 万字
+          {{ runtimeLabel }} · {{ activityText }}<br>
+          {{ guard.overview.running }} 运行 / {{ queuedCount }} 排队 / {{ guard.overview.failed + guard.overview.outboxDeadLetter }} 失败
         </span>
-        <button class="wk-btn" type="button" :disabled="guard.scanning" @click="guard.rescan()">
-          {{ guard.scanning ? '扫描中…' : '重新全量扫描' }}
+        <button class="wk-btn" type="button" :disabled="guard.scanRequestPending" @click="guard.rescan()">
+          {{ guard.scanRequestPending ? '正在下发…' : guard.scanning ? '重新检查' : '扫描当前版本' }}
         </button>
       </div>
     </div>
@@ -207,13 +224,13 @@ function openIssueChapter(issue: GuardIssue) {
                   class="wk-btn"
                   type="button"
                   :data-primary="n === 0"
-                  @click="act(selected, a)"
+                  @click="act(selected, a, n)"
                 >{{ a }}</button>
                 <button
                   class="wk-btn"
                   type="button"
                   :style="{ marginLeft: 'auto', borderColor: 'transparent', color: 'var(--ink-3)' }"
-                  @click="guard.resolve(selected.id)"
+                  @click="guard.resolve(selected.id, 'false_positive')"
                 >这是误报</button>
               </div>
               <p :style="{ margin: 'var(--u3) 0 0', fontSize: 'var(--fs-sm)', color: 'var(--ink-3)', lineHeight: 1.7 }">

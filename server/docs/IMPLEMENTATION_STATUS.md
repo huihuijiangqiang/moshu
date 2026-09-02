@@ -7,9 +7,11 @@
 
 **关键事实**：
 - ✅ 30 张表完整 Alembic baseline，pgvector extension/HALFVEC 列已在迁移中定义
-- ✅ 837 个单元/功能测试通过（SQLite in-memory，mock embedding/LLM）
+- ✅ 848 个单元/功能测试通过（SQLite in-memory，mock embedding/LLM）
 - ✅ 36 个集成测试已在本机真实 PostgreSQL + pgvector 环境通过
 - ✅ 已完成真实账号认证、作品创建、分卷章纲编辑与章节插入的首轮产品闭环
+- ✅ Docker Compose 已接通 PostgreSQL、Redis、Celery worker/dispatcher/beat 与 transactional outbox
+- ✅ Guard 已接入项目扫描、运行状态、真实告警证据与乐观锁处置
 - ⚠️ Codex embedding 回填的持久失败可见性尚未实现
 - ⚠️ 评测夹具仅 10 个 smoke cases，硬编码 100% 指标不代表实际质量
 
@@ -199,6 +201,9 @@
 - ✅ `GET /consistency/issues/{project_id}` - 项目告警列表（可按 chapter_id/status 过滤）
 - ✅ `GET /consistency/issues/{project_id}/{issue_id}` - 告警详情
 - ✅ `POST /consistency/issues/{project_id}/{issue_id}/resolve` - 提交处置（issue_rev 乐观锁）
+- ✅ `POST /consistency/projects/{project_id}/scan` - 扫描项目当前全部章节版本
+- ✅ `GET /consistency/projects/{project_id}/overview` - Guard 聚合状态、最新运行与告警证据
+- ✅ 手工重扫会恢复失败、完成或超过 31 分钟未更新的丢失运行；硬时限内的活跃运行不会重复排队
 
 ---
 
@@ -220,16 +225,21 @@
 
 #### Celery 配置 (`celery_app.py`)
 - ✅ Redis broker + result backend
-- ✅ 任务路由配置
-- ✅ 结果过期与序列化配置
+- ✅ Docker Compose 模型 worker（并发 2）、独立 outbox dispatcher（并发 1）与 beat
+- ✅ beat 每 2 秒批量派发 outbox；独立队列避免长模型任务阻塞保存事件
+- ✅ 显式任务导入，避免错误的 Django 风格 `tasks.tasks` 自动发现
+- ✅ late ack + worker lost 重投；长章节按分块和网关重试设置有限的 30 分钟上限
+- ✅ 软超时会写入 `*_timeout` 失败状态，不会把 run 永久留在运行中
+- ✅ `chapter.body_saved` / `consistency.manual_scan` 路由；章纲事件确认消费
+- ✅ PostgreSQL dead-letter 保留非空 `available_at`，失败事务可正常提交
 
 ---
 
 ### 5. 测试覆盖
 
-#### 单元测试（837 passed，SQLite in-memory，mock providers）
+#### 单元测试（848 passed，SQLite in-memory，mock providers）
 
-**全量测试结果**：837 passed, 36 skipped（未设置集成测试 URL 时）, 4 warnings
+**全量测试结果**：848 passed, 36 skipped（未设置集成测试 URL 时）, 4 warnings
 
 主要测试覆盖（不逐文件列举测试数量，以实际 pytest 结果为准）：
 - ✅ Codex 设定库：CRUD、别名规范化、可检索文本判据、两段式事务、deferred 降级、httpx 错误重试
@@ -293,8 +303,7 @@
 ### 2. 产品功能仍有占位实现
 **状态**：进行中
 
-真实认证、作品创建、分卷章纲和章节插入已经接通；以下用户可见页面仍有 mock 或静态展示：
-- Guard 尚未完整接入一致性状态、告警处置和异步任务运行状态
+真实认证、作品创建、分卷章纲、章节插入和 Guard 运行闭环已经接通；以下用户可见页面仍有 mock 或静态展示：
 - 导出、文风、AI 占比、用量页面尚未全部接入真实后端
 - 正文冲突恢复、离线草稿恢复和保存失败保护仍需补齐端到端交互
 
@@ -413,12 +422,14 @@ baseline，增量实现 Codex embedding 回填、时间锚点解析、issue 生�
 
 ## 技术债务
 
-### 1. 异步运行链路尚未完成产品化验收
-**描述**：Celery 任务代码存在，但 Docker Compose worker/beat、outbox 定时派发、Guard 前端状态尚未形成可观察闭环。
+### 1. 异步运行链路的模型吞吐仍受上游网关约束
+**描述**：worker/dispatcher/beat、outbox 与 Guard 已形成真实闭环；10 万字样本实跑发现
+网关会返回 502/524 和并发限制，当前以模型 worker 并发 2、独立 outbox 队列、SSE 重试、
+有限长任务时限和失败可见性处理。
 
-**风险**：正文保存后的一致性检查可能停留在 outbox，用户无法从界面判断任务是否在运行或失败。
+**风险**：大项目首次全书扫描仍可能较慢或需要手工重扫失败章节，但不会静默卡在 outbox。
 
-**优先级**：高。下一批直接完成运行和可视化验收。
+**优先级**：高。继续记录真实耗时与失败率，再决定是否拆分更细任务或增加网关容量。
 
 ### 2. 评测数据集规模不足
 **描述**：仅 10 个 smoke cases，硬编码 100% 指标。
@@ -453,15 +464,10 @@ baseline，增量实现 Codex embedding 回填、时间锚点解析、issue 生�
 ## 下一步优先级
 
 ### 立即行动（阻塞生产部署）
-1. **接通 Celery/Guard 运行链路**
-   - Docker Compose 启动 worker 与 beat
-   - 定时派发 transactional outbox
-   - Guard 页面展示真实运行状态、告警与处置结果
-
-2. **补齐正文保存保护**
+1. **补齐正文保存保护**
    - 409 冲突恢复、离线草稿恢复、保存失败防丢失
 
-3. **扩充评测数据集**
+2. **扩充评测数据集**
    - 扩充至 100+ 正例 + 50+ hard negatives
    - 接入 CI，设定召回率 ≥70%、误报率 ≤20% 的通过阈值
    - 用真实小说场景替换合成案例
@@ -526,8 +532,8 @@ baseline，增量实现 Codex embedding 回填、时间锚点解析、issue 生�
 - `server/tasks/consistency.py` - 一致性任务
 - `server/tasks/codex.py` - Codex 回填任务
 
-### 测试（837 passed；另有 36 个真实 PostgreSQL 测试通过）
-- `server/tests/` - 单元/功能测试（837 passed）
+### 测试（848 passed；另有 36 个真实 PostgreSQL 测试通过）
+- `server/tests/` - 单元/功能测试（848 passed）
 - `server/tests/integration/` - 集成测试（36 passed，需设置真实 PostgreSQL URL）
 
 ### 文档（1 个文件）
@@ -537,17 +543,17 @@ baseline，增量实现 Codex embedding 回填、时间锚点解析、issue 生�
 
 ## 总结
 
-墨枢一致性后端已完成核心数据模型、服务层、API 端点和异步任务定义，837 个单元/功能
+墨枢一致性后端已完成核心数据模型、服务层、API 端点和异步任务定义，848 个单元/功能
 测试在 SQLite in-memory + mock providers 环境下通过，另有 36 个集成测试在真实
 PostgreSQL + pgvector 环境通过。真实认证、作品创建、分卷章纲与章节插入已经接通。
 
 **关键限制**：
-1. Celery worker/beat、outbox 派发和 Guard 前端尚未完成真实运行闭环
-2. 正文冲突恢复、离线草稿恢复和保存失败保护尚未完成
-3. 导出、文风、AI 占比、用量仍有 mock 或静态实现
-4. Codex embedding 回填的持久失败可见性尚未实现
-5. 评测夹具仅 10 个 smoke cases，硬编码 100% 指标**不代表实际质量**
-6. 时间锚点自然语言解析、增量影响集、LLM 仲裁未实现
+1. 正文冲突恢复、离线草稿恢复和保存失败保护尚未完成
+2. 导出、文风、AI 占比、用量仍有 mock 或静态实现
+3. Codex embedding 回填的持久失败可见性尚未实现
+4. 评测夹具仅 10 个 smoke cases，硬编码 100% 指标**不代表实际质量**
+5. 时间锚点自然语言解析、增量影响集、LLM 仲裁未实现
+6. 真实长文本扫描吞吐受上游模型网关稳定性和并发限制影响
 
 当前是“核心一致性能力 + 首轮真实产品流程”，不是功能完整 MVP。生产部署前仍需完成上述产品闭环、
 扩充评测集并验证长文本规模下的质量和性能。

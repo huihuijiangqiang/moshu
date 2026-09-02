@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { codexFromDto, htmlToDocument } from './content'
+import { codexFromDto, guardIssueFromDto, guardOverviewFromDto, htmlToDocument } from './content'
 
 describe('htmlToDocument', () => {
   it('uses the backend paragraph pid contract', () => {
@@ -62,5 +62,40 @@ describe('codexFromDto', () => {
 
     expect(entry.kind).toBe('system')
     expect(entry.facts).toEqual([{ label: '货币', value: '一贯等于一千文' }])
+  })
+})
+
+describe('Guard DTO mapping', () => {
+  it('keeps issue revision, evidence and resolution actions for real handling', () => {
+    const issue = guardIssueFromDto({
+      id: 'g1', chapter_id: 'ch1', issue_type: 'alive_conflict', severity: 'high',
+      description: '沈砚已经死亡，却在后文亲自开门。', status: 'open', resolved: false,
+      issue_rev: 3, confidence: 0.94, chapter_index: 12, chapter_title: '雪夜归人',
+      evidence: [{ label: '本次正文', text: '沈砚推门进来。', accent: true }],
+      actions: ['accept_old_fact', 'accept_new_fact'], updated_at: '2026-09-02T10:00:00Z'
+    })
+
+    expect(issue.category).toBe('生死状态冲突')
+    expect(issue.chapterRef).toBe('第 12 章 · 雪夜归人')
+    expect(issue.issueRev).toBe(3)
+    expect(issue.actions).toEqual(['保留原设定', '采用新事实'])
+    expect(issue.actionCodes).toEqual(['accept_old_fact', 'accept_new_fact'])
+    expect(issue.evidence[0]?.accent).toBe(true)
+  })
+
+  it('maps outbox and phase state without inventing a completed scan', () => {
+    const overview = guardOverviewFromDto({
+      status: 'running', queued: 0, running: 1, completed: 2, failed: 0,
+      outbox_pending: 1, outbox_dead_letter: 0, latest_activity_at: '2026-09-02T10:00:00Z',
+      runs: [{
+        chapter_id: 'ch1', chapter_index: 12, chapter_title: '雪夜归人', body_rev: 4,
+        status: 'scanning', phases: { extract: 'succeeded', summary: 'running', scan: 'running' },
+        error_code: null, error_detail: null, updated_at: '2026-09-02T10:00:00Z'
+      }]
+    })
+
+    expect(overview.status).toBe('running')
+    expect(overview.outboxPending).toBe(1)
+    expect(overview.runs[0]?.phases.summary).toBe('running')
   })
 })

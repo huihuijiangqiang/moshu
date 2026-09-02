@@ -1,8 +1,9 @@
 """
 Consistency API - status, scan, issues, resolutions with authentication
 """
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Literal, Optional, get_args
+from uuid import uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
@@ -10,8 +11,9 @@ from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from api.auth import get_current_user, verify_project_access
-from db.models_consistency_extended import ConsistencyRun, GuardResolution
-from db.models_core import Chapter, User
+from db.models_consistency import OutboxEvent
+from db.models_consistency_extended import ConsistencyRun, GuardIssueEvidence, GuardResolution
+from db.models_core import Chapter, ChapterBody, User
 from db.models_guard import GuardIssue
 from db.session import get_db
 from services.consistency import PIPELINE_VERSION, get_or_create_run
@@ -65,6 +67,13 @@ class IssueListItem(BaseModel):
     description: str
     status: str
     resolved: bool
+    issue_rev: int
+    confidence: float
+    chapter_index: int
+    chapter_title: str
+    evidence: list[dict]
+    actions: list[str]
+    updated_at: str
 
 
 class IssueDetailResponse(BaseModel):
@@ -104,6 +113,100 @@ class ResolveIssueRequest(BaseModel):
     action: ResolutionAction
     note: Optional[str] = None
     issue_rev: int
+
+
+class ProjectScanResponse(BaseModel):
+    queued: int
+    run_ids: list[int]
+
+
+class RunOverview(BaseModel):
+    chapter_id: str
+    chapter_index: int
+    chapter_title: str
+    body_rev: int
+    status: str
+    phases: ConsistencyPhases
+    error_code: Optional[str] = None
+    error_detail: Optional[str] = None
+    updated_at: str
+
+
+class ProjectConsistencyOverview(BaseModel):
+    status: str
+    queued: int
+    running: int
+    completed: int
+    failed: int
+    outbox_pending: int
+    outbox_dead_letter: int
+    latest_activity_at: Optional[str]
+    runs: list[RunOverview]
+
+
+ACTIVE_RUN_STATES = {"pending", "extracting", "summarizing", "scanning"}
+# Celery's hard limit is 30 minutes.  Manual recovery must not reset a valid
+# streamed extraction while it is still inside that execution envelope.
+STALE_RUN_AFTER = timedelta(minutes=31)
+
+
+async def prepare_manual_run(
+    db: AsyncSession,
+    *,
+    project_id: str,
+    chapter_id: str,
+    body_rev: int,
+) -> tuple[int, bool]:
+    """Return ``(run_id, should_enqueue)`` for a manual current-revision scan.
+
+    Fresh active runs are left alone. Terminal runs and active runs older than
+    the worker hard timeout are reset so a user can recover a failed or lost
+    task without violating the unique run key.
+    """
+    result = await db.execute(
+        select(ConsistencyRun).where(
+            ConsistencyRun.chapter_id == chapter_id,
+            ConsistencyRun.body_rev == body_rev,
+            ConsistencyRun.pipeline_version == PIPELINE_VERSION,
+        )
+    )
+    existing = result.scalar_one_or_none()
+    if existing is None:
+        return (
+            await get_or_create_run(
+                db,
+                project_id=project_id,
+                chapter_id=chapter_id,
+                body_rev=body_rev,
+                pipeline_version=PIPELINE_VERSION,
+                trigger="manual_scan",
+            ),
+            True,
+        )
+
+    updated_at = existing.updated_at
+    if updated_at.tzinfo is None:
+        updated_at = updated_at.replace(tzinfo=timezone.utc)
+    if existing.status in ACTIVE_RUN_STATES and updated_at >= datetime.now(timezone.utc) - STALE_RUN_AFTER:
+        return existing.id, False
+
+    await db.execute(
+        update(ConsistencyRun)
+        .where(ConsistencyRun.id == existing.id)
+        .values(
+            status="pending",
+            extract_state="pending",
+            summary_state="pending",
+            scan_state="pending",
+            trigger="manual_scan",
+            started_at=None,
+            finished_at=None,
+            error_code=None,
+            error_detail=None,
+            updated_at=datetime.now(timezone.utc),
+        )
+    )
+    return existing.id, True
 
 
 @router.get("/status/{chapter_id}/{body_rev}", response_model=ConsistencyStatusResponse)
@@ -164,29 +267,27 @@ async def trigger_consistency_scan(
 
     await verify_project_access(chapter.project_id, user, db)
 
-    # get_or_create_run 返回 run_id(int)，且 pipeline_version 是必填参数
-    run_id = await get_or_create_run(
+    run_id, should_enqueue = await prepare_manual_run(
         db,
         project_id=chapter.project_id,
         chapter_id=request.chapter_id,
         body_rev=request.body_rev,
-        pipeline_version=PIPELINE_VERSION,
-        trigger=request.trigger,
     )
 
-    # OutboxService.enqueue 是 staticmethod，db 为第一个位置参数
-    await OutboxService.enqueue(
-        db,
-        topic="consistency.manual_scan",
-        aggregate_id=f"{request.chapter_id}:{request.body_rev}",
-        aggregate_rev=request.body_rev,
-        payload={
-            "run_id": run_id,
-            "project_id": chapter.project_id,
-            "chapter_id": request.chapter_id,
-            "body_rev": request.body_rev,
-        },
-    )
+    if should_enqueue:
+        await OutboxService.enqueue(
+            db,
+            topic="consistency.manual_scan",
+            aggregate_id=f"{request.chapter_id}:{request.body_rev}:{uuid4().hex}",
+            aggregate_rev=request.body_rev,
+            payload={
+                "run_id": run_id,
+                "project_id": chapter.project_id,
+                "chapter_id": request.chapter_id,
+                "body_rev": request.body_rev,
+                "trigger": "manual_scan",
+            },
+        )
     await db.commit()
 
     status_result = await db.execute(
@@ -196,6 +297,126 @@ async def trigger_consistency_scan(
     return ScanResponse(
         run_id=run_id,
         status=status_result.scalar_one(),
+    )
+
+
+@router.post("/projects/{project_id}/scan", response_model=ProjectScanResponse)
+async def trigger_project_scan(
+    project_id: str,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """把作品内所有已有正文的当前版本加入一致性扫描队列。"""
+    await verify_project_access(project_id, user, db)
+    result = await db.execute(
+        select(Chapter, ChapterBody)
+        .join(ChapterBody, ChapterBody.chapter_id == Chapter.id)
+        .where(Chapter.project_id == project_id, ChapterBody.rev > 0)
+        .order_by(Chapter.idx)
+    )
+
+    run_ids: list[int] = []
+    for chapter, body in result.all():
+        run_id, should_enqueue = await prepare_manual_run(
+            db,
+            project_id=project_id,
+            chapter_id=chapter.id,
+            body_rev=body.rev,
+        )
+        if not should_enqueue:
+            continue
+        await OutboxService.enqueue(
+            db,
+            topic="consistency.manual_scan",
+            aggregate_id=f"{chapter.id}:{body.rev}:{uuid4().hex}",
+            aggregate_rev=body.rev,
+            payload={
+                "run_id": run_id,
+                "project_id": project_id,
+                "chapter_id": chapter.id,
+                "body_rev": body.rev,
+                "trigger": "manual_scan",
+            },
+        )
+        run_ids.append(run_id)
+
+    await db.commit()
+    return ProjectScanResponse(queued=len(run_ids), run_ids=run_ids)
+
+
+@router.get("/projects/{project_id}/overview", response_model=ProjectConsistencyOverview)
+async def get_project_consistency_overview(
+    project_id: str,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """返回每章最新 run 与 outbox 状态，供 Guard 展示真实运行进度。"""
+    await verify_project_access(project_id, user, db)
+    result = await db.execute(
+        select(ConsistencyRun, Chapter)
+        .join(Chapter, Chapter.id == ConsistencyRun.chapter_id)
+        .where(ConsistencyRun.project_id == project_id)
+        .order_by(ConsistencyRun.chapter_id, ConsistencyRun.body_rev.desc(), ConsistencyRun.id.desc())
+    )
+    latest_by_chapter: dict[str, tuple[ConsistencyRun, Chapter]] = {}
+    for run, chapter in result.all():
+        latest_by_chapter.setdefault(run.chapter_id, (run, chapter))
+
+    rows = sorted(latest_by_chapter.values(), key=lambda item: item[1].idx)
+    queued = sum(run.status == "pending" for run, _ in rows)
+    running = sum(run.status in {"extracting", "summarizing", "scanning"} for run, _ in rows)
+    completed = sum(run.status == "completed" for run, _ in rows)
+    failed = sum(run.status == "failed" for run, _ in rows)
+
+    outbox_result = await db.execute(
+        select(OutboxEvent).where(OutboxEvent.topic.in_(("chapter.body_saved", "consistency.manual_scan")))
+    )
+    project_events = [
+        event for event in outbox_result.scalars().all()
+        if isinstance(event.payload, dict) and event.payload.get("project_id") == project_id
+    ]
+    outbox_pending = sum(event.status in {"pending", "dispatching"} for event in project_events)
+    outbox_dead_letter = sum(event.status == "dead_letter" for event in project_events)
+
+    latest_activity = max((run.updated_at for run, _ in rows), default=None)
+    if running:
+        overall = "running"
+    elif outbox_pending or queued:
+        overall = "queued"
+    elif failed or outbox_dead_letter:
+        overall = "failed"
+    elif completed:
+        overall = "completed"
+    else:
+        overall = "idle"
+
+    return ProjectConsistencyOverview(
+        status=overall,
+        queued=queued,
+        running=running,
+        completed=completed,
+        failed=failed,
+        outbox_pending=outbox_pending,
+        outbox_dead_letter=outbox_dead_letter,
+        latest_activity_at=latest_activity.isoformat() if latest_activity else None,
+        runs=[
+            RunOverview(
+                chapter_id=run.chapter_id,
+                chapter_index=chapter.idx,
+                chapter_title=chapter.title,
+                body_rev=run.body_rev,
+                status=run.status,
+                phases=ConsistencyPhases(
+                    extract=run.extract_state,
+                    summary=run.summary_state,
+                    scan=run.scan_state,
+                ),
+                error_code=run.error_code,
+                error_detail=run.error_detail,
+                updated_at=run.updated_at.isoformat(),
+            )
+            for run, chapter in rows
+        ],
     )
 
 
@@ -210,7 +431,11 @@ async def list_issues(
     """列出一致性问题"""
     await verify_project_access(project_id, user, db)
 
-    query = select(GuardIssue).where(GuardIssue.project_id == project_id)
+    query = (
+        select(GuardIssue, Chapter)
+        .join(Chapter, Chapter.id == GuardIssue.chapter_id)
+        .where(GuardIssue.project_id == project_id)
+    )
 
     if chapter_id:
         query = query.where(GuardIssue.chapter_id == chapter_id)
@@ -218,7 +443,24 @@ async def list_issues(
         query = query.where(GuardIssue.status == status_filter)
 
     result = await db.execute(query)
-    issues = result.scalars().all()
+    rows = result.all()
+    issue_ids = [issue.id for issue, _ in rows]
+    evidence_by_issue: dict[str, list[dict]] = {issue_id: [] for issue_id in issue_ids}
+    if issue_ids:
+        evidence_result = await db.execute(
+            select(GuardIssueEvidence)
+            .where(GuardIssueEvidence.issue_id.in_(issue_ids))
+            .order_by(GuardIssueEvidence.issue_id, GuardIssueEvidence.sort_order)
+        )
+        labels = {"expected": "已有事实", "actual": "本次正文", "context": "相关上下文"}
+        for evidence in evidence_result.scalars().all():
+            evidence_by_issue[evidence.issue_id].append({
+                "label": labels.get(evidence.side, evidence.side),
+                "text": evidence.quote or "暂无可引用原文",
+                "accent": evidence.side == "actual",
+                "chapter_id": evidence.chapter_id,
+                "paragraph_id": evidence.paragraph_id,
+            })
 
     return [
         IssueListItem(
@@ -229,8 +471,15 @@ async def list_issues(
             description=issue.description,
             status=issue.status,
             resolved=issue.resolved,
+            issue_rev=issue.issue_rev,
+            confidence=float(issue.confidence),
+            chapter_index=chapter.idx,
+            chapter_title=chapter.title,
+            evidence=evidence_by_issue[issue.id],
+            actions=issue.actions,
+            updated_at=issue.updated_at.isoformat(),
         )
-        for issue in issues
+        for issue, chapter in rows
     ]
 
 

@@ -1,7 +1,7 @@
 import { delay } from '../http'
 import * as seed from './seed'
 import { findShelfBook } from './shelf'
-import type { Chapter, ChapterPlanPatch, CodexEntry, GuardIssue, Project, ContextLayer } from '@/types'
+import type { Chapter, ChapterPlanPatch, CodexEntry, GuardIssue, GuardOverview, GuardResolutionAction, Project, ContextLayer } from '@/types'
 
 /** 内存态副本：mock 下的写操作要真的改变数据，否则界面行为是假的。 */
 const state = {
@@ -162,7 +162,21 @@ export const mockApi = {
     }))
   },
 
-  async resolveGuardIssue(id: string): Promise<void> {
+  async getGuardOverview(projectId = 'p1'): Promise<GuardOverview> {
+    await delay(100)
+    const completed = chaptersFor(projectId).filter((chapter) => chapter.words > 0).length
+    return {
+      status: completed ? 'completed' : 'idle', queued: 0, running: 0, completed, failed: 0,
+      outboxPending: 0, outboxDeadLetter: 0, latestActivityAt: new Date().toISOString(), runs: []
+    }
+  },
+
+  async scanProject(projectId = 'p1'): Promise<{ queued: number; run_ids: number[] }> {
+    await delay(120)
+    return { queued: chaptersFor(projectId).filter((chapter) => chapter.words > 0).length, run_ids: [] }
+  },
+
+  async resolveGuardIssue(_projectId: string, id: string, _issueRev: number, _action: GuardResolutionAction): Promise<void> {
     await delay(120)
     const i = state.issues.find((x) => x.id === id)
     if (i) i.resolved = true

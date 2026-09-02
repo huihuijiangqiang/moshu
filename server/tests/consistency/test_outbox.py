@@ -102,10 +102,11 @@ async def test_mark_failed_locks_row_and_applies_backoff() -> None:
 
 @pytest.mark.asyncio
 async def test_mark_failed_moves_exhausted_event_to_dead_letter() -> None:
-    event = SimpleNamespace(attempts=5)
+    available_at = object()
+    event = SimpleNamespace(attempts=5, available_at=available_at)
     db = SimpleNamespace(execute=AsyncMock(side_effect=[ScalarResult(event), ScalarResult(rowcount=1)]))
 
     assert await OutboxService.mark_failed(db, 12, "lease-token", "permanent", max_attempts=5) is True
     values = db.execute.await_args_list[1].args[0].compile().params
     assert values["status"] == "dead_letter"
-    assert values["available_at"] is None
+    assert values["available_at"] is available_at

@@ -1,6 +1,6 @@
 import { ApiError, USE_MOCK, request } from './http'
 import { mockApi } from './mock'
-import type { Chapter, ChapterPlanPatch, CodexEntry, CodexKind, ContextLayer, Project } from '@/types'
+import type { Chapter, ChapterPlanPatch, CodexEntry, CodexKind, ContextLayer, GuardIssue, GuardOverview, GuardResolutionAction, Project } from '@/types'
 
 interface ProjectDto {
   id: string
@@ -39,6 +39,45 @@ interface OutlineDto {
   body_needs_revision: boolean
 }
 
+interface GuardIssueDto {
+  id: string
+  chapter_id: string
+  issue_type: string
+  severity: string
+  description: string
+  status: string
+  resolved: boolean
+  issue_rev: number
+  confidence: number
+  chapter_index: number
+  chapter_title: string
+  evidence: Array<{ label: string; text: string; accent?: boolean }>
+  actions: string[]
+  updated_at: string
+}
+
+interface GuardOverviewDto {
+  status: GuardOverview['status']
+  queued: number
+  running: number
+  completed: number
+  failed: number
+  outbox_pending: number
+  outbox_dead_letter: number
+  latest_activity_at: string | null
+  runs: Array<{
+    chapter_id: string
+    chapter_index: number
+    chapter_title: string
+    body_rev: number
+    status: string
+    phases: { extract: string; summary: string; scan: string }
+    error_code: string | null
+    error_detail: string | null
+    updated_at: string
+  }>
+}
+
 export interface CodexDto {
   id: string
   project_id: string
@@ -67,6 +106,64 @@ const CODEX_KIND_FROM_DTO: Record<CodexDto['kind'], CodexKind> = {
 const revisions = new Map<string, number>()
 const chapterCache = new Map<string, Chapter>()
 const codexProjectIds = new Map<string, string>()
+
+const ISSUE_LABELS: Record<string, string> = {
+  alive_conflict: '生死状态冲突',
+  ownership_conflict: '物品归属冲突',
+  knowledge_boundary: '知情边界冲突'
+}
+
+const RESOLUTION_LABELS: Record<GuardResolutionAction, string> = {
+  accept_old_fact: '保留原设定',
+  accept_new_fact: '采用新事实',
+  intentional_exception: '标记为有意例外',
+  false_positive: '这是误报',
+  fixed_in_body: '正文已修正',
+  defer: '稍后处理'
+}
+
+export function guardIssueFromDto(dto: GuardIssueDto): GuardIssue {
+  const actionCodes = dto.actions.filter((action): action is GuardResolutionAction => action in RESOLUTION_LABELS)
+  return {
+    id: dto.id,
+    kind: 'conflict',
+    severity: dto.severity === 'high' ? 'high' : 'mid',
+    category: ISSUE_LABELS[dto.issue_type] ?? '一致性冲突',
+    title: dto.description,
+    chapterRef: `第 ${dto.chapter_index} 章 · ${dto.chapter_title}`,
+    detail: `规则置信度 ${Math.round(dto.confidence * 100)}% · 扫描结果不会自动修改正文`,
+    evidence: dto.evidence,
+    actions: actionCodes.map((action) => RESOLUTION_LABELS[action]),
+    actionCodes,
+    issueRev: dto.issue_rev,
+    chapterId: dto.chapter_id,
+    resolved: dto.resolved
+  }
+}
+
+export function guardOverviewFromDto(dto: GuardOverviewDto): GuardOverview {
+  return {
+    status: dto.status,
+    queued: dto.queued,
+    running: dto.running,
+    completed: dto.completed,
+    failed: dto.failed,
+    outboxPending: dto.outbox_pending,
+    outboxDeadLetter: dto.outbox_dead_letter,
+    latestActivityAt: dto.latest_activity_at ?? undefined,
+    runs: dto.runs.map((run) => ({
+      chapterId: run.chapter_id,
+      chapterIndex: run.chapter_index,
+      chapterTitle: run.chapter_title,
+      bodyRev: run.body_rev,
+      status: run.status,
+      phases: run.phases,
+      errorCode: run.error_code ?? undefined,
+      errorDetail: run.error_detail ?? undefined,
+      updatedAt: run.updated_at
+    }))
+  }
+}
 
 function chapterNumber(value: string | null): number | undefined {
   if (!value) return undefined
@@ -283,8 +380,22 @@ const realApi = {
   async dropCodexEntry(): Promise<void> {
     throw new Error('real_codex_drop_not_connected')
   },
-  async listGuardIssues() { return [] },
-  async resolveGuardIssue() {},
+  async listGuardIssues(projectId: string): Promise<GuardIssue[]> {
+    const rows = await request<GuardIssueDto[]>(`/consistency/issues/${projectId}`)
+    return rows.map(guardIssueFromDto)
+  },
+  async getGuardOverview(projectId: string): Promise<GuardOverview> {
+    return guardOverviewFromDto(await request<GuardOverviewDto>(`/consistency/projects/${projectId}/overview`))
+  },
+  async scanProject(projectId: string): Promise<{ queued: number; run_ids: number[] }> {
+    return request(`/consistency/projects/${projectId}/scan`, { method: 'POST' })
+  },
+  async resolveGuardIssue(projectId: string, id: string, issueRev: number, action: GuardResolutionAction): Promise<void> {
+    await request(`/consistency/issues/${projectId}/${id}/resolve`, {
+      method: 'POST',
+      body: JSON.stringify({ action, issue_rev: issueRev })
+    })
+  },
   async getContextLayers(_projectId: string, chapterId: string): Promise<ContextLayer[]> {
     const result = await request<{ layers: ContextLayer[] }>(`/generate/context/${chapterId}`)
     return result.layers

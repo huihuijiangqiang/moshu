@@ -115,6 +115,7 @@ export interface Project {
 }
 
 export type GuardKind = 'conflict' | 'foreshadow' | 'pending-entry'
+export type GuardResolutionAction = 'accept_old_fact' | 'accept_new_fact' | 'intentional_exception' | 'false_positive' | 'fixed_in_body' | 'defer'
 
 export interface GuardIssue {
   id: string
@@ -126,7 +127,34 @@ export interface GuardIssue {
   detail?: string
   evidence: { label: string; text: string; accent?: boolean }[]
   actions: string[]
+  actionCodes?: GuardResolutionAction[]
+  issueRev?: number
+  chapterId?: string
   resolved: boolean
+}
+
+export interface ConsistencyRunOverview {
+  chapterId: string
+  chapterIndex: number
+  chapterTitle: string
+  bodyRev: number
+  status: string
+  phases: { extract: string; summary: string; scan: string }
+  errorCode?: string
+  errorDetail?: string
+  updatedAt: string
+}
+
+export interface GuardOverview {
+  status: 'idle' | 'queued' | 'running' | 'completed' | 'failed'
+  queued: number
+  running: number
+  completed: number
+  failed: number
+  outboxPending: number
+  outboxDeadLetter: number
+  latestActivityAt?: string
+  runs: ConsistencyRunOverview[]
 }
 
 export interface ContextLayer {
