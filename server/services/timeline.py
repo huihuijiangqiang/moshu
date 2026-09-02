@@ -17,19 +17,19 @@
 * story_order 只由本模块分配，且只依据**已确认的全局锚点**。没有共同锚点就
   保持 NULL —— claim 照常落库进入待确认，不参与依赖时序的硬规则。
 
-MVP 范围限制（有意为之，不是遗漏）
-----------------------------------
-本版只支持一种全局锚点：**明确的绝对时间**。绝对时间天然有共同标尺，跨块、跨章
-都可比。除此之外一律保持 NULL：
+保守范围限制
+------------
+本版支持明确的 ISO 绝对时间，以及能精确、唯一引用到这类全局锚点的确定性相对时长。
+事件标签与时间证据随 claim 持久化，因此后章可以引用前章，当前批次内也可以链式引用。
+以下情形仍保持 NULL：
 
-* ``relative_to_anchor``：「三天后」这类相对表述需要先确认它锚在哪个绝对时间上，
-  解析链尚未实现，因此不分配 story_order（保留证据供后续解析与人工确认）。
+* ``relative_to_anchor`` 的时长模糊、事件标签缺失/歧义、跨时间线或方向冲突；
 * ``narration_local``：块内叙述顺序。这**恰恰是不能用**的那一类 —— 它只在块内
   有意义，跨块不可比。见 tests/test_timeline.py 里的对应测试。
 * ``unknown``：模型自己都说不确定。
 
-也就是说：MVP 下只有正文里写明了时间的事件才会进硬规则。这会漏报，但不会误报，
-而误报（把正常倒叙判成矛盾）对作者的伤害大得多。
+无法审计到原文、无法确定解析的时间不会进入硬规则。这会漏报，但不会为了提高命中率
+伪造顺序；误报（把正常倒叙判成矛盾）对作者的伤害更大。
 """
 from __future__ import annotations
 
@@ -63,6 +63,21 @@ _ISO_PATTERNS = (
 
 _ISO_LIKE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}([T ]\d{2}:\d{2}(:\d{2})?)?$")
 
+_CN_DIGITS = {"零": 0, "〇": 0, "一": 1, "二": 2, "两": 2, "三": 3, "四": 4,
+              "五": 5, "六": 6, "七": 7, "八": 8, "九": 9}
+_RELATIVE_RE = re.compile(
+    r"^(?P<number>半|\d+(?:\.\d+)?|[零〇一二两三四五六七八九十百]+)"
+    r"(?:个)?(?P<unit>分钟|小时|时辰|天|日|周)(?P<direction>前|后)$"
+)
+_UNIT_SECONDS = {
+    "分钟": 60,
+    "小时": 3600,
+    "时辰": 7200,
+    "天": 86400,
+    "日": 86400,
+    "周": 7 * 86400,
+}
+
 
 class UnparseableAnchorError(ValueError):
     """锚点值无法归一化成绝对时间。"""
@@ -90,6 +105,49 @@ def parse_absolute_anchor(value: Optional[str]) -> Optional[float]:
     return None
 
 
+def _parse_chinese_number(value: str) -> Optional[float]:
+    if value == "半":
+        return 0.5
+    if re.fullmatch(r"\d+(?:\.\d+)?", value):
+        return float(value)
+    if "百" in value:
+        left, right = value.split("百", 1)
+        hundreds = _CN_DIGITS.get(left, 1) if left else 1
+        tail = _parse_chinese_number(right) if right else 0
+        return None if tail is None else hundreds * 100 + tail
+    if "十" in value:
+        left, right = value.split("十", 1)
+        tens = _CN_DIGITS.get(left, 1) if left else 1
+        ones = _CN_DIGITS.get(right, 0) if right else 0
+        return None if ones is None else tens * 10 + ones
+    digits = [_CN_DIGITS.get(char) for char in value]
+    if any(digit is None for digit in digits):
+        return None
+    return float("".join(str(digit) for digit in digits))
+
+
+def parse_relative_offset(value: Optional[str]) -> Optional[float]:
+    """Parse a narrow, auditable relative duration into signed seconds."""
+    if not value:
+        return None
+    candidate = re.sub(r"\s+", "", value)
+    match = _RELATIVE_RE.fullmatch(candidate)
+    if not match:
+        return None
+    number = _parse_chinese_number(match.group("number"))
+    if number is None or number <= 0:
+        return None
+    seconds = number * _UNIT_SECONDS[match.group("unit")]
+    return seconds if match.group("direction") == "后" else -seconds
+
+
+def _event_ref(claim: dict) -> Optional[str]:
+    value = claim.get("temporal_event_ref")
+    if not value:
+        return None
+    return re.sub(r"\s+", "", str(value)).casefold() or None
+
+
 def is_globally_anchored(claim: dict) -> bool:
     """这条 claim 是否具备**全局**可比的时间锚点。
 
@@ -102,18 +160,26 @@ def is_globally_anchored(claim: dict) -> bool:
 
     注意这里**不看** claim 自带的 story_order：那个字段由本模块写入，不是输入。
     """
-    if claim.get("order_basis") not in GLOBAL_ORDER_BASES:
-        return False
     confidence = claim.get("order_confidence")
     if confidence is None or confidence < MIN_ORDER_CONFIDENCE:
         return False
     if not claim.get("timeline_id"):
         return False
-    return parse_absolute_anchor(claim.get("temporal_anchor_value")) is not None
+    if claim.get("order_basis") in GLOBAL_ORDER_BASES:
+        return parse_absolute_anchor(claim.get("temporal_anchor_value")) is not None
+    return (
+        claim.get("order_basis") == "relative_to_anchor"
+        and claim.get("_resolved_relative") is True
+        and claim.get("story_order") is not None
+    )
 
 
-def assign_story_orders(claims: list[dict]) -> list[dict]:
-    """按已确认的全局锚点分配 story_order；其余保持 NULL。
+def assign_story_orders(
+    claims: list[dict],
+    *,
+    known_anchors: Optional[list[dict]] = None,
+) -> list[dict]:
+    """Resolve absolute anchors and unambiguous relative chains.
 
     这是 story_order 的**唯一**写入点。模型给的任何 story_order 都会被覆盖 ——
     它没有全局标尺可用，给出的必然是局部序号。
@@ -123,7 +189,11 @@ def assign_story_orders(claims: list[dict]) -> list[dict]:
     assigned = []
     for claim in claims:
         positioned = dict(claim)
-        if is_globally_anchored(positioned):
+        positioned["_resolved_relative"] = False
+        if (
+            positioned.get("order_basis") in GLOBAL_ORDER_BASES
+            and is_globally_anchored(positioned)
+        ):
             positioned["story_order"] = parse_absolute_anchor(
                 positioned["temporal_anchor_value"]
             )
@@ -131,6 +201,63 @@ def assign_story_orders(claims: list[dict]) -> list[dict]:
             # 没有共同锚点 —— 保持 NULL，进待确认列表
             positioned["story_order"] = None
         assigned.append(positioned)
+
+    # Accepted claims from earlier chapters provide the cross-chapter anchor
+    # vocabulary. Only their persisted event label, timeline and computed
+    # order are used; no model-created local ordinal is accepted here.
+    external = [
+        dict(anchor)
+        for anchor in (known_anchors or [])
+        if anchor.get("story_order") is not None and _event_ref(anchor)
+    ]
+
+    # Resolve chains iteratively. A relative claim can reference an absolute
+    # anchor, a persisted anchor from another chapter, or a relative claim
+    # resolved in an earlier pass.
+    for _ in range(len(assigned)):
+        changed = False
+        for claim in assigned:
+            if claim.get("story_order") is not None:
+                continue
+            if claim.get("order_basis") != "relative_to_anchor":
+                continue
+            confidence = claim.get("order_confidence")
+            if confidence is None or confidence < MIN_ORDER_CONFIDENCE:
+                continue
+            timeline_id = claim.get("timeline_id")
+            reference = re.sub(
+                r"\s+", "", str(claim.get("temporal_relation_ref") or "")
+            ).casefold()
+            offset = parse_relative_offset(claim.get("temporal_anchor_text"))
+            relation = claim.get("temporal_relation")
+            if not timeline_id or not reference or offset is None:
+                continue
+            if relation == "after" and offset <= 0:
+                continue
+            if relation == "before" and offset >= 0:
+                continue
+            if relation == "simultaneous" and offset != 0:
+                continue
+            if relation not in {"before", "after", "simultaneous"}:
+                continue
+
+            matching_orders = {
+                float(candidate["story_order"])
+                for candidate in [*external, *assigned]
+                if candidate is not claim
+                and candidate.get("timeline_id") == timeline_id
+                and candidate.get("story_order") is not None
+                and reference == _event_ref(candidate)
+            }
+            # Multiple facts may describe the same event. They remain an
+            # unambiguous anchor when their validated global order agrees.
+            if len(matching_orders) != 1:
+                continue
+            claim["story_order"] = matching_orders.pop() + offset
+            claim["_resolved_relative"] = True
+            changed = True
+        if not changed:
+            break
     return assigned
 
 
@@ -142,4 +269,5 @@ __all__ = [
     "assign_story_orders",
     "is_globally_anchored",
     "parse_absolute_anchor",
+    "parse_relative_offset",
 ]

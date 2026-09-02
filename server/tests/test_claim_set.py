@@ -86,8 +86,42 @@ def test_recomputed_fields_are_all_refreshed():
         "valid_to_order",
         "confidence",
         "source_anchor",
+        "temporal_anchor_text",
+        "temporal_anchor_value",
+        "temporal_event_ref",
+        "temporal_relation",
+        "temporal_relation_ref",
+        "order_basis",
+        "order_confidence",
     ):
         assert field in MUTABLE_FIELDS
+
+
+async def test_temporal_evidence_is_persisted_and_refreshed(project):
+    first = payload(
+        "fp_a",
+        temporal_anchor_text="三日后",
+        temporal_event_ref="抵达县城",
+        temporal_relation="after",
+        temporal_relation_ref="离开村庄",
+        order_basis="relative_to_anchor",
+        order_confidence=0.91,
+    )
+    await replace_body_claim_set(project, claims=[first], **SCOPE)
+    await project.commit()
+
+    row = (await load(project))[0]
+    assert row.temporal_event_ref == "抵达县城"
+    assert row.temporal_relation_ref == "离开村庄"
+    assert row.order_basis == "relative_to_anchor"
+
+    second = {**first, "temporal_event_ref": "抵达府城", "order_confidence": 0.93}
+    await replace_body_claim_set(project, claims=[second], **SCOPE)
+    await project.commit()
+
+    row = (await load(project))[0]
+    assert row.temporal_event_ref == "抵达府城"
+    assert float(row.order_confidence) == pytest.approx(0.93)
 
 
 # --- 行为 ---------------------------------------------------------------------

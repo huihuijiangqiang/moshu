@@ -23,7 +23,7 @@ import secrets
 from datetime import datetime, timezone
 from typing import Any, Optional
 
-from sqlalchemy import select
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -37,6 +37,14 @@ ISSUE_ACTIONS: dict[str, list[str]] = {
     "knowledge_boundary": ["accept_new_fact", "intentional_exception", "fixed_in_body", "false_positive"],
 }
 DEFAULT_ACTIONS = ["accept_old_fact", "accept_new_fact", "intentional_exception", "false_positive"]
+
+IMPACT_PREDICATE_FAMILIES = {
+    "alive": frozenset({"alive"}),
+    "owns": frozenset({"owns"}),
+    "uses_knowledge": frozenset({"uses_knowledge", "acquires_knowledge"}),
+    "acquires_knowledge": frozenset({"uses_knowledge", "acquires_knowledge"}),
+}
+MAX_IMPACT_KEYS = 500
 
 
 def claim_anchor(claim: ConsistencyClaim) -> dict[str, Any]:
@@ -54,6 +62,82 @@ class RuleScanner:
 
     def __init__(self, rule_version: str = "v1.0"):
         self.rule_version = rule_version
+        self.last_scan_claim_count = 0
+        self.last_scan_scope = "project"
+
+    async def _load_impacted_claims(
+        self,
+        db: AsyncSession,
+        *,
+        project_id: str,
+        chapter_id: str,
+    ) -> list[ConsistencyClaim]:
+        """Load the changed chapter's entity/predicate closure, with safe fallback."""
+        source_rows = list(
+            (
+                await db.execute(
+                    select(ConsistencyClaim).where(
+                        ConsistencyClaim.project_id == project_id,
+                        ConsistencyClaim.chapter_id == chapter_id,
+                        ConsistencyClaim.status.in_(["accepted", "superseded"]),
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+
+        entity_ids = {
+            entry_id
+            for claim in source_rows
+            for entry_id in (claim.subject_entry_id, claim.object_entry_id)
+            if entry_id
+        }
+        unresolved: dict[str, set[str]] = {}
+        for claim in source_rows:
+            if claim.subject_entry_id:
+                continue
+            subject = claim.subject_text.strip().casefold()
+            if not subject:
+                continue
+            predicates = IMPACT_PREDICATE_FAMILIES.get(
+                claim.predicate,
+                frozenset({claim.predicate}),
+            )
+            for predicate in predicates:
+                unresolved.setdefault(predicate, set()).add(subject)
+
+        key_count = len(entity_ids) + sum(len(values) for values in unresolved.values())
+        if not source_rows or key_count == 0 or key_count > MAX_IMPACT_KEYS:
+            self.last_scan_scope = "project"
+            query = select(ConsistencyClaim).where(
+                ConsistencyClaim.project_id == project_id,
+                ConsistencyClaim.status == "accepted",
+            )
+        else:
+            clauses = [ConsistencyClaim.chapter_id == chapter_id]
+            if entity_ids:
+                clauses.extend(
+                    [
+                        ConsistencyClaim.subject_entry_id.in_(entity_ids),
+                        ConsistencyClaim.object_entry_id.in_(entity_ids),
+                    ]
+                )
+            for predicate, subjects in unresolved.items():
+                clauses.append(
+                    and_(
+                        ConsistencyClaim.predicate == predicate,
+                        func.lower(func.trim(ConsistencyClaim.subject_text)).in_(subjects),
+                    )
+                )
+            self.last_scan_scope = "impact"
+            query = select(ConsistencyClaim).where(
+                ConsistencyClaim.project_id == project_id,
+                ConsistencyClaim.status == "accepted",
+                or_(*clauses),
+            )
+
+        return list((await db.execute(query.order_by(ConsistencyClaim.id))).scalars().all())
 
     def compute_issue_fingerprint(self, issue_type: str, identity_keys: list[str]) -> str:
         """按语义身份计算稳定指纹。
@@ -121,14 +205,12 @@ class RuleScanner:
         Returns:
             List of issue IDs (new or updated)
         """
-        # Load all accepted claims for the project (cross-chapter consistency)
-        result = await db.execute(
-            select(ConsistencyClaim)
-            .where(ConsistencyClaim.project_id == project_id)
-            .where(ConsistencyClaim.status == "accepted")
-            .order_by(ConsistencyClaim.id)
+        all_claims = await self._load_impacted_claims(
+            db,
+            project_id=project_id,
+            chapter_id=chapter_id,
         )
-        all_claims = list(result.scalars().all())
+        self.last_scan_claim_count = len(all_claims)
         claims_by_id = {claim.id: claim for claim in all_claims}
 
         # Run rules on all project claims

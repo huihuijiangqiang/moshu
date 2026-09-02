@@ -6,8 +6,8 @@
 所有声明基于实际代码与测试结果，不夸大、不省略已知缺口。
 
 **关键事实**：
-- ✅ 30 张表完整 Alembic baseline，增量迁移已到 `009_embedding_dispatch_attempts`
-- ✅ 934 个单元/功能测试通过（SQLite in-memory，mock embedding/LLM）
+- ✅ 34 张表完整 Alembic baseline，增量迁移已到 `010_claim_temporal_evidence`
+- ✅ 963 个单元/功能测试通过（SQLite in-memory，mock embedding/LLM）
 - ✅ 前端 61 个测试、TypeScript 类型检查和生产构建通过
 - ✅ 36 个集成测试已在本机真实 PostgreSQL + pgvector 环境通过
 - ✅ 已完成真实账号认证、作品创建、分卷章纲编辑与章节插入的首轮产品闭环
@@ -87,7 +87,7 @@
   `halfvec_cosine_ops` 重建 HNSW 索引；upgrade/downgrade 均会要求重新回填向量
 - ✅ `alembic upgrade head --sql` 与 `alembic downgrade -1 --sql` 语法验证通过
 - ✅ 36 个集成测试已在本机真实 PostgreSQL + pgvector 运行通过；当前审核数据库已真实执行
-  `004_auth_admin_rbac -> 005_usage_ledger -> 006_usage_reservation_expiry -> 007_style_profiles -> 008_embedding_job_visibility -> 009_embedding_dispatch_attempts` 并到达 head
+  `004_auth_admin_rbac -> 005_usage_ledger -> 006_usage_reservation_expiry -> 007_style_profiles -> 008_embedding_job_visibility -> 009_embedding_dispatch_attempts -> 010_claim_temporal_evidence` 并到达 head
 
 ---
 
@@ -138,6 +138,8 @@
 #### RuleScanner (`services/rule_scanner.py`)
 - ✅ `compute_issue_fingerprint`（SHA-256 issue_type + 排序证据键）
 - ✅ `scan_chapter` 完整链路：加载 claims → 跑规则 → upsert issues → 标记 stale
+- ✅ 章节级增量影响集：按新旧实体 ID、未解析主体与谓词族召回关联事实，超过 500 键自动退回全项目扫描
+- ✅ 扫描返回 `claims_scanned` 与 `scan_scope`，可观察增量扫描是否降级
 - ✅ Timeline-aware：`story_order` 为 NULL 时跳过需要时序的规则
 - ✅ Issue 生命周期：fingerprint 去重、`issue_rev` 乐观锁、stale 标记
 - ✅ 证据锚点写入（expected/actual GuardIssueEvidence）
@@ -145,14 +147,16 @@
 
 #### 时间线服务 (`services/timeline.py`)
 - ✅ `parse_absolute_anchor`：解析 ISO-8601 形状的绝对时间
-- ✅ `assign_story_orders`：从确认的全局锚点分配 story_order
+- ✅ `parse_relative_offset`：确定性解析分钟/小时/时辰/日/周的前后偏移（含中文数字和小数）
+- ✅ `assign_story_orders`：从确认的全局锚点分配 story_order，支持当前批次链式引用和跨章节引用
 - ✅ `is_globally_anchored`：四条件校验（order_basis, confidence, timeline_id, 可解析值）
-- ⚠️ **MVP 保守限制**：
+- ✅ 时间原文、事件标签、关系、依据与置信度随 claim 持久化；后章可引用前章事件
+- ⚠️ **保守限制**：
   - 仅支持 ISO-8601 形状的绝对时间（`2024-01-15`, `2024-01-15T10:30:00`）
-  - **不支持**「第 N 天」「N 年后」等自然语言相对表达
+  - 支持 `三日后`、`两小时前`、`半个时辰后` 等精确相对表达；`次日`、`过几日`、`一月后` 等日历相关或模糊时间不推断
   - **不支持** LLM 辅助的模糊时间表达规范化
-  - 相对锚点（`relative_to_anchor`）保留 `temporal_relation`/`temporal_relation_ref` 作为证据，
-    但不分配 story_order —— 相对解析链未实现，保持 NULL 进待确认
+  - 相对锚点必须同一时间线、精确唯一引用已确认事件、方向与原文一致且置信度至少 0.7；否则保持 NULL
+  - 前序锚点后续改写时，既有下游相对 claim 不会主动级联重算，需通过项目重扫/管道升级重新抽取
   - 叙述局部序号（`narration_local`）与未知（`unknown`）保持 story_order=NULL
 
 #### Embedding Provider (`services/embedding.py`)
@@ -325,9 +329,9 @@
 
 ### 5. 测试覆盖
 
-#### 单元测试（934 passed，SQLite in-memory，mock providers）
+#### 单元测试（963 passed，SQLite in-memory，mock providers）
 
-**全量测试结果**：934 passed, 36 skipped（未设置集成测试 URL 时）, 4 warnings；前端 61 passed
+**全量测试结果**：963 passed, 36 skipped（未设置集成测试 URL 时）, 4 warnings；前端 61 passed
 
 主要测试覆盖（不逐文件列举测试数量，以实际 pytest 结果为准）：
 - ✅ Codex 设定库：CRUD、别名规范化、可检索文本判据、两段式事务、deferred 降级、httpx 错误重试
@@ -337,7 +341,8 @@
 - ✅ RuleScanner：三条规则检测、timeline-aware 跳过、stale 标记、fingerprint 去重
 - ✅ 认证授权：JWT 解码、项目权限、Idempotency-Key 必需性
 - ✅ Alembic 迁移：34 张表、pgvector extension、部分唯一索引、downgrade 完整性
-- ✅ 时间锚点：ISO-8601 解析、源锚点位置校验、temporal_anchor_text 确定性要求
+- ✅ 时间锚点：ISO-8601、确定性相对时长、跨章事件引用、源锚点与事件标签原文校验
+- ✅ 增量影响集：新旧实体重绑定、未解析主体、谓词族闭包、全项目安全降级与扫描遥测
 - ✅ 项目、章节、章纲 CRUD、乐观锁冲突、Outbox 与幂等性
 - ✅ Foreshadow 伏笔倒计时、用量统计、风格档案
 - ✅ 风格档跨租户隔离、默认唯一、抽取成功/失败、失败退款、owner 绑定、删除自动解绑与提示隐私
@@ -354,7 +359,7 @@
 
 #### 集成测试（36 tests，真实 PostgreSQL + pgvector 已通过）
 - ✅ Docker PostgreSQL + pgvector 环境已执行 36 个测试并全部通过
-- ✅ 审核数据库已执行 `009_embedding_dispatch_attempts` 到 Alembic head
+- ✅ 审核数据库已执行 `010_claim_temporal_evidence` 到 Alembic head
 - 覆盖内容：
   - 部分唯一索引（`postgresql_where`）的并发 upsert 去重
   - pgvector `<=>` 余弦距离与 HNSW 索引
@@ -381,14 +386,12 @@
 - ✅ 恢复投递与模型执行分别计数，避免 broker 故障污染作者看到的模型重试次数
 - ✅ 真实 Docker 验收：临时作品 `pending -> queued -> ready`，1 次尝试后 1/1 条向量就绪并清理
 
-### 2. 产品功能仍有占位实现
-**状态**：进行中
+### 2. 用户可见核心流程
+**状态**：首轮闭环已完成
 
-真实认证、作品创建、分卷章纲、章节插入、正文保存保护、Guard、导出、备份恢复和作者生成用量已经接通；
-以下用户可见页面仍有 mock 或静态展示：
-- AI 占比页面尚未接入真实来源追踪后端
-
-**风险**：当前不能称为功能完整 MVP，也不能把所有页面展示视为真实数据。
+真实认证、作品创建、分卷章纲、章节插入、正文保存保护、Guard、设定库、导出、备份恢复、
+风格档、AI 来源占比和作者生成用量均已接通真实 API。生产就绪仍受后述评测规模、LLM 仲裁、
+长文本压测和后台模型成本台账限制，不能仅凭页面可用宣称全功能完工。
 
 ### 3. 评测数据集规模不足
 **状态**：概念验证
@@ -416,35 +419,34 @@
 4. 接入 CI，跑到召回 ≥70% 且误报 ≤20% 的可接受阈值
 
 ### 4. 时间锚点解析限制
-**状态**：MVP 保守限制
+**状态**：确定性链已完成，模糊语义仍保守降级
 
 **当前实现**：
 - ✅ ISO-8601 形状绝对时间解析（`2024-01-15`, `2024-01-15T10:30:00`）
 - ✅ `temporal_anchor_text` 自身的确定性解析要求
-- ✅ 相对锚点证据保留（`temporal_relation`, `temporal_relation_ref`），但不分配 story_order
+- ✅ `三日后`、`两小时前`、`半个时辰后` 等确定性相对偏移；月/年不按固定天数伪换算
+- ✅ 同批次链式引用与跨章节事件引用；事件标签及时间证据持久化到 claim
+- ✅ 歧义、跨时间线、低置信度、方向冲突和模糊时长保持 `story_order=NULL`
 
 **保守限制**：
-- ⚠️ **不支持**「第 N 天」「N 年后」等自然语言相对表达（`parse_absolute_anchor` 仅接受 ISO 形状）
 - ⚠️ **不支持** LLM 辅助的语义理解时间线
-- ⚠️ 相对锚点解析链未实现：`relative_to_anchor` 类型的 claim 保留证据但不分配 story_order，
-  无法自动推断 `base_anchor` 链或解析相对偏移
+- ⚠️ `次日`、`过几日`、`年关前后` 等无法确定换算的表达不猜测
+- ⚠️ 前序锚点改写后，下游既有 claim 需通过项目重扫/管道升级重新抽取，不主动级联重算
 
 **后续需要**：
 1. LLM 辅助时间表达规范化
-2. 相对锚点解析链实现（`base_anchor` 追溯与偏移计算）
-3. 模糊时间跨度的区间表达
+2. 模糊时间跨度的区间表达
+3. 锚点依赖图与下游自动失效/重算
 
-### 5. 增量影响集未实现
-**状态**：未开始
+### 5. 增量影响集
+**状态**：首版已完成
 
-**需求**：修改一章后，确定哪些 claims 和 issues 受影响，按实体、predicate、时间线区间构造影响集。
+**当前行为**：从被修改章节的 accepted + superseded 历史恢复影响键，按 subject/object 实体 ID
+召回全项目关联 claim；未解析实体按规范化主体文本和 predicate family 召回，
+`uses_knowledge`/`acquires_knowledge` 做闭包。缺少可靠影响键或超过 500 键时退回全项目扫描，
+扫描结果返回 `claims_scanned` 与 `scan_scope`。
 
-**当前行为**：每次扫描加载全部 claims，效率低。
-
-**后续需要**：
-1. 按 `entity_id` + `predicate` 索引构建影响集查询
-2. 按时间线区间（`story_order` 范围）过滤受影响 claims
-3. 只扫描影响集内的 claims 与 issues
+**后续优化**：加入时间线区间裁剪和基于真实长篇分布的阈值调优；当前安全策略优先避免漏检。
 
 ### 6. LLM 结构化仲裁未实现
 **状态**：未开始
@@ -519,12 +521,12 @@ baseline，增量实现 Codex embedding 回填、时间锚点解析、issue 生�
 
 **优先级**：高。扩充至 100+ 正例 + 50+ hard negatives，接入 CI。
 
-### 3. 增量影响集未实现
-**描述**：每次扫描加载全部 claims。
+### 3. 增量影响集尚未按时间区间裁剪
+**描述**：实体、谓词族和旧版事实的影响闭包已实现；同一实体在很长时间线上的全部相关事实仍会加载。
 
-**风险**：性能瓶颈，随 claims 增长扫描耗时线性增长。
+**风险**：避免了无关实体的全项目扫描，但超长作品的高频核心人物仍可能形成较大影响集。
 
-**优先级**：中。优化点，不影响正确性。
+**优先级**：中。用 10/30/100 万字压测确定阈值后，再加入不会漏检的时间区间裁剪。
 
 ### 4. LLM 仲裁未实现
 **描述**：仅确定性规则，无 LLM 二次判决。
@@ -560,12 +562,12 @@ baseline，增量实现 Codex embedding 回填、时间锚点解析、issue 生�
 
 ### 中期优先级（3-4 周）
 1. **增量影响集优化**
-   - 按实体/predicate/时间线区间构造影响集
-   - 只扫描受影响 claims
+   - ✅ 按实体与 predicate family 构造影响集，只扫描相关 claims
+   - 加入不会漏检的时间线区间裁剪，并用长文本压测校准 500 键降级阈值
 
 2. **时间锚点 LLM 辅助**
    - 模糊时间表达规范化
-   - 自动锚点链推断
+   - 已持久化锚点的依赖图与下游自动重算
 
 ---
 
@@ -615,8 +617,8 @@ baseline，增量实现 Codex embedding 回填、时间锚点解析、issue 生�
 - `server/tasks/consistency.py` - 一致性任务
 - `server/tasks/codex.py` - Codex 回填任务
 
-### 测试（934 passed；另有 36 个真实 PostgreSQL 测试通过）
-- `server/tests/` - 单元/功能测试（934 passed）
+### 测试（963 passed；另有 36 个真实 PostgreSQL 测试通过）
+- `server/tests/` - 单元/功能测试（963 passed）
 - `app/src/**/*.spec.ts` - 前端测试（61 passed）
 - `server/tests/integration/` - 集成测试（36 passed，需设置真实 PostgreSQL URL）
 
@@ -627,16 +629,16 @@ baseline，增量实现 Codex embedding 回填、时间锚点解析、issue 生�
 
 ## 总结
 
-墨枢一致性后端已完成核心数据模型、服务层、API 端点和异步任务定义，934 个单元/功能
+墨枢一致性后端已完成核心数据模型、服务层、API 端点和异步任务定义，963 个单元/功能
 测试在 SQLite in-memory + mock providers 环境下通过，另有 36 个集成测试在真实
 PostgreSQL + pgvector 环境通过。真实认证、可吊销会话、管理员、工作室 RBAC、作品创建、
 分卷章纲、章节插入、全量导出、非覆盖备份恢复、风格指纹、AI 来源账本与作者生成用量台账已经接通，前端 61 个测试与生产构建通过。
 
 **关键限制**：
 1. 自动一致性与 embedding 后台模型成本尚未进入统一台账
-2. 一致性评测集、相对时间锚点、增量影响集与 LLM 仲裁尚未完成
+2. 一致性评测集、LLM 仲裁、模糊时间区间与锚点依赖级联尚未完成
 3. 评测夹具仅 10 个 smoke cases，硬编码 100% 指标**不代表实际质量**
-4. 时间锚点自然语言解析、增量影响集、LLM 仲裁未实现
+4. 模糊时间语义理解、影响集时间区间裁剪、LLM 仲裁未实现
 5. 真实长文本扫描吞吐受上游模型网关稳定性和并发限制影响
 
 当前是“核心一致性能力 + 首轮真实产品流程”，不是功能完整 MVP。生产部署前仍需完成上述产品闭环、

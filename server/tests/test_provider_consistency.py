@@ -799,6 +799,7 @@ async def test_extraction_prompt_asks_for_traceable_temporal_evidence():
         "timeline_id",
         "temporal_anchor_text",
         "temporal_anchor_value",
+        "temporal_event_ref",
         "temporal_relation",
         "temporal_relation_ref",
         "order_basis",
@@ -911,6 +912,7 @@ async def test_order_fields_default_to_null_when_the_model_omits_them():
         "order_confidence",
         "temporal_anchor_text",
         "temporal_anchor_value",
+        "temporal_event_ref",
         "temporal_relation",
         "temporal_relation_ref",
     ):

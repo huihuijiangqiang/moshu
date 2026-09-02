@@ -124,6 +124,148 @@ def issue_snapshot(issue: GuardIssue) -> dict:
     }
 
 
+async def test_impact_scan_excludes_unrelated_claims(
+    scanner, async_db_session, scan_context, add_claim
+):
+    await add_claim(subject_text="李长风", predicate="alive", object_value="true")
+    await add_claim(
+        chapter_id="ch_b",
+        subject_text="无关人物",
+        predicate="located_at",
+        object_value="京城",
+        fingerprint="fp_unrelated_location",
+    )
+
+    await run_scan(scanner, async_db_session, scan_context)
+
+    assert scanner.last_scan_scope == "impact"
+    assert scanner.last_scan_claim_count == 1
+
+
+async def test_superseded_old_claim_keeps_cross_chapter_impact_recall(
+    scanner, async_db_session, scan_context, add_claim
+):
+    await add_claim(
+        status="superseded",
+        subject_text="李长风",
+        predicate="alive",
+        object_value="false",
+    )
+    await add_claim(
+        chapter_id="ch_b",
+        subject_text="李长风",
+        predicate="alive",
+        object_value="true",
+        fingerprint="fp_current_alive",
+    )
+
+    claims = await scanner._load_impacted_claims(
+        async_db_session,
+        project_id="proj_a",
+        chapter_id="ch_a",
+    )
+
+    assert [(claim.chapter_id, claim.status) for claim in claims] == [("ch_b", "accepted")]
+
+
+async def test_entity_rebinding_keeps_both_old_and_new_impact_sets(
+    scanner, async_db_session, scan_context, add_claim, add_entry
+):
+    await add_entry("ent_old")
+    await add_entry("ent_new")
+    await add_claim(
+        status="superseded",
+        subject_text="李长风",
+        subject_entry_id="ent_old",
+        predicate="alive",
+        object_value="false",
+        fingerprint="fp_old_binding",
+    )
+    await add_claim(
+        subject_text="李长风",
+        subject_entry_id="ent_new",
+        predicate="alive",
+        object_value="true",
+        fingerprint="fp_new_binding",
+    )
+    await add_claim(
+        chapter_id="ch_b",
+        subject_text="旧条目关联事实",
+        subject_entry_id="ent_old",
+        predicate="owns",
+        object_value="旧账册",
+        fingerprint="fp_old_related",
+    )
+    await add_claim(
+        chapter_id="ch_b",
+        subject_text="新条目关联事实",
+        subject_entry_id="ent_new",
+        predicate="owns",
+        object_value="新账册",
+        fingerprint="fp_new_related",
+    )
+
+    claims = await scanner._load_impacted_claims(
+        async_db_session,
+        project_id="proj_a",
+        chapter_id="ch_a",
+    )
+
+    assert {claim.fingerprint for claim in claims} == {
+        "fp_new_binding",
+        "fp_old_related",
+        "fp_new_related",
+    }
+
+
+async def test_empty_impact_basis_falls_back_to_project_scan(
+    scanner, async_db_session, scan_context, add_claim
+):
+    await add_claim(
+        chapter_id="ch_b",
+        subject_text="李长风",
+        predicate="alive",
+        object_value="true",
+    )
+
+    claims = await scanner._load_impacted_claims(
+        async_db_session,
+        project_id="proj_a",
+        chapter_id="ch_a",
+    )
+
+    assert scanner.last_scan_scope == "project"
+    assert len(claims) == 1
+
+
+async def test_knowledge_predicate_family_is_included_in_impact_set(
+    scanner, async_db_session, scan_context, add_claim
+):
+    await add_claim(
+        subject_text="李长风",
+        predicate="uses_knowledge",
+        object_value="密道",
+    )
+    await add_claim(
+        chapter_id="ch_b",
+        subject_text="李长风",
+        predicate="acquires_knowledge",
+        object_value="密道",
+        fingerprint="fp_acquires_knowledge",
+    )
+
+    claims = await scanner._load_impacted_claims(
+        async_db_session,
+        project_id="proj_a",
+        chapter_id="ch_a",
+    )
+
+    assert {claim.predicate for claim in claims} == {
+        "uses_knowledge",
+        "acquires_knowledge",
+    }
+
+
 # --- 规则 1：生死冲突 ----------------------------------------------------------
 
 

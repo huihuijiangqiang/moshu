@@ -16,6 +16,7 @@ from services.timeline import (
     assign_story_orders,
     is_globally_anchored,
     parse_absolute_anchor,
+    parse_relative_offset,
 )
 
 
@@ -89,6 +90,29 @@ def test_impossible_date_does_not_parse():
 def test_unparseable_anchor_does_not_raise():
     """一条锚点解析不了不该让整章抽取失败。"""
     assert parse_absolute_anchor("紧接着") is None
+
+
+@pytest.mark.parametrize(
+    "text,seconds",
+    [
+        ("三日后", 3 * 86400),
+        ("两小时前", -2 * 3600),
+        ("半个时辰后", 3600),
+        ("1.5小时后", 90 * 60),
+        ("12分钟后", 12 * 60),
+        ("一百零二天前", -102 * 86400),
+    ],
+)
+def test_relative_duration_parser_is_deterministic(text, seconds):
+    assert parse_relative_offset(text) == seconds
+
+
+@pytest.mark.parametrize(
+    "text",
+    [None, "", "过几日", "次日", "三日左右", "很久以后", "一月后", "一年后", "0天后"],
+)
+def test_vague_relative_durations_are_rejected(text):
+    assert parse_relative_offset(text) is None
 
 
 # --- 全局锚点判定 -------------------------------------------------------------
@@ -200,6 +224,165 @@ def test_relative_evidence_is_preserved_even_though_it_yields_no_order():
     assert assigned["temporal_anchor_text"] == "三日后"
     assert assigned["temporal_relation"] == "after"
     assert assigned["temporal_relation_ref"] == "李长风下山"
+
+
+def test_relative_anchor_resolves_against_one_exact_event_reference():
+    base, relative = assign_story_orders(
+        [
+            anchored_claim(temporal_event_ref="李长风下山"),
+            anchored_claim(
+                subject_text="陆青",
+                order_basis="relative_to_anchor",
+                temporal_anchor_value=None,
+                temporal_anchor_text="三日后",
+                temporal_relation="after",
+                temporal_relation_ref="李长风下山",
+            ),
+        ]
+    )
+    assert relative["story_order"] == base["story_order"] + 3 * 86400
+    assert is_order_reliable(relative) is True
+
+
+def test_relative_anchor_resolves_against_a_persisted_cross_chapter_event():
+    [relative] = assign_story_orders(
+        [
+            anchored_claim(
+                subject_text="陆青",
+                order_basis="relative_to_anchor",
+                temporal_anchor_value=None,
+                temporal_anchor_text="三日后",
+                temporal_relation="after",
+                temporal_relation_ref="李长风下山",
+            )
+        ],
+        known_anchors=[
+            {
+                "timeline_id": "main",
+                "story_order": parse_absolute_anchor("0812-11-03"),
+                "temporal_event_ref": "李长风下山",
+            }
+        ],
+    )
+
+    assert relative["story_order"] == parse_absolute_anchor("0812-11-06")
+    assert is_order_reliable(relative) is True
+
+
+def test_duplicate_facts_for_the_same_persisted_event_are_not_ambiguous():
+    base_order = parse_absolute_anchor("0812-11-03")
+    [relative] = assign_story_orders(
+        [
+            anchored_claim(
+                order_basis="relative_to_anchor",
+                temporal_anchor_value=None,
+                temporal_anchor_text="一日后",
+                temporal_relation="after",
+                temporal_relation_ref="启程",
+            )
+        ],
+        known_anchors=[
+            {"timeline_id": "main", "story_order": base_order, "temporal_event_ref": "启程"},
+            {"timeline_id": "main", "story_order": base_order, "temporal_event_ref": "启程"},
+        ],
+    )
+
+    assert relative["story_order"] == base_order + 86400
+
+
+def test_event_reference_matching_normalizes_whitespace_and_case():
+    base_order = parse_absolute_anchor("2024-01-01")
+    [relative] = assign_story_orders(
+        [
+            anchored_claim(
+                order_basis="relative_to_anchor",
+                temporal_anchor_value=None,
+                temporal_anchor_text="一日后",
+                temporal_relation="after",
+                temporal_relation_ref="  ARRIVE   HOME ",
+            )
+        ],
+        known_anchors=[
+            {
+                "timeline_id": "main",
+                "story_order": base_order,
+                "temporal_event_ref": "Arrive Home",
+            }
+        ],
+    )
+
+    assert relative["story_order"] == base_order + 86400
+
+
+def test_relative_anchor_chain_resolves_in_multiple_passes():
+    base, second, third = assign_story_orders(
+        [
+            anchored_claim(temporal_event_ref="启程"),
+            anchored_claim(
+                subject_text="第二件事",
+                order_basis="relative_to_anchor",
+                temporal_anchor_value=None,
+                temporal_anchor_text="两日后",
+                temporal_relation="after",
+                temporal_relation_ref="启程",
+                temporal_event_ref="抵达",
+            ),
+            anchored_claim(
+                subject_text="第三件事",
+                order_basis="relative_to_anchor",
+                temporal_anchor_value=None,
+                temporal_anchor_text="三小时前",
+                temporal_relation="before",
+                temporal_relation_ref="抵达",
+            ),
+        ]
+    )
+    assert second["story_order"] == base["story_order"] + 2 * 86400
+    assert third["story_order"] == second["story_order"] - 3 * 3600
+
+
+def test_ambiguous_or_cross_timeline_relative_reference_stays_null():
+    assigned = assign_story_orders(
+        [
+            anchored_claim(temporal_event_ref="启程"),
+            anchored_claim(temporal_event_ref="启程", temporal_anchor_value="0812-11-04"),
+            anchored_claim(
+                subject_text="歧义引用",
+                order_basis="relative_to_anchor",
+                temporal_anchor_value=None,
+                temporal_anchor_text="一日后",
+                temporal_relation="after",
+                temporal_relation_ref="启程",
+            ),
+            anchored_claim(
+                subject_text="跨线引用",
+                timeline_id="line_b",
+                order_basis="relative_to_anchor",
+                temporal_anchor_value=None,
+                temporal_anchor_text="一日后",
+                temporal_relation="after",
+                temporal_relation_ref="启程",
+            ),
+        ]
+    )
+    assert assigned[2]["story_order"] is None
+    assert assigned[3]["story_order"] is None
+
+
+def test_relation_direction_must_match_the_duration_text():
+    _, relative = assign_story_orders(
+        [
+            anchored_claim(temporal_event_ref="启程"),
+            anchored_claim(
+                order_basis="relative_to_anchor",
+                temporal_anchor_value=None,
+                temporal_anchor_text="一日前",
+                temporal_relation="after",
+                temporal_relation_ref="启程",
+            ),
+        ]
+    )
+    assert relative["story_order"] is None
 
 
 def test_two_chunks_with_absolute_anchors_are_comparable():

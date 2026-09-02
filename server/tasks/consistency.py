@@ -504,11 +504,37 @@ async def _extract_claims_async(task_id: str, run_id: int):
                     }
                 )
 
+            # 其他章节已经落库的、带全局顺序的事件可作为相对时间参照。排除本章，
+            # 避免正文重放时上一版的同名事件与本次抽取形成假歧义。
+            anchor_rows = (
+                await db.execute(
+                    select(
+                        ConsistencyClaim.timeline_id,
+                        ConsistencyClaim.story_order,
+                        ConsistencyClaim.temporal_event_ref,
+                    ).where(
+                        ConsistencyClaim.project_id == run.project_id,
+                        ConsistencyClaim.chapter_id != run.chapter_id,
+                        ConsistencyClaim.status == "accepted",
+                        ConsistencyClaim.story_order.is_not(None),
+                        ConsistencyClaim.temporal_event_ref.is_not(None),
+                    )
+                )
+            ).all()
+            known_anchors = [
+                {
+                    "timeline_id": row.timeline_id,
+                    "story_order": row.story_order,
+                    "temporal_event_ref": row.temporal_event_ref,
+                }
+                for row in anchor_rows
+            ]
+
             # story_order 只在这里产生：由时间线服务按**已确认的全局锚点**分配，
             # 模型给的任何顺序值都被覆盖。抽取是逐块的，模型编出来的序号只在块内
             # 有意义，而规则扫描是全项目范围的 —— 直接采信等于伪造顺序。
             # 没有共同锚点的 claim 保持 story_order=None，只进待确认列表。
-            anchored = assign_story_orders(linked)
+            anchored = assign_story_orders(linked, known_anchors=known_anchors)
 
             # 再对已经有全局顺序的状态型 claim 闭合有效区间
             positioned = assign_narrative_positions(anchored)
@@ -701,6 +727,8 @@ async def _scan_rules_async(task_id: str, run_id: int):
                 "run_id": run_id,
                 "run_completed": completed,
                 "issues_found": len(issue_ids),
+                "claims_scanned": scanner.last_scan_claim_count,
+                "scan_scope": scanner.last_scan_scope,
             }
         except StaleRevisionError as exc:
             await fail_run(

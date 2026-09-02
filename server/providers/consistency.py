@@ -20,6 +20,7 @@ import json
 import logging
 import math
 import random
+import re
 from typing import TYPE_CHECKING, Any, Optional
 
 import httpx
@@ -97,8 +98,6 @@ def _validate_temporal_anchor(claim: ClaimOutput, chunk: TextChunk) -> bool:
     """
     if not claim.temporal_anchor_text:
         return True  # 没报锚点，无需校验
-    if not claim.temporal_anchor_value:
-        return True  # 报了原文但没给归一化值，_drop_locally_scoped_order 会处理
     if not claim.source_anchor:
         return False  # 有时间锚点但没说在哪段，无法核对
 
@@ -122,6 +121,10 @@ def _validate_temporal_anchor(claim: ClaimOutput, chunk: TextChunk) -> bool:
     if normalized_anchor not in normalized_para:
         return False
 
+    if not claim.temporal_anchor_value:
+        # 相对表述没有绝对值，但原文与位置仍必须真实可核对。
+        return True
+
     # 关键：必须对 temporal_anchor_text **本身**做确定性解析
     parsed_from_text = parse_absolute_anchor(claim.temporal_anchor_text)
     if parsed_from_text is None:
@@ -137,6 +140,24 @@ def _validate_temporal_anchor(claim: ClaimOutput, chunk: TextChunk) -> bool:
         return False  # 模型编造了不同的值
 
     return True
+
+
+def _validate_temporal_event_ref(claim: ClaimOutput, chunk: TextChunk) -> bool:
+    """An anchor label must be quoted from the same source paragraph."""
+    if not claim.temporal_event_ref:
+        return True
+    if not claim.source_anchor:
+        return False
+    position = _extract_paragraph_position(claim.source_anchor)
+    if position is None or position not in chunk.paragraph_positions:
+        return False
+    para_index = chunk.paragraph_positions.index(position)
+    paragraphs = chunk.text.split("\n\n")
+    if para_index >= len(paragraphs):
+        return False
+    normalized_para = re.sub(r"\s+", "", paragraphs[para_index]).casefold()
+    normalized_ref = re.sub(r"\s+", "", claim.temporal_event_ref).casefold()
+    return normalized_ref in normalized_para
 
 
 class ProviderResponseError(RuntimeError):
@@ -195,14 +216,18 @@ class ClaimOutput(BaseModel):
     #: 自然语言表述（「三日后的清晨」）无法归一化时必须留空。
     temporal_anchor_value: Optional[str] = Field(None, max_length=64)
 
-    #: 相对关系及其参照锚点 —— 相对表述的证据。MVP 不据此分配 story_order，
-    #: 但必须收下来，否则这条信息就永久丢失了。
+    #: 可被后文 temporal_relation_ref 精确引用的事件标签。验证后随 claim 持久化，
+    #: 当前章节和后续章节都可引用；无法唯一匹配时不会升级成全局顺序。
+    temporal_event_ref: Optional[str] = Field(None, max_length=200)
+
+    #: 相对关系及其参照锚点。只有精确引用和确定性时长才会据此分配 story_order；
+    #: 模糊表述仍保留证据但不进入依赖时序的硬规则。
     temporal_relation: Optional[str] = Field(
         None, pattern="^(before|after|simultaneous)$"
     )
     temporal_relation_ref: Optional[str] = Field(None, max_length=200)
 
-    #: 顺序依据。absolute_datetime 是 MVP 里唯一的全局锚点；
+    #: 顺序依据。absolute_datetime 是根锚点，relative_to_anchor 只能继承已确认锚点；
     #: narration_local 明确表示「只在本块内有意义」，绝不能当全局序号用。
     order_basis: Optional[str] = Field(
         None, pattern="^(absolute_datetime|relative_to_anchor|narration_local|unknown)$"
@@ -646,6 +671,8 @@ class ConsistencyProvider:
                 claim.story_order = None
                 claim.valid_from_order = None
                 claim.valid_to_order = None
+            if not _validate_temporal_event_ref(claim, chunk):
+                claim.temporal_event_ref = None
 
             claim_dict = claim.model_dump()
             claim_dict["fingerprint"] = claim_fingerprint(
@@ -803,6 +830,7 @@ class ConsistencyProvider:
       "timeline_id": "story timeline identifier, or null if unclear",
       "temporal_anchor_text": "the exact time expression quoted from the text, or null",
       "temporal_anchor_value": "that time normalized as ISO-8601, or null",
+      "temporal_event_ref": "short exact event label that later relative times can reference, or null",
       "temporal_relation": "before|after|simultaneous, or null",
       "temporal_relation_ref": "what the relation is measured against, or null",
       "order_basis": "absolute_datetime|relative_to_anchor|narration_local|unknown",
@@ -837,6 +865,9 @@ Instead, report the time evidence the text actually gives:
   (e.g. "0812-11-03" or "2024-03-01T18:30"). Only fill this in if the text pins
   down an actual date or time. If the text only says "three days later" with no
   fixed date anywhere, leave this null and use `temporal_relation` instead.
+- `temporal_event_ref`: give an anchored event a short, stable label copied from
+  the narrative (for example "李长风下山"). Relative claims may reference this
+  exact label; do not invent labels absent from the excerpt.
 - `temporal_relation` / `temporal_relation_ref`: for relative statements, say
   whether this event is before/after/simultaneous with what ("李长风下山之后").
 

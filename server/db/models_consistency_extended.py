@@ -161,6 +161,15 @@ class ConsistencyClaim(Base, TimestampMixin):
     #: 告警能指回正文的具体位置 —— paragraph_id 来自编辑器，抽取时看不到。
     source_anchor: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
     timeline_id: Mapped[Optional[str]] = mapped_column(String(32), nullable=True, index=True)
+    # Keep the model's auditable temporal evidence.  Later chapters use
+    # temporal_event_ref to resolve relative dates against accepted claims.
+    temporal_anchor_text: Mapped[Optional[str]] = mapped_column(String(200), nullable=True)
+    temporal_anchor_value: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    temporal_event_ref: Mapped[Optional[str]] = mapped_column(String(200), nullable=True)
+    temporal_relation: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)
+    temporal_relation_ref: Mapped[Optional[str]] = mapped_column(String(200), nullable=True)
+    order_basis: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
+    order_confidence: Mapped[Optional[float]] = mapped_column(Numeric(5, 4), nullable=True)
     story_order: Mapped[Optional[float]] = mapped_column(Numeric(24, 8), nullable=True)
     valid_from_order: Mapped[Optional[float]] = mapped_column(Numeric(24, 8), nullable=True)
     valid_to_order: Mapped[Optional[float]] = mapped_column(Numeric(24, 8), nullable=True)
@@ -179,6 +188,15 @@ class ConsistencyClaim(Base, TimestampMixin):
         CheckConstraint(
             "status IN ('candidate', 'accepted', 'rejected', 'superseded')",
             name="ck_claim_status"
+        ),
+        CheckConstraint(
+            "temporal_relation IS NULL OR temporal_relation IN ('before', 'after', 'simultaneous')",
+            name="ck_claim_temporal_relation",
+        ),
+        CheckConstraint(
+            "order_basis IS NULL OR order_basis IN "
+            "('absolute_datetime', 'relative_to_anchor', 'narration_local', 'unknown')",
+            name="ck_claim_order_basis",
         ),
         CheckConstraint(
             "object_type IN ('scalar', 'entity', 'location', 'ability', 'timestamp')",
@@ -216,6 +234,10 @@ class ConsistencyClaim(Base, TimestampMixin):
         ),
         Index("ix_claim_subject_predicate", "subject_entry_id", "predicate", "status"),
         Index("ix_claim_timeline_order", "timeline_id", "story_order"),
+        Index(
+            "ix_claim_temporal_event_ref",
+            "project_id", "timeline_id", "temporal_event_ref", "status",
+        ),
     )
 
 

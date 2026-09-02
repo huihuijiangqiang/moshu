@@ -666,6 +666,61 @@ async def test_relative_anchor_yields_no_order_but_keeps_the_claim(
     assert result["pending_order_claims"] == 1
 
 
+async def test_relative_anchor_resolves_against_another_chapter(
+    use_test_session,
+    async_db_session,
+    pipeline_setup,
+    fake_provider,
+    make_claim,
+):
+    anchor_order = expected_order(10.0)
+    async_db_session.add(
+        Chapter(
+            id="ch_b",
+            project_id="proj_a",
+            volume_id=None,
+            title="锚点章节",
+            idx=2048,
+            words=0,
+            outline=[],
+        )
+    )
+    await async_db_session.flush()
+    async_db_session.add(
+        make_claim(
+            project_id="proj_a",
+            chapter_id="ch_b",
+            timeline_id="main",
+            story_order=anchor_order,
+            temporal_event_ref="李长风下山",
+            fingerprint="fp_cross_chapter_anchor",
+        )
+    )
+    await async_db_session.commit()
+    fake_provider.claims = [
+        claim_payload(
+            "陆青",
+            "fp_relative",
+            timeline_id="main",
+            order_basis="relative_to_anchor",
+            order_confidence=0.95,
+            temporal_anchor_text="三日后",
+            temporal_relation="after",
+            temporal_relation_ref="李长风下山",
+            temporal_event_ref="陆青进城",
+        )
+    ]
+
+    result = await tasks._extract_claims_async("task-1", pipeline_setup.id)
+
+    claims = await load_claims(async_db_session)
+    relative = next(claim for claim in claims if claim.chapter_id == "ch_a")
+    assert float(relative.story_order) == anchor_order + 3 * 86400
+    assert relative.temporal_event_ref == "陆青进城"
+    assert relative.temporal_relation_ref == "李长风下山"
+    assert result["pending_order_claims"] == 0
+
+
 async def test_unknown_order_stays_null_and_claim_still_lands(
     use_test_session, async_db_session, pipeline_setup, fake_provider
 ):
