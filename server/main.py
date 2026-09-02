@@ -91,14 +91,20 @@ async def readiness():
     if redis is None:
         checks["redis"] = "failed"
     else:
-        client = redis.from_url(settings.redis_url, decode_responses=True)
+        client = None
         try:
+            client = redis.from_url(settings.redis_url, decode_responses=True)
             await client.ping()
             checks["redis"] = "ok"
         except Exception:
             checks["redis"] = "failed"
         finally:
-            await client.aclose()
+            if client is not None:
+                try:
+                    await client.aclose()
+                except Exception:
+                    # A failed close must not turn a useful 503 into a 500.
+                    pass
 
     ready = all(value == "ok" for value in checks.values())
     payload = {"status": "ready" if ready else "not_ready", "checks": checks}

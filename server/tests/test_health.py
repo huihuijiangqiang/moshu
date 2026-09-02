@@ -66,3 +66,18 @@ async def test_readiness_returns_503_without_leaking_dependency_errors(monkeypat
     assert response.body == b'{"status":"not_ready","checks":{"postgres":"failed","redis":"failed"}}'
     assert b"unavailable" not in response.body
     assert fake_redis.closed is True
+
+
+@pytest.mark.asyncio
+async def test_readiness_handles_invalid_redis_configuration(monkeypatch):
+    monkeypatch.setattr(main, "engine", _Engine())
+
+    def invalid_url(*_args, **_kwargs):
+        raise ValueError("invalid redis URL")
+
+    monkeypatch.setattr(main, "redis", SimpleNamespace(from_url=invalid_url))
+
+    response = await main.readiness()
+
+    assert response.status_code == 503
+    assert response.body == b'{"status":"not_ready","checks":{"postgres":"ok","redis":"failed"}}'
