@@ -152,7 +152,7 @@ PostgreSQL 与 Redis，全部通过时返回 200，否则返回 503 和逐项状
 核心 MVP 已完成并由 `docs/IMPLEMENTATION_STATUS.md` 记录证据：认证与 refresh
 session、管理员设置与审计、项目/工作室 RBAC、设定库 CRUD 与 embedding 回填、
 持续章纲、版本化正文保存、四层上下文、SSE 生成、导出备份、用量结算、Guard
-扫描与 LLM 仲裁均已接通。后端单元/功能测试为 979 passed，另有 36 个真实
+扫描与 LLM 仲裁均已接通。后端单元/功能测试为 982 passed，另有 36 个真实
 PostgreSQL/pgvector 集成测试；前端测试为 61 passed。
 
 仍需在生产数据上继续验证的事项：

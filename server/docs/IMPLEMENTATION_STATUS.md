@@ -7,7 +7,7 @@
 
 **关键事实**：
 - ✅ 34 张表完整 Alembic baseline，增量迁移已到 `011_guard_issue_arbitration`
-- ✅ 979 个单元/功能测试通过（SQLite in-memory，mock embedding/LLM）
+- ✅ 982 个单元/功能测试通过（SQLite in-memory，mock embedding/LLM）
 - ✅ 前端 61 个测试、TypeScript 类型检查和生产构建通过
 - ✅ 36 个集成测试已在本机真实 PostgreSQL + pgvector 环境通过
 - ✅ 已完成真实账号认证、作品创建、分卷章纲编辑与章节插入的首轮产品闭环
@@ -363,9 +363,9 @@ PostgreSQL/pgvector 检索必须在真实部署上单独压测；该脚本只覆
 
 ### 5. 测试覆盖
 
-#### 单元测试（979 passed，SQLite in-memory，mock providers）
+#### 单元测试（982 passed，SQLite in-memory，mock providers）
 
-**全量测试结果**：979 passed, 36 skipped（未设置集成测试 URL 时）, 4 warnings；前端 61 passed
+**全量测试结果**：982 passed, 36 skipped（未设置集成测试 URL 时）, 4 warnings；前端 61 passed
 
 主要测试覆盖（不逐文件列举测试数量，以实际 pytest 结果为准）：
 - ✅ Codex 设定库：CRUD、别名规范化、可检索文本判据、两段式事务、deferred 降级、httpx 错误重试
@@ -657,8 +657,8 @@ baseline，增量实现 Codex embedding 回填、时间锚点解析、issue 生�
 - `server/tasks/consistency.py` - 一致性任务
 - `server/tasks/codex.py` - Codex 回填任务
 
-### 测试（979 passed；另有 36 个真实 PostgreSQL 测试通过）
-- `server/tests/` - 单元/功能测试（979 passed）
+### 测试（982 passed；另有 36 个真实 PostgreSQL 测试通过）
+- `server/tests/` - 单元/功能测试（982 passed）
 - `app/src/**/*.spec.ts` - 前端测试（61 passed）
 - `server/tests/integration/` - 集成测试（36 passed，需设置真实 PostgreSQL URL）
 
@@ -669,7 +669,7 @@ baseline，增量实现 Codex embedding 回填、时间锚点解析、issue 生�
 
 ## 总结
 
-墨枢一致性后端已完成核心数据模型、服务层、API 端点和异步任务定义，979 个单元/功能
+墨枢一致性后端已完成核心数据模型、服务层、API 端点和异步任务定义，982 个单元/功能
 测试在 SQLite in-memory + mock providers 环境下通过，另有 36 个集成测试在真实
 PostgreSQL + pgvector 环境通过。真实认证、可吊销会话、管理员、工作室 RBAC、作品创建、
 分卷章纲、章节插入、全量导出、非覆盖备份恢复、风格指纹、AI 来源账本与作者生成用量台账已经接通，前端 61 个测试与生产构建通过。
