@@ -20,7 +20,7 @@ server/
 │   ├── projects.py   # 项目管理
 │   ├── chapters.py   # 章节读写（含乐观锁）
 │   └── ...
-├── db/               # 数据模型（19张表）
+├── db/               # 数据模型（34张表）
 │   ├── models_core.py    # 骨架 6张
 │   ├── models_codex.py   # 设定库 4张
 │   ├── models_guard.py   # 守卫 2张
@@ -29,10 +29,10 @@ server/
 ├── memory/           # ★ 四层上下文装配器（核心）
 │   ├── assembler.py  # 装配逻辑与预算裁剪
 │   └── tokenizer.py  # Token 计数
-├── guard/            # 一致性守卫（待实现）
-├── gateway/          # 模型网关（待实现）
-├── tasks/            # Celery 任务（待实现）
-├── services/         # 业务逻辑层（待实现）
+├── guard/            # 一致性领域辅助模块
+├── providers/        # Chat/Embedding 模型网关客户端
+├── tasks/            # Celery 异步任务与 outbox dispatcher
+├── services/         # 业务逻辑层
 ├── tests/            # 测试
 ├── config.py         # 配置管理
 └── main.py           # FastAPI 入口
@@ -100,7 +100,7 @@ uvicorn main:app --reload --host 0.0.0.0 --port 8000
 
 ## 已实现
 
-### 数据模型（23张表）
+### 数据模型（34张表）
 - ✅ 骨架 6张：users, projects, volumes, chapters, chapter_bodies, chapter_versions
 - ✅ 设定库 4张：codex_entries, codex_aliases, codex_refs, codex_relations
 - ✅ 守卫 2张：guard_issues, foreshadows
@@ -145,42 +145,22 @@ uvicorn main:app --reload --host 0.0.0.0 --port 8000
 - ✅ `POST /generate/chapter` - 按章纲流式生成候选整章
 - ✅ `POST /generate/inline` - 续写/扩写/润色/语气/作者风格行内生成
 
-## 待实现（优先级排序）
+## 当前边界
 
-按《开发规划与技术选型》文档的排期：
+核心 MVP 已完成并由 `docs/IMPLEMENTATION_STATUS.md` 记录证据：认证与 refresh
+session、管理员设置与审计、项目/工作室 RBAC、设定库 CRUD 与 embedding 回填、
+持续章纲、版本化正文保存、四层上下文、SSE 生成、导出备份、用量结算、Guard
+扫描与 LLM 仲裁均已接通。后端单元/功能测试为 979 passed，另有 36 个真实
+PostgreSQL/pgvector 集成测试；前端测试为 61 passed。
 
-### Week 1-2: 骨架跑通
-- [ ] 为现有 23 张表建立首个 Alembic baseline；在 baseline 完成前不得创建伪装成初始版本的增量迁移
-- [ ] 认证接口：`POST /auth/code` + `/auth/verify`
-- [ ] Docker Compose 完整配置
-- [ ] 守卫 spike：构造 20 处矛盾测试稿，测规则前置覆盖率
+仍需在生产数据上继续验证的事项：
 
-### Week 3-4: 设定库 + 网关
-- [ ] Codex CRUD 全套接口
-- [ ] 改名跟随：更新 `codex_refs` 后返回受影响章节
-- [ ] `codex_refs` 全量重建（扫描 `content_json` 的 `CodexRef` 节点）
-- [ ] 模型网关（`gateway/`）：路由表 + 回退链 + token 记账
-- [ ] 实体抽取器（`guard/extractor.py`）
+- 正文到结构化 claim 的 LLM 抽取质量，以及时间、能力、地理、伏笔四类 P1 规则；
+- 10/30/100 万字规模下的真实 PostgreSQL 检索、模型网络延迟和成本曲线；
+- 模糊时间表达的语义规范化与跨章节锚点变更后的级联重算；
+- Kubernetes manifests、集中式错误上报与日志平台（Compose 部署已可用）。
 
-### Week 5-6: 生成链路
-- [x] ★ `POST /generate/chapter` SSE 接口
-- [ ] 开书向导四步：`POST /generate/wizard/:step`
-- [x] 行内 AI：`POST /generate/inline`
-- [ ] Celery 摘要链路：`tasks/summarize.py`
-- [x] 完善 layer2/3/4 装配逻辑
-
-### Week 7-8: 一致性守卫（MVP 成败点）
-- [ ] ★ 冲突判定两阶段：规则前置 + LLM 判定
-- [ ] `tasks/guard_scan.py` 全链路
-- [ ] 守卫接口：`GET /projects/:id/guard` + `POST /guard/:id/resolve`
-- [ ] 伏笔倒计时：`guard/foreshadow.py`
-- [ ] 评测集接入 CI：跑到召回 ≥14/20、误报 ≤20%
-
-### Week 9-10: 收口
-- [ ] 导出三格式：`POST /export` + `GET /export/:taskId`
-- [ ] 用量与订阅：`GET /usage`
-- [ ] 性能压测：首屏 <2s / 切章 <200ms
-- [ ] 错误上报与日志
+可重复的确定性规则/上下文 CPU 基准见 `scripts/benchmark_consistency.py`。
 
 ## 开发规范
 
