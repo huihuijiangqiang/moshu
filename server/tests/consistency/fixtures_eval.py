@@ -1,289 +1,310 @@
+"""Versioned evaluation corpus for the three deterministic P0 rules.
+
+The corpus deliberately keeps hard negatives on the same subjects, objects, and
+timelines as positive candidates. They exercise the scanner's actual candidate
+path instead of inflating quality with unrelated prose.
 """
-P0 consistency evaluation fixtures - positive examples and hard negatives
-"""
 
-# P0 规则覆盖：
-# 1. 生死冲突
-# 2. 物品归属冲突
-# 3. 知情边界违规
+from __future__ import annotations
 
-POSITIVE_CASES = [
-    {
-        "id": "alive_001",
-        "rule": "alive_conflict",
-        "description": "角色已死亡但后续章节仍活跃",
-        "project_id": "proj_test",
-        "timeline_id": "main",
-        "claims": [
-            {
-                "subject": "沈砚",
-                "predicate": "alive",
-                "object_value": "false",
-                "story_order": 100.0,
-                "chapter_id": "ch_05",
-                "body_rev": 3,
-                "paragraph_id": "p_5_12",
-            },
-            {
-                "subject": "沈砚",
-                "predicate": "alive",
-                "object_value": "true",
-                "story_order": 150.0,
-                "chapter_id": "ch_08",
-                "body_rev": 2,
-                "paragraph_id": "p_8_03",
-            },
-        ],
-        "expected_conflict": True,
-        "expected_evidence": ["ch_05:3:p_5_12", "ch_08:2:p_8_03"],
-    },
-    {
-        "id": "ownership_001",
-        "rule": "ownership_conflict",
-        "description": "同一物品同时归属两人",
-        "project_id": "proj_test",
-        "timeline_id": "main",
-        "claims": [
-            {
-                "subject": "玉佩",
-                "predicate": "owned_by",
-                "object_entity": "沈砚",
-                "story_order": 80.0,
-                "chapter_id": "ch_04",
-                "body_rev": 1,
-                "paragraph_id": "p_4_08",
-            },
-            {
-                "subject": "玉佩",
-                "predicate": "owned_by",
-                "object_entity": "苏清",
-                "story_order": 80.0,
-                "chapter_id": "ch_04",
-                "body_rev": 1,
-                "paragraph_id": "p_4_15",
-            },
-        ],
-        "expected_conflict": True,
-        "expected_evidence": ["ch_04:1:p_4_08", "ch_04:1:p_4_15"],
-    },
-    {
-        "id": "knowledge_001",
-        "rule": "knowledge_boundary",
-        "description": "角色使用尚未获知的信息",
-        "project_id": "proj_test",
-        "timeline_id": "main",
-        "claims": [
-            {
-                "subject": "苏清",
-                "predicate": "knows_fact",
-                "object_value": "沈砚真实身份",
-                "story_order": 120.0,
-                "chapter_id": "ch_07",
-                "body_rev": 2,
-                "paragraph_id": "p_7_20",
-            },
-            {
-                "subject": "苏清",
-                "predicate": "acts_on_knowledge",
-                "object_value": "沈砚真实身份",
-                "story_order": 80.0,
-                "chapter_id": "ch_05",
-                "body_rev": 1,
-                "paragraph_id": "p_5_08",
-            },
-        ],
-        "expected_conflict": True,
-        "expected_evidence": ["ch_05:1:p_5_08", "ch_07:2:p_7_20"],
-    },
-]
+from typing import Any
 
-HARD_NEGATIVES = [
-    {
-        "id": "hn_conditional_ability",
-        "description": "条件性能力陈述 - 不冲突",
-        "project_id": "proj_test",
-        "timeline_id": "main",
-        "claims": [
-            {
-                "subject": "沈砚",
-                "predicate": "sword_skill",
-                "object_value": "poor",
-                "certainty": "explicit",
-                "story_order": 50.0,
-                "chapter_id": "ch_02",
-                "body_rev": 1,
-                "paragraph_id": "p_2_05",
-                "context": "沈砚不擅长用剑",
-            },
-            {
-                "subject": "沈砚",
-                "predicate": "sword_skill",
-                "object_value": "barely_usable",
-                "certainty": "explicit",
-                "story_order": 60.0,
-                "chapter_id": "ch_03",
-                "body_rev": 1,
-                "paragraph_id": "p_3_12",
-                "context": "危急时勉强拔剑",
-                "condition": "emergency",
-            },
-        ],
-        "expected_conflict": False,
-        "reason": "条件限定明确，不冲突",
-    },
-    {
-        "id": "hn_temporal_change",
-        "description": "时间演变的状态变化 - 不冲突",
-        "project_id": "proj_test",
-        "timeline_id": "main",
-        "claims": [
-            {
-                "subject": "北狄山道",
-                "predicate": "snow_state",
-                "object_value": "melting",
-                "story_order": 40.0,
-                "chapter_id": "ch_02",
-                "body_rev": 1,
-                "paragraph_id": "p_2_01",
-                "context": "四月初，积雪开始融化",
-            },
-            {
-                "subject": "北狄山道",
-                "predicate": "snow_state",
-                "object_value": "patches_remain",
-                "story_order": 45.0,
-                "chapter_id": "ch_02",
-                "body_rev": 1,
-                "paragraph_id": "p_2_18",
-                "context": "四月底山阴仍有残雪",
-            },
-        ],
-        "expected_conflict": False,
-        "reason": "时间不同，状态演变合理",
-    },
-    {
-        "id": "hn_treatment_effect",
-        "description": "治疗后症状改善 - 不冲突",
-        "project_id": "proj_test",
-        "timeline_id": "main",
-        "claims": [
-            {
-                "subject": "沈砚",
-                "predicate": "shoulder_condition",
-                "object_value": "pain_severe",
-                "story_order": 30.0,
-                "chapter_id": "ch_01",
-                "body_rev": 2,
-                "paragraph_id": "p_1_15",
-                "context": "左肩旧伤遇寒痛",
-                "trigger": "cold",
-            },
-            {
-                "subject": "沈砚",
-                "predicate": "shoulder_condition",
-                "object_value": "pain_reduced",
-                "story_order": 32.0,
-                "chapter_id": "ch_01",
-                "body_rev": 2,
-                "paragraph_id": "p_1_20",
-                "context": "服药后症状减轻",
-                "cause": "medication",
-            },
-        ],
-        "expected_conflict": False,
-        "reason": "因果关系明确，不冲突",
-    },
-    {
-        "id": "hn_age_progression",
-        "description": "年龄渐变 - 不冲突",
-        "project_id": "proj_test",
-        "timeline_id": "main",
-        "claims": [
-            {
-                "subject": "苏清",
-                "predicate": "appearance",
-                "object_value": "youthful_handsome",
-                "story_order": 10.0,
-                "chapter_id": "ch_01",
-                "body_rev": 1,
-                "paragraph_id": "p_1_03",
-                "context": "年轻时的苏清英俊潇洒",
-                "age_range": "young",
-            },
-            {
-                "subject": "苏清",
-                "predicate": "appearance",
-                "object_value": "mature_dignified",
-                "story_order": 200.0,
-                "chapter_id": "ch_15",
-                "body_rev": 1,
-                "paragraph_id": "p_15_05",
-                "context": "中年的苏清威严沉稳",
-                "age_range": "middle_age",
-            },
-        ],
-        "expected_conflict": False,
-        "reason": "时间跨度大，自然变化",
-    },
-    {
-        "id": "hn_ownership_transfer",
-        "description": "物品归属转移 - 不冲突",
-        "project_id": "proj_test",
-        "timeline_id": "main",
-        "claims": [
-            {
-                "subject": "玉佩",
-                "predicate": "owned_by",
-                "object_entity": "沈砚",
-                "story_order": 50.0,
-                "chapter_id": "ch_03",
-                "body_rev": 1,
-                "paragraph_id": "p_3_05",
-                "context": "沈砚佩戴玉佩",
-            },
-            {
-                "subject": "玉佩",
-                "predicate": "owned_by",
-                "object_entity": "苏清",
-                "story_order": 80.0,
-                "chapter_id": "ch_05",
-                "body_rev": 1,
-                "paragraph_id": "p_5_10",
-                "context": "沈砚将玉佩赠予苏清",
-                "transfer_event": "gift",
-            },
-        ],
-        "expected_conflict": False,
-        "reason": "有转移事件，时间先后明确",
-    },
-]
-
-EASY_NEGATIVES = [
-    {
-        "id": "en_different_entities",
-        "description": "完全不同的实体 - 不冲突",
-        "claims": [
-            {"subject": "沈砚", "predicate": "alive", "object_value": "true"},
-            {"subject": "苏清", "predicate": "location", "object_value": "京城"},
-        ],
-        "expected_conflict": False,
-        "reason": "主体不同，谓词不同",
-    },
-    {
-        "id": "en_different_timelines",
-        "description": "不同时间线 - 不冲突",
-        "claims": [
-            {"subject": "沈砚", "predicate": "alive", "timeline_id": "main", "story_order": 100.0},
-            {"subject": "沈砚", "predicate": "alive", "timeline_id": "flashback", "story_order": 100.0},
-        ],
-        "expected_conflict": False,
-        "reason": "时间线不同",
-    },
-]
+CORPUS_VERSION = "rule-eval-v1"
+POSITIVE_CASES_PER_RULE = 40
+HARD_NEGATIVE_CASES_PER_RULE = 20
+EASY_NEGATIVE_CASES = 20
 
 
-def get_all_fixtures():
-    """获取所有测试夹具"""
+def _claim(
+    case_id: str,
+    side: int,
+    *,
+    subject: str,
+    predicate: str,
+    object_type: str,
+    object_value: str | None,
+    story_order: float | None,
+    timeline_id: str = "main",
+    chapter_id: str | None = None,
+    **extra: Any,
+) -> dict[str, Any]:
+    chapter = chapter_id or ("ch_source" if side == 1 else "ch_followup")
+    return {
+        "subject_text": subject,
+        "predicate": predicate,
+        "object_type": object_type,
+        "object_value": object_value,
+        "story_order": story_order,
+        "timeline_id": timeline_id,
+        "chapter_id": chapter,
+        "body_rev": 1,
+        "paragraph_id": f"{case_id}-p{side}",
+        "source_anchor": f"P{side - 1}",
+        "fingerprint": f"{CORPUS_VERSION}-{case_id}-claim-{side}",
+        **extra,
+    }
+
+
+def _case(
+    case_id: str,
+    *,
+    split: str,
+    rule: str | None,
+    description: str,
+    claims: list[dict[str, Any]],
+    reason: str | None = None,
+) -> dict[str, Any]:
+    return {
+        "id": case_id,
+        "corpus_version": CORPUS_VERSION,
+        "split": split,
+        "rule": rule,
+        "description": description,
+        "claims": claims,
+        "expected_conflict": split == "positive",
+        "expected_issue_type": rule if split == "positive" else None,
+        "expected_evidence": [claim["paragraph_id"] for claim in claims],
+        "reason": reason,
+    }
+
+
+def _positive_cases() -> list[dict[str, Any]]:
+    cases: list[dict[str, Any]] = []
+    for index in range(POSITIVE_CASES_PER_RULE):
+        suffix = f"{index + 1:03d}"
+        alive_id = f"alive-positive-{suffix}"
+        alive_subject = f"生死正例人物{suffix}"
+        cases.append(
+            _case(
+                alive_id,
+                split="positive",
+                rule="alive_conflict",
+                description="角色明确死亡后，在同一时间线中无解释地再次活动。",
+                claims=[
+                    _claim(
+                        alive_id,
+                        1,
+                        subject=alive_subject,
+                        predicate="alive",
+                        object_type="scalar",
+                        object_value="false",
+                        story_order=1000 + index * 10,
+                    ),
+                    _claim(
+                        alive_id,
+                        2,
+                        subject=alive_subject,
+                        predicate="alive",
+                        object_type="scalar",
+                        object_value="true",
+                        story_order=1001 + index * 10,
+                    ),
+                ],
+            )
+        )
+
+        ownership_id = f"ownership-positive-{suffix}"
+        item_id = f"eval-item-positive-{suffix}"
+        cases.append(
+            _case(
+                ownership_id,
+                split="positive",
+                rule="ownership_conflict",
+                description="同一件物品在重叠有效期内被声明为归不同人物所有。",
+                claims=[
+                    _claim(
+                        ownership_id,
+                        1,
+                        subject=f"原持有人{suffix}",
+                        predicate="owns",
+                        object_type="entity",
+                        object_value=f"冲突物品{suffix}",
+                        object_entry_id=item_id,
+                        story_order=2000 + index * 10,
+                        valid_from_order=2000 + index * 10,
+                        valid_to_order=2005 + index * 10,
+                    ),
+                    _claim(
+                        ownership_id,
+                        2,
+                        subject=f"新持有人{suffix}",
+                        predicate="owns",
+                        object_type="entity",
+                        object_value=f"冲突物品{suffix}",
+                        object_entry_id=item_id,
+                        story_order=2001 + index * 10,
+                        valid_from_order=2001 + index * 10,
+                    ),
+                ],
+            )
+        )
+
+        knowledge_id = f"knowledge-positive-{suffix}"
+        knowledge_subject = f"知情正例人物{suffix}"
+        knowledge = f"密信内容{suffix}"
+        cases.append(
+            _case(
+                knowledge_id,
+                split="positive",
+                rule="knowledge_boundary",
+                description="角色先使用秘密，后在同一时间线中才获知该秘密。",
+                claims=[
+                    _claim(
+                        knowledge_id,
+                        1,
+                        subject=knowledge_subject,
+                        predicate="uses_knowledge",
+                        object_type="scalar",
+                        object_value=knowledge,
+                        story_order=3000 + index * 10,
+                    ),
+                    _claim(
+                        knowledge_id,
+                        2,
+                        subject=knowledge_subject,
+                        predicate="acquires_knowledge",
+                        object_type="scalar",
+                        object_value=knowledge,
+                        story_order=3001 + index * 10,
+                    ),
+                ],
+            )
+        )
+    return cases
+
+
+def _alive_hard_negative(index: int) -> dict[str, Any]:
+    suffix = f"{index + 1:03d}"
+    case_id = f"alive-hard-negative-{suffix}"
+    subject = f"生死反例人物{suffix}"
+    base = 4000 + index * 10
+    if index < 8:
+        claims = [
+            _claim(case_id, 1, subject=subject, predicate="alive", object_type="scalar", object_value="true", story_order=base),
+            _claim(case_id, 2, subject=subject, predicate="alive", object_type="scalar", object_value="false", story_order=base + 1),
+        ]
+        reason = "自然的由生到死不是复活冲突。"
+    elif index < 14:
+        claims = [
+            _claim(case_id, 1, subject=subject, predicate="alive", object_type="scalar", object_value="false", story_order=base, timeline_id="main"),
+            _claim(case_id, 2, subject=subject, predicate="alive", object_type="scalar", object_value="true", story_order=base + 1, timeline_id="dream"),
+        ]
+        reason = "主时间线死亡与梦境时间线活动不能相互推出冲突。"
+    else:
+        claims = [
+            _claim(case_id, 1, subject=subject, predicate="alive", object_type="scalar", object_value="false", story_order=None),
+            _claim(case_id, 2, subject=subject, predicate="alive", object_type="scalar", object_value="true", story_order=base + 1),
+        ]
+        reason = "缺少可靠先后顺序时必须保守跳过。"
+    return _case(case_id, split="hard_negative", rule="alive_conflict", description="共享角色的非冲突生死状态。", claims=claims, reason=reason)
+
+
+def _ownership_hard_negative(index: int) -> dict[str, Any]:
+    suffix = f"{index + 1:03d}"
+    case_id = f"ownership-hard-negative-{suffix}"
+    item_id = f"eval-item-negative-{suffix}"
+    base = 5000 + index * 10
+    if index < 8:
+        claims = [
+            _claim(case_id, 1, subject=f"赠与人{suffix}", predicate="owns", object_type="entity", object_value=f"转让物品{suffix}", object_entry_id=item_id, story_order=base, valid_from_order=base, valid_to_order=base + 1),
+            _claim(case_id, 2, subject=f"受赠人{suffix}", predicate="owns", object_type="entity", object_value=f"转让物品{suffix}", object_entry_id=item_id, story_order=base + 1, valid_from_order=base + 1),
+        ]
+        reason = "旧归属在新归属开始时已经结束。"
+    elif index < 14:
+        owner = f"同一持有人{suffix}"
+        claims = [
+            _claim(case_id, 1, subject=owner, predicate="owns", object_type="entity", object_value=f"持续持有物品{suffix}", object_entry_id=item_id, story_order=base),
+            _claim(case_id, 2, subject=owner, predicate="owns", object_type="entity", object_value=f"持续持有物品{suffix}", object_entry_id=item_id, story_order=base + 1),
+        ]
+        reason = "同一持有人重复出现不构成归属冲突。"
+    else:
+        claims = [
+            _claim(case_id, 1, subject=f"现实持有人{suffix}", predicate="owns", object_type="entity", object_value=f"分线物品{suffix}", object_entry_id=item_id, story_order=base, timeline_id="main"),
+            _claim(case_id, 2, subject=f"梦境持有人{suffix}", predicate="owns", object_type="entity", object_value=f"分线物品{suffix}", object_entry_id=item_id, story_order=base + 1, timeline_id="dream"),
+        ]
+        reason = "不同时间线的归属不直接冲突。"
+    return _case(case_id, split="hard_negative", rule="ownership_conflict", description="共享物品的合法归属变化。", claims=claims, reason=reason)
+
+
+def _knowledge_hard_negative(index: int) -> dict[str, Any]:
+    suffix = f"{index + 1:03d}"
+    case_id = f"knowledge-hard-negative-{suffix}"
+    subject = f"知情反例人物{suffix}"
+    knowledge = f"账册秘密{suffix}"
+    base = 6000 + index * 10
+    if index < 8:
+        claims = [
+            _claim(case_id, 1, subject=subject, predicate="acquires_knowledge", object_type="scalar", object_value=knowledge, story_order=base),
+            _claim(case_id, 2, subject=subject, predicate="uses_knowledge", object_type="scalar", object_value=knowledge, story_order=base + 1),
+        ]
+        reason = "先获知再使用符合知情边界。"
+    elif index < 14:
+        claims = [
+            _claim(case_id, 1, subject=subject, predicate="uses_knowledge", object_type="scalar", object_value=f"甲{knowledge}", story_order=base),
+            _claim(case_id, 2, subject=subject, predicate="acquires_knowledge", object_type="scalar", object_value=f"乙{knowledge}", story_order=base + 1),
+        ]
+        reason = "同一角色涉及不同信息，不应串成冲突。"
+    else:
+        claims = [
+            _claim(case_id, 1, subject=subject, predicate="uses_knowledge", object_type="scalar", object_value=knowledge, story_order=base, timeline_id="main"),
+            _claim(case_id, 2, subject=subject, predicate="acquires_knowledge", object_type="scalar", object_value=knowledge, story_order=base + 1, timeline_id="flashback"),
+        ]
+        reason = "不同时间线的知情状态相互独立。"
+    return _case(case_id, split="hard_negative", rule="knowledge_boundary", description="共享人物和信息的合法知情过程。", claims=claims, reason=reason)
+
+
+def _hard_negative_cases() -> list[dict[str, Any]]:
+    cases: list[dict[str, Any]] = []
+    for index in range(HARD_NEGATIVE_CASES_PER_RULE):
+        cases.extend(
+            [
+                _alive_hard_negative(index),
+                _ownership_hard_negative(index),
+                _knowledge_hard_negative(index),
+            ]
+        )
+    return cases
+
+
+def _easy_negative_cases() -> list[dict[str, Any]]:
+    return [
+        _case(
+            f"easy-negative-{index + 1:03d}",
+            split="easy_negative",
+            rule=None,
+            description="互不相关的人物地点描写。",
+            claims=[
+                _claim(
+                    f"easy-negative-{index + 1:03d}",
+                    1,
+                    subject=f"路人{index + 1:03d}",
+                    predicate="located_at",
+                    object_type="location",
+                    object_value=f"村落{index + 1:03d}",
+                    story_order=7000 + index * 10,
+                ),
+                _claim(
+                    f"easy-negative-{index + 1:03d}",
+                    2,
+                    subject=f"商队{index + 1:03d}",
+                    predicate="weather_observed",
+                    object_type="scalar",
+                    object_value="晴",
+                    story_order=7001 + index * 10,
+                ),
+            ],
+            reason="主体、谓词和对象均无冲突关系。",
+        )
+        for index in range(EASY_NEGATIVE_CASES)
+    ]
+
+
+POSITIVE_CASES = _positive_cases()
+HARD_NEGATIVES = _hard_negative_cases()
+EASY_NEGATIVES = _easy_negative_cases()
+
+
+def get_all_fixtures() -> dict[str, list[dict[str, Any]]]:
     return {
         "positive": POSITIVE_CASES,
         "hard_negative": HARD_NEGATIVES,
@@ -291,11 +312,9 @@ def get_all_fixtures():
     }
 
 
-def get_positive_count():
-    """获取正例数量"""
+def get_positive_count() -> int:
     return len(POSITIVE_CASES)
 
 
-def get_hard_negative_count():
-    """获取 hard negative 数量"""
+def get_hard_negative_count() -> int:
     return len(HARD_NEGATIVES)
