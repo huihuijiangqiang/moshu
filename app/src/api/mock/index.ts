@@ -82,10 +82,13 @@ export const mockApi = {
     return c ? structuredClone(c) : undefined
   },
 
-  async saveChapter(id: string, patch: Partial<Chapter>): Promise<void> {
+  async saveChapter(id: string, patch: Partial<Chapter>): Promise<{ rev: number }> {
     await delay(120)
     const c = [...state.chapters, ...projectDrafts.values()].flat().find((x) => x.id === id)
-    if (c) Object.assign(c, patch)
+    if (!c) return { rev: 0 }
+    Object.assign(c, patch)
+    c.rev = (c.rev ?? 0) + 1
+    return { rev: c.rev }
   },
 
   async updateChapterPlan(id: string, patch: ChapterPlanPatch): Promise<Chapter | undefined> {

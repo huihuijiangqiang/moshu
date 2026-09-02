@@ -29,6 +29,24 @@ interface ChapterDto extends ChapterListDto {
   rev: number
 }
 
+export interface ChapterSaveResult {
+  rev: number
+}
+
+export interface BodyConflict {
+  chapterId: string
+  serverContentHtml: string
+  serverRev: number
+  clientContentHtml: string
+}
+
+export class BodyConflictError extends Error {
+  constructor(public conflict: BodyConflict) {
+    super('body_revision_conflict')
+    this.name = 'BodyConflictError'
+  }
+}
+
 interface OutlineDto {
   chapter_id: string
   title: string
@@ -287,6 +305,24 @@ export function htmlToDocument(html: string): Record<string, unknown> {
   return { type: 'doc', content }
 }
 
+export function bodyConflictFromError(chapterId: string, error: ApiError): BodyConflict | null {
+  if (error.status !== 409) return null
+  try {
+    const response = JSON.parse(error.message) as { detail?: Record<string, unknown> }
+    const detail = response.detail
+    if (!detail || detail.conflict !== true || typeof detail.server_rev !== 'number') return null
+    if (typeof detail.server_content_html !== 'string' || typeof detail.client_content_html !== 'string') return null
+    return {
+      chapterId,
+      serverContentHtml: detail.server_content_html,
+      serverRev: detail.server_rev,
+      clientContentHtml: detail.client_content_html
+    }
+  } catch {
+    return null
+  }
+}
+
 const realApi = {
   async getProject(projectId = 'p1'): Promise<Project> {
     return projectFromDto(await request<ProjectDto>(`/projects/${projectId}`))
@@ -309,18 +345,32 @@ const realApi = {
     return chapter
   },
 
-  async saveChapter(id: string, patch: Partial<Chapter>): Promise<void> {
+  async saveChapter(id: string, patch: Partial<Chapter>): Promise<ChapterSaveResult> {
     const content = patch.content ?? ''
-    const result = await request<{ rev: number }>(`/chapters/${id}/body`, {
-      method: 'PUT',
-      headers: { 'Idempotency-Key': crypto.randomUUID() },
-      body: JSON.stringify({
-        content_html: content,
-        content_json: htmlToDocument(content),
-        base_rev: revisions.get(id) ?? patch.rev ?? 0
+    try {
+      const result = await request<ChapterSaveResult>(`/chapters/${id}/body`, {
+        method: 'PUT',
+        headers: { 'Idempotency-Key': crypto.randomUUID() },
+        body: JSON.stringify({
+          content_html: content,
+          content_json: htmlToDocument(content),
+          base_rev: revisions.get(id) ?? patch.rev ?? 0
+        })
       })
-    })
-    revisions.set(id, result.rev)
+      revisions.set(id, result.rev)
+      const cached = chapterCache.get(id)
+      if (cached) cached.rev = result.rev
+      return result
+    } catch (error) {
+      if (error instanceof ApiError) {
+        const conflict = bodyConflictFromError(id, error)
+        if (conflict) {
+          revisions.set(id, conflict.serverRev)
+          throw new BodyConflictError(conflict)
+        }
+      }
+      throw error
+    }
   },
 
   async updateChapterPlan(id: string, patch: ChapterPlanPatch): Promise<Chapter | undefined> {

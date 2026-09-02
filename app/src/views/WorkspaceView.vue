@@ -32,10 +32,26 @@ let disposed = false
 
 const editor = useNovelEditor(html.value, (next, chars) => {
   html.value = next
-  if (store.activeId) store.setWords(store.activeId, chars)
+  if (store.activeId) {
+    store.setWords(store.activeId, chars)
+    store.setContent(store.activeId, next)
+  }
 })
 
-const { state: saveState, savedAt, online, markClean } = useAutosave(chapterId, html)
+const {
+  state: saveState,
+  savedAt,
+  online,
+  recoveryDraft,
+  conflict: saveConflict,
+  storageWarning,
+  retry: retrySave,
+  prepareChapter,
+  restoreLocalDraft,
+  discardLocalDraft,
+  acceptServerVersion,
+  keepLocalVersion
+} = useAutosave(chapterId, html)
 
 const requestedChapterId = computed(() => typeof route.query.chapter === 'string' ? route.query.chapter : null)
 
@@ -51,7 +67,8 @@ watch(
     if (disposed || store.activeId !== id) return
 
     const content = store.chapters.find((chapter) => chapter.id === id)?.content ?? ''
-    markClean(id, content)
+    await prepareChapter(id, content)
+    if (disposed || store.activeId !== id) return
     const currentEditor = editor.value
     if (!currentEditor || currentEditor.isDestroyed) return
     currentEditor.commands.setContent(content, { emitUpdate: false })
@@ -130,12 +147,54 @@ const saveLabel = computed(() => {
       return '离线 · 已存本地'
     case 'error':
       return '保存失败 · 已存本地'
+    case 'conflict':
+      return '版本冲突 · 等待处理'
     case 'saved':
       return `已保存 ${savedAt.value?.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' }) ?? ''}`
     default:
       return '就绪'
   }
 })
+
+const activeRecovery = computed(() => recoveryDraft.value?.chapterId === store.activeId ? recoveryDraft.value : null)
+const activeSaveConflict = computed(() => saveConflict.value?.chapterId === store.activeId ? saveConflict.value : null)
+
+function excerpt(content: string) {
+  const text = new DOMParser().parseFromString(content, 'text/html').body.textContent?.trim() ?? ''
+  return text.length > 180 ? `${text.slice(0, 180)}…` : text || '空白正文'
+}
+
+const serverConflictExcerpt = computed(() => excerpt(activeSaveConflict.value?.serverContentHtml ?? ''))
+const localConflictExcerpt = computed(() => excerpt(activeSaveConflict.value?.clientContentHtml ?? ''))
+
+function replaceEditorContent(content: string, rev?: number) {
+  const id = store.activeId
+  const currentEditor = editor.value
+  if (!id || !currentEditor || currentEditor.isDestroyed) return
+  currentEditor.commands.setContent(content, { emitUpdate: false })
+  html.value = content
+  store.setContent(id, content, rev)
+}
+
+function recoverDraft() {
+  const draft = restoreLocalDraft()
+  if (draft && draft.chapterId === store.activeId) replaceEditorContent(draft.html)
+}
+
+async function discardDraft() {
+  await discardLocalDraft()
+}
+
+async function useServerVersion() {
+  const accepted = await acceptServerVersion()
+  if (accepted && accepted.chapterId === store.activeId) {
+    replaceEditorContent(accepted.html, accepted.rev)
+  }
+}
+
+function openConflictChapter() {
+  if (saveConflict.value) store.activeId = saveConflict.value.chapterId
+}
 
 const readMinutes = computed(() => Math.max(1, Math.round((store.active?.words ?? 0) / 350)))
 
@@ -264,6 +323,61 @@ function editChapterPlan() {
 
       <div v-if="!online" :style="{ padding: '5px var(--u4)', fontSize: 'var(--fs-sm)', fontWeight: 700, background: 'var(--alert)', color: 'var(--on-alert)' }">
         离线中 · 你可以继续写，内容已存在本地，联网后自动同步
+      </div>
+
+      <div
+        v-if="storageWarning"
+        :style="{ padding: '6px var(--u4)', fontSize: 'var(--fs-sm)', fontWeight: 700, background: 'var(--alert)', color: 'var(--on-alert)' }"
+      >
+        本地草稿存储不可用 · 请保持联网，云端自动保存仍会继续
+      </div>
+
+      <div
+        v-if="activeRecovery"
+        :style="{ padding: '8px var(--u4)', display: 'flex', alignItems: 'center', gap: 'var(--u3)', flexWrap: 'wrap', background: 'var(--alert-soft)', borderBottom: 'var(--hair) solid var(--alert-line)' }"
+      >
+        <strong :style="{ color: 'var(--alert-ink)' }">发现未同步的本地草稿</strong>
+        <span :style="{ color: 'var(--ink-3)', fontSize: 'var(--fs-sm)' }">
+          {{ new Date(activeRecovery.at).toLocaleString('zh-CN', { hour12: false }) }}
+        </span>
+        <span :style="{ marginLeft: 'auto' }" />
+        <button class="wk-btn wk-btn-xs" type="button" @click="discardDraft">使用云端版本</button>
+        <button class="wk-btn wk-btn-xs" type="button" data-primary="true" @click="recoverDraft">恢复本地草稿</button>
+      </div>
+
+      <div
+        v-if="activeSaveConflict"
+        :style="{ padding: 'var(--u3) var(--u4)', display: 'flex', alignItems: 'stretch', gap: 'var(--u3)', flexWrap: 'wrap', background: 'var(--alert-soft)', borderBottom: 'var(--hair) solid var(--alert-line)' }"
+      >
+        <div :style="{ width: '100%', fontWeight: 700, color: 'var(--alert-ink)' }">云端正文已更新，请选择保留哪一版</div>
+        <div :style="{ flex: '1 1 260px', minWidth: 0, paddingLeft: 'var(--u3)', borderLeft: '3px solid var(--line-strong)' }">
+          <div class="wk-label">云端 · 第 {{ activeSaveConflict.serverRev }} 版</div>
+          <p :style="{ margin: '4px 0 0', color: 'var(--ink-2)', lineHeight: 1.55 }">{{ serverConflictExcerpt }}</p>
+        </div>
+        <div :style="{ flex: '1 1 260px', minWidth: 0, paddingLeft: 'var(--u3)', borderLeft: '3px solid var(--alert)' }">
+          <div class="wk-label" :style="{ color: 'var(--alert-ink)' }">本地草稿</div>
+          <p :style="{ margin: '4px 0 0', color: 'var(--ink-2)', lineHeight: 1.55 }">{{ localConflictExcerpt }}</p>
+        </div>
+        <div :style="{ display: 'flex', gap: 'var(--u2)', alignItems: 'center', flexWrap: 'wrap' }">
+          <button class="wk-btn wk-btn-xs" type="button" @click="useServerVersion">采用云端</button>
+          <button class="wk-btn wk-btn-xs" type="button" data-primary="true" @click="keepLocalVersion">保留本地并保存</button>
+        </div>
+      </div>
+
+      <div
+        v-else-if="saveConflict"
+        :style="{ padding: '7px var(--u4)', display: 'flex', alignItems: 'center', gap: 'var(--u3)', background: 'var(--alert-soft)', borderBottom: 'var(--hair) solid var(--alert-line)', color: 'var(--alert-ink)' }"
+      >
+        <strong>另一章有版本冲突</strong>
+        <button class="wk-btn wk-btn-xs" type="button" @click="openConflictChapter">打开处理</button>
+      </div>
+
+      <div
+        v-if="saveState === 'error'"
+        :style="{ padding: '7px var(--u4)', display: 'flex', alignItems: 'center', gap: 'var(--u3)', background: 'var(--alert-soft)', borderBottom: 'var(--hair) solid var(--alert-line)', color: 'var(--alert-ink)' }"
+      >
+        <strong>云端保存失败，本地草稿仍在</strong>
+        <button class="wk-btn wk-btn-xs" type="button" @click="retrySave">重试保存</button>
       </div>
 
       <!-- v-show 而非 v-if：编辑器不能因为切标签被卸载 -->

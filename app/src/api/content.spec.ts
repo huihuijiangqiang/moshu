@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import { codexFromDto, guardIssueFromDto, guardOverviewFromDto, htmlToDocument } from './content'
+import { ApiError } from './http'
+import { bodyConflictFromError, codexFromDto, guardIssueFromDto, guardOverviewFromDto, htmlToDocument } from './content'
 
 describe('htmlToDocument', () => {
   it('uses the backend paragraph pid contract', () => {
@@ -8,6 +9,32 @@ describe('htmlToDocument', () => {
     ) as { content: Array<{ attrs: { pid: string } }> }
 
     expect(document.content.map((node) => node.attrs.pid)).toEqual(['known-pid', 'p-1'])
+  })
+})
+
+describe('bodyConflictFromError', () => {
+  it('extracts both versions from a FastAPI 409 response', () => {
+    const conflict = bodyConflictFromError('ch-1', new ApiError(409, JSON.stringify({
+      detail: {
+        conflict: true,
+        server_content_html: '<p>server</p>',
+        server_content_json: {},
+        server_rev: 7,
+        client_content_html: '<p>client</p>',
+        client_content_json: {}
+      }
+    })))
+
+    expect(conflict).toEqual({
+      chapterId: 'ch-1',
+      serverContentHtml: '<p>server</p>',
+      serverRev: 7,
+      clientContentHtml: '<p>client</p>'
+    })
+  })
+
+  it('does not misclassify an idempotency-key 409 as a body conflict', () => {
+    expect(bodyConflictFromError('ch-1', new ApiError(409, '{"detail":"Idempotency key conflict"}'))).toBeNull()
   })
 })
 

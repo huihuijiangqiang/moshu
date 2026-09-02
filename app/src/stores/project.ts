@@ -55,6 +55,13 @@ export const useProjectStore = defineStore('project', () => {
     if (project.value?.wordCount !== undefined) project.value.wordCount += delta
   }
 
+  function setContent(id: string, content: string, rev?: number) {
+    const chapter = chapters.value.find((item) => item.id === id)
+    if (!chapter) return
+    chapter.content = content
+    if (rev !== undefined) chapter.rev = rev
+  }
+
   async function updateChapterPlan(id: string, patch: ChapterPlanPatch) {
     const updated = await contentApi.updateChapterPlan(id, patch)
     if (!updated) throw new Error('chapter_not_found')
@@ -77,6 +84,6 @@ export const useProjectStore = defineStore('project', () => {
 
   return {
     project, chapters, activeId, active, byVolume, totalWords, totalChapters, loading, loadedProjectId,
-    load, openChapter, setWords, updateChapterPlan, insertChapterAfter
+    load, openChapter, setWords, setContent, updateChapterPlan, insertChapterAfter
   }
 })
