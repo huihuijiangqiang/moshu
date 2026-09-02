@@ -25,7 +25,7 @@ async function refreshAccessToken(): Promise<string | null> {
   return refreshInFlight
 }
 
-export async function request<T>(path: string, init?: RequestInit, retryAuth = true): Promise<T> {
+export async function requestResponse(path: string, init?: RequestInit, retryAuth = true): Promise<Response> {
   const token = getAccessToken()
   const res = await fetch(BASE + path, {
     ...init,
@@ -37,10 +37,15 @@ export async function request<T>(path: string, init?: RequestInit, retryAuth = t
   })
   if (res.status === 401 && retryAuth && !path.startsWith('/auth/')) {
     const refreshed = await refreshAccessToken()
-    if (refreshed) return request<T>(path, init, false)
+    if (refreshed) return requestResponse(path, init, false)
     window.dispatchEvent(new CustomEvent('moshu:unauthorized'))
   }
   if (!res.ok) throw new ApiError(res.status, await res.text())
+  return res
+}
+
+export async function request<T>(path: string, init?: RequestInit, retryAuth = true): Promise<T> {
+  const res = await requestResponse(path, init, retryAuth)
   if (res.status === 204) return undefined as T
   return (await res.json()) as T
 }

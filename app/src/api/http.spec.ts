@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { request } from './http'
+import { request, requestResponse } from './http'
 import { clearSession, setSession } from './session'
 
 const user = { id: 'u1', name: '作者', email: 'writer@example.com', plan: 'free' }
@@ -42,6 +42,18 @@ describe('authenticated API requests', () => {
     vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(null, { status: 204 }))
 
     await expect(request<void>('/auth/logout', { method: 'POST' })).resolves.toBeUndefined()
+  })
+
+  it('returns an authenticated raw response for file downloads', async () => {
+    setSession({ access_token: 'runtime-access', refresh_token: 'runtime-refresh', user })
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response('manuscript', {
+      status: 200,
+      headers: { 'Content-Type': 'text/plain' }
+    }))
+
+    const result = await requestResponse('/projects/p1/export')
+
+    await expect(result.text()).resolves.toBe('manuscript')
   })
 
   it('refreshes once after a 401 and retries with the new access token', async () => {

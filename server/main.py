@@ -7,7 +7,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from api import admin, auth, chapters, codex, consistency, generate, orgs, outlines, projects
+from api import admin, auth, chapters, codex, consistency, exports, generate, orgs, outlines, projects
 from config import settings
 
 
@@ -52,6 +52,7 @@ async def health():
 
 # 已实现路由
 app.include_router(auth.router, prefix="/auth", tags=["认证"])
+app.include_router(exports.router, prefix="/projects", tags=["导出与备份"])
 app.include_router(projects.router, prefix="/projects", tags=["项目"])
 app.include_router(chapters.router, prefix="/chapters", tags=["章节"])
 app.include_router(outlines.router, prefix="/chapters", tags=["章纲"])

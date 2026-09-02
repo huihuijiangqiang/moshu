@@ -7,12 +7,13 @@
 
 **关键事实**：
 - ✅ 30 张表完整 Alembic baseline，`004_auth_admin_rbac` 再增加 3 张安全与管理表
-- ✅ 893 个单元/功能测试通过（SQLite in-memory，mock embedding/LLM）
-- ✅ 前端 51 个测试、TypeScript 类型检查和生产构建通过
+- ✅ 897 个单元/功能测试通过（SQLite in-memory，mock embedding/LLM）
+- ✅ 前端 55 个测试、TypeScript 类型检查和生产构建通过
 - ✅ 36 个集成测试已在本机真实 PostgreSQL + pgvector 环境通过
 - ✅ 已完成真实账号认证、作品创建、分卷章纲编辑与章节插入的首轮产品闭环
 - ✅ Refresh session 持久化轮换、防重放、注销即时吊销，系统管理员与项目 RBAC 已接通
 - ✅ 工作室成员管理、角色调整和作品共享已有真实 API 与 UI
+- ✅ TXT/Markdown/DOCX/EPUB、分章 ZIP、完整 JSON 备份与非覆盖恢复已接通真实数据库
 - ✅ Docker Compose 已接通 PostgreSQL、Redis、Celery worker/dispatcher/beat 与 transactional outbox
 - ✅ Guard 已接入项目扫描、运行状态、真实告警证据与乐观锁处置
 - ⚠️ Codex embedding 回填的持久失败可见性尚未实现
@@ -166,6 +167,14 @@
 - ✅ 距离阈值过滤，ORDER BY distance 高效最近邻
 - ✅ pgvector 余弦距离与 HNSW 相关集成测试已在真实 PostgreSQL 环境通过
 
+#### 导出与备份 (`services/exporting.py`)
+- ✅ 服务端全量读取章节正文，不依赖前端是否打开过章节
+- ✅ TXT / Markdown 单文件与分章 ZIP；DOCX / EPUB 标准容器
+- ✅ 完整 JSON 备份包含卷、正文 rev、正文版本、章纲历史、设定别名与关系
+- ✅ 备份主动排除 embedding；恢复时重建 ID 并创建新作品，不覆盖原稿
+- ✅ 服务端与浏览器均限制 100 MB 备份，并区分文件、格式、权限与服务错误
+- ✅ 真实 `p1` 验收：32 章、34,638 字、24 条设定，TXT/DOCX/EPUB/1.45 MB 备份均生成成功
+
 ---
 
 ### 3. API 端点（全部需认证 + 项目权限）
@@ -187,6 +196,12 @@
 - ✅ owner / lead / writer / editor / viewer 动作级权限矩阵
 - ✅ 只有作品 owner 且同时是工作室 owner 时才能把作品挂入工作室
 - ✅ 前端 `/admin` 和 `/projects/:projectId/access` 已在真实 PostgreSQL 环境验收
+
+#### 导出与备份 (`api/exports.py`)
+- ✅ `GET /projects/{id}/export` - TXT/Markdown/DOCX/EPUB 与分章 ZIP
+- ✅ `GET /projects/{id}/backup` - 下载可移植的完整 JSON 备份
+- ✅ `POST /projects/restore-backup` - 校验备份并恢复为当前用户的新作品
+- ✅ 所有下载均执行项目 `export` 动作权限检查，跨租户请求返回 403
 
 #### 项目 (`api/projects.py`)
 - ✅ `POST /projects` - 创建作品、分卷、首章和初始设定条目
@@ -257,9 +272,9 @@
 
 ### 5. 测试覆盖
 
-#### 单元测试（893 passed，SQLite in-memory，mock providers）
+#### 单元测试（897 passed，SQLite in-memory，mock providers）
 
-**全量测试结果**：893 passed, 36 skipped（未设置集成测试 URL 时）, 4 warnings；前端 51 passed
+**全量测试结果**：897 passed, 36 skipped（未设置集成测试 URL 时）, 4 warnings；前端 55 passed
 
 主要测试覆盖（不逐文件列举测试数量，以实际 pytest 结果为准）：
 - ✅ Codex 设定库：CRUD、别名规范化、可检索文本判据、两段式事务、deferred 降级、httpx 错误重试
@@ -323,8 +338,9 @@
 ### 2. 产品功能仍有占位实现
 **状态**：进行中
 
-真实认证、作品创建、分卷章纲、章节插入、正文保存保护和 Guard 运行闭环已经接通；以下用户可见页面仍有 mock 或静态展示：
-- 导出、文风、AI 占比、用量页面尚未全部接入真实后端
+真实认证、作品创建、分卷章纲、章节插入、正文保存保护、Guard、导出和备份恢复已经接通；
+以下用户可见页面仍有 mock 或静态展示：
+- 文风、AI 占比、用量页面尚未接入真实后端
 
 **风险**：当前不能称为功能完整 MVP，也不能把所有页面展示视为真实数据。
 
@@ -483,9 +499,10 @@ baseline，增量实现 Codex embedding 回填、时间锚点解析、issue 生�
 ## 下一步优先级
 
 ### 立即行动（阻塞生产部署）
-1. **真实导出与备份恢复**
-   - TXT/Markdown/DOCX/EPUB 全量导出，校验章节数、字数、顺序和 revision
-   - 可校验备份包与恢复预检，避免误覆盖现有作品
+1. **真实用量台账与额度控制**
+   - 所有模型调用统一记录输入、输出、模型、费用和业务来源
+   - 生成前原子预留额度，完成后按实际用量结算，失败时释放预留
+   - 管理端可调整套餐与额度，作者端只展示真实聚合数据
 
 2. **扩充评测数据集**
    - 扩充至 100+ 正例 + 50+ hard negatives
@@ -493,12 +510,16 @@ baseline，增量实现 Codex embedding 回填、时间锚点解析、issue 生�
    - 用真实小说场景替换合成案例
 
 ### 短期优先级（1-2 周）
-1. **实现 Codex Embedding 持久失败可见性**
+1. **真实风格档与 AI 来源追踪**
+   - 风格档 CRUD、样文抽取状态、生成时显式选择
+   - 记录 AI 插入区间和之后的人工修改，只提供可解释来源统计
+
+2. **实现 Codex Embedding 持久失败可见性**
    - 增加 `codex_backfill_failures` 表
    - 增加 `GET /codex/{project_id}/embedding-status` 端点
    - 更新 `backfill_codex_embeddings_task` 记录耗尽失败
 
-2. **实现 LLM 结构化仲裁**
+3. **实现 LLM 结构化仲裁**
    - `providers/llm.py` 增加 `arbitrate_conflict` 方法
    - RuleScanner 输出传递给 LLM
    - 低置信度 issue 标记为 `needs_review`
@@ -539,7 +560,7 @@ baseline，增量实现 Codex embedding 回填、时间锚点解析、issue 生�
 - `server/services/outbox.py` - Outbox 服务
 - `server/services/idempotency.py` - 幂等服务
 
-### API 端点（9 个文件）
+### API 端点（10 个文件）
 - `server/api/auth.py` - 认证与授权
 - `server/api/projects.py` - 项目管理
 - `server/api/chapters.py` - 章节读写
@@ -548,6 +569,7 @@ baseline，增量实现 Codex embedding 回填、时间锚点解析、issue 生�
 - `server/api/consistency.py` - 一致性状态查询
 - `server/api/admin.py` - 系统管理、账号与运行设置
 - `server/api/orgs.py` - 工作室成员与作品共享
+- `server/api/exports.py` - 全量导出、备份与恢复
 - `server/main.py` - FastAPI 入口
 
 ### 异步任务（3 个文件）
@@ -555,9 +577,9 @@ baseline，增量实现 Codex embedding 回填、时间锚点解析、issue 生�
 - `server/tasks/consistency.py` - 一致性任务
 - `server/tasks/codex.py` - Codex 回填任务
 
-### 测试（893 passed；另有 36 个真实 PostgreSQL 测试通过）
-- `server/tests/` - 单元/功能测试（893 passed）
-- `app/src/**/*.spec.ts` - 前端测试（51 passed）
+### 测试（897 passed；另有 36 个真实 PostgreSQL 测试通过）
+- `server/tests/` - 单元/功能测试（897 passed）
+- `app/src/**/*.spec.ts` - 前端测试（55 passed）
 - `server/tests/integration/` - 集成测试（36 passed，需设置真实 PostgreSQL URL）
 
 ### 文档（1 个文件）
@@ -567,13 +589,13 @@ baseline，增量实现 Codex embedding 回填、时间锚点解析、issue 生�
 
 ## 总结
 
-墨枢一致性后端已完成核心数据模型、服务层、API 端点和异步任务定义，893 个单元/功能
+墨枢一致性后端已完成核心数据模型、服务层、API 端点和异步任务定义，897 个单元/功能
 测试在 SQLite in-memory + mock providers 环境下通过，另有 36 个集成测试在真实
 PostgreSQL + pgvector 环境通过。真实认证、可吊销会话、管理员、工作室 RBAC、作品创建、
-分卷章纲与章节插入已经接通，前端 51 个测试与生产构建通过。
+分卷章纲、章节插入、全量导出与非覆盖备份恢复已经接通，前端 55 个测试与生产构建通过。
 
 **关键限制**：
-1. 导出、文风、AI 占比、用量仍有 mock 或静态实现
+1. 文风、AI 占比、用量仍有 mock 或静态实现
 2. Codex embedding 回填的持久失败可见性尚未实现
 3. 评测夹具仅 10 个 smoke cases，硬编码 100% 指标**不代表实际质量**
 4. 时间锚点自然语言解析、增量影响集、LLM 仲裁未实现
