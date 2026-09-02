@@ -7,7 +7,7 @@ export const project: Project = {
   chapterCount: 89,
   dailyGoal: 6000,
   dailyWords: 2780,
-  styleProfile: '沈氏白描',
+  styleProfile: 'style_demo',
   volumes: [
     { id: 'v1', index: 1, title: '少年出山' },
     { id: 'v2', index: 2, title: '北境风雪' }

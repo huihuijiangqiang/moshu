@@ -5,6 +5,7 @@ import { contentApi } from '@/api/content'
 import { useProjectStore } from '@/stores/project'
 import { useCodexStore } from '@/stores/codex'
 import { useGuardStore } from '@/stores/guard'
+import { useStylesStore } from '@/stores/styles'
 import { CODEX_KIND_LABEL, type ContextLayer, type GenerationControls } from '@/types'
 import { useProjectNavigation } from '@/composables/use-project-navigation'
 
@@ -20,6 +21,7 @@ const router = useRouter()
 const project = useProjectStore()
 const codex = useCodexStore()
 const guard = useGuardStore()
+const styles = useStylesStore()
 const { toProject } = useProjectNavigation()
 
 const layers = ref<ContextLayer[]>([])
@@ -38,7 +40,11 @@ watch(
     loadingContext.value = true
     contextError.value = ''
     try {
-      layers.value = await contentApi.getContextLayers(projectId, chapterId)
+      const [context] = await Promise.all([
+        contentApi.getContextLayers(projectId, chapterId),
+        styles.load()
+      ])
+      layers.value = context
     } catch (error) {
       layers.value = []
       contextError.value = error instanceof Error ? error.message : '上下文加载失败'
@@ -71,6 +77,10 @@ const CAP: Record<ContextLayer['key'], number> = {
 }
 
 const cost = computed(() => (model.value === 'advanced' ? 35 : 18))
+const styleName = computed(() => {
+  const id = project.project?.styleProfile
+  return id ? styles.byId.get(id)?.name ?? '已绑定风格档' : '未设置'
+})
 
 /** 本章引用的设定：mock 下按章号反查 refChapters */
 const refs = computed(() => {
@@ -146,7 +156,7 @@ const refs = computed(() => {
           </label>
           <div class="row-between">
             <span :style="{ color: 'var(--ink-2)' }">风格档</span>
-            <span>{{ project.project?.styleProfile ?? '未设置' }}</span>
+            <span>{{ styleName }}</span>
           </div>
           <div class="row-between">
             <span :style="{ color: 'var(--ink-2)' }">预估消耗</span>

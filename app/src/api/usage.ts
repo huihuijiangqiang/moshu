@@ -1,4 +1,4 @@
-import { request } from './http'
+import { USE_MOCK, delay, request } from './http'
 
 export interface CreditRates {
   basic_input: number
@@ -43,6 +43,20 @@ export interface UsageSummary {
   recent: UsageEvent[]
 }
 
-export const usageApi = {
+const realUsageApi = {
   summary: () => request<UsageSummary>('/usage/summary')
 }
+
+const mockUsageApi = {
+  async summary(): Promise<UsageSummary> {
+    await delay(120)
+    return {
+      plan: 'author', plan_label: '作者版', remaining: 4980, quota: 5000, spent: 20,
+      period_start: new Date().toISOString(), resets_at: null,
+      rates: { basic_input: 1, basic_output: 2, advanced_input: 4, advanced_output: 8, cached_percent: 20 },
+      items: [], daily: [], recent: []
+    }
+  }
+}
+
+export const usageApi = USE_MOCK ? mockUsageApi : realUsageApi

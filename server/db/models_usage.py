@@ -4,7 +4,7 @@
 from datetime import datetime
 from typing import TYPE_CHECKING, Optional
 
-from sqlalchemy import BigInteger, DateTime, ForeignKey, Integer, String, func
+from sqlalchemy import BigInteger, DateTime, ForeignKey, Index, Integer, String, Text, func, text
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -22,12 +22,24 @@ class StyleProfile(Base, TimestampMixin):
     id: Mapped[str] = mapped_column(String(32), primary_key=True)
     user_id: Mapped[str] = mapped_column(String(32), ForeignKey("users.id", ondelete="CASCADE"), index=True)
     name: Mapped[str] = mapped_column(String(200))
-    sample_words: Mapped[int] = mapped_column(Integer)  # 样本字数，需≥5万
+    sample_words: Mapped[int] = mapped_column(Integer)
+    sample_text: Mapped[str] = mapped_column(Text, default="")
     is_default: Mapped[bool] = mapped_column(default=False)
     dimensions: Mapped[dict] = mapped_column(JSONB)  # 6个维度：句长/对白/修饰/意象/钩子/口头禅
     alignment: Mapped[float] = mapped_column(default=0.0)  # 最近生成的对齐度评分
     upload_url: Mapped[Optional[str]] = mapped_column(String(512), nullable=True)  # 对象存储URL
-    status: Mapped[str] = mapped_column(String(20), default="processing")  # processing, ready, failed
+    status: Mapped[str] = mapped_column(String(20), default="pending")
+    error_detail: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    extracted_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    __table_args__ = (
+        Index(
+            "uq_style_profiles_default_user",
+            "user_id",
+            unique=True,
+            postgresql_where=text("is_default"),
+        ),
+    )
 
     # 关系
     user: Mapped["User"] = relationship()

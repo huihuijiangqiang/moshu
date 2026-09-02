@@ -6,15 +6,16 @@
 所有声明基于实际代码与测试结果，不夸大、不省略已知缺口。
 
 **关键事实**：
-- ✅ 30 张表完整 Alembic baseline，增量迁移已到 `006_usage_reservation_expiry`
-- ✅ 907 个单元/功能测试通过（SQLite in-memory，mock embedding/LLM）
-- ✅ 前端 57 个测试、TypeScript 类型检查和生产构建通过
+- ✅ 30 张表完整 Alembic baseline，增量迁移已到 `007_style_profiles`
+- ✅ 914 个单元/功能测试通过（SQLite in-memory，mock embedding/LLM）
+- ✅ 前端 59 个测试、TypeScript 类型检查和生产构建通过
 - ✅ 36 个集成测试已在本机真实 PostgreSQL + pgvector 环境通过
 - ✅ 已完成真实账号认证、作品创建、分卷章纲编辑与章节插入的首轮产品闭环
 - ✅ Refresh session 持久化轮换、防重放、注销即时吊销，系统管理员与项目 RBAC 已接通
 - ✅ 工作室成员管理、角色调整和作品共享已有真实 API 与 UI
 - ✅ TXT/Markdown/DOCX/EPUB、分章 ZIP、完整 JSON 备份与非覆盖恢复已接通真实数据库
 - ✅ 作者生成已接通真实用量台账、原子额度预留、按实际 token 结算、失败退款和过期预留回收
+- ✅ 风格档已接通用户隔离 CRUD、真实六维抽取、作品绑定、生成提示与用量结算
 - ✅ Docker Compose 已接通 PostgreSQL、Redis、Celery worker/dispatcher/beat 与 transactional outbox
 - ✅ Guard 已接入项目扫描、运行状态、真实告警证据与乐观锁处置
 - ⚠️ Codex embedding 回填的持久失败可见性尚未实现
@@ -82,7 +83,7 @@
   `halfvec_cosine_ops` 重建 HNSW 索引；upgrade/downgrade 均会要求重新回填向量
 - ✅ `alembic upgrade head --sql` 与 `alembic downgrade -1 --sql` 语法验证通过
 - ✅ 36 个集成测试已在本机真实 PostgreSQL + pgvector 运行通过；当前审核数据库已真实执行
-  `004_auth_admin_rbac -> 005_usage_ledger -> 006_usage_reservation_expiry` 并到达 head
+  `004_auth_admin_rbac -> 005_usage_ledger -> 006_usage_reservation_expiry -> 007_style_profiles` 并到达 head
 
 ---
 
@@ -182,7 +183,16 @@
 - ✅ 网关失败、内部错误和浏览器中断释放预留；进程崩溃遗留预留在一小时后惰性回收
 - ✅ 每月额度按 `quota_resets_at` 惰性重置，不依赖单点定时任务
 - ✅ 基础/高级输入输出费率及缓存折算比例可由管理员配置，历史记录保留计价快照
+- ✅ 风格抽取按真实 prompt/cached/completion token 结算；失败释放预留额度
 - ⚠️ 自动一致性抽取、摘要和 embedding 是平台后台任务，目前不扣作者积分，也尚未进入统一成本台账
+
+#### 风格指纹 (`services/style_profiles.py`)
+- ✅ 样文按用户隔离存储，上限 50 万字符，任何 API 响应均不返回样文原文
+- ✅ 抽取时均匀采样开头、中段和结尾，最多 3 万字符，不会只截断书稿尾部
+- ✅ 5,000 字以下拒绝抽取；5,000–49,999 字标记低置信度；5 万字以上为标准置信度
+- ✅ 句式节奏、对白习惯、描写密度、意象感官、章末钩子、惯用/禁用表达六维结构化输出
+- ✅ 样文在系统提示中被明确标为不可信数据；生成提示只读取统计指纹，不读取样文原文
+- ✅ 真实网关验收：5,940 字样文抽取为 `ready`，实际结算 13 积分
 
 ---
 
@@ -216,6 +226,12 @@
 - ✅ `GET /usage/summary` - 当前真实余额、本期已结算用量、按功能聚合、14 天序列及最近 20 笔
 - ✅ 仅返回当前认证用户数据；released/reserved 与上月记录不计入本期实际消费
 - ✅ 余额不足在模型请求前返回 402，包含本次最大需求和当前余额
+
+#### 风格档 (`api/styles.py`)
+- ✅ `GET/POST /styles`、`GET/PATCH/DELETE /styles/{id}` - 用户隔离 CRUD
+- ✅ `POST /styles/{id}/extract` - 真实模型抽取，显式 pending/processing/ready/failed 状态
+- ✅ `PUT /projects/{id}/style-profile` - 仅作品 owner 可绑定自己的 ready 风格档或解绑
+- ✅ 每个用户只有一个默认档；删除默认档会晋升替代档，删除已绑定档由外键自动解绑作品
 
 #### 项目 (`api/projects.py`)
 - ✅ `POST /projects` - 创建作品、分卷、首章和初始设定条目
@@ -286,9 +302,9 @@
 
 ### 5. 测试覆盖
 
-#### 单元测试（907 passed，SQLite in-memory，mock providers）
+#### 单元测试（914 passed，SQLite in-memory，mock providers）
 
-**全量测试结果**：907 passed, 36 skipped（未设置集成测试 URL 时）, 4 warnings；前端 57 passed
+**全量测试结果**：914 passed, 36 skipped（未设置集成测试 URL 时）, 4 warnings；前端 59 passed
 
 主要测试覆盖（不逐文件列举测试数量，以实际 pytest 结果为准）：
 - ✅ Codex 设定库：CRUD、别名规范化、可检索文本判据、两段式事务、deferred 降级、httpx 错误重试
@@ -301,6 +317,7 @@
 - ✅ 时间锚点：ISO-8601 解析、源锚点位置校验、temporal_anchor_text 确定性要求
 - ✅ 项目、章节、章纲 CRUD、乐观锁冲突、Outbox 与幂等性
 - ✅ Foreshadow 伏笔倒计时、用量统计、风格档案
+- ✅ 风格档跨租户隔离、默认唯一、抽取成功/失败、失败退款、owner 绑定、删除自动解绑与提示隐私
 - ✅ **文档断言测试**：`test_documentation_accurately_reflects_missing_dead_letter_visibility`
   守住「瞬时快照」「非持续可查询」等准确表述
 
@@ -313,7 +330,7 @@
 
 #### 集成测试（36 tests，真实 PostgreSQL + pgvector 已通过）
 - ✅ Docker PostgreSQL + pgvector 环境已执行 36 个测试并全部通过
-- ✅ 审核数据库已执行 `006_usage_reservation_expiry` 到 Alembic head
+- ✅ 审核数据库已执行 `007_style_profiles` 到 Alembic head
 - 覆盖内容：
   - 部分唯一索引（`postgresql_where`）的并发 upsert 去重
   - pgvector `<=>` 余弦距离与 HNSW 索引
@@ -354,7 +371,7 @@
 
 真实认证、作品创建、分卷章纲、章节插入、正文保存保护、Guard、导出、备份恢复和作者生成用量已经接通；
 以下用户可见页面仍有 mock 或静态展示：
-- 文风、AI 占比页面尚未接入真实后端
+- AI 占比页面尚未接入真实来源追踪后端
 
 **风险**：当前不能称为功能完整 MVP，也不能把所有页面展示视为真实数据。
 
@@ -514,7 +531,7 @@ baseline，增量实现 Codex embedding 回填、时间锚点解析、issue 生�
 
 ### 立即行动（阻塞生产部署）
 1. **真实风格档与 AI 来源追踪**
-   - 风格档 CRUD、样文抽取状态、生成时显式选择
+   - ✅ 风格档 CRUD、样文抽取状态、作品绑定与生成接入已经完成
    - 记录 AI 插入区间和之后的人工修改，只提供可解释来源统计
 
 2. **扩充评测数据集**
@@ -569,8 +586,9 @@ baseline，增量实现 Codex embedding 回填、时间锚点解析、issue 生�
 - `server/services/outbox.py` - Outbox 服务
 - `server/services/idempotency.py` - 幂等服务
 - `server/services/usage.py` - 用量预留、结算、退款与月度额度
+- `server/services/style_profiles.py` - 风格样文采样、网关抽取与六维结果校验
 
-### API 端点（11 个文件）
+### API 端点（12 个文件）
 - `server/api/auth.py` - 认证与授权
 - `server/api/projects.py` - 项目管理
 - `server/api/chapters.py` - 章节读写
@@ -581,6 +599,7 @@ baseline，增量实现 Codex embedding 回填、时间锚点解析、issue 生�
 - `server/api/orgs.py` - 工作室成员与作品共享
 - `server/api/exports.py` - 全量导出、备份与恢复
 - `server/api/usage.py` - 真实余额、聚合和逐笔用量
+- `server/api/styles.py` - 风格档 CRUD、抽取与作品绑定
 - `server/main.py` - FastAPI 入口
 
 ### 异步任务（3 个文件）
@@ -588,9 +607,9 @@ baseline，增量实现 Codex embedding 回填、时间锚点解析、issue 生�
 - `server/tasks/consistency.py` - 一致性任务
 - `server/tasks/codex.py` - Codex 回填任务
 
-### 测试（907 passed；另有 36 个真实 PostgreSQL 测试通过）
-- `server/tests/` - 单元/功能测试（907 passed）
-- `app/src/**/*.spec.ts` - 前端测试（57 passed）
+### 测试（914 passed；另有 36 个真实 PostgreSQL 测试通过）
+- `server/tests/` - 单元/功能测试（914 passed）
+- `app/src/**/*.spec.ts` - 前端测试（59 passed）
 - `server/tests/integration/` - 集成测试（36 passed，需设置真实 PostgreSQL URL）
 
 ### 文档（1 个文件）
@@ -600,13 +619,13 @@ baseline，增量实现 Codex embedding 回填、时间锚点解析、issue 生�
 
 ## 总结
 
-墨枢一致性后端已完成核心数据模型、服务层、API 端点和异步任务定义，907 个单元/功能
+墨枢一致性后端已完成核心数据模型、服务层、API 端点和异步任务定义，914 个单元/功能
 测试在 SQLite in-memory + mock providers 环境下通过，另有 36 个集成测试在真实
 PostgreSQL + pgvector 环境通过。真实认证、可吊销会话、管理员、工作室 RBAC、作品创建、
-分卷章纲、章节插入、全量导出、非覆盖备份恢复与作者生成用量台账已经接通，前端 57 个测试与生产构建通过。
+分卷章纲、章节插入、全量导出、非覆盖备份恢复、风格指纹与作者生成用量台账已经接通，前端 59 个测试与生产构建通过。
 
 **关键限制**：
-1. 文风、AI 占比仍有 mock 或静态实现；后台模型成本尚未进入统一台账
+1. AI 占比仍是静态实现；自动一致性与 embedding 后台模型成本尚未进入统一台账
 2. Codex embedding 回填的持久失败可见性尚未实现
 3. 评测夹具仅 10 个 smoke cases，硬编码 100% 指标**不代表实际质量**
 4. 时间锚点自然语言解析、增量影响集、LLM 仲裁未实现

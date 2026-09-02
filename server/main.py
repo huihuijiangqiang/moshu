@@ -7,7 +7,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from api import admin, auth, chapters, codex, consistency, exports, generate, orgs, outlines, projects, usage
+from api import admin, auth, chapters, codex, consistency, exports, generate, orgs, outlines, projects, styles, usage
 from config import settings
 
 
@@ -62,6 +62,7 @@ app.include_router(generate.router, prefix="/generate", tags=["生成"])
 app.include_router(admin.router, prefix="/admin", tags=["管理"])
 app.include_router(orgs.router, prefix="/orgs", tags=["组织"])
 app.include_router(usage.router, prefix="/usage", tags=["用量"])
+app.include_router(styles.router, tags=["风格档"])
 
 # TODO: 挂载后续路由
 # from api import guard
