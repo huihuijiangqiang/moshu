@@ -12,7 +12,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from api.auth import get_current_user, verify_project_access
+from api.auth import ProjectPermission, get_current_user, verify_project_permission
 from db.models_core import Chapter, Project, User
 from db.models_usage import GenerationRun
 from db.session import get_db
@@ -59,6 +59,7 @@ async def _load_scope(
     chapter_id: str,
     user: User,
     db: AsyncSession,
+    permission: ProjectPermission = ProjectPermission.VIEW,
 ) -> tuple[Chapter, Project]:
     result = await db.execute(
         select(Chapter, Project).join(Project, Project.id == Chapter.project_id).where(Chapter.id == chapter_id)
@@ -67,7 +68,7 @@ async def _load_scope(
     if row is None:
         raise HTTPException(status_code=404, detail="Chapter not found")
     chapter, project = row
-    await verify_project_access(project.id, user, db)
+    await verify_project_permission(project.id, permission, user, db)
     return chapter, project
 
 
@@ -76,7 +77,7 @@ async def _prepare(
     user: User,
     db: AsyncSession,
 ) -> PromptPackage:
-    chapter, project = await _load_scope(request.chapter_id, user, db)
+    chapter, project = await _load_scope(request.chapter_id, user, db, ProjectPermission.GENERATE)
     service = GenerationService(db)
     kwargs = request.model_dump(by_alias=False)
     kwargs.pop("chapter_id")

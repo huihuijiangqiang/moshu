@@ -1,6 +1,6 @@
 import { createRouter, createWebHistory, type RouteLocationNormalized } from 'vue-router'
 import { USE_MOCK } from '@/api/http'
-import { hasSession } from '@/api/session'
+import { getSessionUser, hasSession } from '@/api/session'
 
 /** meta.bare = 不套 AppShell 的全屏页（登录、开书向导） */
 export const router = createRouter({
@@ -14,7 +14,9 @@ export const router = createRouter({
     { path: '/projects/:projectId/style', name: 'style', component: () => import('@/views/StyleView.vue'), meta: { scope: 'project', section: 'style' } },
     { path: '/projects/:projectId/ai-ratio', name: 'ai-ratio', component: () => import('@/views/AiRatioView.vue'), meta: { scope: 'project', section: 'ai-ratio' } },
     { path: '/projects/:projectId/export', name: 'export', component: () => import('@/views/ExportView.vue'), meta: { scope: 'project', section: 'export' } },
+    { path: '/projects/:projectId/access', name: 'access', component: () => import('@/views/AccessView.vue'), meta: { scope: 'project', section: 'access' } },
     { path: '/usage', name: 'usage', component: () => import('@/views/UsageView.vue') },
+    { path: '/admin', name: 'admin', component: () => import('@/views/AdminView.vue'), meta: { admin: true } },
     { path: '/projects/new', name: 'wizard', component: () => import('@/views/WizardView.vue'), meta: { bare: true } },
     { path: '/write', redirect: '/projects/p1/write' },
     { path: '/outline', redirect: '/projects/p1/outline' },
@@ -35,6 +37,9 @@ export function authGuard(to: RouteLocationNormalized, useMock = USE_MOCK) {
     return { name: 'login', query: { redirect: to.fullPath } }
   }
   if (to.name === 'login' && hasSession()) return { name: 'shelf' }
+  if (to.meta.admin === true && !['admin', 'super_admin'].includes(getSessionUser()?.system_role ?? 'user')) {
+    return { name: 'shelf' }
+  }
   return true
 }
 

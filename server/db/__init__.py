@@ -3,6 +3,7 @@
 """
 
 from db.base import Base, TimestampMixin
+from db.models_admin import AdminAuditLog, AuthSession, SystemSetting
 from db.models_codex import CodexAlias, CodexEntry, CodexRef, CodexRelation
 from db.models_consistency import (
     ChapterOutlineRevision,
@@ -27,6 +28,9 @@ from db.models_usage import GenerationRun, RatioReport, StyleProfile, UsageLog
 __all__ = [
     "Base",
     "TimestampMixin",
+    "AuthSession",
+    "SystemSetting",
+    "AdminAuditLog",
     # Core
     "User",
     "Project",

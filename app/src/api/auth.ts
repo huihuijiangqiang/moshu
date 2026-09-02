@@ -1,5 +1,5 @@
 import { request } from './http'
-import { clearSession, setSession, type SessionTokens, type SessionUser } from './session'
+import { clearSession, getRefreshToken, setSession, type SessionTokens, type SessionUser } from './session'
 
 export interface AuthResponse extends SessionTokens {
   token_type: 'bearer'
@@ -29,7 +29,17 @@ export const authApi = {
     return request<SessionUser>('/auth/me')
   },
 
-  logout() {
-    clearSession()
+  async logout() {
+    const refreshToken = getRefreshToken()
+    try {
+      if (refreshToken) {
+        await request('/auth/logout', {
+          method: 'POST',
+          body: JSON.stringify({ refresh_token: refreshToken })
+        })
+      }
+    } finally {
+      clearSession()
+    }
   }
 }

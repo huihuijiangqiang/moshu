@@ -7,7 +7,7 @@
 import pytest
 from fastapi import HTTPException
 
-from api.auth import get_current_user, verify_project_access
+from api.auth import ProjectPermission, get_current_user, verify_project_access, verify_project_permission
 from db.models_org import Org, OrgMember
 
 
@@ -83,6 +83,74 @@ async def test_unrelated_user_denied_on_personal_project(async_db_session, make_
         await verify_project_access("proj_private", other, async_db_session)
 
     assert exc_info.value.status_code == 403
+
+
+@pytest.mark.parametrize(
+    ("role", "permission", "allowed"),
+    [
+        ("viewer", ProjectPermission.VIEW, True),
+        ("viewer", ProjectPermission.EDIT_BODY, False),
+        ("writer", ProjectPermission.EDIT_BODY, True),
+        ("writer", ProjectPermission.MANAGE_CODEX, False),
+        ("editor", ProjectPermission.MANAGE_CODEX, True),
+        ("editor", ProjectPermission.RUN_GUARD, False),
+        ("lead", ProjectPermission.MANAGE_MEMBERS, False),
+    ],
+)
+async def test_org_roles_enforce_action_permissions(
+    async_db_session, make_user, make_project, role, permission, allowed
+):
+    owner = make_user("role_owner")
+    member = make_user(f"role_{role}")
+    async_db_session.add_all([owner, member, Org(id="org_roles", name="Roles", plan="studio", seats=8)])
+    await async_db_session.flush()
+    async_db_session.add(OrgMember(org_id="org_roles", user_id=member.id, role=role))
+    async_db_session.add(make_project("proj_roles", owner_id=owner.id, org_id="org_roles"))
+    await async_db_session.commit()
+
+    if allowed:
+        project = await verify_project_permission("proj_roles", permission, member, async_db_session)
+        assert project.id == "proj_roles"
+    else:
+        with pytest.raises(HTTPException) as exc_info:
+            await verify_project_permission("proj_roles", permission, member, async_db_session)
+        assert exc_info.value.status_code == 403
+
+
+async def test_refresh_rotation_rejects_replayed_token(app_client):
+    registered = await app_client.post(
+        "/auth/register",
+        json={"name": "Rotation", "email": "rotation@example.test", "password": "password-123"},
+    )
+    assert registered.status_code == 201
+    first = registered.json()
+
+    rotated = await app_client.post("/auth/refresh", json={"refresh_token": first["refresh_token"]})
+    assert rotated.status_code == 200
+    assert rotated.json()["refresh_token"] != first["refresh_token"]
+
+    replay = await app_client.post("/auth/refresh", json={"refresh_token": first["refresh_token"]})
+    assert replay.status_code == 401
+
+
+async def test_logout_revokes_refresh_session(app_client):
+    registered = await app_client.post(
+        "/auth/register",
+        json={"name": "Logout", "email": "logout@example.test", "password": "password-123"},
+    )
+    session = registered.json()
+    response = await app_client.post(
+        "/auth/logout",
+        json={"refresh_token": session["refresh_token"]},
+        headers={"Authorization": f"Bearer {session['access_token']}"},
+    )
+    assert response.status_code == 204
+    assert (await app_client.post(
+        "/auth/refresh", json={"refresh_token": session["refresh_token"]}
+    )).status_code == 401
+    assert (await app_client.get(
+        "/auth/me", headers={"Authorization": f"Bearer {session['access_token']}"}
+    )).status_code == 401
 
 
 async def test_missing_project_returns_404(async_db_session, make_user):

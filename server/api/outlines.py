@@ -7,7 +7,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from api.auth import get_current_user, verify_project_access
+from api.auth import ProjectPermission, get_current_user, verify_project_permission
 from db.models_core import Chapter, User
 from db.session import get_db
 from domain.outlines import (
@@ -83,12 +83,13 @@ async def _verify_chapter_access(
     db: AsyncSession,
     chapter_id: str,
     user: User,
+    permission: ProjectPermission = ProjectPermission.VIEW,
 ) -> Chapter:
     result = await db.execute(select(Chapter).where(Chapter.id == chapter_id))
     chapter = result.scalar_one_or_none()
     if chapter is None:
         raise HTTPException(status_code=404, detail={"code": "CHAPTER_NOT_FOUND"})
-    await verify_project_access(chapter.project_id, user, db)
+    await verify_project_permission(chapter.project_id, permission, user, db)
     return chapter
 
 
@@ -100,7 +101,7 @@ async def put_outline(
     db: AsyncSession = Depends(get_db),
 ) -> OutlineResponse:
     try:
-        await _verify_chapter_access(db, chapter_id, user)
+        await _verify_chapter_access(db, chapter_id, user, ProjectPermission.MANAGE_OUTLINE)
         result = await update_outline(
             db,
             chapter_id=chapter_id,
@@ -174,7 +175,7 @@ async def resolve_body_revision(
     db: AsyncSession = Depends(get_db),
 ) -> OutlineResponse:
     try:
-        await _verify_chapter_access(db, chapter_id, user)
+        await _verify_chapter_access(db, chapter_id, user, ProjectPermission.MANAGE_OUTLINE)
         result = await acknowledge_body_revision(
             db,
             chapter_id=chapter_id,

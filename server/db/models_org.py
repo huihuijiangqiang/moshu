@@ -35,7 +35,7 @@ class OrgMember(Base, TimestampMixin):
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     org_id: Mapped[str] = mapped_column(String(32), ForeignKey("orgs.id", ondelete="CASCADE"), index=True)
     user_id: Mapped[str] = mapped_column(String(32), ForeignKey("users.id", ondelete="CASCADE"), index=True)
-    role: Mapped[str] = mapped_column(String(20))  # owner, lead, writer, editor
+    role: Mapped[str] = mapped_column(String(20))  # owner, lead, writer, editor, viewer
 
     # 关系
     org: Mapped["Org"] = relationship(back_populates="members")

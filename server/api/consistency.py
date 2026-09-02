@@ -10,7 +10,7 @@ from pydantic import BaseModel
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from api.auth import get_current_user, verify_project_access
+from api.auth import ProjectPermission, get_current_user, verify_project_permission
 from db.models_consistency import OutboxEvent
 from db.models_consistency_extended import ConsistencyRun, GuardIssueEvidence, GuardResolution
 from db.models_core import Chapter, ChapterBody, User
@@ -233,7 +233,7 @@ async def get_consistency_status(
         raise HTTPException(status_code=404, detail="Consistency run not found")
 
     # Verify project access
-    await verify_project_access(run.project_id, user, db)
+    await verify_project_permission(run.project_id, ProjectPermission.VIEW, user, db)
 
     return ConsistencyStatusResponse(
         chapter_id=run.chapter_id,
@@ -265,7 +265,7 @@ async def trigger_consistency_scan(
     if not chapter:
         raise HTTPException(status_code=404, detail="Chapter not found")
 
-    await verify_project_access(chapter.project_id, user, db)
+    await verify_project_permission(chapter.project_id, ProjectPermission.RUN_GUARD, user, db)
 
     run_id, should_enqueue = await prepare_manual_run(
         db,
@@ -307,7 +307,7 @@ async def trigger_project_scan(
     db: AsyncSession = Depends(get_db),
 ):
     """把作品内所有已有正文的当前版本加入一致性扫描队列。"""
-    await verify_project_access(project_id, user, db)
+    await verify_project_permission(project_id, ProjectPermission.RUN_GUARD, user, db)
     result = await db.execute(
         select(Chapter, ChapterBody)
         .join(ChapterBody, ChapterBody.chapter_id == Chapter.id)
@@ -351,7 +351,7 @@ async def get_project_consistency_overview(
     db: AsyncSession = Depends(get_db),
 ):
     """返回每章最新 run 与 outbox 状态，供 Guard 展示真实运行进度。"""
-    await verify_project_access(project_id, user, db)
+    await verify_project_permission(project_id, ProjectPermission.VIEW, user, db)
     result = await db.execute(
         select(ConsistencyRun, Chapter)
         .join(Chapter, Chapter.id == ConsistencyRun.chapter_id)
@@ -429,7 +429,7 @@ async def list_issues(
     db: AsyncSession = Depends(get_db),
 ):
     """列出一致性问题"""
-    await verify_project_access(project_id, user, db)
+    await verify_project_permission(project_id, ProjectPermission.VIEW, user, db)
 
     query = (
         select(GuardIssue, Chapter)
@@ -491,7 +491,7 @@ async def get_issue_detail(
     db: AsyncSession = Depends(get_db),
 ):
     """获取问题详情"""
-    await verify_project_access(project_id, user, db)
+    await verify_project_permission(project_id, ProjectPermission.VIEW, user, db)
 
     result = await db.execute(
         select(GuardIssue).where(
@@ -535,7 +535,7 @@ async def resolve_issue(
     db: AsyncSession = Depends(get_db),
 ):
     """处置一致性问题 - 使用 issue_rev 乐观锁"""
-    await verify_project_access(project_id, user, db)
+    await verify_project_permission(project_id, ProjectPermission.RESOLVE_GUARD, user, db)
 
     # 用带 issue_rev 条件的原子 UPDATE 实现乐观并发控制：
     # 并发的两个相同 issue_rev 请求里，只有一个能命中 rowcount==1。

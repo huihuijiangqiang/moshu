@@ -4,7 +4,7 @@
 from datetime import datetime
 from typing import TYPE_CHECKING, Optional
 
-from sqlalchemy import BigInteger, DateTime, ForeignKey, Integer, String, Text, func
+from sqlalchemy import BigInteger, Boolean, DateTime, ForeignKey, Integer, String, Text, func
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -26,6 +26,8 @@ class User(Base, TimestampMixin):
     name: Mapped[str] = mapped_column(String(100))
     avatar_url: Mapped[Optional[str]] = mapped_column(String(512))
     plan: Mapped[str] = mapped_column(String(50), default="free")  # free, author, studio
+    system_role: Mapped[str] = mapped_column(String(20), default="user")  # user, admin, super_admin
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     quota_remaining: Mapped[int] = mapped_column(Integer, default=0)
     quota_total: Mapped[int] = mapped_column(Integer, default=0)
 

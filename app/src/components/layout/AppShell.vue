@@ -8,6 +8,8 @@ import { useCodexStore } from '@/stores/codex'
 import { useGuardStore } from '@/stores/guard'
 import { useShellStore } from '@/stores/shell'
 import { projectPath, routeProjectId } from '@/router/project-route'
+import { authApi } from '@/api/auth'
+import { getSessionUser } from '@/api/session'
 
 /**
  * 全局外壳：图标轨 + 顶栏 + 内容槽 + 底部状态条。
@@ -23,6 +25,8 @@ const project = useProjectStore()
 const codex = useCodexStore()
 const guard = useGuardStore()
 const shell = useShellStore()
+const sessionUser = getSessionUser()
+const isAdmin = ['admin', 'super_admin'].includes(sessionUser?.system_role ?? 'user')
 
 interface RailEntry {
   to: string
@@ -38,7 +42,9 @@ const inProject = computed(() => route.meta.scope === 'project' && !!projectId.v
 const rail = computed<RailEntry[]>(() => {
   const entries: RailEntry[] = [{ to: '/', icon: 'shelf', label: '作品库', shortLabel: '作品' }]
   if (!projectId.value) {
-    return entries.concat({ to: '/usage', icon: 'usage', label: '用量与计费', shortLabel: '用量' })
+    entries.push({ to: '/usage', icon: 'usage', label: '用量与计费', shortLabel: '用量' })
+    if (isAdmin) entries.push({ to: '/admin', icon: 'guard', label: '系统管理', shortLabel: '管理' })
+    return entries
   }
   return entries.concat([
     { to: projectPath(projectId.value, 'write'), icon: 'write', label: '写作台', shortLabel: '正文' },
@@ -52,7 +58,9 @@ const rail = computed<RailEntry[]>(() => {
 
 const railFoot = computed<RailEntry[]>(() => projectId.value ? [
   { to: projectPath(projectId.value, 'export'), icon: 'export', label: '导出', shortLabel: '导出' },
-  { to: '/usage', icon: 'usage', label: '用量与计费', shortLabel: '用量' }
+  { to: projectPath(projectId.value, 'access'), icon: 'codex', label: '协作与权限', shortLabel: '协作' },
+  { to: '/usage', icon: 'usage', label: '用量与计费', shortLabel: '用量' },
+  ...(isAdmin ? [{ to: '/admin', icon: 'guard' as IconName, label: '系统管理', shortLabel: '管理' }] : [])
 ] : [])
 
 const library = computed(() => route.name === 'shelf')
@@ -69,6 +77,14 @@ const remaining = computed(() =>
 
 function isCurrent(to: string) {
   return to === '/' ? route.path === '/' : route.path.startsWith(to)
+}
+
+async function signOut() {
+  try {
+    await authApi.logout()
+  } finally {
+    await router.replace({ name: 'login' })
+  }
 }
 </script>
 
@@ -108,6 +124,11 @@ function isCurrent(to: string) {
           <span class="rail-label">{{ r.shortLabel }}</span>
           <span class="rail-tip">{{ r.label }}</span>
         </button>
+        <button class="rail-item" type="button" aria-label="退出登录" @click="signOut">
+          <AppIcon name="collapse" />
+          <span class="rail-label">退出</span>
+          <span class="rail-tip">退出登录</span>
+        </button>
       </div>
     </nav>
 
@@ -138,7 +159,7 @@ function isCurrent(to: string) {
               <span :style="{ width: goalPct + '%' }" />
             </span>
           </template>
-          <span class="avatar" aria-hidden="true">沈</span>
+          <span class="avatar" :title="sessionUser?.name ?? '当前账号'">{{ (sessionUser?.name ?? '用').slice(0, 1) }}</span>
         </div>
       </header>
 

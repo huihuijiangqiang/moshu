@@ -38,6 +38,12 @@ describe('authenticated API requests', () => {
     })
   })
 
+  it('accepts an empty 204 response for delete and logout requests', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(null, { status: 204 }))
+
+    await expect(request<void>('/auth/logout', { method: 'POST' })).resolves.toBeUndefined()
+  })
+
   it('refreshes once after a 401 and retries with the new access token', async () => {
     setSession({ access_token: 'expired', refresh_token: 'refresh-token', user })
     const fetchMock = vi.spyOn(globalThis, 'fetch')

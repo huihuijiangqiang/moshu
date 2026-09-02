@@ -6,10 +6,13 @@
 所有声明基于实际代码与测试结果，不夸大、不省略已知缺口。
 
 **关键事实**：
-- ✅ 30 张表完整 Alembic baseline，pgvector extension/HALFVEC 列已在迁移中定义
-- ✅ 848 个单元/功能测试通过（SQLite in-memory，mock embedding/LLM）
+- ✅ 30 张表完整 Alembic baseline，`004_auth_admin_rbac` 再增加 3 张安全与管理表
+- ✅ 893 个单元/功能测试通过（SQLite in-memory，mock embedding/LLM）
+- ✅ 前端 51 个测试、TypeScript 类型检查和生产构建通过
 - ✅ 36 个集成测试已在本机真实 PostgreSQL + pgvector 环境通过
 - ✅ 已完成真实账号认证、作品创建、分卷章纲编辑与章节插入的首轮产品闭环
+- ✅ Refresh session 持久化轮换、防重放、注销即时吊销，系统管理员与项目 RBAC 已接通
+- ✅ 工作室成员管理、角色调整和作品共享已有真实 API 与 UI
 - ✅ Docker Compose 已接通 PostgreSQL、Redis、Celery worker/dispatcher/beat 与 transactional outbox
 - ✅ Guard 已接入项目扫描、运行状态、真实告警证据与乐观锁处置
 - ⚠️ Codex embedding 回填的持久失败可见性尚未实现
@@ -19,7 +22,7 @@
 
 ## 已完成模块
 
-### 1. 数据模型（30 张表，100% Alembic 覆盖）
+### 1. 数据模型（33 张表，100% Alembic 覆盖）
 
 #### 核心骨架 (6 张)
 - `users` - 用户账号
@@ -54,10 +57,15 @@
 - `guard_issue_evidence` - 告警证据锚点
 - `guard_resolutions` - 告警处置记录
 
-#### 组织与协作 (3 张，MVP 建表不开功能)
+#### 组织与协作 (3 张，成员与作品共享功能已开放)
 - `orgs` - 组织
 - `org_members` - 组织成员
 - `chapter_assignments` - 章节分工
+
+#### 认证与管理 (3 张)
+- `auth_sessions` - 可吊销登录会话与 refresh token 轮换状态
+- `system_settings` - 注册开关和新账号默认套餐/额度
+- `admin_audit_logs` - 管理员修改审计记录
 
 #### 风格/用量/占比 (5 张)
 - `style_profiles` - 风格档案
@@ -71,8 +79,8 @@
   `002_embedding_halfvec_2048.py` 清理旧向量并迁移到 HALFVEC(2048)，以
   `halfvec_cosine_ops` 重建 HNSW 索引；upgrade/downgrade 均会要求重新回填向量
 - ✅ `alembic upgrade head --sql` 与 `alembic downgrade -1 --sql` 语法验证通过
-- ✅ 36 个集成测试已在本机真实 PostgreSQL + pgvector 运行通过，`003_product_workflows`
-  已迁移到 head；默认 SQLite 测试未设置 `TEST_POSTGRES_URL` 时仍会跳过该组用例
+- ✅ 36 个集成测试已在本机真实 PostgreSQL + pgvector 运行通过；当前审核数据库已真实执行
+  `003_product_workflows -> 004_auth_admin_rbac` 并到达 head
 
 ---
 
@@ -163,17 +171,22 @@
 ### 3. API 端点（全部需认证 + 项目权限）
 
 #### 认证 (`api/auth.py`)
-- ✅ JWT bearer 认证
-- ✅ `get_current_user`：解码 token，查库验证
-- ✅ `verify_project_access`：owner 或 org 成员校验
-- ✅ `ProjectAccessChecker` 依赖类
-
-#### 认证 (`api/auth.py`)
 - ✅ `POST /auth/register` - 邮箱密码注册
 - ✅ `POST /auth/login` - 邮箱密码登录
-- ✅ `POST /auth/refresh` - 独立 refresh JWT 换取新会话
+- ✅ `POST /auth/refresh` - 持久 session 内轮换 refresh JWT，旧 token 重放返回 401
+- ✅ `POST /auth/logout` / `POST /auth/logout-all` - 吊销当前/全部会话，access token 即时失效
 - ✅ `GET /auth/me` - 查询当前账号
 - ✅ PBKDF2-SHA256 密码存储，access/refresh token 类型隔离
+- ✅ 禁用账号即时拒绝既有 access token、登录和 refresh
+
+#### 管理员与协作 (`api/admin.py`, `api/orgs.py`)
+- ✅ `GET /admin/overview`、`GET/PATCH /admin/users`、`GET/PATCH /admin/settings`
+- ✅ `admin` / `super_admin` 系统角色边界；只有超级管理员可调整系统角色
+- ✅ 管理端不返回 API key，只返回模型名称与“是否配置”状态
+- ✅ 工作室创建、成员列表/添加/改角色/移除；禁止移除或降级最后一个 owner
+- ✅ owner / lead / writer / editor / viewer 动作级权限矩阵
+- ✅ 只有作品 owner 且同时是工作室 owner 时才能把作品挂入工作室
+- ✅ 前端 `/admin` 和 `/projects/:projectId/access` 已在真实 PostgreSQL 环境验收
 
 #### 项目 (`api/projects.py`)
 - ✅ `POST /projects` - 创建作品、分卷、首章和初始设定条目
@@ -244,9 +257,9 @@
 
 ### 5. 测试覆盖
 
-#### 单元测试（848 passed，SQLite in-memory，mock providers）
+#### 单元测试（893 passed，SQLite in-memory，mock providers）
 
-**全量测试结果**：848 passed, 36 skipped（未设置集成测试 URL 时）, 4 warnings
+**全量测试结果**：893 passed, 36 skipped（未设置集成测试 URL 时）, 4 warnings；前端 51 passed
 
 主要测试覆盖（不逐文件列举测试数量，以实际 pytest 结果为准）：
 - ✅ Codex 设定库：CRUD、别名规范化、可检索文本判据、两段式事务、deferred 降级、httpx 错误重试
@@ -271,7 +284,7 @@
 
 #### 集成测试（36 tests，真实 PostgreSQL + pgvector 已通过）
 - ✅ Docker PostgreSQL + pgvector 环境已执行 36 个测试并全部通过
-- ✅ `003_product_workflows` 已在真实数据库执行到 Alembic head
+- ✅ 审核数据库已执行 `004_auth_admin_rbac` 到 Alembic head
 - 覆盖内容：
   - 部分唯一索引（`postgresql_where`）的并发 upsert 去重
   - pgvector `<=>` 余弦距离与 HNSW 索引
@@ -470,7 +483,11 @@ baseline，增量实现 Codex embedding 回填、时间锚点解析、issue 生�
 ## 下一步优先级
 
 ### 立即行动（阻塞生产部署）
-1. **扩充评测数据集**
+1. **真实导出与备份恢复**
+   - TXT/Markdown/DOCX/EPUB 全量导出，校验章节数、字数、顺序和 revision
+   - 可校验备份包与恢复预检，避免误覆盖现有作品
+
+2. **扩充评测数据集**
    - 扩充至 100+ 正例 + 50+ hard negatives
    - 接入 CI，设定召回率 ≥70%、误报率 ≤20% 的通过阈值
    - 用真实小说场景替换合成案例
@@ -507,6 +524,7 @@ baseline，增量实现 Codex embedding 回填、时间锚点解析、issue 生�
 - `server/db/models_consistency_extended.py` - 一致性扩展 8 张表
 - `server/db/models_usage.py` - 风格/用量 4 张表
 - `server/db/models_org.py` - 组织 3 张表
+- `server/db/models_admin.py` - 会话、运行设置与审计 3 张表
 
 ### 服务层（11 个文件）
 - `server/services/codex.py` - 设定库 CRUD
@@ -521,13 +539,15 @@ baseline，增量实现 Codex embedding 回填、时间锚点解析、issue 生�
 - `server/services/outbox.py` - Outbox 服务
 - `server/services/idempotency.py` - 幂等服务
 
-### API 端点（7 个文件）
+### API 端点（9 个文件）
 - `server/api/auth.py` - 认证与授权
 - `server/api/projects.py` - 项目管理
 - `server/api/chapters.py` - 章节读写
 - `server/api/outlines.py` - 章纲管理
 - `server/api/codex.py` - 设定库 CRUD
 - `server/api/consistency.py` - 一致性状态查询
+- `server/api/admin.py` - 系统管理、账号与运行设置
+- `server/api/orgs.py` - 工作室成员与作品共享
 - `server/main.py` - FastAPI 入口
 
 ### 异步任务（3 个文件）
@@ -535,8 +555,9 @@ baseline，增量实现 Codex embedding 回填、时间锚点解析、issue 生�
 - `server/tasks/consistency.py` - 一致性任务
 - `server/tasks/codex.py` - Codex 回填任务
 
-### 测试（848 passed；另有 36 个真实 PostgreSQL 测试通过）
-- `server/tests/` - 单元/功能测试（848 passed）
+### 测试（893 passed；另有 36 个真实 PostgreSQL 测试通过）
+- `server/tests/` - 单元/功能测试（893 passed）
+- `app/src/**/*.spec.ts` - 前端测试（51 passed）
 - `server/tests/integration/` - 集成测试（36 passed，需设置真实 PostgreSQL URL）
 
 ### 文档（1 个文件）
@@ -546,9 +567,10 @@ baseline，增量实现 Codex embedding 回填、时间锚点解析、issue 生�
 
 ## 总结
 
-墨枢一致性后端已完成核心数据模型、服务层、API 端点和异步任务定义，848 个单元/功能
+墨枢一致性后端已完成核心数据模型、服务层、API 端点和异步任务定义，893 个单元/功能
 测试在 SQLite in-memory + mock providers 环境下通过，另有 36 个集成测试在真实
-PostgreSQL + pgvector 环境通过。真实认证、作品创建、分卷章纲与章节插入已经接通。
+PostgreSQL + pgvector 环境通过。真实认证、可吊销会话、管理员、工作室 RBAC、作品创建、
+分卷章纲与章节插入已经接通，前端 51 个测试与生产构建通过。
 
 **关键限制**：
 1. 导出、文风、AI 占比、用量仍有 mock 或静态实现

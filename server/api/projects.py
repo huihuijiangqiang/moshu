@@ -8,7 +8,13 @@ from pydantic import BaseModel, Field
 from sqlalchemy import func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from api.auth import get_current_user, verify_project_access
+from api.auth import (
+    ProjectPermission,
+    get_current_user,
+    get_project_permissions,
+    verify_project_access,
+    verify_project_permission,
+)
 from db import Chapter, Project, Volume
 from db.models_codex import CodexEntry
 from db.models_consistency import ChapterOutlineState
@@ -320,6 +326,18 @@ async def get_project(
     return await _project_out(db, project)
 
 
+@router.get("/{project_id}/permissions", response_model=list[str])
+async def list_project_permissions(
+    project_id: str,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> list[str]:
+    _project, permissions = await get_project_permissions(project_id, user, db)
+    if not permissions:
+        raise HTTPException(status_code=403, detail="Access denied")
+    return sorted(permission.value for permission in permissions)
+
+
 @router.get("/{project_id}/chapters", response_model=list[ChapterListItem])
 async def list_chapters(
     project_id: str,
@@ -364,10 +382,11 @@ async def list_chapters(
 async def create_chapter(
     project_id: str,
     request: ChapterCreate,
-    _project: Project = Depends(verify_project_access),
+    user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> ChapterListItem:
     """Insert a chapter and atomically keep book-wide chapter indexes contiguous."""
+    await verify_project_permission(project_id, ProjectPermission.MANAGE_OUTLINE, user, db)
     volume_result = await db.execute(
         select(Volume)
         .where(Volume.id == request.volume_id, Volume.project_id == project_id)

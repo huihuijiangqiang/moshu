@@ -16,7 +16,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from api.auth import get_current_user, verify_project_access
+from api.auth import ProjectPermission, get_current_user, verify_project_permission
 from db.models_codex import CODEX_STATUSES, CodexAlias, CodexEntry
 from db.models_core import User
 from db.session import get_db
@@ -188,7 +188,7 @@ async def list_codex_entries(
     db: AsyncSession = Depends(get_db),
 ):
     """列出当前作品的设定，供写作工作台与 @ 引用共同使用。"""
-    await verify_project_access(project_id, user, db)
+    await verify_project_permission(project_id, ProjectPermission.VIEW, user, db)
 
     entries = list(
         (
@@ -253,7 +253,7 @@ async def create_codex_entry(
     provider: EmbeddingProvider = Depends(get_embedding_provider),
 ):
     """创建条目及其别名，随后补齐 embedding。"""
-    await verify_project_access(project_id, user, db)
+    await verify_project_permission(project_id, ProjectPermission.MANAGE_CODEX, user, db)
 
     entry = await create_entry(
         db,
@@ -282,7 +282,7 @@ async def update_codex_entry(
     provider: EmbeddingProvider = Depends(get_embedding_provider),
 ):
     """更新名称/类型/描述等字段；只有可检索文本变化才重算向量。"""
-    await verify_project_access(project_id, user, db)
+    await verify_project_permission(project_id, ProjectPermission.MANAGE_CODEX, user, db)
     entry = await _load_entry(db, project_id, entry_id)
 
     changes = request.model_dump(exclude_unset=True)
@@ -310,7 +310,7 @@ async def add_codex_alias(
     provider: EmbeddingProvider = Depends(get_embedding_provider),
 ):
     """添加别名。重复添加同一别名幂等：不加行，也不重算向量。"""
-    await verify_project_access(project_id, user, db)
+    await verify_project_permission(project_id, ProjectPermission.MANAGE_CODEX, user, db)
     entry = await _load_entry(db, project_id, entry_id)
 
     added = await add_alias(db, entry, request.alias)
@@ -334,7 +334,7 @@ async def remove_codex_alias(
     provider: EmbeddingProvider = Depends(get_embedding_provider),
 ):
     """删除别名。别名本来不存在时不重算向量。"""
-    await verify_project_access(project_id, user, db)
+    await verify_project_permission(project_id, ProjectPermission.MANAGE_CODEX, user, db)
     entry = await _load_entry(db, project_id, entry_id)
 
     removed = await remove_alias(db, entry, request.alias)
@@ -360,7 +360,7 @@ async def backfill_codex_embeddings(
     当前无独立 GET 项目状态端点、无 dead-letter 标记，无法持续监控任务耗尽重试
     的失败。带重试的异步版本见 tasks.codex.backfill_codex_embeddings_task。
     """
-    await verify_project_access(project_id, user, db)
+    await verify_project_permission(project_id, ProjectPermission.MANAGE_CODEX, user, db)
 
     if batch_size <= 0:
         raise HTTPException(status_code=422, detail="batch_size must be positive")

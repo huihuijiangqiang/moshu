@@ -1,6 +1,6 @@
 import type { RouteLocationNormalizedLoaded } from 'vue-router'
 
-export type ProjectSection = 'write' | 'outline' | 'codex' | 'guard' | 'style' | 'ai-ratio' | 'export'
+export type ProjectSection = 'write' | 'outline' | 'codex' | 'guard' | 'style' | 'ai-ratio' | 'export' | 'access'
 
 export function projectPath(projectId: string, section: ProjectSection = 'write') {
   return `/projects/${encodeURIComponent(projectId)}/${section}`

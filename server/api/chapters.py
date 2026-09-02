@@ -6,7 +6,7 @@ from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from api.auth import get_current_user
+from api.auth import ProjectPermission, get_current_user, verify_project_permission
 from db import Chapter, ChapterBody
 from db.models_core import User
 from db.session import get_db
@@ -90,8 +90,7 @@ async def get_chapter(
         raise HTTPException(status_code=404, detail="章节不存在")
 
     # Verify project access
-    from api.auth import verify_project_access
-    await verify_project_access(chapter.project_id, user, db)
+    await verify_project_permission(chapter.project_id, ProjectPermission.VIEW, user, db)
 
     # 加载正文
     body_stmt = select(ChapterBody).where(ChapterBody.chapter_id == chapter_id)
@@ -163,8 +162,7 @@ async def save_chapter_body_endpoint(
         raise HTTPException(status_code=404, detail="章节不存在")
 
     # Verify project access
-    from api.auth import verify_project_access
-    await verify_project_access(chapter.project_id, user, db)
+    await verify_project_permission(chapter.project_id, ProjectPermission.EDIT_BODY, user, db)
 
     body_stmt = select(ChapterBody).where(ChapterBody.chapter_id == chapter_id)
     body_result = await db.execute(body_stmt)

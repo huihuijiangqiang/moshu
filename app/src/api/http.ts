@@ -41,6 +41,7 @@ export async function request<T>(path: string, init?: RequestInit, retryAuth = t
     window.dispatchEvent(new CustomEvent('moshu:unauthorized'))
   }
   if (!res.ok) throw new ApiError(res.status, await res.text())
+  if (res.status === 204) return undefined as T
   return (await res.json()) as T
 }
 

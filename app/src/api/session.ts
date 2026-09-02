@@ -3,6 +3,8 @@ export interface SessionUser {
   name: string
   email: string | null
   plan: string
+  system_role?: 'user' | 'admin' | 'super_admin'
+  is_active?: boolean
 }
 
 export interface SessionTokens {
@@ -29,6 +31,16 @@ export function getRefreshToken() {
 
 export function hasSession() {
   return !!(getAccessToken() || getRefreshToken())
+}
+
+export function getSessionUser(): SessionUser | null {
+  if (!storageAvailable()) return null
+  try {
+    const raw = localStorage.getItem(USER_KEY)
+    return raw ? JSON.parse(raw) as SessionUser : null
+  } catch {
+    return null
+  }
 }
 
 export function setSession(session: SessionTokens) {
