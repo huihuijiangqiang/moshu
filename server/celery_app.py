@@ -34,13 +34,18 @@ celery_app.conf.update(
         "consistency.generate_summary": {"queue": "consistency"},
         "consistency.scan_rules": {"queue": "consistency"},
         "codex.backfill_embeddings": {"queue": "consistency"},
+        "codex.recover_stale_embedding_jobs": {"queue": "outbox"},
     },
     beat_schedule={
         "dispatch-consistency-outbox": {
             "task": "consistency.dispatch_outbox",
             "schedule": 2.0,
             "kwargs": {"batch_size": 20},
-        }
+        },
+        "recover-stale-embedding-jobs": {
+            "task": "codex.recover_stale_embedding_jobs",
+            "schedule": 60.0,
+        },
     },
 )
 

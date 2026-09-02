@@ -1,36 +1,31 @@
-"""
-Codex embedding 回填任务 - 指数退避 + 有界重试 + 逐批提交。
-
-架构 8：「失败采用指数退避和最大重试，永久失败进入 dead-letter 状态并在项目状态
-接口可见。锁只覆盖单章短事务，不在调用模型时持有数据库锁。」部分实现：
-
-* 指数退避 + 有界重试：autoretry_for + retry_backoff + max_retries；
-* 逐批提交：commit_each_batch=True。重试时已完成的批次哈希已匹配，下一轮查询
-  直接跳过 —— 重试因此是幂等的，不会重复烧网关配额；
-* **永久失败可见性尚未实现**：当前没有独立 dead-letter 状态表、没有失败次数/
-  最后错误/耗尽标记，也没有只读 GET 项目状态端点。任务耗尽重试后数据留在 stale，
-  但 POST /codex/{project_id}/backfill-embeddings 只返回该次调用后的瞬时快照
-  remaining_count，无法持续查询失败可见性。真正满足架构 8 需后续增加持久状态和 GET。
-
-分工：请求路径（api.codex）不重试，让作者的编辑不被网关抖动拖长；重试与合批
-都在这里。回填按项目一次 embed_batch 多条，比逐条 embed_text 便宜得多。
-"""
+"""Codex embedding backfill with bounded retries and persistent dead letters."""
 import asyncio
+from datetime import UTC, datetime, timedelta
 
 import httpx
 from celery import shared_task
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from config import settings
+from db.models_embedding import CodexEmbeddingJob
 from services.codex import count_stale_entries
 from services.codex_embedding import embed_missing_codex_entries
 from services.embedding import EmbeddingProviderError, GatewayEmbeddingProvider
+from services.embedding_jobs import (
+    begin_attempt,
+    complete_job,
+    fail_job,
+    record_dispatch_failure,
+)
 
 engine = create_async_engine(settings.database_url, echo=False)
 AsyncSessionLocal = async_sessionmaker(engine, expire_on_commit=False)
 
 #: 视为「网关暂时不可用、值得重试」的异常。httpx.HTTPError 覆盖连接与状态码错误。
 RETRYABLE_ERRORS = (EmbeddingProviderError, OSError, httpx.HTTPError)
+STALE_QUEUE_SECONDS = 120
+MAX_DISPATCH_ATTEMPTS = 5
 
 
 def run_async(coro):
@@ -39,21 +34,52 @@ def run_async(coro):
     return loop.run_until_complete(coro)
 
 
-async def _backfill_async(project_id: str, batch_size: int) -> dict:
+async def _backfill_async(
+    project_id: str,
+    batch_size: int,
+    *,
+    attempt: int = 1,
+    task_id: str | None = None,
+    exhausted: bool = False,
+) -> dict:
     async with AsyncSessionLocal() as db:
-        embedded = await embed_missing_codex_entries(
-            db,
-            GatewayEmbeddingProvider(),
-            project_id=project_id,
-            batch_size=batch_size,
-            commit_each_batch=True,
-        )
+        await begin_attempt(db, project_id, attempt=attempt, task_id=task_id)
         await db.commit()
+        try:
+            embedded = await embed_missing_codex_entries(
+                db,
+                GatewayEmbeddingProvider(),
+                project_id=project_id,
+                batch_size=batch_size,
+                commit_each_batch=True,
+            )
+            remaining = await count_stale_entries(db, project_id)
+            await complete_job(
+                db,
+                project_id,
+                embedded_count=embedded,
+                remaining_count=remaining,
+            )
+            await db.commit()
+        except Exception as error:
+            await db.rollback()
+            remaining = await count_stale_entries(db, project_id)
+            retryable = isinstance(error, RETRYABLE_ERRORS)
+            await fail_job(
+                db,
+                project_id,
+                attempt=attempt,
+                error=error,
+                remaining_count=remaining,
+                exhausted=exhausted or not retryable,
+            )
+            await db.commit()
+            raise
         return {
             "status": "success",
             "project_id": project_id,
             "embedded_count": embedded,
-            "remaining_count": await count_stale_entries(db, project_id),
+            "remaining_count": remaining,
         }
 
 
@@ -67,22 +93,78 @@ async def _backfill_async(project_id: str, batch_size: int) -> dict:
     retry_jitter=True,
 )
 def backfill_codex_embeddings_task(self, project_id: str, batch_size: int = 32):
-    """回填项目内所有待重算条目的向量。
-
-    Args:
-        project_id: 项目 ID
-        batch_size: 每批条目数（每批一次 embed_batch 调用）
-
-    Returns:
-        {"status", "project_id", "embedded_count", "remaining_count"}
-        其中 remaining_count 是本次任务完成后的待重算快照。
-
-    Raises:
-        EmbeddingProviderError / OSError / httpx.HTTPError: 网关不可用，
-            Celery 按指数退避重试。重试耗尽后条目留在待重算状态，但当前无
-            持久 dead-letter 标记或独立状态查询接口，失败可见性待后续实现。
-    """
-    return run_async(_backfill_async(project_id, batch_size))
+    """Backfill stale entries and persist every attempt, including exhaustion."""
+    retries = int(getattr(self.request, "retries", 0))
+    return run_async(
+        _backfill_async(
+            project_id,
+            batch_size,
+            attempt=retries + 1,
+            task_id=getattr(self.request, "id", None),
+            exhausted=retries >= self.max_retries,
+        )
+    )
 
 
-__all__ = ["RETRYABLE_ERRORS", "backfill_codex_embeddings_task"]
+async def _recover_stale_embedding_jobs_async(
+    *,
+    stale_seconds: int = STALE_QUEUE_SECONDS,
+    batch_size: int = 20,
+) -> dict:
+    """Re-dispatch jobs stranded between the database commit and broker publish."""
+    from celery_app import celery_app
+
+    cutoff = datetime.now(UTC) - timedelta(seconds=stale_seconds)
+    async with AsyncSessionLocal() as db:
+        jobs = list(
+            (
+                await db.execute(
+                    select(CodexEmbeddingJob)
+                    .where(
+                        CodexEmbeddingJob.status == "queued",
+                        CodexEmbeddingJob.updated_at < cutoff,
+                    )
+                    .order_by(CodexEmbeddingJob.updated_at, CodexEmbeddingJob.project_id)
+                    .limit(batch_size)
+                    .with_for_update(skip_locked=True)
+                )
+            )
+            .scalars()
+            .all()
+        )
+        recovered = 0
+        failed = 0
+        for job in jobs:
+            job.dispatch_attempts += 1
+            job.updated_at = datetime.now(UTC)
+            try:
+                result = celery_app.send_task(
+                    "codex.backfill_embeddings",
+                    args=(job.project_id, 32),
+                )
+                job.task_id = result.id
+                job.error_code = None
+                job.last_error = None
+                recovered += 1
+            except Exception as error:
+                await record_dispatch_failure(
+                    db,
+                    job.project_id,
+                    error=error,
+                    max_attempts=MAX_DISPATCH_ATTEMPTS,
+                )
+                failed += 1
+        await db.commit()
+        return {"recovered": recovered, "failed": failed}
+
+
+@shared_task(name="codex.recover_stale_embedding_jobs")
+def recover_stale_embedding_jobs():
+    return run_async(_recover_stale_embedding_jobs_async())
+
+
+__all__ = [
+    "RETRYABLE_ERRORS",
+    "backfill_codex_embeddings_task",
+    "recover_stale_embedding_jobs",
+]

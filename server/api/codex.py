@@ -9,16 +9,18 @@
 鉴权：所有端点都过 verify_project_access（owner 或 org 成员），回填端点同样如此
 —— 全项目回填会打满 embedding 网关配额，不能任人触发。
 """
+from datetime import datetime
 from typing import Literal, Optional, get_args
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, ConfigDict, Field
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from api.auth import ProjectPermission, get_current_user, verify_project_permission
 from db.models_codex import CODEX_STATUSES, CodexAlias, CodexEntry
-from db.models_core import User
+from db.models_core import Project, User
+from db.models_embedding import CodexEmbeddingJob
 from db.session import get_db
 from services.codex import (
     add_alias,
@@ -30,6 +32,7 @@ from services.codex import (
 )
 from services.codex_embedding import embed_missing_codex_entries
 from services.embedding import GatewayEmbeddingProvider
+from services.embedding_jobs import fail_job, lock_job, queue_job
 from services.providers import EmbeddingProvider
 
 router = APIRouter()
@@ -119,6 +122,67 @@ class BackfillResponse(BaseModel):
     project_id: str
     embedded_count: int
     remaining_count: int
+
+
+class EmbeddingJobResponse(BaseModel):
+    project_id: str
+    status: Literal["ready", "pending", "queued", "running", "retrying", "dead_letter"]
+    total_count: int
+    fresh_count: int
+    remaining_count: int
+    attempts: int
+    dispatch_attempts: int
+    task_id: str | None
+    error_code: str | None
+    last_error: str | None
+    last_attempt_at: datetime | None
+    exhausted_at: datetime | None
+    can_retry: bool
+
+
+def dispatch_embedding_backfill(project_id: str, batch_size: int) -> str:
+    from celery_app import celery_app
+
+    return celery_app.send_task(
+        "codex.backfill_embeddings",
+        args=(project_id, batch_size),
+    ).id
+
+
+async def _embedding_job_response(
+    db: AsyncSession,
+    project_id: str,
+    job: CodexEmbeddingJob | None = None,
+) -> EmbeddingJobResponse:
+    total = int((await db.execute(
+        select(func.count(CodexEntry.id)).where(CodexEntry.project_id == project_id)
+    )).scalar_one())
+    remaining = await count_stale_entries(db, project_id)
+    if job is None:
+        job = await db.get(CodexEmbeddingJob, project_id)
+    if remaining == 0:
+        visible_status = "ready"
+    elif job is None or job.status == "succeeded":
+        visible_status = "pending"
+    else:
+        visible_status = job.status
+    active = visible_status in {"queued", "running", "retrying"}
+    show_failure = remaining > 0 and job is not None
+    return EmbeddingJobResponse(
+        project_id=project_id,
+        status=visible_status,
+        total_count=total,
+        fresh_count=max(0, total - remaining),
+        remaining_count=remaining,
+        attempts=job.attempts if job else 0,
+        dispatch_attempts=job.dispatch_attempts if job else 0,
+        task_id=job.task_id if job else None,
+        error_code=job.error_code if show_failure else None,
+        last_error=job.last_error if show_failure else None,
+        last_attempt_at=job.last_attempt_at if job else None,
+        exhausted_at=job.exhausted_at if show_failure else None,
+        can_retry=remaining > 0 and not active,
+    )
 
 
 async def _load_entry(db: AsyncSession, project_id: str, entry_id: str) -> CodexEntry:
@@ -375,3 +439,62 @@ async def backfill_codex_embeddings(
         embedded_count=embedded,
         remaining_count=await count_stale_entries(db, project_id),
     )
+
+
+@router.get("/{project_id}/embedding-status", response_model=EmbeddingJobResponse)
+async def get_embedding_status(
+    project_id: str,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> EmbeddingJobResponse:
+    """Return durable retry/dead-letter state plus current stale-entry counts."""
+    await verify_project_permission(project_id, ProjectPermission.VIEW, user, db)
+    return await _embedding_job_response(db, project_id)
+
+
+@router.post(
+    "/{project_id}/embedding-backfill",
+    response_model=EmbeddingJobResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+async def queue_embedding_backfill(
+    project_id: str,
+    batch_size: int = 32,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> EmbeddingJobResponse:
+    """Queue one observable backfill; concurrent clicks reuse the active job."""
+    await verify_project_permission(project_id, ProjectPermission.MANAGE_CODEX, user, db)
+    if batch_size <= 0:
+        raise HTTPException(status_code=422, detail="batch_size must be positive")
+
+    # Serialize first-time row creation and duplicate queue attempts on the project row.
+    await db.execute(select(Project.id).where(Project.id == project_id).with_for_update())
+    remaining = await count_stale_entries(db, project_id)
+    job = await lock_job(db, project_id)
+    if remaining == 0 or (job and job.status in {"queued", "running", "retrying"}):
+        return await _embedding_job_response(db, project_id, job)
+
+    job = await queue_job(db, project_id, remaining)
+    await db.commit()
+    try:
+        task_id = dispatch_embedding_backfill(project_id, batch_size)
+    except Exception as error:
+        await fail_job(
+            db,
+            project_id,
+            attempt=0,
+            error=error,
+            remaining_count=remaining,
+            exhausted=True,
+        )
+        await db.commit()
+        raise HTTPException(
+            status_code=503,
+            detail={"code": "EMBEDDING_QUEUE_UNAVAILABLE"},
+        ) from error
+    job = await lock_job(db, project_id)
+    if job:
+        job.task_id = task_id
+    await db.commit()
+    return await _embedding_job_response(db, project_id, job)

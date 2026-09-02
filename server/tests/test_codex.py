@@ -1231,6 +1231,12 @@ async def test_the_backfill_task_body_embeds_and_reports_the_remainder(
         "embedded_count": 3,
         "remaining_count": 0,
     }
+    from db.models_embedding import CodexEmbeddingJob
+
+    job = await async_db_session.get(CodexEmbeddingJob, "proj_a")
+    assert job.status == "succeeded"
+    assert job.attempts == 1
+    assert job.remaining_count == 0
     # batch_size=2 → 两批（2 + 1），而不是三次单条调用
     assert [len(batch) for batch in provider.batch_calls] == [2, 1]
 
@@ -1289,40 +1295,9 @@ async def test_the_backfill_task_propagates_httpx_error_for_retry(
     assert isinstance(exc_info.value, httpx.HTTPError)
 
 
-def test_documentation_accurately_reflects_missing_dead_letter_visibility():
-    """文档断言：确保相关文档明确当前无持久失败状态或持续查询接口。
-
-    架构 8 要求永久失败可见，但当前实现只有瞬时快照 remaining_count，无独立
-    dead-letter 表/失败次数/最后错误，也无只读 GET 端点。此测试守住文档准确性，
-    防止误导性表述（如「持续可见」「持续暴露」「就是那个信号」）重新进入代码。
-    """
-    from api.codex import backfill_codex_embeddings
-    from services.codex import count_stale_entries
+def test_documentation_reflects_persistent_dead_letter_visibility():
+    """The task contract must keep durable exhaustion visible after retries stop."""
     from tasks.codex import backfill_codex_embeddings_task
 
-    # tasks/codex.py 模块文档必须说明可见性尚未实现
-    task_module_doc = backfill_codex_embeddings_task.__module__
-    import sys
-
-    task_module = sys.modules[task_module_doc]
-    assert "永久失败可见性尚未实现" in task_module.__doc__
-    assert "无法持续查询失败可见性" in task_module.__doc__
-    assert "真正满足架构 8 需后续增加持久状态和 GET" in task_module.__doc__
-
-    # tasks/codex.py 任务函数 docstring 必须说明无持久标记
-    assert "但当前无" in backfill_codex_embeddings_task.__doc__
-    assert "持久 dead-letter 标记" in backfill_codex_embeddings_task.__doc__
-    assert "失败可见性待后续实现" in backfill_codex_embeddings_task.__doc__
-
-    # api/codex.py 端点 docstring 必须说明是瞬时快照
-    api_doc = backfill_codex_embeddings.__doc__
-    assert "本次回填成功后的待重算快照" in api_doc
-    assert "而非持续可查询的失败状态" in api_doc
-    assert "无法持续监控" in api_doc
-
-    # services/codex.py count_stale_entries 必须说明是瞬时快照、无法区分
-    count_doc = count_stale_entries.__doc__
-    assert "瞬时快照" in count_doc
-    assert "非持续失败状态" in count_doc
-    assert "无法区分" in count_doc or "无法区分「首次待补」与「永久失败」" in count_doc
-    assert "真正满足架构 8 需后续" in count_doc
+    assert "persist every attempt" in backfill_codex_embeddings_task.__doc__
+    assert "including exhaustion" in backfill_codex_embeddings_task.__doc__

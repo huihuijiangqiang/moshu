@@ -6,9 +6,9 @@
 所有声明基于实际代码与测试结果，不夸大、不省略已知缺口。
 
 **关键事实**：
-- ✅ 30 张表完整 Alembic baseline，增量迁移已到 `007_style_profiles`
-- ✅ 917 个单元/功能测试通过（SQLite in-memory，mock embedding/LLM）
-- ✅ 前端 60 个测试、TypeScript 类型检查和生产构建通过
+- ✅ 30 张表完整 Alembic baseline，增量迁移已到 `009_embedding_dispatch_attempts`
+- ✅ 934 个单元/功能测试通过（SQLite in-memory，mock embedding/LLM）
+- ✅ 前端 61 个测试、TypeScript 类型检查和生产构建通过
 - ✅ 36 个集成测试已在本机真实 PostgreSQL + pgvector 环境通过
 - ✅ 已完成真实账号认证、作品创建、分卷章纲编辑与章节插入的首轮产品闭环
 - ✅ Refresh session 持久化轮换、防重放、注销即时吊销，系统管理员与项目 RBAC 已接通
@@ -19,14 +19,14 @@
 - ✅ AI 来源账本已接通真实生成 run、段落指纹校验、编辑分类与采纳字数回写
 - ✅ Docker Compose 已接通 PostgreSQL、Redis、Celery worker/dispatcher/beat 与 transactional outbox
 - ✅ Guard 已接入项目扫描、运行状态、真实告警证据与乐观锁处置
-- ⚠️ Codex embedding 回填的持久失败可见性尚未实现
+- ✅ Codex embedding 回填具有持久任务状态、失败次数、最后错误、耗尽标记与重试入口
 - ⚠️ 评测夹具仅 10 个 smoke cases，硬编码 100% 指标不代表实际质量
 
 ---
 
 ## 已完成模块
 
-### 1. 数据模型（33 张表，100% Alembic 覆盖）
+### 1. 数据模型（34 张表，100% Alembic 覆盖）
 
 #### 核心骨架 (6 张)
 - `users` - 用户账号
@@ -44,6 +44,9 @@
 - `codex_aliases` - 条目别名
 - `codex_refs` - 章节对设定的引用
 - `codex_relations` - 设定条目间关系
+
+#### Embedding 运维状态 (1 张)
+- `codex_embedding_jobs` - 每作品回填状态、尝试次数、剩余欠账、最后错误与 dead letter
 
 #### 一致性基础设施 (4 张)
 - `chapter_outline_states` - 章纲状态
@@ -84,7 +87,7 @@
   `halfvec_cosine_ops` 重建 HNSW 索引；upgrade/downgrade 均会要求重新回填向量
 - ✅ `alembic upgrade head --sql` 与 `alembic downgrade -1 --sql` 语法验证通过
 - ✅ 36 个集成测试已在本机真实 PostgreSQL + pgvector 运行通过；当前审核数据库已真实执行
-  `004_auth_admin_rbac -> 005_usage_ledger -> 006_usage_reservation_expiry -> 007_style_profiles` 并到达 head
+  `004_auth_admin_rbac -> 005_usage_ledger -> 006_usage_reservation_expiry -> 007_style_profiles -> 008_embedding_job_visibility -> 009_embedding_dispatch_attempts` 并到达 head
 
 ---
 
@@ -97,8 +100,9 @@
 - ✅ 两段式事务：标脏先提交，网关后补向量
 - ✅ 网关失败降级 `deferred`，不阻塞作者写入
 - ✅ `refresh_embedding_if_stale` 幂等补向量
-- ✅ **已知缺口**：无持久 dead-letter 状态表、无失败次数/最后错误/耗尽标记，
-  `remaining_count` 仅为瞬时快照，无独立 GET 状态端点持续监控永久失败
+- ✅ `queued/running/retrying/succeeded/dead_letter` 状态持久化，记录失败次数、最后错误与耗尽时间
+- ✅ 作者可查询当前新鲜/待补条目数，并在耗尽后明确重新入队
+- ✅ worker 执行失败与 broker 重新投递次数独立计数；beat 自动回收发布窗口中断的过期 `queued` 作业
 
 #### 章纲服务 (`services/outlines.py`)
 - ✅ 独立章纲版本控制（与正文解耦）
@@ -273,7 +277,8 @@
 - ✅ `POST /codex/{project_id}/entries/{entry_id}/aliases` - 添加别名
 - ✅ `DELETE /codex/{project_id}/entries/{entry_id}/aliases` - 删除别名
 - ✅ `POST /codex/{project_id}/backfill-embeddings` - 同步回填向量（受项目权限保护）
-  - ⚠️ `remaining_count` 是本次响应的瞬时快照，非持续可查询状态
+- ✅ `GET /codex/{project_id}/embedding-status` - 持久查询索引健康度与 dead letter
+- ✅ `POST /codex/{project_id}/embedding-backfill` - 幂等入队或重新执行耗尽任务
 
 #### 一致性状态 (`api/consistency.py`, prefix `/consistency`)
 - ✅ `GET /consistency/status/{chapter_id}/{body_rev}` - 章节版本一致性状态（三阶段）
@@ -298,10 +303,13 @@
 
 #### Codex 回填任务 (`tasks/codex.py`)
 - ✅ `backfill_codex_embeddings_task` - 项目级批量 embedding 回填
+- ✅ `recover_stale_embedding_jobs` - 每分钟回收发布窗口中断的过期排队任务，独立走 outbox worker
 - ✅ 指数退避重试：`autoretry_for`, `retry_backoff`, `max_retries=5`
 - ✅ 逐批提交：`commit_each_batch=True`，重试幂等不重复烧配额
 - ✅ httpx.HTTPError 纳入 RETRYABLE_ERRORS
-- ⚠️ **已知缺口**：耗尽重试后数据留 stale，但无持久失败状态或独立查询接口
+- ✅ 每次尝试先落 `running`，失败落 `retrying`，第 6 次失败落 `dead_letter`
+- ✅ Web 进程通过项目 Celery app 显式发往 Redis，避免绑定默认 AMQP broker
+- ✅ worker 执行尝试与 broker 恢复投递独立计数；恢复连续失败 5 次才进入 `dead_letter`
 
 #### Celery 配置 (`celery_app.py`)
 - ✅ Redis broker + result backend
@@ -317,9 +325,9 @@
 
 ### 5. 测试覆盖
 
-#### 单元测试（917 passed，SQLite in-memory，mock providers）
+#### 单元测试（934 passed，SQLite in-memory，mock providers）
 
-**全量测试结果**：917 passed, 36 skipped（未设置集成测试 URL 时）, 4 warnings；前端 60 passed
+**全量测试结果**：934 passed, 36 skipped（未设置集成测试 URL 时）, 4 warnings；前端 61 passed
 
 主要测试覆盖（不逐文件列举测试数量，以实际 pytest 结果为准）：
 - ✅ Codex 设定库：CRUD、别名规范化、可检索文本判据、两段式事务、deferred 降级、httpx 错误重试
@@ -328,7 +336,7 @@
 - ✅ 一致性服务：Claim fingerprint、规则逻辑、hard negative 案例
 - ✅ RuleScanner：三条规则检测、timeline-aware 跳过、stale 标记、fingerprint 去重
 - ✅ 认证授权：JWT 解码、项目权限、Idempotency-Key 必需性
-- ✅ Alembic 迁移：30 张表、pgvector extension、部分唯一索引、downgrade 完整性
+- ✅ Alembic 迁移：34 张表、pgvector extension、部分唯一索引、downgrade 完整性
 - ✅ 时间锚点：ISO-8601 解析、源锚点位置校验、temporal_anchor_text 确定性要求
 - ✅ 项目、章节、章纲 CRUD、乐观锁冲突、Outbox 与幂等性
 - ✅ Foreshadow 伏笔倒计时、用量统计、风格档案
@@ -346,7 +354,7 @@
 
 #### 集成测试（36 tests，真实 PostgreSQL + pgvector 已通过）
 - ✅ Docker PostgreSQL + pgvector 环境已执行 36 个测试并全部通过
-- ✅ 审核数据库已执行 `007_style_profiles` 到 Alembic head
+- ✅ 审核数据库已执行 `009_embedding_dispatch_attempts` 到 Alembic head
 - 覆盖内容：
   - 部分唯一索引（`postgresql_where`）的并发 upsert 去重
   - pgvector `<=>` 余弦距离与 HNSW 索引
@@ -360,27 +368,18 @@
 ## 已知缺口与限制
 
 ### 1. Codex Embedding 回填失败可见性
-**状态**：部分实现
+**状态**：已完成
 
 **已有**：
 - ✅ 指数退避重试（5 次，最大间隔 600s）
 - ✅ httpx.HTTPError 纳入重试异常
 - ✅ `remaining_count` 在 POST 响应中返回
-
-**缺失**：
-- ❌ 无独立 dead-letter 状态表
-- ❌ 无失败次数、最后错误、耗尽标记
-- ❌ 无只读 GET 项目状态端点
-- ❌ `remaining_count` 仅为本次成功响应的瞬时快照，无法持续查询
-- ❌ 无法区分「首次待补」与「永久失败」
-
-**影响**：任务耗尽重试后，数据留在 stale 状态，但无法通过 API 持续监控失败可见性。
-架构 8「永久失败在项目状态接口可见」尚未满足。
-
-**后续需要**：
-1. 增加 `codex_backfill_failures` 表：记录失败次数、最后错误、耗尽时间戳
-2. 增加 `GET /codex/{project_id}/embedding-status` 端点：返回持久失败状态
-3. 文档断言测试守住诚实表述，防止未实现功能被误导性宣称
+- ✅ `codex_embedding_jobs` 持久区分首次待补、运行、重试、成功和永久失败
+- ✅ `GET /codex/{project_id}/embedding-status` 返回当前欠账、失败次数、最后错误与耗尽时间
+- ✅ `POST /codex/{project_id}/embedding-backfill` 防重复入队，并允许 dead letter 明确重试
+- ✅ Web 进程若在状态提交后、broker 发布前退出，beat 会在 120 秒租约后重新投递
+- ✅ 恢复投递与模型执行分别计数，避免 broker 故障污染作者看到的模型重试次数
+- ✅ 真实 Docker 验收：临时作品 `pending -> queued -> ready`，1 次尝试后 1/1 条向量就绪并清理
 
 ### 2. 产品功能仍有占位实现
 **状态**：进行中
@@ -520,21 +519,14 @@ baseline，增量实现 Codex embedding 回填、时间锚点解析、issue 生�
 
 **优先级**：高。扩充至 100+ 正例 + 50+ hard negatives，接入 CI。
 
-### 3. Codex Embedding 持久失败可见性缺失
-**描述**：无 dead-letter 表、无 GET 状态端点。
-
-**风险**：任务耗尽重试后，失败对用户不可见。
-
-**优先级**：中。影响运维可观测性，但不阻塞基础功能。
-
-### 4. 增量影响集未实现
+### 3. 增量影响集未实现
 **描述**：每次扫描加载全部 claims。
 
 **风险**：性能瓶颈，随 claims 增长扫描耗时线性增长。
 
 **优先级**：中。优化点，不影响正确性。
 
-### 5. LLM 仲裁未实现
+### 4. LLM 仲裁未实现
 **描述**：仅确定性规则，无 LLM 二次判决。
 
 **风险**：误报率可能高于架构要求（≤20%）。
@@ -557,9 +549,9 @@ baseline，增量实现 Codex embedding 回填、时间锚点解析、issue 生�
 
 ### 短期优先级（1-2 周）
 1. **实现 Codex Embedding 持久失败可见性**
-   - 增加 `codex_backfill_failures` 表
-   - 增加 `GET /codex/{project_id}/embedding-status` 端点
-   - 更新 `backfill_codex_embeddings_task` 记录耗尽失败
+   - ✅ 增加 `codex_embedding_jobs` 表
+   - ✅ 增加 GET 状态与 POST 重新入队端点
+   - ✅ 更新 `backfill_codex_embeddings_task` 记录每次尝试和耗尽失败
 
 2. **实现 LLM 结构化仲裁**
    - `providers/llm.py` 增加 `arbitrate_conflict` 方法
@@ -623,9 +615,9 @@ baseline，增量实现 Codex embedding 回填、时间锚点解析、issue 生�
 - `server/tasks/consistency.py` - 一致性任务
 - `server/tasks/codex.py` - Codex 回填任务
 
-### 测试（917 passed；另有 36 个真实 PostgreSQL 测试通过）
-- `server/tests/` - 单元/功能测试（917 passed）
-- `app/src/**/*.spec.ts` - 前端测试（60 passed）
+### 测试（934 passed；另有 36 个真实 PostgreSQL 测试通过）
+- `server/tests/` - 单元/功能测试（934 passed）
+- `app/src/**/*.spec.ts` - 前端测试（61 passed）
 - `server/tests/integration/` - 集成测试（36 passed，需设置真实 PostgreSQL URL）
 
 ### 文档（1 个文件）
@@ -635,14 +627,14 @@ baseline，增量实现 Codex embedding 回填、时间锚点解析、issue 生�
 
 ## 总结
 
-墨枢一致性后端已完成核心数据模型、服务层、API 端点和异步任务定义，917 个单元/功能
+墨枢一致性后端已完成核心数据模型、服务层、API 端点和异步任务定义，934 个单元/功能
 测试在 SQLite in-memory + mock providers 环境下通过，另有 36 个集成测试在真实
 PostgreSQL + pgvector 环境通过。真实认证、可吊销会话、管理员、工作室 RBAC、作品创建、
-分卷章纲、章节插入、全量导出、非覆盖备份恢复、风格指纹、AI 来源账本与作者生成用量台账已经接通，前端 60 个测试与生产构建通过。
+分卷章纲、章节插入、全量导出、非覆盖备份恢复、风格指纹、AI 来源账本与作者生成用量台账已经接通，前端 61 个测试与生产构建通过。
 
 **关键限制**：
 1. 自动一致性与 embedding 后台模型成本尚未进入统一台账
-2. Codex embedding 回填的持久失败可见性尚未实现
+2. 一致性评测集、相对时间锚点、增量影响集与 LLM 仲裁尚未完成
 3. 评测夹具仅 10 个 smoke cases，硬编码 100% 指标**不代表实际质量**
 4. 时间锚点自然语言解析、增量影响集、LLM 仲裁未实现
 5. 真实长文本扫描吞吐受上游模型网关稳定性和并发限制影响

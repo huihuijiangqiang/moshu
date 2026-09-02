@@ -129,6 +129,7 @@ def test_expected_core_tables_are_present(migration_metadata):
         "chapter_versions",
         "codex_entries",
         "codex_aliases",
+        "codex_embedding_jobs",
         "consistency_runs",
         "consistency_claims",
         "document_summaries",

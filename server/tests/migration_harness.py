@@ -64,6 +64,17 @@ class _OpRecorder:
             sa.ForeignKeyConstraint(local_cols, remote, name=constraint_name, **kw)
         )
 
+    def create_check_constraint(
+        self,
+        constraint_name: str,
+        table_name: str,
+        condition: str,
+        **kw: Any,
+    ) -> None:
+        self.metadata.tables[table_name].append_constraint(
+            sa.CheckConstraint(condition, name=constraint_name, **kw)
+        )
+
     def drop_constraint(
         self,
         constraint_name: str,

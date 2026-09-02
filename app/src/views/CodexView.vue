@@ -1,11 +1,12 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { useCodexStore, codexEntrySearchText } from '@/stores/codex'
 import { useProjectStore } from '@/stores/project'
 import { useShellStore } from '@/stores/shell'
 import { CODEX_KIND_LABEL, type CodexEntry, type CodexKind } from '@/types'
 import { useProjectNavigation } from '@/composables/use-project-navigation'
+import { embeddingApi, type EmbeddingJob } from '@/api/embedding'
 
 const codex = useCodexStore()
 const project = useProjectStore()
@@ -18,8 +19,62 @@ type Scope = 'kind' | 'resident' | 'pending' | 'conflict' | 'all'
 const scope = ref<Scope>('kind')
 const selectedId = ref<string | null>(null)
 const mobileDetailOpen = ref(false)
+const embeddingJob = ref<EmbeddingJob | null>(null)
+const embeddingError = ref('')
+const queueingEmbedding = ref(false)
+let embeddingTimer: ReturnType<typeof setTimeout> | null = null
 
-onMounted(() => shell.setCrumb('设定库'))
+const embeddingLabel = computed(() => {
+  switch (embeddingJob.value?.status) {
+    case 'ready': return '检索索引已就绪'
+    case 'queued': return embeddingJob.value.dispatchAttempts
+      ? `检索索引重新投递中 · ${embeddingJob.value.dispatchAttempts} 次`
+      : '检索索引已排队'
+    case 'running': return '正在更新检索索引'
+    case 'retrying': return `检索索引重试中 · ${embeddingJob.value.attempts} 次`
+    case 'dead_letter': return `检索索引失败 · ${embeddingJob.value.attempts + embeddingJob.value.dispatchAttempts} 次`
+    default: return '检索索引待更新'
+  }
+})
+
+async function refreshEmbeddingStatus() {
+  const projectId = project.loadedProjectId
+  if (!projectId) return
+  if (embeddingTimer) clearTimeout(embeddingTimer)
+  try {
+    embeddingJob.value = await embeddingApi.status(projectId)
+    embeddingError.value = ''
+  } catch (error) {
+    embeddingError.value = error instanceof Error ? error.message : '索引状态加载失败'
+  }
+  if (embeddingJob.value && ['queued', 'running', 'retrying'].includes(embeddingJob.value.status)) {
+    embeddingTimer = setTimeout(refreshEmbeddingStatus, 2500)
+  }
+}
+
+async function queueEmbeddingBackfill() {
+  const projectId = project.loadedProjectId
+  if (!projectId || queueingEmbedding.value) return
+  queueingEmbedding.value = true
+  embeddingError.value = ''
+  try {
+    embeddingJob.value = await embeddingApi.queue(projectId)
+    embeddingTimer = setTimeout(refreshEmbeddingStatus, 1000)
+  } catch (error) {
+    embeddingError.value = error instanceof Error ? error.message : '索引任务入队失败'
+  } finally {
+    queueingEmbedding.value = false
+  }
+}
+
+onMounted(() => {
+  shell.setCrumb('设定库')
+  void refreshEmbeddingStatus()
+})
+onBeforeUnmount(() => {
+  if (embeddingTimer) clearTimeout(embeddingTimer)
+})
+watch(() => project.loadedProjectId, () => void refreshEmbeddingStatus())
 
 const scopes: { key: Scope; label: string; count: () => number }[] = [
   { key: 'all', label: '全部', count: () => codex.entries.length },
@@ -166,6 +221,22 @@ function openChapter(index: number) {
           >{{ item.label }}<span v-if="item.key === 'pending' || item.key === 'conflict'">{{ item.count() }}</span></button>
         </div>
       </div>
+
+      <section v-if="embeddingJob || embeddingError" class="codex-embedding-status" :data-status="embeddingJob?.status">
+        <div>
+          <strong>{{ embeddingLabel }}</strong>
+          <small v-if="embeddingJob">{{ embeddingJob.freshCount }} / {{ embeddingJob.totalCount }} 条可检索</small>
+          <small v-if="embeddingError">{{ embeddingError }}</small>
+          <small v-else-if="embeddingJob?.lastError">{{ embeddingJob.errorCode }} · {{ embeddingJob.lastError }}</small>
+        </div>
+        <button
+          v-if="embeddingJob?.canRetry"
+          class="wk-btn"
+          type="button"
+          :disabled="queueingEmbedding"
+          @click="queueEmbeddingBackfill"
+        >{{ queueingEmbedding ? '入队中' : '重新索引' }}</button>
+      </section>
 
       <div class="codex-list-head"><span>{{ currentListLabel }}</span><small>{{ rows.length }} 条</small></div>
       <div class="codex-list" role="listbox" :aria-label="`${currentListLabel}设定`">
