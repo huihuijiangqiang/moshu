@@ -90,6 +90,8 @@ async def test_chapter_generation_streams_meta_text_done_and_records_run(
     assert run.prompt_tokens == 123
     assert run.cached_tokens == 10
     assert "task.chapter" in run.layer_report["skills"]
+    assert run.layer_report["provenance"]["algorithm"] == "djb2-32-v1"
+    assert len(run.layer_report["provenance"]["paragraph_hashes"]) == 1
     usage = (await async_db_session.execute(select(UsageLog))).scalar_one()
     assert usage.status == "completed"
     assert usage.run_id == run.id

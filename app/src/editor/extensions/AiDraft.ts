@@ -1,4 +1,5 @@
 import { Node, mergeAttributes, type CommandProps } from '@tiptap/core'
+import { Fragment } from '@tiptap/pm/model'
 import { VueNodeViewRenderer } from '@tiptap/vue-3'
 import AiDraftBlock from '@/components/editor/AiDraftBlock.vue'
 
@@ -10,6 +11,7 @@ declare module '@tiptap/core' {
       insertAiDraft: () => ReturnType
       appendDraftText: (text: string) => ReturnType
       setDraftStatus: (status: DraftStatus) => ReturnType
+      setDraftRunId: (runId: string) => ReturnType
       acceptDraftAt: (pos: number) => ReturnType
       rejectDraftAt: (pos: number) => ReturnType
       rejectAllDrafts: () => ReturnType
@@ -23,6 +25,12 @@ function findDraft(state: CommandProps['state']) {
     if (node.type.name === 'aiDraft') found = { pos, size: node.nodeSize }
   })
   return found as { pos: number; size: number } | null
+}
+
+export function provenanceHash(text: string) {
+  let hash = 5381
+  for (const character of text) hash = ((hash * 33) ^ (character.codePointAt(0) ?? 0)) >>> 0
+  return hash.toString(16).padStart(8, '0')
 }
 
 /**
@@ -41,7 +49,8 @@ export const AiDraft = Node.create({
   addAttributes() {
     return {
       status: { default: 'pending' as DraftStatus },
-      label: { default: 'AI 草稿' }
+      label: { default: 'AI 草稿' },
+      runId: { default: null }
     }
   },
 
@@ -74,9 +83,17 @@ export const AiDraft = Node.create({
           const found = findDraft(state)
           if (!found) return false
           // 容器内最后一个子节点的内部末尾
-          const insertAt = found.pos + found.size - 2
-          if (text === '\n') tr.split(insertAt)
-          else tr.insertText(text, insertAt)
+          let insertAt = found.pos + found.size - 2
+          for (const part of text.replace(/\r\n?/g, '\n').split(/(\n)/)) {
+            if (!part) continue
+            if (part === '\n') {
+              tr.split(insertAt)
+              insertAt += 2
+            } else {
+              tr.insertText(part, insertAt)
+              insertAt += part.length
+            }
+          }
           tr.setMeta('addToHistory', false)
           if (dispatch) dispatch(tr)
           return true
@@ -95,13 +112,35 @@ export const AiDraft = Node.create({
           return true
         },
 
+      setDraftRunId:
+        (runId) =>
+        ({ state, tr, dispatch }) => {
+          const found = findDraft(state)
+          if (!found) return false
+          const node = state.doc.nodeAt(found.pos)
+          if (!node) return false
+          tr.setNodeMarkup(found.pos, undefined, { ...node.attrs, runId })
+          tr.setMeta('addToHistory', false)
+          if (dispatch) dispatch(tr)
+          return true
+        },
+
       /** 解包：草稿内容原地成为正文，一次事务完成 */
       acceptDraftAt:
         (pos) =>
         ({ state, tr, dispatch }) => {
           const node = state.doc.nodeAt(pos)
           if (!node || node.type.name !== 'aiDraft') return false
-          tr.replaceWith(pos, pos + node.nodeSize, node.content)
+          const runId = typeof node.attrs.runId === 'string' ? node.attrs.runId : null
+          const content = node.content.content.map((child) => {
+            if (!runId || child.type.name !== 'paragraph') return child
+            return child.type.create(
+              { ...child.attrs, aiRunId: runId, aiSourceHash: provenanceHash(child.textContent) },
+              child.content,
+              child.marks
+            )
+          })
+          tr.replaceWith(pos, pos + node.nodeSize, Fragment.fromArray(content))
           if (dispatch) dispatch(tr)
           return true
         },

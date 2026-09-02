@@ -299,7 +299,11 @@ export function htmlToDocument(html: string): Record<string, unknown> {
   const document = new DOMParser().parseFromString(html, 'text/html')
   const content = Array.from(document.body.children).map((element, index) => ({
     type: 'paragraph',
-    attrs: { pid: element.getAttribute('data-paragraph-id') ?? `p-${index}` },
+    attrs: {
+      pid: element.getAttribute('data-paragraph-id') ?? `p-${index}`,
+      ...(element.getAttribute('data-ai-run-id') ? { aiRunId: element.getAttribute('data-ai-run-id') } : {}),
+      ...(element.getAttribute('data-ai-source-hash') ? { aiSourceHash: element.getAttribute('data-ai-source-hash') } : {})
+    },
     content: element.textContent ? [{ type: 'text', text: element.textContent }] : []
   }))
   return { type: 'doc', content }

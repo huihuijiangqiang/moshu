@@ -25,6 +25,7 @@ from services.generation import (
     count_generated_words,
     retryable_stream,
 )
+from services.provenance import PROVENANCE_ALGORITHM, generated_paragraph_hashes
 from services.usage import (
     InsufficientCreditsError,
     UsageReservation,
@@ -142,7 +143,13 @@ def _generation_response(
                 completion_tokens=completion_tokens,
                 generated_words=count_generated_words(prose),
                 accepted_words=0,
-                layer_report=package.layer_report,
+                layer_report={
+                    **package.layer_report,
+                    "provenance": {
+                        "algorithm": PROVENANCE_ALGORITHM,
+                        "paragraph_hashes": generated_paragraph_hashes(prose),
+                    },
+                },
             )
             db.add(run)
             await db.flush()

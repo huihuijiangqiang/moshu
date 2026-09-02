@@ -41,7 +41,7 @@ const navCmds = computed<Cmd[]>(() => [
     { id: 'nav-codex', group: '当前作品', label: `设定库 · ${codex.entries.length} 条`, hint: 'G C', run: () => router.push(toProject('codex')) },
     { id: 'nav-guard', group: '当前作品', label: `一致性守卫 · ${guard.open.length} 条待处理`, hint: 'G G', run: () => router.push(toProject('guard')) },
     { id: 'nav-style', group: '当前作品', label: '风格档', run: () => router.push(toProject('style')) },
-    { id: 'nav-ratio', group: '当前作品', label: 'AI 占比自查', run: () => router.push(toProject('ai-ratio')) },
+    { id: 'nav-ratio', group: '当前作品', label: 'AI 来源账本', run: () => router.push(toProject('ai-ratio')) },
     { id: 'nav-export', group: '当前作品', label: '导出作品', run: () => router.push(toProject('export')) }
   ] : []),
   { id: 'nav-shelf', group: '全局', label: '作品库', run: () => router.push('/') },

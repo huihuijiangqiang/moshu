@@ -4,6 +4,7 @@ import Placeholder from '@tiptap/extension-placeholder'
 import CharacterCount from '@tiptap/extension-character-count'
 import { AiDraft } from './extensions/AiDraft'
 import { CodexRef } from './extensions/CodexRef'
+import { Provenance } from './extensions/Provenance'
 import { createCodexSuggestion } from './extensions/codex-suggestion'
 import { useCodexStore } from '@/stores/codex'
 
@@ -17,6 +18,7 @@ export function useNovelEditor(content: string, onUpdate: (html: string, chars: 
       Placeholder.configure({ placeholder: '继续写，或按 Tab 让 AI 接着往下铺；输入 @ 引用设定' }),
       CharacterCount,
       AiDraft,
+      Provenance,
       CodexRef,
       createCodexSuggestion((q) => codex.search(q))
     ],

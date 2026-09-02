@@ -54,7 +54,7 @@ const rail = computed<RailEntry[]>(() => {
     { to: projectPath(projectId.value, 'codex'), icon: 'codex', label: `设定库 · ${codex.entries.length}`, shortLabel: '设定', dot: codex.pending.length > 0 },
     { to: projectPath(projectId.value, 'guard'), icon: 'guard', label: `一致性守卫 · ${guard.open.length}`, shortLabel: '守卫', dot: guard.open.length > 0 },
     { to: projectPath(projectId.value, 'style'), icon: 'style', label: '风格档', shortLabel: '风格' },
-    { to: projectPath(projectId.value, 'ai-ratio'), icon: 'ratio', label: 'AI 占比自查', shortLabel: 'AI 检测' }
+    { to: projectPath(projectId.value, 'ai-ratio'), icon: 'ratio', label: 'AI 来源账本', shortLabel: 'AI 来源' }
   ])
 })
 

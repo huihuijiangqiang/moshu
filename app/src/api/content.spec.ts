@@ -10,6 +10,17 @@ describe('htmlToDocument', () => {
 
     expect(document.content.map((node) => node.attrs.pid)).toEqual(['known-pid', 'p-1'])
   })
+
+  it('preserves server-verifiable AI provenance attributes', () => {
+    const document = htmlToDocument(
+      '<p data-ai-run-id="run-1" data-ai-source-hash="00abc123">AI 草稿</p>'
+    ) as { content: Array<{ attrs: Record<string, string> }> }
+
+    expect(document.content[0]?.attrs).toMatchObject({
+      aiRunId: 'run-1',
+      aiSourceHash: '00abc123'
+    })
+  })
 })
 
 describe('bodyConflictFromError', () => {

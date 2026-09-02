@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { Editor } from '@tiptap/core'
 import StarterKit from '@tiptap/starter-kit'
 import { AiDraft } from './AiDraft'
+import { Provenance } from './Provenance'
 
 /** NodeView 依赖 Vue 渲染，单测里用不带 NodeView 的扩展验证命令与事务行为 */
 const Plain = AiDraft.extend({ addNodeView: undefined })
@@ -9,7 +10,7 @@ const Plain = AiDraft.extend({ addNodeView: undefined })
 function makeEditor() {
   return new Editor({
     element: document.createElement('div'),
-    extensions: [StarterKit, Plain],
+    extensions: [StarterKit, Plain, Provenance],
     content: '<p>原有正文。</p>'
   })
 }
@@ -61,6 +62,24 @@ describe('AiDraft', () => {
     editor.commands.acceptDraftAt(pos)
     expect(editor.getHTML()).not.toContain('data-ai-draft')
     expect(editor.getText()).toContain('被采纳的句子')
+    editor.destroy()
+  })
+
+  it('采纳真实生成草稿时保留 run 和原文指纹', () => {
+    const editor = makeEditor()
+    editor.commands.insertAiDraft()
+    editor.commands.appendDraftText('第一段\n第二段')
+    editor.commands.setDraftRunId('run-1')
+    let pos = -1
+    editor.state.doc.descendants((node, p) => {
+      if (node.type.name === 'aiDraft') pos = p
+    })
+    editor.commands.acceptDraftAt(pos)
+
+    const html = editor.getHTML()
+    expect(html).toContain('data-ai-run-id="run-1"')
+    expect(html.match(/data-ai-source-hash=/g)).toHaveLength(2)
+    expect(draftParagraphTexts(editor)).toEqual([])
     editor.destroy()
   })
 

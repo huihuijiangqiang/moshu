@@ -55,7 +55,7 @@ const navStyle = {
         <span v-if="guard.open.length" class="badge">{{ guard.open.length }}</span>
       </RouterLink>
       <RouterLink to="/style" :style="navStyle" :aria-current="route.path === '/style'">风格档</RouterLink>
-      <RouterLink to="/ai-ratio" :style="navStyle" :aria-current="route.path === '/ai-ratio'">AI 占比自查</RouterLink>
+      <RouterLink to="/ai-ratio" :style="navStyle" :aria-current="route.path === '/ai-ratio'">AI 来源账本</RouterLink>
       <RouterLink to="/export" :style="navStyle" :aria-current="route.path === '/export'">导出</RouterLink>
     </nav>
   </aside>

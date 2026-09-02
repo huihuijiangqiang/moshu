@@ -13,6 +13,7 @@ from db.models_codex import CodexEntry, CodexRef
 from db.models_core import Chapter, ChapterBody, ChapterVersion
 from services.idempotency import IdempotencyService
 from services.outbox import OutboxService
+from services.provenance import sync_accepted_words
 
 
 class ChapterNotFoundError(LookupError):
@@ -352,6 +353,14 @@ async def save_chapter_body(
                         count=count,
                     )
                     db.add(ref)
+
+    # Recalculate the north-star metric from server-verified generation fingerprints.
+    await sync_accepted_words(
+        db,
+        project_id=chapter.project_id,
+        chapter_id=chapter_id,
+        content_json=content_json,
+    )
 
     # 12. 写 transactional outbox
     await OutboxService.enqueue(

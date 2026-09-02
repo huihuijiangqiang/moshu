@@ -1,6 +1,5 @@
 import { describe, expect, it } from 'vitest'
 import { mockApi } from './index'
-import { ratioApi } from './ai-ratio'
 
 describe('mock project scoping', () => {
   it('loads metadata and chapters for the selected project', async () => {
@@ -28,15 +27,5 @@ describe('mock project scoping', () => {
     expect(foreignIssues[0]?.title).toContain('长夜渡舟')
     expect(foreignIssues[0]?.title).not.toContain('剑起山河')
     expect(primaryCodex.length).toBeGreaterThan(0)
-  })
-
-  it('returns a different AI ratio summary for chapter and whole-book scopes', async () => {
-    const [chapter, book] = await Promise.all([
-      ratioApi.report('p3-ch16', 'chapter'),
-      ratioApi.report('p3-ch16', 'book')
-    ])
-
-    expect(book.suspectCount).toBeGreaterThan(chapter.suspectCount)
-    expect(book.human).not.toBe(chapter.human)
   })
 })

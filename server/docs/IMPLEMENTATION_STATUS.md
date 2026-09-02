@@ -7,8 +7,8 @@
 
 **关键事实**：
 - ✅ 30 张表完整 Alembic baseline，增量迁移已到 `007_style_profiles`
-- ✅ 914 个单元/功能测试通过（SQLite in-memory，mock embedding/LLM）
-- ✅ 前端 59 个测试、TypeScript 类型检查和生产构建通过
+- ✅ 917 个单元/功能测试通过（SQLite in-memory，mock embedding/LLM）
+- ✅ 前端 60 个测试、TypeScript 类型检查和生产构建通过
 - ✅ 36 个集成测试已在本机真实 PostgreSQL + pgvector 环境通过
 - ✅ 已完成真实账号认证、作品创建、分卷章纲编辑与章节插入的首轮产品闭环
 - ✅ Refresh session 持久化轮换、防重放、注销即时吊销，系统管理员与项目 RBAC 已接通
@@ -16,6 +16,7 @@
 - ✅ TXT/Markdown/DOCX/EPUB、分章 ZIP、完整 JSON 备份与非覆盖恢复已接通真实数据库
 - ✅ 作者生成已接通真实用量台账、原子额度预留、按实际 token 结算、失败退款和过期预留回收
 - ✅ 风格档已接通用户隔离 CRUD、真实六维抽取、作品绑定、生成提示与用量结算
+- ✅ AI 来源账本已接通真实生成 run、段落指纹校验、编辑分类与采纳字数回写
 - ✅ Docker Compose 已接通 PostgreSQL、Redis、Celery worker/dispatcher/beat 与 transactional outbox
 - ✅ Guard 已接入项目扫描、运行状态、真实告警证据与乐观锁处置
 - ⚠️ Codex embedding 回填的持久失败可见性尚未实现
@@ -112,6 +113,7 @@
 - ✅ 严格 `base_rev` 乐观锁校验
 - ✅ 幂等保存（哈希匹配时不创建新版本）
 - ✅ Transactional outbox 事件
+- ✅ 保存后按真实生成段落指纹重算 `GenerationRun.accepted_words`；段落删除后自动回落
 
 #### 前端正文保存保护 (`app/src/composables/use-autosave.ts`)
 - ✅ 每章独立待保存队列；快速切章不会让后一章覆盖前一章的待同步正文
@@ -194,6 +196,14 @@
 - ✅ 样文在系统提示中被明确标为不可信数据；生成提示只读取统计指纹，不读取样文原文
 - ✅ 真实网关验收：5,940 字样文抽取为 `ready`，实际结算 13 积分
 
+#### AI 内容来源 (`services/provenance.py`)
+- ✅ 生成完成时只保存原始段落指纹，不复制正文原文
+- ✅ 来源标记必须匹配同作品、同章节的真实 `GenerationRun` 及服务端原始指纹
+- ✅ 原文指纹未变归为 `ai-raw`，作者修改后归为 `ai-edited`，无可信标记归为 `human`
+- ✅ 同一生成段落指纹不可超出原始出现次数重复认领；跨章与伪造 run 均按手写处理
+- ✅ 全书范围只返回聚合，避免把整本正文通过报告端点一次性下发
+- ✅ 全书统计一次预取生成记录，无按章节查询 run 的 N+1
+
 ---
 
 ### 3. API 端点（全部需认证 + 项目权限）
@@ -226,6 +236,11 @@
 - ✅ `GET /usage/summary` - 当前真实余额、本期已结算用量、按功能聚合、14 天序列及最近 20 笔
 - ✅ 仅返回当前认证用户数据；released/reserved 与上月记录不计入本期实际消费
 - ✅ 余额不足在模型请求前返回 402，包含本次最大需求和当前余额
+
+#### AI 来源 (`api/provenance.py`)
+- ✅ `GET /projects/{id}/provenance?scope=chapter&chapter_id=...` - 本章段落级来源账本
+- ✅ `GET /projects/{id}/provenance?scope=book` - 全书来源聚合，不返回正文段落
+- ✅ 只依据系统实际生成记录，不提供不可解释的“疑似 AI 句式检测”
 
 #### 风格档 (`api/styles.py`)
 - ✅ `GET/POST /styles`、`GET/PATCH/DELETE /styles/{id}` - 用户隔离 CRUD
@@ -302,9 +317,9 @@
 
 ### 5. 测试覆盖
 
-#### 单元测试（914 passed，SQLite in-memory，mock providers）
+#### 单元测试（917 passed，SQLite in-memory，mock providers）
 
-**全量测试结果**：914 passed, 36 skipped（未设置集成测试 URL 时）, 4 warnings；前端 59 passed
+**全量测试结果**：917 passed, 36 skipped（未设置集成测试 URL 时）, 4 warnings；前端 60 passed
 
 主要测试覆盖（不逐文件列举测试数量，以实际 pytest 结果为准）：
 - ✅ Codex 设定库：CRUD、别名规范化、可检索文本判据、两段式事务、deferred 降级、httpx 错误重试
@@ -318,6 +333,7 @@
 - ✅ 项目、章节、章纲 CRUD、乐观锁冲突、Outbox 与幂等性
 - ✅ Foreshadow 伏笔倒计时、用量统计、风格档案
 - ✅ 风格档跨租户隔离、默认唯一、抽取成功/失败、失败退款、owner 绑定、删除自动解绑与提示隐私
+- ✅ AI 来源：真实 run/段落指纹校验、编辑后分类、重复与跨章节伪造防护、采纳字数回落
 - ✅ **文档断言测试**：`test_documentation_accurately_reflects_missing_dead_letter_visibility`
   守住「瞬时快照」「非持续可查询」等准确表述
 
@@ -532,7 +548,7 @@ baseline，增量实现 Codex embedding 回填、时间锚点解析、issue 生�
 ### 立即行动（阻塞生产部署）
 1. **真实风格档与 AI 来源追踪**
    - ✅ 风格档 CRUD、样文抽取状态、作品绑定与生成接入已经完成
-   - 记录 AI 插入区间和之后的人工修改，只提供可解释来源统计
+   - ✅ AI 插入段落、之后的人工修改与可解释来源统计已经完成
 
 2. **扩充评测数据集**
    - 扩充至 100+ 正例 + 50+ hard negatives
@@ -607,9 +623,9 @@ baseline，增量实现 Codex embedding 回填、时间锚点解析、issue 生�
 - `server/tasks/consistency.py` - 一致性任务
 - `server/tasks/codex.py` - Codex 回填任务
 
-### 测试（914 passed；另有 36 个真实 PostgreSQL 测试通过）
-- `server/tests/` - 单元/功能测试（914 passed）
-- `app/src/**/*.spec.ts` - 前端测试（59 passed）
+### 测试（917 passed；另有 36 个真实 PostgreSQL 测试通过）
+- `server/tests/` - 单元/功能测试（917 passed）
+- `app/src/**/*.spec.ts` - 前端测试（60 passed）
 - `server/tests/integration/` - 集成测试（36 passed，需设置真实 PostgreSQL URL）
 
 ### 文档（1 个文件）
@@ -619,13 +635,13 @@ baseline，增量实现 Codex embedding 回填、时间锚点解析、issue 生�
 
 ## 总结
 
-墨枢一致性后端已完成核心数据模型、服务层、API 端点和异步任务定义，914 个单元/功能
+墨枢一致性后端已完成核心数据模型、服务层、API 端点和异步任务定义，917 个单元/功能
 测试在 SQLite in-memory + mock providers 环境下通过，另有 36 个集成测试在真实
 PostgreSQL + pgvector 环境通过。真实认证、可吊销会话、管理员、工作室 RBAC、作品创建、
-分卷章纲、章节插入、全量导出、非覆盖备份恢复、风格指纹与作者生成用量台账已经接通，前端 59 个测试与生产构建通过。
+分卷章纲、章节插入、全量导出、非覆盖备份恢复、风格指纹、AI 来源账本与作者生成用量台账已经接通，前端 60 个测试与生产构建通过。
 
 **关键限制**：
-1. AI 占比仍是静态实现；自动一致性与 embedding 后台模型成本尚未进入统一台账
+1. 自动一致性与 embedding 后台模型成本尚未进入统一台账
 2. Codex embedding 回填的持久失败可见性尚未实现
 3. 评测夹具仅 10 个 smoke cases，硬编码 100% 指标**不代表实际质量**
 4. 时间锚点自然语言解析、增量影响集、LLM 仲裁未实现

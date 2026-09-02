@@ -208,7 +208,11 @@ function generate(options: GenerationControls) {
     { chapterId: store.activeId, ...options },
     {
       onChunk: (t) => editor.value?.commands.appendDraftText(t),
-      onDone: () => { editor.value?.commands.setDraftStatus('pending'); generating.value = false },
+      onDone: (result) => {
+        if (typeof result?.runId === 'string') editor.value?.commands.setDraftRunId(result.runId)
+        editor.value?.commands.setDraftStatus('pending')
+        generating.value = false
+      },
       onError: (error) => {
         generationError.value = error instanceof Error ? error.message : '生成失败，请重试'
         editor.value?.commands.setDraftStatus('pending')
@@ -253,7 +257,11 @@ function runInline(action: string) {
     },
     {
       onChunk: (text) => editor.value?.commands.appendDraftText(text),
-      onDone: () => { editor.value?.commands.setDraftStatus('pending'); generating.value = false },
+      onDone: (result) => {
+        if (typeof result?.runId === 'string') editor.value?.commands.setDraftRunId(result.runId)
+        editor.value?.commands.setDraftStatus('pending')
+        generating.value = false
+      },
       onError: (error) => {
         generationError.value = error instanceof Error ? error.message : '行内生成失败，请重试'
         editor.value?.commands.setDraftStatus('pending')
