@@ -29,7 +29,6 @@ server/
 ├── memory/           # ★ 四层上下文装配器（核心）
 │   ├── assembler.py  # 装配逻辑与预算裁剪
 │   └── tokenizer.py  # Token 计数
-├── guard/            # 一致性领域辅助模块
 ├── providers/        # Chat/Embedding 模型网关客户端
 ├── tasks/            # Celery 异步任务与 outbox dispatcher
 ├── services/         # 业务逻辑层
