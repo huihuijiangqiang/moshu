@@ -68,7 +68,7 @@ export const useProjectStore = defineStore('project', () => {
     if (!projectId) throw new Error('project_not_loaded')
     const created = await contentApi.insertChapter(projectId, volumeId, afterIndex)
     chapters.value.forEach((chapter) => {
-      if (chapter.volumeId === volumeId && chapter.index > afterIndex) chapter.index += 1
+      if (chapter.index > afterIndex) chapter.index += 1
     })
     chapters.value.push(created)
     if (project.value?.chapterCount !== undefined) project.value.chapterCount += 1

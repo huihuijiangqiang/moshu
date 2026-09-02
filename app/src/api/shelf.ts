@@ -3,6 +3,19 @@ import { shelfApi as mockShelfApi, type ShelfBook } from './mock/shelf'
 
 export type { ShelfBook } from './mock/shelf'
 
+export interface CreateBookInput {
+  title: string
+  genre: string
+  inspiration: string
+  synopsis: string
+  protagonist: string
+  coreHook: string
+  audience: string
+  template: string
+  tags: string[]
+  volumes: Array<{ title: string; summary: string }>
+}
+
 interface ProjectListDto {
   id: string
   title: string
@@ -15,6 +28,14 @@ interface ProjectListDto {
   last_chapter_title: string | null
   updated_at: string
   target_words_daily: number
+}
+
+interface ProjectCreateDto {
+  id: string
+  title: string
+  genre: string | null
+  target_words_daily: number
+  volumes: Array<{ id: string; title: string; idx: number }>
 }
 
 const coverTones: ShelfBook['coverTone'][] = ['mountain', 'city', 'river', 'spring', 'space']
@@ -54,6 +75,40 @@ const realShelfApi = {
   async listBooks(): Promise<ShelfBook[]> {
     const rows = await request<ProjectListDto[]>('/projects')
     return rows.map(shelfBookFromDto)
+  },
+
+  async createBook(input: CreateBookInput): Promise<ShelfBook> {
+    const project = await request<ProjectCreateDto>('/projects', {
+      method: 'POST',
+      body: JSON.stringify({
+        title: input.title,
+        genre: input.genre,
+        inspiration: input.inspiration,
+        synopsis: input.synopsis,
+        protagonist: input.protagonist,
+        core_hook: input.coreHook,
+        audience: input.audience,
+        template: input.template,
+        tags: input.tags,
+        volumes: input.volumes
+      })
+    })
+    return {
+      id: project.id,
+      title: project.title,
+      genre: project.genre ?? '题材待补充',
+      status: 'planning',
+      words: 0,
+      chapters: 1,
+      codexCount: [input.protagonist, input.coreHook].filter((value) => value.trim()).length,
+      guardOpen: 0,
+      lastTouched: '刚刚 · 创建故事骨架',
+      targetWords: 600_000,
+      dailyGoal: project.target_words_daily,
+      progress: 0,
+      todayWords: 0,
+      coverTone: 'mountain'
+    }
   }
 }
 

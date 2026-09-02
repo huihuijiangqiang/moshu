@@ -28,7 +28,7 @@ async function select(id: string) {
 
 <template>
   <div class="wk-pane" :style="{ height: '100%' }">
-    <Teleport to="#topbar-actions">
+    <Teleport defer to="#topbar-actions">
       <button class="topbar-btn" type="button">新建风格档</button>
     </Teleport>
 

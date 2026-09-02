@@ -19,6 +19,7 @@ const store = useProjectStore()
 const shell = useShellStore()
 const { toProject } = useProjectNavigation()
 const view = ref<'grid' | 'list'>('grid')
+const selectedVolumeId = ref<string | null>(null)
 const selectedId = ref<string | null>(null)
 const drafts = ref<Record<string, PlanDraft>>({})
 const pendingDecision = ref(false)
@@ -29,9 +30,11 @@ const saveError = ref('')
 
 onMounted(() => shell.setCrumb('大纲'))
 
-const currentVolume = computed(() => store.byVolume.at(-1) ?? null)
+const currentVolume = computed(() =>
+  store.byVolume.find((item) => item.volume.id === selectedVolumeId.value) ?? store.byVolume[0] ?? null
+)
 const selected = computed<Chapter | null>(
-  () => currentVolume.value?.chapters.find((c) => c.id === selectedId.value) ?? currentVolume.value?.chapters.at(-2) ?? null
+  () => currentVolume.value?.chapters.find((c) => c.id === selectedId.value) ?? currentVolume.value?.chapters.at(-1) ?? null
 )
 const currentDraft = computed(() => selected.value ? drafts.value[selected.value.id] ?? null : null)
 const isDirty = computed(() => {
@@ -55,20 +58,32 @@ watch(selected, (chapter) => {
 }, { immediate: true })
 
 watch(
-  [() => route.query.chapter, () => store.chapters.length],
+  [() => route.query.chapter, () => store.chapters.length, () => store.project?.id],
   ([chapterId]) => {
-    if (typeof chapterId === 'string' && currentVolume.value?.chapters.some((chapter) => chapter.id === chapterId)) {
-      selectedId.value = chapterId
-    }
+    const requestedId = typeof chapterId === 'string' ? chapterId : store.activeId
+    const requested = requestedId ? store.chapters.find((chapter) => chapter.id === requestedId) : undefined
+    const group = requested
+      ? store.byVolume.find((item) => item.volume.id === requested.volumeId)
+      : store.byVolume.find((item) => item.chapters.length > 0) ?? store.byVolume[0]
+    if (!group) return
+    selectedVolumeId.value = group.volume.id
+    selectedId.value = requested?.volumeId === group.volume.id ? requested.id : group.chapters.at(-1)?.id ?? null
   },
   { immediate: true }
 )
 
-const pacing = [
-  { title: '爽点间隔', body: '平均 4.2 章一次，健康区间内。', warn: false },
-  { title: '连续铺垫过长', body: '第 78-84 章连续 7 章无冲突推进。', warn: true },
-  { title: '伏笔密度', body: '本卷埋 3 收 1，末章需回收 2。', warn: false }
-]
+const pacing = computed(() => {
+  const chapters = currentVolume.value?.chapters ?? []
+  const planned = chapters.filter((chapter) => chapter.outline.length > 0).length
+  const written = chapters.filter((chapter) => chapter.words > 0).length
+  const needsRevision = chapters.filter((chapter) => chapter.bodyNeedsRevision).length
+  const ratio = (value: number) => chapters.length ? Math.round((value / chapters.length) * 100) : 0
+  return [
+    { title: '章纲覆盖', body: `${planned} / ${chapters.length} 章已有章纲（${ratio(planned)}%）`, warn: planned < chapters.length },
+    { title: '正文进度', body: `${written} / ${chapters.length} 章已有正文（${ratio(written)}%）`, warn: false },
+    { title: '计划变更', body: needsRevision ? `${needsRevision} 章正文需要按新章纲调整` : '当前没有待调整正文', warn: needsRevision > 0 }
+  ]
+})
 
 function cellStyle(c: Chapter) {
   const active = c.id === selected.value?.id
@@ -87,6 +102,12 @@ function writeChapter(chapter: Chapter) {
 
 function selectChapter(id: string) {
   selectedId.value = id
+}
+
+function selectVolume(id: string) {
+  selectedVolumeId.value = id
+  const group = store.byVolume.find((item) => item.volume.id === id)
+  selectedId.value = group?.chapters.at(-1)?.id ?? null
 }
 
 function addNode() {
@@ -162,7 +183,7 @@ async function insertChapter() {
 <template>
   <div class="wk-pane" :style="{ height: '100%', display: 'flex', flexDirection: 'column' }">
     <!-- 顶栏动作 Teleport 到外壳，本屏不再自带 header -->
-    <Teleport to="#topbar-actions">
+    <Teleport defer to="#topbar-actions">
       <button
         v-for="v in (['grid', 'list'] as const)"
         :key="v"
@@ -173,24 +194,22 @@ async function insertChapter() {
       >{{ v === 'grid' ? '网格' : '列表' }}</button>
     </Teleport>
 
-    <section class="rule-b outline-timeline">
-      <div class="kicker" :style="{ marginBottom: '16px' }">故事内时间线</div>
-      <div class="outline-timeline-track">
-        <div class="outline-timeline-segment is-major">
-          <strong>第一卷</strong><span class="muted">三月 — 四月初 · 62 章</span>
-        </div>
-        <div class="outline-timeline-segment">
-          <strong>第二卷</strong><span class="muted">四月 — ? · 25 章</span>
-        </div>
+    <section class="rule-b outline-structure">
+      <div class="kicker" :style="{ marginBottom: '16px' }">分卷结构</div>
+      <div class="outline-volume-track" :style="{ gridTemplateColumns: `repeat(${Math.max(store.byVolume.length, 1)}, minmax(150px, 1fr))` }">
         <button
-          class="outline-timeline-alert"
+          v-for="item in store.byVolume"
+          :key="item.volume.id"
           type="button"
-          @click="router.push(toProject('guard'))"
-        >时间线冲突</button>
+          :aria-pressed="item.volume.id === currentVolume?.volume.id"
+          @click="selectVolume(item.volume.id)"
+        >
+          <strong>第 {{ item.volume.index }} 卷</strong>
+          <span>{{ item.volume.title }}</span>
+          <small>{{ item.chapters.length }} 章 · {{ (item.chapters.reduce((sum, chapter) => sum + chapter.words, 0) / 10000).toFixed(1) }} 万字</small>
+        </button>
       </div>
-      <p>
-        第 79 章交代「四月始融雪」，第 86 章「风雪走了三日」推算已到五月中。点击红段查看守卫详情。
-      </p>
+      <p>{{ currentVolume?.volume.summary || '本卷尚未填写卷纲，可先从章节计划开始。' }}</p>
     </section>
 
     <div class="app-body outline-workspace">
@@ -333,13 +352,14 @@ async function insertChapter() {
 </template>
 
 <style scoped>
-.outline-timeline { flex: none; padding: 26px 24px; }
-.outline-timeline-track { height: 44px; display: grid; grid-template-columns: 62fr 25fr 13fr; border: 2px solid var(--line-strong); font-size: var(--fs-sm); }
-.outline-timeline-segment { min-width: 0; display: flex; align-items: center; gap: 10px; padding: 0 12px; border-right: 2px solid var(--line-strong); }
-.outline-timeline-segment.is-major { background: var(--panel); }
-.outline-timeline-segment span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.outline-timeline-alert { border: 0; background: var(--alert-soft); color: var(--alert-ink); font: inherit; font-weight: 700; text-align: left; padding: 0 12px; cursor: pointer; }
-.outline-timeline > p { margin: 12px 0 0; color: var(--ink-2); line-height: 1.6; font-size: var(--fs-sm); }
+.outline-structure { flex: none; padding: 22px 24px; }
+.outline-volume-track { display: grid; overflow-x: auto; border: var(--hair) solid var(--line-strong); }
+.outline-volume-track button { min-width: 150px; min-height: 70px; display: grid; gap: 3px; padding: 10px 12px; border: 0; border-right: var(--hair) solid var(--line-strong); background: var(--paper); color: var(--ink); text-align: left; font: inherit; cursor: pointer; }
+.outline-volume-track button:last-child { border-right: 0; }
+.outline-volume-track button[aria-pressed="true"] { background: var(--primary-soft); box-shadow: inset 0 -3px 0 var(--primary); }
+.outline-volume-track span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.outline-volume-track small { color: var(--ink-3); }
+.outline-structure > p { margin: 11px 0 0; color: var(--ink-2); line-height: 1.55; font-size: var(--fs-sm); }
 .outline-workspace { min-height: 0; grid-template-columns: minmax(0, 1fr) 390px; }
 .outline-chapter-cell { position: relative; }
 .outline-revision-flag { margin-top: 7px; color: var(--alert-ink); font-size: var(--fs-xs); font-weight: 700; }
@@ -390,11 +410,7 @@ async function insertChapter() {
 }
 
 @media (max-width: 840px) {
-  .outline-timeline { padding: 18px 16px; }
-  .outline-timeline-track { height: auto; grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  .outline-timeline-segment { min-height: 42px; }
-  .outline-timeline-segment:nth-child(2) { border-right: 0; }
-  .outline-timeline-alert { grid-column: 1 / -1; min-height: 34px; border-top: 2px solid var(--line-strong); text-align: center; }
+  .outline-structure { padding: 18px 16px; }
   .outline-workspace { grid-template-columns: minmax(0, 1fr); overflow: auto; }
   .outline-editor { min-height: 520px; border-top: var(--hair) solid var(--line-strong); border-left: 0; }
 }

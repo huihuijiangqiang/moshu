@@ -1,4 +1,6 @@
-import { createRouter, createWebHistory } from 'vue-router'
+import { createRouter, createWebHistory, type RouteLocationNormalized } from 'vue-router'
+import { USE_MOCK } from '@/api/http'
+import { hasSession } from '@/api/session'
 
 /** meta.bare = 不套 AppShell 的全屏页（登录、开书向导） */
 export const router = createRouter({
@@ -26,3 +28,14 @@ export const router = createRouter({
     { path: '/:pathMatch(.*)*', redirect: '/' }
   ]
 })
+
+export function authGuard(to: RouteLocationNormalized, useMock = USE_MOCK) {
+  if (useMock) return true
+  if (to.name !== 'login' && !hasSession()) {
+    return { name: 'login', query: { redirect: to.fullPath } }
+  }
+  if (to.name === 'login' && hasSession()) return { name: 'shelf' }
+  return true
+}
+
+router.beforeEach((to) => authGuard(to))

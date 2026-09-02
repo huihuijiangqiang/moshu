@@ -1,5 +1,6 @@
 import { USE_MOCK } from './http'
 import { mockApi } from './mock'
+import { getAccessToken } from './session'
 import type { GenerateOptions, GenerationMeta, InlineGenerateOptions } from '@/types'
 
 export interface StreamHandlers {
@@ -69,7 +70,7 @@ async function sseStream(
 ) {
   let completed = false
   try {
-    const token = import.meta.env.VITE_API_TOKEN as string | undefined
+    const token = getAccessToken()
     const res = await fetch(`${import.meta.env.VITE_API_BASE ?? '/api'}${path}`, {
       method: 'POST',
       headers: {

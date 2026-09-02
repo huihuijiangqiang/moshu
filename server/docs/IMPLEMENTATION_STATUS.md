@@ -7,8 +7,9 @@
 
 **关键事实**：
 - ✅ 30 张表完整 Alembic baseline，pgvector extension/HALFVEC 列已在迁移中定义
-- ✅ 809 个单元/功能测试通过（SQLite in-memory，mock embedding/LLM）
-- ⚠️ 36 个集成测试全部 SKIP（本机无真实 PostgreSQL + pgvector，**未在真实数据库验证**）
+- ✅ 837 个单元/功能测试通过（SQLite in-memory，mock embedding/LLM）
+- ✅ 36 个集成测试已在本机真实 PostgreSQL + pgvector 环境通过
+- ✅ 已完成真实账号认证、作品创建、分卷章纲编辑与章节插入的首轮产品闭环
 - ⚠️ Codex embedding 回填的持久失败可见性尚未实现
 - ⚠️ 评测夹具仅 10 个 smoke cases，硬编码 100% 指标不代表实际质量
 
@@ -25,6 +26,9 @@
 - `chapters` - 章节元信息
 - `chapter_bodies` - 章节正文（独立存储）
 - `chapter_versions` - 章节版本历史
+
+`003_product_workflows.py` 在 baseline 之上补充账号密码字段、作品灵感/简介/故事骨架、
+卷纲，以及章节章纲备注与修改时间，支持当前真实产品流程。
 
 #### 设定库 (4 张)
 - `codex_entries` - 设定条目（HALFVEC(2048) embedding 列）
@@ -65,8 +69,8 @@
   `002_embedding_halfvec_2048.py` 清理旧向量并迁移到 HALFVEC(2048)，以
   `halfvec_cosine_ops` 重建 HNSW 索引；upgrade/downgrade 均会要求重新回填向量
 - ✅ `alembic upgrade head --sql` 与 `alembic downgrade -1 --sql` 语法验证通过
-- ⚠️ **真实 PostgreSQL + pgvector 未验证**：36 个集成测试因本机无真实数据库而跳过，
-  pgvector `<=>` 余弦距离、部分唯一索引的并发去重、HNSW 索引性能等**未在真实环境验证**
+- ✅ 36 个集成测试已在本机真实 PostgreSQL + pgvector 运行通过，`003_product_workflows`
+  已迁移到 head；默认 SQLite 测试未设置 `TEST_POSTGRES_URL` 时仍会跳过该组用例
 
 ---
 
@@ -143,7 +147,7 @@
 #### RAG 检索 (`services/retrieval.py`)
 - ✅ **代码已实现**：`retrieve_similar_entities_l3` 使用 pgvector cosine distance (`<=>`)
 - ✅ 距离阈值过滤，ORDER BY distance 高效最近邻
-- ⚠️ **真实 PostgreSQL + pgvector 未验证**：余弦距离召回准确性、HNSW 索引性能未在真实环境测试
+- ✅ pgvector 余弦距离与 HNSW 相关集成测试已在真实 PostgreSQL 环境通过
 
 ---
 
@@ -155,9 +159,18 @@
 - ✅ `verify_project_access`：owner 或 org 成员校验
 - ✅ `ProjectAccessChecker` 依赖类
 
+#### 认证 (`api/auth.py`)
+- ✅ `POST /auth/register` - 邮箱密码注册
+- ✅ `POST /auth/login` - 邮箱密码登录
+- ✅ `POST /auth/refresh` - 独立 refresh JWT 换取新会话
+- ✅ `GET /auth/me` - 查询当前账号
+- ✅ PBKDF2-SHA256 密码存储，access/refresh token 类型隔离
+
 #### 项目 (`api/projects.py`)
+- ✅ `POST /projects` - 创建作品、分卷、首章和初始设定条目
 - ✅ `GET /projects/{id}` - 项目详情
-- ✅ `GET /projects/{id}/chapters` - 章节列表（不含正文）
+- ✅ `GET /projects/{id}/chapters` - 章节列表（含章纲状态，不含正文）
+- ✅ `POST /projects/{id}/chapters` - 在指定位置插入章节并重排全局序号
 
 #### 章节 (`api/chapters.py`)
 - ✅ `GET /chapters/{id}` - 章节详情（含正文 + rev）
@@ -214,9 +227,9 @@
 
 ### 5. 测试覆盖
 
-#### 单元测试（809 passed，SQLite in-memory，mock providers）
+#### 单元测试（837 passed，SQLite in-memory，mock providers）
 
-**全量测试结果**：809 passed, 36 skipped, 4 warnings
+**全量测试结果**：837 passed, 36 skipped（未设置集成测试 URL 时）, 4 warnings
 
 主要测试覆盖（不逐文件列举测试数量，以实际 pytest 结果为准）：
 - ✅ Codex 设定库：CRUD、别名规范化、可检索文本判据、两段式事务、deferred 降级、httpx 错误重试
@@ -239,16 +252,16 @@
 - ⚠️ **硬编码指标不代表实际质量**：夹具仅 10 个合成案例，规则逻辑为简化概念验证版本，
   距离真实小说场景的规模化评测（≥100 正例 + ≥50 hard negatives）差距巨大
 
-#### 集成测试（36 tests，全部 SKIP）
-- ⚠️ `tests/integration/` 下 36 个测试**在本地从未运行过**
-- ⚠️ 需要真实 PostgreSQL + pgvector（设置 `TEST_POSTGRES_URL` 后才会运行）
-- 覆盖内容（未验证）：
+#### 集成测试（36 tests，真实 PostgreSQL + pgvector 已通过）
+- ✅ Docker PostgreSQL + pgvector 环境已执行 36 个测试并全部通过
+- ✅ `003_product_workflows` 已在真实数据库执行到 Alembic head
+- 覆盖内容：
   - 部分唯一索引（`postgresql_where`）的并发 upsert 去重
   - pgvector `<=>` 余弦距离与 HNSW 索引
   - `INSERT ... ON CONFLICT` upsert 语义
   - GIN 索引
   - CHECK 约束在并发/边界数据下的真实拒绝行为
-- **不能宣称这些测试通过** —— 它们从未在真实数据库上跑过
+- 默认 SQLite 全量命令未设置 `TEST_POSTGRES_URL` 时仍会显示这些用例 skipped；真实数据库结果单独记录。
 
 ---
 
@@ -277,17 +290,15 @@
 2. 增加 `GET /codex/{project_id}/embedding-status` 端点：返回持久失败状态
 3. 文档断言测试守住诚实表述，防止未实现功能被误导性宣称
 
-### 2. 集成测试未验证
-**状态**：全部 SKIP
+### 2. 产品功能仍有占位实现
+**状态**：进行中
 
-36 个集成测试因本机无真实 PostgreSQL + pgvector 而跳过，以下能力**未在真实数据库验证**：
-- 部分唯一索引的并发 upsert 去重
-- pgvector 余弦距离召回准确性
-- PostgreSQL-specific upsert 语义
-- GIN 索引性能
-- CHECK 约束在边界数据下的拒绝行为
+真实认证、作品创建、分卷章纲和章节插入已经接通；以下用户可见页面仍有 mock 或静态展示：
+- Guard 尚未完整接入一致性状态、告警处置和异步任务运行状态
+- 导出、文风、AI 占比、用量页面尚未全部接入真实后端
+- 正文冲突恢复、离线草稿恢复和保存失败保护仍需补齐端到端交互
 
-**风险**：SQLite 单元测试与真实 PostgreSQL 行为可能存在差异，生产部署前需补全集成测试验证。
+**风险**：当前不能称为功能完整 MVP，也不能把所有页面展示视为真实数据。
 
 ### 3. 评测数据集规模不足
 **状态**：概念验证
@@ -402,12 +413,12 @@ baseline，增量实现 Codex embedding 回填、时间锚点解析、issue 生�
 
 ## 技术债务
 
-### 1. PostgreSQL 集成测试从未运行
-**描述**：36 个 `tests/integration/` 测试因本机无真实数据库而跳过。
+### 1. 异步运行链路尚未完成产品化验收
+**描述**：Celery 任务代码存在，但 Docker Compose worker/beat、outbox 定时派发、Guard 前端状态尚未形成可观察闭环。
 
-**风险**：SQLite 单元测试无法验证 pgvector、部分唯一索引、PostgreSQL-specific upsert 等行为。
+**风险**：正文保存后的一致性检查可能停留在 outbox，用户无法从界面判断任务是否在运行或失败。
 
-**优先级**：高。生产部署前必须在真实 PostgreSQL + pgvector 上跑通集成测试。
+**优先级**：高。下一批直接完成运行和可视化验收。
 
 ### 2. 评测数据集规模不足
 **描述**：仅 10 个 smoke cases，硬编码 100% 指标。
@@ -442,12 +453,15 @@ baseline，增量实现 Codex embedding 回填、时间锚点解析、issue 生�
 ## 下一步优先级
 
 ### 立即行动（阻塞生产部署）
-1. **补全集成测试验证**
-   - 搭建本地 PostgreSQL + pgvector 测试环境
-   - 设置 `TEST_POSTGRES_URL` 跑通 36 个集成测试
-   - 修复发现的 SQLite/PostgreSQL 行为差异
+1. **接通 Celery/Guard 运行链路**
+   - Docker Compose 启动 worker 与 beat
+   - 定时派发 transactional outbox
+   - Guard 页面展示真实运行状态、告警与处置结果
 
-2. **扩充评测数据集**
+2. **补齐正文保存保护**
+   - 409 冲突恢复、离线草稿恢复、保存失败防丢失
+
+3. **扩充评测数据集**
    - 扩充至 100+ 正例 + 50+ hard negatives
    - 接入 CI，设定召回率 ≥70%、误报率 ≤20% 的通过阈值
    - 用真实小说场景替换合成案例
@@ -512,9 +526,9 @@ baseline，增量实现 Codex embedding 回填、时间锚点解析、issue 生�
 - `server/tasks/consistency.py` - 一致性任务
 - `server/tasks/codex.py` - Codex 回填任务
 
-### 测试（809 passed, 36 skipped）
-- `server/tests/` - 单元/功能测试（809 passed）
-- `server/tests/integration/` - 集成测试（36 skipped，需真实 PostgreSQL）
+### 测试（837 passed；另有 36 个真实 PostgreSQL 测试通过）
+- `server/tests/` - 单元/功能测试（837 passed）
+- `server/tests/integration/` - 集成测试（36 passed，需设置真实 PostgreSQL URL）
 
 ### 文档（1 个文件）
 - `server/docs/IMPLEMENTATION_STATUS.md` - **本文档**（唯一当前事实来源）
@@ -523,17 +537,17 @@ baseline，增量实现 Codex embedding 回填、时间锚点解析、issue 生�
 
 ## 总结
 
-墨枢一致性后端已完成核心数据模型、服务层、API 端点和异步任务的实现，809 个单元/功能
-测试在 SQLite in-memory + mock providers 环境下通过。30 张表完整 Alembic baseline，
-pgvector extension 与 Vector 列已在迁移中定义，代码质量经 ruff 验证。
+墨枢一致性后端已完成核心数据模型、服务层、API 端点和异步任务定义，837 个单元/功能
+测试在 SQLite in-memory + mock providers 环境下通过，另有 36 个集成测试在真实
+PostgreSQL + pgvector 环境通过。真实认证、作品创建、分卷章纲与章节插入已经接通。
 
 **关键限制**：
-1. 36 个集成测试因本机无真实 PostgreSQL + pgvector 而跳过，**不能宣称这些测试通过**，
-   pgvector 余弦距离、部分唯一索引等**未在真实数据库验证**
-2. Codex embedding 回填的持久失败可见性尚未实现，无 dead-letter 表与 GET 状态端点
-3. 评测夹具仅 10 个 smoke cases，硬编码 100% 指标**不代表实际质量**
-4. 时间锚点仅支持 ISO-8601 绝对时间，**不支持**「第 N 天」「N 年后」等自然语言表达
-5. 增量影响集、LLM 仲裁未实现
+1. Celery worker/beat、outbox 派发和 Guard 前端尚未完成真实运行闭环
+2. 正文冲突恢复、离线草稿恢复和保存失败保护尚未完成
+3. 导出、文风、AI 占比、用量仍有 mock 或静态实现
+4. Codex embedding 回填的持久失败可见性尚未实现
+5. 评测夹具仅 10 个 smoke cases，硬编码 100% 指标**不代表实际质量**
+6. 时间锚点自然语言解析、增量影响集、LLM 仲裁未实现
 
-生产部署前**必须**补全集成测试验证、扩充评测数据集、实现 LLM 仲裁。当前状态为功能完整
-的 MVP，但距离生产就绪的质量标准（召回率 ≥70%、误报率 ≤20%）仍有差距。
+当前是“核心一致性能力 + 首轮真实产品流程”，不是功能完整 MVP。生产部署前仍需完成上述产品闭环、
+扩充评测集并验证长文本规模下的质量和性能。

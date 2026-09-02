@@ -100,7 +100,7 @@ export interface ChapterPlanPatch {
   baseRevision: number
 }
 
-export interface Volume { id: string; index: number; title: string }
+export interface Volume { id: string; index: number; title: string; summary?: string }
 
 export interface Project {
   id: string

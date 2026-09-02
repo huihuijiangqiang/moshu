@@ -22,6 +22,7 @@ class User(Base, TimestampMixin):
     id: Mapped[str] = mapped_column(String(32), primary_key=True)
     phone: Mapped[Optional[str]] = mapped_column(String(20), unique=True, index=True)
     email: Mapped[Optional[str]] = mapped_column(String(255), unique=True, index=True)
+    password_hash: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     name: Mapped[str] = mapped_column(String(100))
     avatar_url: Mapped[Optional[str]] = mapped_column(String(512))
     plan: Mapped[str] = mapped_column(String(50), default="free")  # free, author, studio
@@ -47,6 +48,9 @@ class Project(Base, TimestampMixin):
     status: Mapped[str] = mapped_column(String(20), default="ongoing")  # ongoing, finished, archived
     target_words_daily: Mapped[int] = mapped_column(Integer, default=3000)
     style_profile_id: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
+    inspiration: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    synopsis: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    story_settings: Mapped[dict] = mapped_column(JSONB, default=dict)
 
     # 关系
     owner: Mapped["User"] = relationship(back_populates="projects")

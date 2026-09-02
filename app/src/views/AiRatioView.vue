@@ -49,7 +49,7 @@ function segStyle(source: SegmentSource) {
 
 <template>
   <div class="wk-pane" :style="{ height: '100%', overflow: 'auto' }">
-    <Teleport to="#topbar-actions">
+    <Teleport defer to="#topbar-actions">
       <button
         v-for="s in (['chapter', 'book'] as const)"
         :key="s"

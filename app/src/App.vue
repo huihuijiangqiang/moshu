@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, watch } from 'vue'
+import { computed, onMounted, onUnmounted, watch } from 'vue'
 import { RouterView, useRoute, useRouter } from 'vue-router'
 import { ApiError } from '@/api/http'
 import AppShell from '@/components/layout/AppShell.vue'
@@ -22,6 +22,12 @@ const bare = computed(() => route.meta.bare === true)
 // 设定库与守卫在应用级预载：图标轨计数、⌘K 搜索、@ 引用在任意页面都要可用
 shell.initTheme()
 
+const onUnauthorized = () => {
+  void router.replace({ name: 'login', query: { redirect: route.fullPath } })
+}
+onMounted(() => window.addEventListener('moshu:unauthorized', onUnauthorized))
+onUnmounted(() => window.removeEventListener('moshu:unauthorized', onUnauthorized))
+
 watch(
   () => route.params.projectId,
   async (value) => {
@@ -32,6 +38,10 @@ watch(
     } catch (error) {
       if (error instanceof ApiError && error.status === 404) {
         await router.replace('/')
+        return
+      }
+      if (error instanceof ApiError && error.status === 401) {
+        onUnauthorized()
         return
       }
       console.error('加载作品失败', error)
@@ -45,11 +55,11 @@ watch(
 <template>
   <RouterView v-slot="{ Component }">
     <template v-if="bare">
-      <component :is="Component" />
+      <component :is="Component" :key="`bare:${String(route.name)}`" />
     </template>
-    <AppShell v-else>
+    <AppShell v-else key="app-shell">
       <KeepAlive :include="['WorkspaceView']">
-        <component :is="Component" />
+        <component :is="Component" :key="String(route.name)" />
       </KeepAlive>
     </AppShell>
   </RouterView>

@@ -45,8 +45,17 @@ class _OpRecorder:
         self.created_indexes.append(index)
         return index
 
+    def add_column(self, table_name: str, column: sa.Column, **kw: Any) -> None:
+        kw.pop("schema", None)
+        self.metadata.tables[table_name].append_column(column)
+
     def drop_table(self, table_name: str, **kw: Any) -> None:
         self.dropped_tables.append(table_name)
+
+    def drop_column(self, table_name: str, column_name: str, **kw: Any) -> None:
+        kw.pop("schema", None)
+        table = self.metadata.tables[table_name]
+        table._columns.remove(table.c[column_name])
 
     def drop_index(self, index_name: str, **kw: Any) -> None:
         table_name = kw.get("table_name")

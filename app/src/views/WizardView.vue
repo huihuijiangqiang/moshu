@@ -2,7 +2,7 @@
 import { computed, onMounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { projectPath } from '@/router/project-route'
-import { shelfApi } from '@/api/mock/shelf'
+import { shelfApi } from '@/api/shelf'
 
 type Audience = 'male' | 'female' | 'general'
 
@@ -290,7 +290,15 @@ async function createProject() {
   try {
     const book = await shelfApi.createBook({
       title: bookTitle.value,
-      genre: [audienceLabel.value, selectedGenre.value.label, ...selectedTags.value.map((tag) => tag.label)].join(' · ')
+      genre: [audienceLabel.value, selectedGenre.value.label, ...selectedTags.value.map((tag) => tag.label)].join(' · '),
+      inspiration: inspiration.value,
+      synopsis: synopsis.value,
+      protagonist: protagonist.value,
+      coreHook: coreHook.value,
+      audience: audienceLabel.value,
+      template: selectedTemplate.value?.label ?? '',
+      tags: selectedTags.value.map((tag) => tag.label),
+      volumes: volumes.value
     })
     localStorage.removeItem(DRAFT_KEY)
     await router.push(projectPath(book.id, 'outline'))
