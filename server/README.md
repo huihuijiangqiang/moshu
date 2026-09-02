@@ -98,6 +98,9 @@ uvicorn main:app --reload --host 0.0.0.0 --port 8000
 
 访问 API 文档：http://localhost:8000/docs
 
+容器探针：`GET /health` 仅检查 Web 进程存活；`GET /health/ready` 会实际探测
+PostgreSQL 与 Redis，全部通过时返回 200，否则返回 503 和逐项状态。
+
 ## 已实现
 
 ### 数据模型（34张表）

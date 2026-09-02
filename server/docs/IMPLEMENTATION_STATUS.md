@@ -18,6 +18,7 @@
 - ✅ 风格档已接通用户隔离 CRUD、真实六维抽取、作品绑定、生成提示与用量结算
 - ✅ AI 来源账本已接通真实生成 run、段落指纹校验、编辑分类与采纳字数回写
 - ✅ Docker Compose 已接通 PostgreSQL、Redis、Celery worker/dispatcher/beat 与 transactional outbox
+- ✅ `/health/ready` 会实际探测 PostgreSQL 与 Redis，并以 503 暴露未就绪依赖
 - ✅ Guard 已接入项目扫描、运行状态、真实告警证据与乐观锁处置
 - ✅ 确定性 Guard 告警已接入有依据的 LLM 二次复核；失败保留规则告警且不自动替作者判误报
 - ✅ Codex embedding 回填具有持久任务状态、失败次数、最后错误、耗尽标记与重试入口

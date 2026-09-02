@@ -6,6 +6,13 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
+from sqlalchemy import text
+
+try:  # Keep health/liveness endpoints importable in minimal test images.
+    import redis.asyncio as redis
+except ModuleNotFoundError:  # pragma: no cover - production dependencies include redis
+    redis = None
 
 from api import (
     admin,
@@ -23,6 +30,7 @@ from api import (
     usage,
 )
 from config import settings
+from db.session import engine
 
 
 @asynccontextmanager
@@ -62,6 +70,39 @@ async def root():
 async def health():
     """健康检查端点"""
     return {"status": "healthy"}
+
+
+@app.get("/health/ready")
+async def readiness():
+    """依赖就绪检查，用于容器探针和发布验收。
+
+    ``/health`` 只表示 Web 进程存活；此端点会实际探测 PostgreSQL 与 Redis，
+    并在任一依赖不可用时返回 503，避免流量被导向尚未完成迁移或无法排队任务的实例。
+    错误只返回分类后的状态，不泄露连接串、凭据或异常堆栈。
+    """
+    checks: dict[str, str] = {}
+    try:
+        async with engine.connect() as connection:
+            await connection.execute(text("SELECT 1"))
+        checks["postgres"] = "ok"
+    except Exception:
+        checks["postgres"] = "failed"
+
+    if redis is None:
+        checks["redis"] = "failed"
+    else:
+        client = redis.from_url(settings.redis_url, decode_responses=True)
+        try:
+            await client.ping()
+            checks["redis"] = "ok"
+        except Exception:
+            checks["redis"] = "failed"
+        finally:
+            await client.aclose()
+
+    ready = all(value == "ok" for value in checks.values())
+    payload = {"status": "ready" if ready else "not_ready", "checks": checks}
+    return JSONResponse(status_code=200 if ready else 503, content=payload)
 
 
 # 已实现路由
