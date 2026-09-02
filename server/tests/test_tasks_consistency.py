@@ -36,6 +36,7 @@ from config import settings
 from db.models_consistency_extended import ConsistencyClaim, DocumentSummary
 from db.models_core import Chapter, ChapterBody, ChapterVersion
 from db.models_guard import GuardIssue
+from providers.consistency import ArbitrationDecision
 from services.consistency import (
     PIPELINE_VERSION,
     get_or_create_run,
@@ -51,6 +52,7 @@ def test_long_model_tasks_are_routed_away_from_outbox_dispatch():
     assert routes["consistency.dispatch_outbox"]["queue"] == "outbox"
     assert routes["consistency.extract_claims"]["queue"] == "consistency"
     assert routes["consistency.generate_summary"]["queue"] == "consistency"
+    assert routes["consistency.arbitrate_issues"]["queue"] == "consistency"
 
 
 def test_run_step_task_persists_soft_timeout(monkeypatch):
@@ -205,6 +207,29 @@ def claim_payload(subject: str, fingerprint: str, **overrides) -> dict:
     }
     payload.update(overrides)
     return payload
+
+
+def arbitration_issue(run_id: int, claim_ids: list[int]) -> GuardIssue:
+    return GuardIssue(
+        id="gi_arbitration",
+        project_id="proj_a",
+        chapter_id="ch_a",
+        run_id=run_id,
+        issue_type="alive_conflict",
+        rule_version="1.0.0",
+        fingerprint="fp_arbitration",
+        severity="high",
+        confidence=0.95,
+        description="角色已经死亡，却在后文再次出现",
+        evidence={"claim_ids": claim_ids},
+        anchor={"chapter_id": "ch_a", "body_rev": 1},
+        actions=["accept_old_fact", "accept_new_fact"],
+        status="open",
+        issue_rev=1,
+        resolved=False,
+        false_positive=False,
+        arbitration_status="pending",
+    )
 
 
 #: 测试里表示「正文写明了时间」的基准日。顺序值 N 表示这一天的第 N 秒 —— 具体
@@ -2336,7 +2361,7 @@ async def test_dispatch_reuses_existing_run_for_same_revision(
 
     assert result["run_id"] == pipeline_setup.id
     assert result["status"] == "dispatched"
-    assert len(dispatched) == 1
+    assert len(dispatched) == 2, "扫描后仲裁会额外构造一条内部 chain"
 
 
 async def test_dispatch_creates_run_with_shared_pipeline_version(
@@ -2403,13 +2428,208 @@ async def test_summary_and_scan_are_dispatched_in_parallel(
     )
 
     kinds = [kind for kind, _ in calls]
-    assert kinds == ["group", "chain"], "先构造并行组，再串到 extract 之后"
+    assert kinds == ["chain", "group", "chain"]
 
-    group_args = next(args for kind, args in calls if kind == "group")
-    assert len(group_args) == 2, "摘要与扫描在同一个并行组内"
+    scan_chain_args = calls[0][1]
+    assert len(scan_chain_args) == 2
+    assert scan_chain_args[0].task == "consistency.scan_rules"
+    assert scan_chain_args[1].task == "consistency.arbitrate_issues"
 
-    chain_args = next(args for kind, args in calls if kind == "chain")
-    assert len(chain_args) == 2, "chain 只有两段：extract，然后并行组"
+    group_args = calls[1][1]
+    assert len(group_args) == 2, "摘要与（扫描后仲裁）在同一个并行组内"
+    assert group_args[0].task == "consistency.generate_summary"
+
+    outer_chain_args = calls[2][1]
+    assert len(outer_chain_args) == 2, "先抽取，再并行执行摘要与扫描支线"
+    assert outer_chain_args[0].task == "consistency.extract_claims"
+
+
+async def test_arbitration_releases_read_transaction_and_persists_advice(
+    use_test_session, async_db_session, pipeline_setup, make_claim, monkeypatch
+):
+    claim = make_claim(
+        project_id="proj_a",
+        chapter_id="ch_a",
+        body_rev=1,
+        subject_text="沈砚",
+        predicate="dead",
+        object_value="true",
+        source_anchor="P0",
+        fingerprint="claim_dead",
+    )
+    async_db_session.add(claim)
+    await async_db_session.flush()
+    issue = arbitration_issue(pipeline_setup.id, [claim.id])
+    async_db_session.add(issue)
+    await async_db_session.commit()
+    run_id = pipeline_setup.id
+    issue_id = issue.id
+    fingerprint = issue.fingerprint
+
+    class ReviewingProvider:
+        async def arbitrate_conflicts(self, cases):
+            assert async_db_session.in_transaction() is False
+            assert cases[0]["evidence"][0]["quote"] == "第一版正文"
+            return {
+                fingerprint: ArbitrationDecision(
+                    case_id=fingerprint,
+                    verdict="supported",
+                    confidence=0.91,
+                    rationale="原文证据直接冲突。",
+                )
+            }
+
+    monkeypatch.setattr(tasks, "ConsistencyProvider", ReviewingProvider)
+
+    result = await tasks._arbitrate_issues_async("task-review", run_id)
+
+    issue = await async_db_session.get(GuardIssue, issue_id)
+    assert result["status"] == "success"
+    assert result["issues_arbitrated"] == 1
+    assert issue.arbitration_status == "supported"
+    assert float(issue.arbitration_confidence) == 0.91
+    assert issue.status == "open"
+    assert issue.resolved is False
+
+
+async def test_arbitration_gateway_failure_is_degraded_not_destructive(
+    use_test_session, async_db_session, pipeline_setup, make_claim, monkeypatch
+):
+    claim = make_claim(
+        project_id="proj_a",
+        chapter_id="ch_a",
+        body_rev=1,
+        source_anchor="P0",
+        fingerprint="claim_for_failure",
+    )
+    async_db_session.add(claim)
+    await async_db_session.flush()
+    issue = arbitration_issue(pipeline_setup.id, [claim.id])
+    async_db_session.add(issue)
+    await async_db_session.commit()
+    run_id = pipeline_setup.id
+    issue_id = issue.id
+
+    class FailingProvider:
+        async def arbitrate_conflicts(self, _cases):
+            raise httpx.TimeoutException("review timed out")
+
+    monkeypatch.setattr(tasks, "ConsistencyProvider", FailingProvider)
+
+    result = await tasks._arbitrate_issues_async("task-review", run_id)
+
+    issue = await async_db_session.get(GuardIssue, issue_id)
+    assert result == {
+        "status": "degraded",
+        "task_id": "task-review",
+        "run_id": run_id,
+        "issues_arbitrated": 0,
+        "failed": 1,
+    }
+    assert issue.arbitration_status == "failed"
+    assert issue.status == "open"
+    assert issue.resolved is False
+
+
+async def test_author_false_positive_wins_over_inflight_arbitration(
+    use_test_session, async_db_session, pipeline_setup, make_claim, monkeypatch
+):
+    claim = make_claim(
+        project_id="proj_a",
+        chapter_id="ch_a",
+        body_rev=1,
+        source_anchor="P0",
+        fingerprint="claim_author_decision",
+    )
+    async_db_session.add(claim)
+    await async_db_session.flush()
+    issue = arbitration_issue(pipeline_setup.id, [claim.id])
+    async_db_session.add(issue)
+    await async_db_session.commit()
+    run_id = pipeline_setup.id
+    issue_id = issue.id
+    fingerprint = issue.fingerprint
+
+    class RacingProvider:
+        async def arbitrate_conflicts(self, _cases):
+            current = await async_db_session.get(GuardIssue, issue_id)
+            current.status = "false_positive"
+            current.resolved = True
+            current.resolution = "false_positive"
+            current.false_positive = True
+            await async_db_session.commit()
+            return {
+                fingerprint: ArbitrationDecision(
+                    case_id=fingerprint,
+                    verdict="supported",
+                    confidence=0.99,
+                    rationale="模型晚到的结论",
+                )
+            }
+
+    monkeypatch.setattr(tasks, "ConsistencyProvider", RacingProvider)
+
+    result = await tasks._arbitrate_issues_async("task-review", run_id)
+
+    issue = await async_db_session.get(GuardIssue, issue_id)
+    assert result["issues_arbitrated"] == 0
+    assert issue.status == "false_positive"
+    assert issue.false_positive is True
+    assert issue.arbitration_status == "pending"
+    assert issue.arbitration_rationale is None
+
+
+async def test_new_scan_run_prevents_old_arbitration_from_overwriting_new_evidence(
+    use_test_session,
+    async_db_session,
+    pipeline_setup,
+    make_claim,
+    make_run,
+    monkeypatch,
+):
+    claim = make_claim(
+        project_id="proj_a",
+        chapter_id="ch_a",
+        body_rev=1,
+        source_anchor="P0",
+        fingerprint="claim_old_evidence",
+    )
+    async_db_session.add(claim)
+    await async_db_session.flush()
+    issue = arbitration_issue(pipeline_setup.id, [claim.id])
+    async_db_session.add(issue)
+    newer_run = make_run(project_id="proj_a", chapter_id="ch_a", body_rev=2)
+    async_db_session.add(newer_run)
+    await async_db_session.commit()
+    old_run_id = pipeline_setup.id
+    issue_id = issue.id
+    fingerprint = issue.fingerprint
+    newer_run_id = newer_run.id
+
+    class RacingProvider:
+        async def arbitrate_conflicts(self, _cases):
+            current = await async_db_session.get(GuardIssue, issue_id)
+            current.run_id = newer_run_id
+            current.evidence = {"claim_ids": [], "evidence_signature": "new"}
+            await async_db_session.commit()
+            return {
+                fingerprint: ArbitrationDecision(
+                    case_id=fingerprint,
+                    verdict="supported",
+                    confidence=0.99,
+                    rationale="旧证据的晚到结论",
+                )
+            }
+
+    monkeypatch.setattr(tasks, "ConsistencyProvider", RacingProvider)
+
+    result = await tasks._arbitrate_issues_async("task-old-review", old_run_id)
+
+    issue = await async_db_session.get(GuardIssue, issue_id)
+    assert result["issues_arbitrated"] == 0
+    assert issue.run_id == newer_run_id
+    assert issue.arbitration_status == "pending"
+    assert issue.arbitration_rationale is None
 
 
 async def test_dispatch_outbox_routes_manual_scan_to_existing_run(

@@ -324,6 +324,9 @@ async def test_issue_list_includes_chapter_evidence_actions_and_revision(
     app_client, async_db_session, seed_project, make_run, auth_headers
 ):
     issue = await seed_issue(async_db_session, seed_project, make_run)
+    issue.arbitration_status = "unsupported"
+    issue.arbitration_confidence = 0.81
+    issue.arbitration_rationale = "上下文可能是在描述梦境。"
     async_db_session.add(
         GuardIssueEvidence(
             issue_id=issue.id,
@@ -347,6 +350,9 @@ async def test_issue_list_includes_chapter_evidence_actions_and_revision(
     assert row["chapter_title"] == "Chapter ch_a"
     assert row["issue_rev"] == 1
     assert row["actions"] == ["accept_old_fact", "accept_new_fact"]
+    assert row["arbitration_status"] == "unsupported"
+    assert row["arbitration_confidence"] == 0.81
+    assert row["arbitration_rationale"] == "上下文可能是在描述梦境。"
     assert row["evidence"] == [{
         "label": "本次正文",
         "text": "她亲眼看见已经死去的人推门而入。",
@@ -354,6 +360,28 @@ async def test_issue_list_includes_chapter_evidence_actions_and_revision(
         "chapter_id": "ch_a",
         "paragraph_id": "p-2",
     }]
+
+
+async def test_issue_detail_exposes_arbitration_diagnostics(
+    app_client, async_db_session, seed_project, make_run, auth_headers
+):
+    issue = await seed_issue(async_db_session, seed_project, make_run)
+    issue.arbitration_status = "failed"
+    issue.arbitration_version = "1.0.0"
+    issue.arbitration_error = "ProviderResponseError: invalid payload"
+    issue.arbitrated_at = datetime(2026, 9, 3, 8, 0, tzinfo=timezone.utc)
+    await async_db_session.commit()
+
+    response = await app_client.get(
+        f"/consistency/issues/proj_a/{issue.id}", headers=auth_headers("user_a")
+    )
+
+    assert response.status_code == 200
+    detail = response.json()
+    assert detail["arbitration_status"] == "failed"
+    assert detail["arbitration_version"] == "1.0.0"
+    assert detail["arbitration_error"] == "ProviderResponseError: invalid payload"
+    assert detail["arbitrated_at"] == "2026-09-03T08:00:00+00:00"
 
 
 async def test_status_endpoint_uses_shared_pipeline_version(

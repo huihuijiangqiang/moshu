@@ -53,6 +53,19 @@ class GuardIssue(Base, TimestampMixin):
     resolution: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
     false_positive: Mapped[bool] = mapped_column(default=False)
     stale_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    arbitration_status: Mapped[str] = mapped_column(
+        String(20), server_default="not_requested", nullable=False, index=True
+    )
+    arbitration_confidence: Mapped[Optional[float]] = mapped_column(
+        Numeric(4, 3), nullable=True
+    )
+    arbitration_rationale: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    arbitration_model: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
+    arbitration_version: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
+    arbitration_error: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    arbitrated_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
 
     # 关系
     project: Mapped["Project"] = relationship()
@@ -63,8 +76,19 @@ class GuardIssue(Base, TimestampMixin):
         CheckConstraint("status IN ('open', 'resolved', 'stale', 'false_positive')", name="ck_guard_issue_status"),
         CheckConstraint("severity IN ('low', 'medium', 'high')", name="ck_guard_issue_severity"),
         CheckConstraint("confidence >= 0.0 AND confidence <= 1.0", name="ck_guard_issue_confidence"),
+        CheckConstraint(
+            "arbitration_status IN "
+            "('not_requested', 'pending', 'supported', 'unsupported', 'uncertain', 'failed')",
+            name="ck_guard_issue_arbitration_status",
+        ),
+        CheckConstraint(
+            "arbitration_confidence IS NULL OR "
+            "(arbitration_confidence >= 0.0 AND arbitration_confidence <= 1.0)",
+            name="ck_guard_issue_arbitration_confidence",
+        ),
         CheckConstraint("issue_rev > 0", name="ck_guard_issue_rev_positive"),
         Index("ix_guard_issue_status_stale", "status", "stale_at"),
+        Index("ix_guard_issue_run_arbitration", "run_id", "arbitration_status"),
     )
 
 

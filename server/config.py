@@ -50,6 +50,7 @@ class Settings(BaseSettings):
     consistency_gateway_tier: str = "main"  # cheap, main, premium
     consistency_extraction_model: str = "gpt-4o-mini"
     consistency_summary_model: str = "gpt-4o-mini"
+    consistency_arbitration_model: Optional[str] = None
     embedding_gateway_url: Optional[str] = None
     embedding_gateway_key: Optional[str] = None
     embedding_model: str = "doubao-embedding-vision"
@@ -98,6 +99,10 @@ class Settings(BaseSettings):
     @property
     def resolved_generation_model(self) -> str:
         return self.generation_model or self.consistency_summary_model
+
+    @property
+    def resolved_arbitration_model(self) -> str:
+        return self.consistency_arbitration_model or self.consistency_extraction_model
 
     def _gateway_pair(self, tier: Optional[str]) -> tuple[str, str]:
         resolved = (tier or self.consistency_gateway_tier).lower()

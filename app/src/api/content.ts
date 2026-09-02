@@ -71,6 +71,9 @@ interface GuardIssueDto {
   chapter_title: string
   evidence: Array<{ label: string; text: string; accent?: boolean }>
   actions: string[]
+  arbitration_status: GuardIssue['arbitrationStatus']
+  arbitration_confidence: number | null
+  arbitration_rationale: string | null
   updated_at: string
 }
 
@@ -155,7 +158,10 @@ export function guardIssueFromDto(dto: GuardIssueDto): GuardIssue {
     actionCodes,
     issueRev: dto.issue_rev,
     chapterId: dto.chapter_id,
-    resolved: dto.resolved
+    resolved: dto.resolved,
+    arbitrationStatus: dto.arbitration_status,
+    arbitrationConfidence: dto.arbitration_confidence ?? undefined,
+    arbitrationRationale: dto.arbitration_rationale ?? undefined
   }
 }
 

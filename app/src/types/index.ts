@@ -116,6 +116,7 @@ export interface Project {
 
 export type GuardKind = 'conflict' | 'foreshadow' | 'pending-entry'
 export type GuardResolutionAction = 'accept_old_fact' | 'accept_new_fact' | 'intentional_exception' | 'false_positive' | 'fixed_in_body' | 'defer'
+export type GuardArbitrationStatus = 'not_requested' | 'pending' | 'supported' | 'unsupported' | 'uncertain' | 'failed'
 
 export interface GuardIssue {
   id: string
@@ -131,6 +132,9 @@ export interface GuardIssue {
   issueRev?: number
   chapterId?: string
   resolved: boolean
+  arbitrationStatus: GuardArbitrationStatus
+  arbitrationConfidence?: number
+  arbitrationRationale?: string
 }
 
 export interface ConsistencyRunOverview {

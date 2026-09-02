@@ -161,7 +161,8 @@ export const mockApi = {
       detail: '这是当前作品的独立演示告警，不会引用其他作品的人物或设定。',
       evidence: [],
       actions: ['回到正文确认'],
-      resolved: false
+      resolved: false,
+      arbitrationStatus: 'not_requested'
     }))
   },
 

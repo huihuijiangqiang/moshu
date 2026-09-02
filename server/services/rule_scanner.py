@@ -539,6 +539,7 @@ class RuleScanner:
                 issue_rev=1,
                 resolved=False,
                 false_positive=False,
+                arbitration_status="pending",
             )
             try:
                 # uq_guard_issue_fingerprint(project_id, fingerprint) 上有并发窗口：
@@ -578,6 +579,14 @@ class RuleScanner:
             existing.actions = actions
             existing.rule_version = self.rule_version
             existing.issue_rev += 1
+            if not is_false_positive:
+                existing.arbitration_status = "pending"
+                existing.arbitration_confidence = None
+                existing.arbitration_rationale = None
+                existing.arbitration_model = None
+                existing.arbitration_version = None
+                existing.arbitration_error = None
+                existing.arbitrated_at = None
 
         if not is_false_positive:
             existing.status = "open"

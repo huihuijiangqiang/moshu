@@ -6,8 +6,8 @@
 所有声明基于实际代码与测试结果，不夸大、不省略已知缺口。
 
 **关键事实**：
-- ✅ 34 张表完整 Alembic baseline，增量迁移已到 `010_claim_temporal_evidence`
-- ✅ 963 个单元/功能测试通过（SQLite in-memory，mock embedding/LLM）
+- ✅ 34 张表完整 Alembic baseline，增量迁移已到 `011_guard_issue_arbitration`
+- ✅ 977 个单元/功能测试通过（SQLite in-memory，mock embedding/LLM）
 - ✅ 前端 61 个测试、TypeScript 类型检查和生产构建通过
 - ✅ 36 个集成测试已在本机真实 PostgreSQL + pgvector 环境通过
 - ✅ 已完成真实账号认证、作品创建、分卷章纲编辑与章节插入的首轮产品闭环
@@ -19,6 +19,7 @@
 - ✅ AI 来源账本已接通真实生成 run、段落指纹校验、编辑分类与采纳字数回写
 - ✅ Docker Compose 已接通 PostgreSQL、Redis、Celery worker/dispatcher/beat 与 transactional outbox
 - ✅ Guard 已接入项目扫描、运行状态、真实告警证据与乐观锁处置
+- ✅ 确定性 Guard 告警已接入有依据的 LLM 二次复核；失败保留规则告警且不自动替作者判误报
 - ✅ Codex embedding 回填具有持久任务状态、失败次数、最后错误、耗尽标记与重试入口
 - ⚠️ 评测夹具仅 10 个 smoke cases，硬编码 100% 指标不代表实际质量
 
@@ -87,7 +88,7 @@
   `halfvec_cosine_ops` 重建 HNSW 索引；upgrade/downgrade 均会要求重新回填向量
 - ✅ `alembic upgrade head --sql` 与 `alembic downgrade -1 --sql` 语法验证通过
 - ✅ 36 个集成测试已在本机真实 PostgreSQL + pgvector 运行通过；当前审核数据库已真实执行
-  `004_auth_admin_rbac -> 005_usage_ledger -> 006_usage_reservation_expiry -> 007_style_profiles -> 008_embedding_job_visibility -> 009_embedding_dispatch_attempts -> 010_claim_temporal_evidence` 并到达 head
+  `004_auth_admin_rbac -> 005_usage_ledger -> 006_usage_reservation_expiry -> 007_style_profiles -> 008_embedding_job_visibility -> 009_embedding_dispatch_attempts -> 010_claim_temporal_evidence -> 011_guard_issue_arbitration` 并到达 head
 
 ---
 
@@ -144,6 +145,17 @@
 - ✅ Issue 生命周期：fingerprint 去重、`issue_rev` 乐观锁、stale 标记
 - ✅ 证据锚点写入（expected/actual GuardIssueEvidence）
 - ✅ 不变证据重扫幂等（fingerprint 已知且证据未变时不写入，7af84ac）
+- ✅ 新告警与实质证据变化标记 `pending`；相同证据保留既有仲裁且不增加 `issue_rev`
+- ✅ 作者标记的 `false_positive` 不会因重扫或证据变化重新触发模型仲裁
+
+#### LLM 冲突仲裁 (`services/arbitration.py`)
+- ✅ 在 RuleScanner 已持久化确定性告警后异步执行，不阻塞规则告警生效
+- ✅ 只从 claim 绑定的不可变 `ChapterVersion` 与 `P<n>` 锚点取证，单条原文最多 600 字
+- ✅ 每批最多 20 个 case，复用 ConsistencyProvider 的 SSE、有限重试和模型配置
+- ✅ 严格结构化结果：`supported` / `unsupported` / `uncertain`，置信度与理由持久化
+- ✅ 模型调用前释放数据库事务；网关失败、畸形响应或漏项显式记为 `failed`
+- ✅ fail-open：任何模型结论都不自动关闭规则告警，`unsupported` 只向作者提示“可能误报”
+- ✅ 回写按 `run_id`、`pending` 和作者误报状态复核并加行锁；旧证据晚到结果不会覆盖新扫描
 
 #### 时间线服务 (`services/timeline.py`)
 - ✅ `parse_absolute_anchor`：解析 ISO-8601 形状的绝对时间
@@ -173,6 +185,7 @@
 - ✅ JSON 标量 `object_value` 规范化，单个布尔/数字值不会拖垮整章抽取
 - ✅ claims 逐条校验；单条畸形输出隔离，整批畸形仍显式失败
 - ✅ 真实首章链路验证：4699 可见字符、53 条 claims、2048 维 embedding
+- ✅ 仲裁按 20 条分批，忽略陌生 case_id、漏项显式失败，并将故事原文声明为不可信 DATA
 
 #### RAG 检索 (`services/retrieval.py`)
 - ✅ **代码已实现**：`retrieve_similar_entities_l3` 使用 pgvector cosine distance (`<=>`)
@@ -293,6 +306,7 @@
 - ✅ `POST /consistency/projects/{project_id}/scan` - 扫描项目当前全部章节版本
 - ✅ `GET /consistency/projects/{project_id}/overview` - Guard 聚合状态、最新运行与告警证据
 - ✅ 手工重扫会恢复失败、完成或超过 31 分钟未更新的丢失运行；硬时限内的活跃运行不会重复排队
+- ✅ 列表与详情返回模型复核状态、置信度和理由；详情额外返回模型、版本、错误和复核时间
 
 ---
 
@@ -303,6 +317,7 @@
 - ✅ `extract_claims` - LLM 结构化抽取，生成 embedding，保存 claims
 - ✅ `generate_summary` - LLM 生成摘要，带 embedding
 - ✅ `scan_rules` - 运行 RuleScanner，更新 run 状态
+- ✅ `arbitrate_issues` - 扫描成功后对新增/变更告警做有依据的二次复核，失败降级但保留规则结果
 - ✅ `dispatch_outbox` - 租约批量领取，按 topic 路由，标记 sent/failed
 
 #### Codex 回填任务 (`tasks/codex.py`)
@@ -323,15 +338,16 @@
 - ✅ late ack + worker lost 重投；长章节按分块和网关重试设置有限的 30 分钟上限
 - ✅ 软超时会写入 `*_timeout` 失败状态，不会把 run 永久留在运行中
 - ✅ `chapter.body_saved` / `consistency.manual_scan` 路由；章纲事件确认消费
+- ✅ 抽取后并行执行摘要与 `scan_rules -> arbitrate_issues`，仲裁不占用数据库长事务
 - ✅ PostgreSQL dead-letter 保留非空 `available_at`，失败事务可正常提交
 
 ---
 
 ### 5. 测试覆盖
 
-#### 单元测试（963 passed，SQLite in-memory，mock providers）
+#### 单元测试（977 passed，SQLite in-memory，mock providers）
 
-**全量测试结果**：963 passed, 36 skipped（未设置集成测试 URL 时）, 4 warnings；前端 61 passed
+**全量测试结果**：977 passed, 36 skipped（未设置集成测试 URL 时）, 4 warnings；前端 61 passed
 
 主要测试覆盖（不逐文件列举测试数量，以实际 pytest 结果为准）：
 - ✅ Codex 设定库：CRUD、别名规范化、可检索文本判据、两段式事务、deferred 降级、httpx 错误重试
@@ -343,6 +359,7 @@
 - ✅ Alembic 迁移：34 张表、pgvector extension、部分唯一索引、downgrade 完整性
 - ✅ 时间锚点：ISO-8601、确定性相对时长、跨章事件引用、源锚点与事件标签原文校验
 - ✅ 增量影响集：新旧实体重绑定、未解析主体、谓词族闭包、全项目安全降级与扫描遥测
+- ✅ LLM 仲裁：不可变版本取证、600 字截断、20 条分批、陌生/缺失/畸形响应、失败降级、事务释放与前端映射
 - ✅ 项目、章节、章纲 CRUD、乐观锁冲突、Outbox 与幂等性
 - ✅ Foreshadow 伏笔倒计时、用量统计、风格档案
 - ✅ 风格档跨租户隔离、默认唯一、抽取成功/失败、失败退款、owner 绑定、删除自动解绑与提示隐私
@@ -359,7 +376,7 @@
 
 #### 集成测试（36 tests，真实 PostgreSQL + pgvector 已通过）
 - ✅ Docker PostgreSQL + pgvector 环境已执行 36 个测试并全部通过
-- ✅ 审核数据库已执行 `010_claim_temporal_evidence` 到 Alembic head
+- ✅ 审核数据库已执行 `011_guard_issue_arbitration` 到 Alembic head
 - 覆盖内容：
   - 部分唯一索引（`postgresql_where`）的并发 upsert 去重
   - pgvector `<=>` 余弦距离与 HNSW 索引
@@ -448,18 +465,17 @@
 
 **后续优化**：加入时间线区间裁剪和基于真实长篇分布的阈值调优；当前安全策略优先避免漏检。
 
-### 6. LLM 结构化仲裁未实现
-**状态**：未开始
+### 6. LLM 结构化仲裁
+**状态**：首版已完成
 
-**当前实现**：仅确定性规则前置（alive_conflict, ownership_conflict, knowledge_boundary）。
+**当前实现**：确定性规则先落告警，随后模型只根据不可变章节快照、claim 锚点和结构化证据给出
+`supported` / `unsupported` / `uncertain` 建议。模型失败、畸形或漏项均记为 `failed`，规则告警仍保持开放。
 
-**架构要求**：规则前置 + LLM 二次仲裁（消歧、补充上下文、置信度）。
-
-**后续需要**：
-1. `providers/llm.py` 增加 `arbitrate_conflict` 方法
-2. RuleScanner 输出传递给 LLM 仲裁
-3. LLM 返回结构化判决与置信度
-4. 低置信度 issue 标记为 `needs_review`
+**保守限制**：
+1. 模型建议不参与 issue fingerprint、`issue_rev` 或自动处置
+2. `unsupported` 不会自动标记误报，最终决定仍由作者提交
+3. 仲裁、自动摘要/抽取和 embedding 尚未进入统一后台成本台账
+4. 真实大规模误报改善程度仍需扩充评测集验证
 
 ---
 
@@ -528,12 +544,12 @@ baseline，增量实现 Codex embedding 回填、时间锚点解析、issue 生�
 
 **优先级**：中。用 10/30/100 万字压测确定阈值后，再加入不会漏检的时间区间裁剪。
 
-### 4. LLM 仲裁未实现
-**描述**：仅确定性规则，无 LLM 二次判决。
+### 4. LLM 仲裁质量尚缺规模化评测
+**描述**：仲裁链路、证据约束和失败降级已实现，但目前没有足够真实小说 case 证明其能把误报率降到目标。
 
-**风险**：误报率可能高于架构要求（≤20%）。
+**风险**：模型建议可能偏保守或在复杂叙事中给出 `uncertain`，不能用少量 smoke case 宣称质量达标。
 
-**优先级**：高。架构明确要求 LLM 仲裁。
+**优先级**：高。与确定性规则一起纳入 100+ 正例、50+ hard negatives 的盲评。
 
 ---
 
@@ -555,10 +571,10 @@ baseline，增量实现 Codex embedding 回填、时间锚点解析、issue 生�
    - ✅ 增加 GET 状态与 POST 重新入队端点
    - ✅ 更新 `backfill_codex_embeddings_task` 记录每次尝试和耗尽失败
 
-2. **实现 LLM 结构化仲裁**
-   - `providers/llm.py` 增加 `arbitrate_conflict` 方法
-   - RuleScanner 输出传递给 LLM
-   - 低置信度 issue 标记为 `needs_review`
+2. **验证 LLM 结构化仲裁质量**
+   - ✅ 规则后置二次复核、结构化结果、失败降级和前端提示已经完成
+   - 用扩充评测集统计各 verdict 的准确率、覆盖率与失败率
+   - 将自动一致性、摘要和 embedding 纳入后台成本台账
 
 ### 中期优先级（3-4 周）
 1. **增量影响集优化**
@@ -583,13 +599,14 @@ baseline，增量实现 Codex embedding 回填、时间锚点解析、issue 生�
 - `server/db/models_org.py` - 组织 3 张表
 - `server/db/models_admin.py` - 会话、运行设置与审计 3 张表
 
-### 服务层（12 个文件）
+### 服务层（13 个文件）
 - `server/services/codex.py` - 设定库 CRUD
 - `server/services/codex_embedding.py` - Embedding 生命周期
 - `server/services/outlines.py` - 章纲服务
 - `server/services/body.py` - 正文保存
 - `server/services/consistency.py` - 一致性服务
 - `server/services/rule_scanner.py` - 规则扫描器
+- `server/services/arbitration.py` - 有依据的 LLM 冲突仲裁与失败降级
 - `server/services/timeline.py` - 时间线服务
 - `server/services/retrieval.py` - RAG 检索
 - `server/services/embedding.py` - Embedding provider
@@ -617,8 +634,8 @@ baseline，增量实现 Codex embedding 回填、时间锚点解析、issue 生�
 - `server/tasks/consistency.py` - 一致性任务
 - `server/tasks/codex.py` - Codex 回填任务
 
-### 测试（963 passed；另有 36 个真实 PostgreSQL 测试通过）
-- `server/tests/` - 单元/功能测试（963 passed）
+### 测试（977 passed；另有 36 个真实 PostgreSQL 测试通过）
+- `server/tests/` - 单元/功能测试（977 passed）
 - `app/src/**/*.spec.ts` - 前端测试（61 passed）
 - `server/tests/integration/` - 集成测试（36 passed，需设置真实 PostgreSQL URL）
 
@@ -629,16 +646,16 @@ baseline，增量实现 Codex embedding 回填、时间锚点解析、issue 生�
 
 ## 总结
 
-墨枢一致性后端已完成核心数据模型、服务层、API 端点和异步任务定义，963 个单元/功能
+墨枢一致性后端已完成核心数据模型、服务层、API 端点和异步任务定义，977 个单元/功能
 测试在 SQLite in-memory + mock providers 环境下通过，另有 36 个集成测试在真实
 PostgreSQL + pgvector 环境通过。真实认证、可吊销会话、管理员、工作室 RBAC、作品创建、
 分卷章纲、章节插入、全量导出、非覆盖备份恢复、风格指纹、AI 来源账本与作者生成用量台账已经接通，前端 61 个测试与生产构建通过。
 
 **关键限制**：
 1. 自动一致性与 embedding 后台模型成本尚未进入统一台账
-2. 一致性评测集、LLM 仲裁、模糊时间区间与锚点依赖级联尚未完成
+2. 一致性评测集、模糊时间区间与锚点依赖级联尚未完成；LLM 仲裁首版已完成但尚缺规模化质量验证
 3. 评测夹具仅 10 个 smoke cases，硬编码 100% 指标**不代表实际质量**
-4. 模糊时间语义理解、影响集时间区间裁剪、LLM 仲裁未实现
+4. 模糊时间语义理解与影响集时间区间裁剪未实现；仲裁只提供建议，不自动处置
 5. 真实长文本扫描吞吐受上游模型网关稳定性和并发限制影响
 
 当前是“核心一致性能力 + 首轮真实产品流程”，不是功能完整 MVP。生产部署前仍需完成上述产品闭环、

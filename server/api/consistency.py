@@ -73,6 +73,9 @@ class IssueListItem(BaseModel):
     chapter_title: str
     evidence: list[dict]
     actions: list[str]
+    arbitration_status: str
+    arbitration_confidence: Optional[float] = None
+    arbitration_rationale: Optional[str] = None
     updated_at: str
 
 
@@ -95,6 +98,13 @@ class IssueDetailResponse(BaseModel):
     resolved: bool
     resolution: Optional[str]
     false_positive: bool
+    arbitration_status: str
+    arbitration_confidence: Optional[float]
+    arbitration_rationale: Optional[str]
+    arbitration_model: Optional[str]
+    arbitration_version: Optional[str]
+    arbitration_error: Optional[str]
+    arbitrated_at: Optional[str]
 
 
 #: GuardResolution.action 的 CHECK 约束允许值，必须与 ORM 保持一致。
@@ -477,6 +487,13 @@ async def list_issues(
             chapter_title=chapter.title,
             evidence=evidence_by_issue[issue.id],
             actions=issue.actions,
+            arbitration_status=issue.arbitration_status,
+            arbitration_confidence=(
+                float(issue.arbitration_confidence)
+                if issue.arbitration_confidence is not None
+                else None
+            ),
+            arbitration_rationale=issue.arbitration_rationale,
             updated_at=issue.updated_at.isoformat(),
         )
         for issue, chapter in rows
@@ -523,6 +540,17 @@ async def get_issue_detail(
         resolved=issue.resolved,
         resolution=issue.resolution,
         false_positive=issue.false_positive,
+        arbitration_status=issue.arbitration_status,
+        arbitration_confidence=(
+            float(issue.arbitration_confidence)
+            if issue.arbitration_confidence is not None
+            else None
+        ),
+        arbitration_rationale=issue.arbitration_rationale,
+        arbitration_model=issue.arbitration_model,
+        arbitration_version=issue.arbitration_version,
+        arbitration_error=issue.arbitration_error,
+        arbitrated_at=issue.arbitrated_at.isoformat() if issue.arbitrated_at else None,
     )
 
 

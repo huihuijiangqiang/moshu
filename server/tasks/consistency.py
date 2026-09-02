@@ -48,7 +48,13 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from config import settings
 from db import ChapterBody, ChapterVersion, ConsistencyClaim, ConsistencyRun, DocumentSummary
 from db.models_consistency_extended import RUN_PHASE_COLUMNS, RUN_PHASES
+from db.models_guard import GuardIssue
 from providers.consistency import ConsistencyProvider
+from services.arbitration import (
+    apply_arbitration_failure,
+    apply_arbitration_results,
+    load_pending_arbitration_cases,
+)
 from services.claim_set import replace_body_claim_set
 from services.consistency import (
     EXTRACTOR_VERSION,
@@ -443,7 +449,10 @@ def dispatch_run_pipeline(run_id: int) -> None:
     """
     pipeline = chain(
         extract_claims.si(run_id),
-        group(generate_summary.si(run_id), scan_rules.si(run_id)),
+        group(
+            generate_summary.si(run_id),
+            chain(scan_rules.si(run_id), arbitrate_issues.si(run_id)),
+        ),
     )
     pipeline.apply_async()
 
@@ -745,6 +754,93 @@ async def _scan_rules_async(task_id: str, run_id: int):
             raise
 
 
+@shared_task(bind=True, name="consistency.arbitrate_issues")
+def arbitrate_issues(self, run_id: int):
+    """Review newly created or materially changed rule issues without blocking them."""
+    return run_async(_arbitrate_issues_async(self.request.id, run_id))
+
+
+async def _arbitrate_issues_async(task_id: str, run_id: int):
+    async with AsyncSessionLocal() as db:
+        await load_run(db, run_id)
+        issues, cases = await load_pending_arbitration_cases(db, run_id=run_id)
+        if not cases:
+            await db.rollback()
+            return {
+                "status": "success",
+                "task_id": task_id,
+                "run_id": run_id,
+                "issues_arbitrated": 0,
+                "failed": 0,
+            }
+
+        # Release the read transaction before the model network call. Immutable
+        # chapter versions keep every quote stable while no DB connection is held.
+        issue_ids = [issue.id for issue in issues]
+        await db.rollback()
+        provider = ConsistencyProvider()
+        try:
+            decisions = await provider.arbitrate_conflicts(cases)
+        except Exception as exc:
+            logger.exception("conflict arbitration failed for run %s", run_id)
+            current = list(
+                (
+                    await db.execute(
+                        select(GuardIssue)
+                        .where(
+                            GuardIssue.id.in_(issue_ids),
+                            GuardIssue.run_id == run_id,
+                            GuardIssue.arbitration_status == "pending",
+                            GuardIssue.false_positive.is_(False),
+                        )
+                        .with_for_update(skip_locked=True)
+                    )
+                )
+                .scalars()
+                .all()
+            )
+            apply_arbitration_failure(current, exc)
+            await db.commit()
+            return {
+                "status": "degraded",
+                "task_id": task_id,
+                "run_id": run_id,
+                "issues_arbitrated": 0,
+                "failed": len(current),
+            }
+
+        current = list(
+            (
+                await db.execute(
+                    select(GuardIssue)
+                    .where(
+                        GuardIssue.id.in_(issue_ids),
+                        GuardIssue.run_id == run_id,
+                        GuardIssue.arbitration_status == "pending",
+                        GuardIssue.false_positive.is_(False),
+                    )
+                    .with_for_update(skip_locked=True)
+                )
+            )
+            .scalars()
+            .all()
+        )
+        apply_arbitration_results(
+            current,
+            decisions,
+            model=settings.resolved_arbitration_model,
+        )
+        await db.commit()
+        failed = sum(issue.arbitration_status == "failed" for issue in current)
+        return {
+            "status": "degraded" if failed else "success",
+            "task_id": task_id,
+            "run_id": run_id,
+            "issues_arbitrated": len(current) - failed,
+            "failed": failed,
+        }
+
+
 @shared_task(bind=True, name="consistency.dispatch_outbox")
 def dispatch_outbox(self, batch_size: int = 10):
     """
@@ -810,7 +906,9 @@ __all__ = [
     "RunFailedError",
     "RunNotFoundError",
     "StaleRevisionError",
+    "_arbitrate_issues_async",
     "advance_run_status",
+    "arbitrate_issues",
     "build_entity_linker",
     "dispatch_run_pipeline",
     "dispatch_outbox",

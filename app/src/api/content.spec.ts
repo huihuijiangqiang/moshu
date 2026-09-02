@@ -110,7 +110,9 @@ describe('Guard DTO mapping', () => {
       description: '沈砚已经死亡，却在后文亲自开门。', status: 'open', resolved: false,
       issue_rev: 3, confidence: 0.94, chapter_index: 12, chapter_title: '雪夜归人',
       evidence: [{ label: '本次正文', text: '沈砚推门进来。', accent: true }],
-      actions: ['accept_old_fact', 'accept_new_fact'], updated_at: '2026-09-02T10:00:00Z'
+      actions: ['accept_old_fact', 'accept_new_fact'], arbitration_status: 'unsupported',
+      arbitration_confidence: 0.81, arbitration_rationale: '上下文暗示这是梦境。',
+      updated_at: '2026-09-02T10:00:00Z'
     })
 
     expect(issue.category).toBe('生死状态冲突')
@@ -119,6 +121,9 @@ describe('Guard DTO mapping', () => {
     expect(issue.actions).toEqual(['保留原设定', '采用新事实'])
     expect(issue.actionCodes).toEqual(['accept_old_fact', 'accept_new_fact'])
     expect(issue.evidence[0]?.accent).toBe(true)
+    expect(issue.arbitrationStatus).toBe('unsupported')
+    expect(issue.arbitrationConfidence).toBe(0.81)
+    expect(issue.arbitrationRationale).toBe('上下文暗示这是梦境。')
   })
 
   it('maps outbox and phase state without inventing a completed scan', () => {

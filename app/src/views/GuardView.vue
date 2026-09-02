@@ -55,6 +55,22 @@ const activityText = computed(() => {
   return Number.isNaN(value.getTime()) ? '已有运行记录' : value.toLocaleString('zh-CN', { hour12: false })
 })
 
+const arbitrationCopy = computed(() => {
+  if (!selected.value) return null
+  const confidence = selected.value.arbitrationConfidence == null
+    ? ''
+    : ` · ${Math.round(selected.value.arbitrationConfidence * 100)}%`
+  const copy = {
+    not_requested: null,
+    pending: { label: '模型复核中', detail: '规则告警已经生效，模型正在核对上下文。' },
+    supported: { label: `模型支持该告警${confidence}`, detail: selected.value.arbitrationRationale || '现有证据支持这处冲突。' },
+    unsupported: { label: `模型认为可能是误报${confidence}`, detail: selected.value.arbitrationRationale || '规则告警仍然保留，需要你最终确认。' },
+    uncertain: { label: `模型无法确定${confidence}`, detail: selected.value.arbitrationRationale || '现有证据不足，请按正文和设定自行判断。' },
+    failed: { label: '模型复核失败', detail: '规则告警仍然保留，不影响你继续处置。' }
+  } as const
+  return copy[selected.value.arbitrationStatus]
+})
+
 watch(rows, (list) => {
   if (!list.some((i) => i.id === selectedId.value)) selectedId.value = list[0]?.id ?? null
 }, { immediate: true })
@@ -213,6 +229,22 @@ function openIssueChapter(issue: GuardIssue) {
                 </p>
               </div>
             </template>
+
+            <div
+              v-if="arbitrationCopy"
+              :style="{
+                marginTop: 'var(--u4)', padding: 'var(--u3) var(--u4)',
+                borderLeft: '3px solid var(--line-strong)', background: 'var(--panel-sunken)'
+              }"
+              aria-live="polite"
+            >
+              <div :style="{ fontSize: 'var(--fs-sm)', fontWeight: 700, color: 'var(--ink)' }">
+                {{ arbitrationCopy.label }}
+              </div>
+              <p :style="{ margin: '4px 0 0', fontSize: 'var(--fs-sm)', lineHeight: 1.7, color: 'var(--ink-2)' }">
+                {{ arbitrationCopy.detail }}
+              </p>
+            </div>
 
             <!-- 处置。第一项是推荐动作，误报单独一条，用于持续调准 -->
             <div :style="{ marginTop: 'var(--u6)', paddingTop: 'var(--u4)', borderTop: 'var(--hair) solid var(--line)' }">

@@ -118,6 +118,9 @@ def issue_snapshot(issue: GuardIssue) -> dict:
         "resolution": issue.resolution,
         "false_positive": issue.false_positive,
         "stale_at": issue.stale_at,
+        "arbitration_status": issue.arbitration_status,
+        "arbitration_confidence": issue.arbitration_confidence,
+        "arbitration_rationale": issue.arbitration_rationale,
         "evidence": issue.evidence,
         "anchor": issue.anchor,
         "updated_at": issue.updated_at,
@@ -723,12 +726,19 @@ async def test_rediscovered_issue_bumps_issue_rev_only_when_evidence_changes(
     await run_scan(scanner, async_db_session, scan_context)
     issues = await load_issues(async_db_session)
     assert issues[0].issue_rev == 1
+    assert issues[0].arbitration_status == "pending"
+    issues[0].arbitration_status = "supported"
+    issues[0].arbitration_confidence = 0.91
+    issues[0].arbitration_rationale = "两处证据直接冲突。"
+    await async_db_session.flush()
 
     # 同一份实质证据再扫一次：rev 不动
     await run_scan(scanner, async_db_session, scan_context)
     async_db_session.expunge_all()
     issues = await load_issues(async_db_session)
     assert issues[0].issue_rev == 1
+    assert issues[0].arbitration_status == "supported"
+    assert float(issues[0].arbitration_confidence) == 0.91
 
     # 证据换了一版（同一条 claim 的来源锚点变了）：rev 递增
     alive = (
@@ -743,6 +753,9 @@ async def test_rediscovered_issue_bumps_issue_rev_only_when_evidence_changes(
     async_db_session.expunge_all()
     issues = await load_issues(async_db_session)
     assert issues[0].issue_rev == 2
+    assert issues[0].arbitration_status == "pending"
+    assert issues[0].arbitration_confidence is None
+    assert issues[0].arbitration_rationale is None
 
 
 async def test_disappearing_conflict_is_marked_stale(
@@ -840,6 +853,7 @@ async def test_false_positive_issue_is_not_revived(
     issues[0].status = "false_positive"
     issues[0].false_positive = True
     issues[0].resolution = "false_positive"
+    issues[0].arbitration_status = "supported"
     await async_db_session.flush()
     revision_before = issues[0].issue_rev
 
@@ -1113,6 +1127,7 @@ async def test_false_positive_evidence_is_not_silently_replaced(
     issues[0].status = "false_positive"
     issues[0].false_positive = True
     issues[0].resolution = "false_positive"
+    issues[0].arbitration_status = "supported"
     await async_db_session.flush()
 
     # 重新读一次再取快照：updated_at 带 onupdate=func.now()，flush 之后是过期状态，
@@ -1137,6 +1152,7 @@ async def test_false_positive_stays_false_positive_but_tracks_new_evidence_with_
     issues[0].status = "false_positive"
     issues[0].false_positive = True
     issues[0].resolution = "false_positive"
+    issues[0].arbitration_status = "supported"
     await async_db_session.flush()
     rev_before = issues[0].issue_rev
     evidence_before = issues[0].evidence
@@ -1155,6 +1171,7 @@ async def test_false_positive_stays_false_positive_but_tracks_new_evidence_with_
     refreshed = (await load_issues(async_db_session))[0]
     assert refreshed.status == "false_positive", "误报不得复活"
     assert refreshed.false_positive is True
+    assert refreshed.arbitration_status == "supported", "作者误报判定不得重新触发模型仲裁"
     assert refreshed.resolved is False or refreshed.resolution == "false_positive"
     assert refreshed.issue_rev == rev_before + 1, "换了证据就必须换 rev"
     assert refreshed.evidence != evidence_before
