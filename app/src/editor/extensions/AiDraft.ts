@@ -9,11 +9,15 @@ declare module '@tiptap/core' {
   interface Commands<ReturnType> {
     aiDraft: {
       insertAiDraft: () => ReturnType
+      insertPersistedDraft: (draft: { id: string; runId: string | null; content: string }) => ReturnType
       appendDraftText: (text: string) => ReturnType
       setDraftStatus: (status: DraftStatus) => ReturnType
       setDraftRunId: (runId: string) => ReturnType
+      setDraftCandidateId: (draftId: string) => ReturnType
       acceptDraftAt: (pos: number) => ReturnType
+      acceptDraftById: (draftId: string) => ReturnType
       rejectDraftAt: (pos: number) => ReturnType
+      rejectDraftById: (draftId: string) => ReturnType
       rejectAllDrafts: () => ReturnType
     }
   }
@@ -23,6 +27,17 @@ function findDraft(state: CommandProps['state']) {
   let found: { pos: number; size: number } | null = null
   state.doc.descendants((node, pos) => {
     if (node.type.name === 'aiDraft') found = { pos, size: node.nodeSize }
+  })
+  return found as { pos: number; size: number } | null
+}
+
+function findDraftById(state: CommandProps['state'], draftId: string) {
+  let found: { pos: number; size: number } | null = null
+  state.doc.descendants((node, pos) => {
+    if (node.type.name === 'aiDraft' && node.attrs.draftId === draftId) {
+      found = { pos, size: node.nodeSize }
+      return false
+    }
   })
   return found as { pos: number; size: number } | null
 }
@@ -50,7 +65,8 @@ export const AiDraft = Node.create({
     return {
       status: { default: 'pending' as DraftStatus },
       label: { default: 'AI 草稿' },
-      runId: { default: null }
+      runId: { default: null },
+      draftId: { default: null }
     }
   },
 
@@ -76,6 +92,21 @@ export const AiDraft = Node.create({
             attrs: { status: 'streaming' },
             content: [{ type: 'paragraph' }]
           }),
+
+      insertPersistedDraft:
+        (draft) =>
+        ({ state, commands }) => {
+          if (findDraftById(state, draft.id)) return false
+          const paragraphs = draft.content.replace(/\r\n?/g, '\n').split('\n')
+          return commands.insertContent({
+            type: this.name,
+            attrs: { status: 'pending', runId: draft.runId, draftId: draft.id },
+            content: paragraphs.map((text) => ({
+              type: 'paragraph',
+              ...(text ? { content: [{ type: 'text', text }] } : {})
+            }))
+          })
+        },
 
       appendDraftText:
         (text) =>
@@ -125,6 +156,19 @@ export const AiDraft = Node.create({
           return true
         },
 
+      setDraftCandidateId:
+        (draftId) =>
+        ({ state, tr, dispatch }) => {
+          const found = findDraft(state)
+          if (!found) return false
+          const node = state.doc.nodeAt(found.pos)
+          if (!node) return false
+          tr.setNodeMarkup(found.pos, undefined, { ...node.attrs, draftId })
+          tr.setMeta('addToHistory', false)
+          if (dispatch) dispatch(tr)
+          return true
+        },
+
       /** 解包：草稿内容原地成为正文，一次事务完成 */
       acceptDraftAt:
         (pos) =>
@@ -145,6 +189,13 @@ export const AiDraft = Node.create({
           return true
         },
 
+      acceptDraftById:
+        (draftId) =>
+        ({ state, commands }) => {
+          const found = findDraftById(state, draftId)
+          return found ? commands.acceptDraftAt(found.pos) : false
+        },
+
       rejectDraftAt:
         (pos) =>
         ({ state, tr, dispatch }) => {
@@ -153,6 +204,13 @@ export const AiDraft = Node.create({
           tr.delete(pos, pos + node.nodeSize)
           if (dispatch) dispatch(tr)
           return true
+        },
+
+      rejectDraftById:
+        (draftId) =>
+        ({ state, commands }) => {
+          const found = findDraftById(state, draftId)
+          return found ? commands.rejectDraftAt(found.pos) : false
         },
 
       rejectAllDrafts:

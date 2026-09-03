@@ -244,9 +244,39 @@ export interface InlineGenerateOptions extends GenerateOptions {
 export type GenerationControls = Omit<GenerateOptions, 'chapterId'>
 
 export interface GenerationMeta {
+  draftId?: string
   skills: string[]
   scene: string
   layers: Record<string, unknown>
   promptTokens: number
   model: string
+}
+
+export type GenerationDraftStatus = 'streaming' | 'ready' | 'failed' | 'accepted' | 'rejected'
+
+export interface GenerationDraftSummary {
+  id: string
+  runId: string | null
+  projectId: string
+  chapterId: string
+  kind: 'chapter' | 'inline'
+  status: GenerationDraftStatus
+  generatedWords: number
+  excerpt: string
+  requestSummary: {
+    action?: InlineGenerateOptions['action']
+    instruction?: string
+    model?: GenerateOptions['model']
+    targetWords?: number
+    useStyleProfile?: boolean
+    dialogueDensity?: GenerateOptions['dialogueDensity']
+  }
+  errorCode: string | null
+  createdAt: string
+  updatedAt: string
+  acceptedAt: string | null
+}
+
+export interface GenerationDraftDetail extends GenerationDraftSummary {
+  content: string
 }

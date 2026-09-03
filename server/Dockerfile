@@ -1,7 +1,8 @@
 FROM python:3.12-slim
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
-    PYTHONUNBUFFERED=1
+    PYTHONUNBUFFERED=1 \
+    TIKTOKEN_CACHE_DIR=/opt/tiktoken-cache
 
 WORKDIR /app
 
@@ -14,6 +15,13 @@ import tomllib
 with open('/tmp/pyproject.toml', 'rb') as source:
     dependencies = tomllib.load(source)['project']['dependencies']
 subprocess.check_call([sys.executable, '-m', 'pip', 'install', '--no-cache-dir', *dependencies])
+
+# Token budgeting is required during module import. Bake the encoding into the
+# image so API/worker startup never depends on a later public-network download.
+import os
+os.makedirs(os.environ['TIKTOKEN_CACHE_DIR'], exist_ok=True)
+import tiktoken
+tiktoken.get_encoding('cl100k_base')
 PY
 
 COPY . /app

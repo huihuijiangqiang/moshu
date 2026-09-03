@@ -24,7 +24,7 @@ from db.models_core import Chapter, ChapterBody, ChapterVersion, Project, User, 
 from db.models_embedding import CodexEmbeddingJob
 from db.models_guard import Foreshadow, GuardIssue
 from db.models_org import ChapterAssignment, Org, OrgMember
-from db.models_usage import GenerationRun, RatioReport, StyleProfile, UsageLog
+from db.models_usage import GenerationDraft, GenerationRun, RatioReport, StyleProfile, UsageLog
 
 __all__ = [
     "Base",
@@ -64,6 +64,7 @@ __all__ = [
     # Usage
     "StyleProfile",
     "GenerationRun",
+    "GenerationDraft",
     "UsageLog",
     "RatioReport",
     # Org

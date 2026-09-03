@@ -4,7 +4,7 @@ from sqlalchemy import select
 
 from api.generate import get_generation_gateway
 from db.models_core import User
-from db.models_usage import GenerationRun, UsageLog
+from db.models_usage import GenerationDraft, GenerationRun, UsageLog
 from main import app
 from services.generation import GenerationProviderError, StreamEvent
 
@@ -31,6 +31,12 @@ class FailingGenerationGateway:
     async def stream(self, package):
         raise GenerationProviderError("upstream failed")
         yield
+
+
+class PartiallyFailingGenerationGateway:
+    async def stream(self, package):
+        yield StreamEvent("chunk", text="她刚把第一畦菜种下，雨便落了下来。")
+        raise GenerationProviderError("upstream disconnected")
 
 
 def parse_sse(text: str) -> list[object]:
@@ -179,3 +185,173 @@ async def test_generation_provider_failure_releases_reserved_credits(
     log = (await async_db_session.execute(select(UsageLog))).scalar_one()
     assert user.quota_remaining == 1000
     assert log.status == "released"
+
+
+async def test_completed_generation_persists_candidate_and_supports_idempotent_accept(
+    app_client,
+    async_db_session,
+    seed_project,
+    auth_headers,
+):
+    await seed_project(user_id="draft_writer", project_id="draft_novel", chapter_ids=("draft_ch",))
+    fake = FakeGenerationGateway()
+    app.dependency_overrides[get_generation_gateway] = lambda: fake
+    try:
+        generated = await app_client.post(
+            "/generate/chapter",
+            headers=auth_headers("draft_writer"),
+            json={"chapterId": "draft_ch", "targetWords": 1200, "model": "basic"},
+        )
+    finally:
+        app.dependency_overrides.pop(get_generation_gateway, None)
+
+    done = parse_sse(generated.text)[-2]
+    assert done["draftId"]
+    draft = await async_db_session.get(GenerationDraft, done["draftId"])
+    assert draft is not None
+    assert draft.status == "ready"
+    assert draft.run_id == done["runId"]
+    assert draft.content_text == "沈禾推开粮铺的门。周掌柜抬眼看她。"
+
+    listing = await app_client.get(
+        "/generate/drafts", params={"chapterId": "draft_ch"}, headers=auth_headers("draft_writer")
+    )
+    assert listing.status_code == 200
+    assert listing.json()["items"][0]["id"] == draft.id
+    assert "content" not in listing.json()["items"][0]
+
+    detail = await app_client.get(f"/generate/drafts/{draft.id}", headers=auth_headers("draft_writer"))
+    assert detail.json()["content"] == draft.content_text
+
+    accepted = await app_client.post(
+        f"/generate/drafts/{draft.id}/accept", headers=auth_headers("draft_writer")
+    )
+    accepted_again = await app_client.post(
+        f"/generate/drafts/{draft.id}/accept", headers=auth_headers("draft_writer")
+    )
+    assert accepted.status_code == 200
+    assert accepted.json()["status"] == "accepted"
+    assert accepted_again.status_code == 200
+    assert accepted_again.json()["acceptedAt"] == accepted.json()["acceptedAt"]
+
+    cannot_reject = await app_client.delete(
+        f"/generate/drafts/{draft.id}", headers=auth_headers("draft_writer")
+    )
+    assert cannot_reject.status_code == 409
+    assert (
+        await app_client.get(
+            "/generate/drafts", params={"chapterId": "draft_ch"}, headers=auth_headers("draft_writer")
+        )
+    ).json()["items"] == []
+
+
+async def test_partial_provider_failure_keeps_recoverable_candidate(
+    app_client,
+    async_db_session,
+    seed_project,
+    auth_headers,
+):
+    await seed_project(user_id="partial_writer", project_id="partial_novel", chapter_ids=("partial_ch",))
+    app.dependency_overrides[get_generation_gateway] = lambda: PartiallyFailingGenerationGateway()
+    try:
+        response = await app_client.post(
+            "/generate/chapter",
+            headers=auth_headers("partial_writer"),
+            json={"chapterId": "partial_ch", "targetWords": 1200, "model": "basic"},
+        )
+    finally:
+        app.dependency_overrides.pop(get_generation_gateway, None)
+
+    assert parse_sse(response.text)[-1]["code"] == "generation_provider_error"
+    draft = (await async_db_session.execute(select(GenerationDraft))).scalar_one()
+    assert draft.status == "failed"
+    assert draft.run_id is not None
+    assert draft.content_text == "她刚把第一畦菜种下，雨便落了下来。"
+    assert draft.generated_words > 0
+    run = await async_db_session.get(GenerationRun, draft.run_id)
+    assert run is not None
+    assert run.layer_report["incomplete"] is True
+    assert run.layer_report["provenance"]["paragraph_hashes"]
+
+    accepted = await app_client.post(
+        f"/generate/drafts/{draft.id}/accept", headers=auth_headers("partial_writer")
+    )
+    assert accepted.status_code == 200
+    assert accepted.json()["content"] == draft.content_text
+
+
+async def test_draft_access_requires_body_edit_permission_and_reject_is_idempotent(
+    app_client,
+    async_db_session,
+    seed_project,
+    auth_headers,
+):
+    await seed_project(user_id="owner", project_id="private_novel", chapter_ids=("private_ch",))
+    async_db_session.add(
+        User(
+            id="outsider",
+            name="outsider",
+            email="outsider@example.test",
+            quota_remaining=100,
+            quota_total=100,
+        )
+    )
+    draft = GenerationDraft(
+        id="draft_private",
+        user_id="owner",
+        project_id="private_novel",
+        chapter_id="private_ch",
+        kind="inline",
+        status="ready",
+        content_text="只属于这本书的候选。",
+        generated_words=10,
+        request_summary={"action": "续写"},
+    )
+    async_db_session.add(draft)
+    await async_db_session.commit()
+
+    forbidden = await app_client.get(
+        "/generate/drafts", params={"chapterId": "private_ch"}, headers=auth_headers("outsider")
+    )
+    assert forbidden.status_code == 403
+
+    rejected = await app_client.delete("/generate/drafts/draft_private", headers=auth_headers("owner"))
+    rejected_again = await app_client.delete("/generate/drafts/draft_private", headers=auth_headers("owner"))
+    assert rejected.status_code == 204
+    assert rejected_again.status_code == 204
+    await async_db_session.refresh(draft)
+    assert draft.status == "rejected"
+    assert draft.rejected_at is not None
+
+
+async def test_streaming_draft_cannot_be_accepted_or_rejected(
+    app_client,
+    async_db_session,
+    seed_project,
+    auth_headers,
+):
+    await seed_project(user_id="stream_writer", project_id="stream_novel", chapter_ids=("stream_ch",))
+    draft = GenerationDraft(
+        id="draft_streaming",
+        user_id="stream_writer",
+        project_id="stream_novel",
+        chapter_id="stream_ch",
+        kind="chapter",
+        status="streaming",
+        content_text="仍在写入的内容",
+        generated_words=7,
+        request_summary={},
+    )
+    async_db_session.add(draft)
+    await async_db_session.commit()
+
+    accepted = await app_client.post(
+        "/generate/drafts/draft_streaming/accept", headers=auth_headers("stream_writer")
+    )
+    rejected = await app_client.delete(
+        "/generate/drafts/draft_streaming", headers=auth_headers("stream_writer")
+    )
+    assert accepted.status_code == 409
+    assert rejected.status_code == 409
+    await async_db_session.refresh(draft)
+    assert draft.status == "streaming"

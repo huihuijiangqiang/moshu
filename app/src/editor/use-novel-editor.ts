@@ -1,4 +1,6 @@
 import { useEditor } from '@tiptap/vue-3'
+import { Fragment, type Node as ProseMirrorNode } from '@tiptap/pm/model'
+import { getHTMLFromFragment, type Editor } from '@tiptap/core'
 import StarterKit from '@tiptap/starter-kit'
 import Placeholder from '@tiptap/extension-placeholder'
 import CharacterCount from '@tiptap/extension-character-count'
@@ -26,7 +28,21 @@ export function useNovelEditor(content: string, onUpdate: (html: string, chars: 
       attributes: { class: 'prose-body', spellcheck: 'false' }
     },
     onUpdate: ({ editor }) => {
-      onUpdate(editor.getHTML(), editor.storage.characterCount.characters())
+      const canonical = canonicalBody(editor)
+      onUpdate(canonical.html, canonical.characters)
     }
   })
+}
+
+/** AI candidates remain visible in the editor but are not canonical body content until accepted. */
+export function canonicalBody(editor: Editor): { html: string; characters: number } {
+  const nodes: ProseMirrorNode[] = []
+  editor.state.doc.content.forEach((node) => {
+    if (node.type.name !== 'aiDraft') nodes.push(node)
+  })
+  const fragment = Fragment.fromArray(nodes)
+  return {
+    html: getHTMLFromFragment(fragment, editor.schema),
+    characters: nodes.reduce((total, node) => total + node.textContent.length, 0)
+  }
 }

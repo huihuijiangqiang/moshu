@@ -4,7 +4,7 @@
 from datetime import datetime
 from typing import TYPE_CHECKING, Optional
 
-from sqlalchemy import BigInteger, DateTime, ForeignKey, Index, Integer, String, Text, func, text
+from sqlalchemy import BigInteger, CheckConstraint, DateTime, ForeignKey, Index, Integer, String, Text, func, text
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -67,6 +67,37 @@ class GenerationRun(Base):
     # 关系
     user: Mapped["User"] = relationship()
     project: Mapped["Project"] = relationship()
+
+
+class GenerationDraft(Base, TimestampMixin):
+    """AI candidate text kept outside the canonical chapter body."""
+
+    __tablename__ = "generation_drafts"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True)
+    run_id: Mapped[Optional[str]] = mapped_column(
+        String(32), ForeignKey("generation_runs.id", ondelete="SET NULL"), nullable=True, unique=True
+    )
+    user_id: Mapped[str] = mapped_column(String(32), ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    project_id: Mapped[str] = mapped_column(String(32), ForeignKey("projects.id", ondelete="CASCADE"), index=True)
+    chapter_id: Mapped[str] = mapped_column(String(32), ForeignKey("chapters.id", ondelete="CASCADE"), index=True)
+    kind: Mapped[str] = mapped_column(String(20))
+    status: Mapped[str] = mapped_column(String(20), default="streaming", index=True)
+    content_text: Mapped[str] = mapped_column(Text, default="")
+    generated_words: Mapped[int] = mapped_column(Integer, default=0)
+    request_summary: Mapped[dict] = mapped_column(JSONB, default=dict)
+    error_code: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
+    accepted_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    rejected_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    __table_args__ = (
+        CheckConstraint("kind IN ('chapter', 'inline')", name="ck_generation_draft_kind"),
+        CheckConstraint(
+            "status IN ('streaming', 'ready', 'failed', 'accepted', 'rejected')",
+            name="ck_generation_draft_status",
+        ),
+        Index("ix_generation_drafts_chapter_status_created", "chapter_id", "status", "created_at"),
+    )
 
 
 class UsageLog(Base):

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { EditorContent } from '@tiptap/vue-3'
 import ChapterPanel from '@/components/layout/ChapterPanel.vue'
@@ -14,8 +14,8 @@ import { useProjectNavigation } from '@/composables/use-project-navigation'
 import { useProjectStore } from '@/stores/project'
 import { useShellStore } from '@/stores/shell'
 import { BodyConflictError, contentApi } from '@/api/content'
-import { streamChapter, streamInline } from '@/api/generation'
-import type { GenerationControls, InlineGenerateOptions } from '@/types'
+import { generationDraftApi, streamChapter, streamInline } from '@/api/generation'
+import type { GenerationControls, GenerationDraftDetail, GenerationDraftSummary, InlineGenerateOptions } from '@/types'
 
 defineOptions({ name: 'WorkspaceView' })
 
@@ -32,8 +32,12 @@ const paneTab = ref<'body' | 'outline'>('body')
 const versionOpen = ref(false)
 const restoringVersion = ref(false)
 const restoreError = ref('')
+const generationDrafts = ref<GenerationDraftSummary[]>([])
+const draftsLoading = ref(false)
 let abort: (() => void) | null = null
 let disposed = false
+let draftLoadSequence = 0
+let stoppedDraftTimer: ReturnType<typeof setTimeout> | null = null
 
 const editor = useNovelEditor(html.value, (next, chars) => {
   html.value = next
@@ -129,13 +133,16 @@ onMounted(() => {
   shell.setCrumb(crumb.value)
   syncViewport()
   window.addEventListener('resize', syncViewport)
+  window.addEventListener('moshu:draft-action', handleDraftAction as EventListener)
 })
 
 onBeforeUnmount(() => {
   disposed = true
   abort?.()
   abort = null
+  if (stoppedDraftTimer) clearTimeout(stoppedDraftTimer)
   window.removeEventListener('resize', syncViewport)
+  window.removeEventListener('moshu:draft-action', handleDraftAction as EventListener)
 })
 
 /** 折叠不用 display:none —— 改列宽，编辑器实例保持挂载 */
@@ -249,6 +256,67 @@ function openConflictChapter() {
 
 const readMinutes = computed(() => Math.max(1, Math.round((store.active?.words ?? 0) / 350)))
 
+async function loadGenerationDrafts() {
+  const id = store.activeId
+  const sequence = ++draftLoadSequence
+  if (!id) {
+    generationDrafts.value = []
+    return
+  }
+  draftsLoading.value = true
+  try {
+    const rows = await generationDraftApi.list(id)
+    if (!disposed && sequence === draftLoadSequence && store.activeId === id) generationDrafts.value = rows
+  } catch (error) {
+    if (!disposed && sequence === draftLoadSequence) {
+      generationError.value = error instanceof Error ? error.message : '候选草稿加载失败'
+    }
+  } finally {
+    if (!disposed && sequence === draftLoadSequence) draftsLoading.value = false
+  }
+}
+
+watch(() => store.activeId, () => void loadGenerationDrafts(), { immediate: true })
+
+function attachDraftIdentity(meta: { draftId?: string }) {
+  if (meta.draftId) editor.value?.commands.setDraftCandidateId(meta.draftId)
+}
+
+async function insertGenerationDraft(draft: GenerationDraftDetail) {
+  if (!editor.value || draft.chapterId !== store.activeId || !draft.content) return
+  paneTab.value = 'body'
+  editor.value.chain().focus().insertPersistedDraft({ id: draft.id, runId: draft.runId, content: draft.content }).run()
+}
+
+async function rejectGenerationDraft(id: string) {
+  try {
+    await generationDraftApi.reject(id)
+    editor.value?.commands.rejectDraftById(id)
+    await loadGenerationDrafts()
+  } catch (error) {
+    generationError.value = error instanceof Error ? error.message : '候选草稿舍弃失败'
+  }
+}
+
+async function handleDraftAction(event: Event) {
+  const detail = (event as CustomEvent<{ action?: string; draftId?: string }>).detail
+  if (!detail?.draftId) return
+  if (detail.action === 'reject') {
+    await rejectGenerationDraft(detail.draftId)
+    return
+  }
+  if (detail.action !== 'accept') return
+  try {
+    await generationDraftApi.accept(detail.draftId)
+    editor.value?.commands.acceptDraftById(detail.draftId)
+    await nextTick()
+    if (store.activeId) await flush(store.activeId)
+    await loadGenerationDrafts()
+  } catch (error) {
+    generationError.value = error instanceof Error ? error.message : '候选草稿采纳失败'
+  }
+}
+
 function generate(options: GenerationControls) {
   if (!editor.value || generating.value) return
   if (!store.activeId) return
@@ -259,15 +327,21 @@ function generate(options: GenerationControls) {
     { chapterId: store.activeId, ...options },
     {
       onChunk: (t) => editor.value?.commands.appendDraftText(t),
+      onMeta: attachDraftIdentity,
       onDone: (result) => {
         if (typeof result?.runId === 'string') editor.value?.commands.setDraftRunId(result.runId)
+        if (typeof result?.draftId === 'string') editor.value?.commands.setDraftCandidateId(result.draftId)
         editor.value?.commands.setDraftStatus('pending')
         generating.value = false
+        abort = null
+        void loadGenerationDrafts()
       },
       onError: (error) => {
         generationError.value = error instanceof Error ? error.message : '生成失败，请重试'
         editor.value?.commands.setDraftStatus('pending')
         generating.value = false
+        abort = null
+        void loadGenerationDrafts()
       }
     }
   )
@@ -278,6 +352,7 @@ function stop() {
   abort = null
   generating.value = false
   editor.value?.commands.setDraftStatus('pending')
+  stoppedDraftTimer = setTimeout(() => void loadGenerationDrafts(), 500)
 }
 
 function runInline(action: string) {
@@ -308,15 +383,21 @@ function runInline(action: string) {
     },
     {
       onChunk: (text) => editor.value?.commands.appendDraftText(text),
+      onMeta: attachDraftIdentity,
       onDone: (result) => {
         if (typeof result?.runId === 'string') editor.value?.commands.setDraftRunId(result.runId)
+        if (typeof result?.draftId === 'string') editor.value?.commands.setDraftCandidateId(result.draftId)
         editor.value?.commands.setDraftStatus('pending')
         generating.value = false
+        abort = null
+        void loadGenerationDrafts()
       },
       onError: (error) => {
         generationError.value = error instanceof Error ? error.message : '行内生成失败，请重试'
         editor.value?.commands.setDraftStatus('pending')
         generating.value = false
+        abort = null
+        void loadGenerationDrafts()
       }
     }
   )
@@ -479,8 +560,13 @@ function editChapterPlan() {
         v-if="shell.rightOpen"
         :generating="generating"
         :generation-error="generationError"
+        :drafts="generationDrafts"
+        :drafts-loading="draftsLoading"
         @generate="generate"
         @stop="stop"
+        @insert-draft="insertGenerationDraft"
+        @reject-draft="rejectGenerationDraft"
+        @refresh-drafts="loadGenerationDrafts"
       />
       <button v-else class="wk-stub" type="button" title="展开 AI 面板 ⌘J" @click="shell.rightOpen = true">
         AI 面板

@@ -1,7 +1,7 @@
-import { USE_MOCK } from './http'
+import { request, requestResponse, USE_MOCK } from './http'
 import { mockApi } from './mock'
 import { getAccessToken } from './session'
-import type { GenerateOptions, GenerationMeta, InlineGenerateOptions } from '@/types'
+import type { GenerateOptions, GenerationDraftDetail, GenerationDraftSummary, GenerationMeta, InlineGenerateOptions } from '@/types'
 
 export interface StreamHandlers {
   onChunk: (text: string) => void
@@ -24,6 +24,29 @@ export function streamChapter(opts: GenerateOptions, h: StreamHandlers): () => v
 
 export function streamInline(opts: InlineGenerateOptions, h: StreamHandlers): () => void {
   return startStream('/generate/inline', opts, h)
+}
+
+export const generationDraftApi = {
+  async list(chapterId: string): Promise<GenerationDraftSummary[]> {
+    if (USE_MOCK) return []
+    const result = await request<{ items: GenerationDraftSummary[] }>(
+      `/generate/drafts?chapterId=${encodeURIComponent(chapterId)}`
+    )
+    return result.items
+  },
+
+  async get(id: string): Promise<GenerationDraftDetail> {
+    if (USE_MOCK) throw new GenerationError('mock_draft_missing', '模拟模式没有已保存候选')
+    return request<GenerationDraftDetail>(`/generate/drafts/${encodeURIComponent(id)}`)
+  },
+
+  async accept(id: string): Promise<GenerationDraftDetail> {
+    return request<GenerationDraftDetail>(`/generate/drafts/${encodeURIComponent(id)}/accept`, { method: 'POST' })
+  },
+
+  async reject(id: string): Promise<void> {
+    await requestResponse(`/generate/drafts/${encodeURIComponent(id)}`, { method: 'DELETE' })
+  }
 }
 
 function startStream(path: string, opts: GenerateOptions | InlineGenerateOptions, h: StreamHandlers): () => void {

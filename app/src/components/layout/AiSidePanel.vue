@@ -8,14 +8,28 @@ import { useGuardStore } from '@/stores/guard'
 import { useStylesStore } from '@/stores/styles'
 import { CODEX_KIND_LABEL, type ContextLayer, type GenerationControls } from '@/types'
 import { useProjectNavigation } from '@/composables/use-project-navigation'
+import { generationDraftApi } from '@/api/generation'
+import AppIcon from '@/components/ui/AppIcon.vue'
+import type { GenerationDraftDetail, GenerationDraftSummary } from '@/types'
 
 /**
  * AI 面板。三件事按重要性排：能不能生成（章纲 + 参数）、
  * 生成会带什么进去（四层预算）、生成前有什么没解决（守卫提醒）。
  * 四层预算是产品的硬约束，必须逐层可见 —— 作者要知道 25k 被谁吃掉了。
  */
-const props = defineProps<{ generating?: boolean; generationError?: string }>()
-const emit = defineEmits<{ generate: [options: GenerationControls]; stop: [] }>()
+const props = defineProps<{
+  generating?: boolean
+  generationError?: string
+  drafts?: GenerationDraftSummary[]
+  draftsLoading?: boolean
+}>()
+const emit = defineEmits<{
+  generate: [options: GenerationControls]
+  stop: []
+  insertDraft: [draft: GenerationDraftDetail]
+  rejectDraft: [id: string]
+  refreshDrafts: []
+}>()
 
 const router = useRouter()
 const project = useProjectStore()
@@ -25,11 +39,14 @@ const styles = useStylesStore()
 const { toProject } = useProjectNavigation()
 
 const layers = ref<ContextLayer[]>([])
-const tab = ref<'ai' | 'refs' | 'notes'>('ai')
+const tab = ref<'ai' | 'drafts' | 'refs' | 'notes'>('ai')
 const targetWords = ref(3000)
 const model = ref<'basic' | 'advanced'>('basic')
 const loadingContext = ref(false)
 const contextError = ref('')
+const selectedDraft = ref<GenerationDraftDetail | null>(null)
+const draftDetailLoading = ref(false)
+const draftDetailError = ref('')
 
 const BUDGET = 25000
 
@@ -88,13 +105,45 @@ const refs = computed(() => {
   if (!idx) return []
   return codex.entries.filter((e) => e.refChapters.includes(idx))
 })
+
+watch(() => project.activeId, () => {
+  selectedDraft.value = null
+  draftDetailError.value = ''
+})
+
+async function openDraft(draft: GenerationDraftSummary) {
+  draftDetailLoading.value = true
+  draftDetailError.value = ''
+  try {
+    selectedDraft.value = await generationDraftApi.get(draft.id)
+  } catch (error) {
+    draftDetailError.value = error instanceof Error ? error.message : '候选内容加载失败'
+  } finally {
+    draftDetailLoading.value = false
+  }
+}
+
+function draftLabel(draft: GenerationDraftSummary) {
+  if (draft.requestSummary.action) return draft.requestSummary.action
+  return draft.kind === 'chapter' ? '整章生成' : '行内生成'
+}
+
+function draftTime(value: string) {
+  return new Date(value).toLocaleString('zh-CN', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' })
+}
+
+function rejectSelected() {
+  if (!selectedDraft.value) return
+  emit('rejectDraft', selectedDraft.value.id)
+  selectedDraft.value = null
+}
 </script>
 
 <template>
   <div>
     <div class="wk-tabs">
       <button
-        v-for="t in (['ai', 'refs', 'notes'] as const)"
+        v-for="t in (['ai', 'drafts', 'refs', 'notes'] as const)"
         :key="t"
         class="wk-tab"
         type="button"
@@ -102,7 +151,7 @@ const refs = computed(() => {
         :aria-selected="tab === t"
         @click="tab = t"
       >
-        {{ t === 'ai' ? 'AI' : t === 'refs' ? `引用 ${refs.length}` : '笔记' }}
+        {{ t === 'ai' ? 'AI' : t === 'drafts' ? `候选 ${props.drafts?.length ?? 0}` : t === 'refs' ? `引用 ${refs.length}` : '笔记' }}
       </button>
     </div>
 
@@ -233,6 +282,66 @@ const refs = computed(() => {
       </section>
     </template>
 
+    <template v-else-if="tab === 'drafts'">
+      <div class="wk-head">
+        <span>生成候选</span>
+        <span class="wk-head-push">{{ props.drafts?.length ?? 0 }} 条</span>
+        <button class="draft-refresh" type="button" title="刷新候选" aria-label="刷新候选" @click="emit('refreshDrafts')">
+          <AppIcon name="restore" :size="14" />
+        </button>
+      </div>
+
+      <div v-if="selectedDraft" class="draft-detail">
+        <button class="draft-back" type="button" @click="selectedDraft = null">返回候选列表</button>
+        <div class="row-between">
+          <strong>{{ draftLabel(selectedDraft) }}</strong>
+          <span class="pill" :class="selectedDraft.status === 'failed' ? 'pill-alert' : 'pill-soft'">
+            {{ selectedDraft.status === 'streaming' ? '生成中' : selectedDraft.status === 'failed' ? '生成中断' : '待采纳' }}
+          </span>
+        </div>
+        <div class="draft-meta">{{ selectedDraft.generatedWords }} 字 · {{ draftTime(selectedDraft.createdAt) }}</div>
+        <div class="draft-prose">{{ selectedDraft.content || '没有可恢复的内容。' }}</div>
+        <p v-if="selectedDraft.status === 'failed'" class="draft-warning">这次生成提前中断，已保留完成的部分。</p>
+        <p v-else-if="selectedDraft.status === 'streaming'" class="draft-warning">候选仍在写入，完成或停止后才能处理。</p>
+        <div class="draft-actions">
+          <button class="wk-btn wk-btn-xs" type="button" :disabled="selectedDraft.status === 'streaming'" @click="rejectSelected">舍弃</button>
+          <button
+            class="wk-btn wk-btn-xs"
+            data-primary="true"
+            type="button"
+            :disabled="!selectedDraft.content || selectedDraft.status === 'streaming'"
+            @click="emit('insertDraft', selectedDraft)"
+          >放入正文检查</button>
+        </div>
+      </div>
+
+      <div v-else>
+        <p v-if="props.draftsLoading || draftDetailLoading" class="draft-state">正在读取候选…</p>
+        <p v-else-if="draftDetailError" class="draft-state draft-state-error">{{ draftDetailError }}</p>
+        <template v-else>
+          <button
+            v-for="draft in props.drafts"
+            :key="draft.id"
+            class="draft-row"
+            type="button"
+            @click="openDraft(draft)"
+          >
+            <span class="row-between">
+              <strong>{{ draftLabel(draft) }}</strong>
+              <span :class="draft.status === 'failed' ? 'draft-status-failed' : 'muted'">
+                {{ draft.status === 'streaming' ? '生成中' : draft.status === 'failed' ? '已中断' : `${draft.generatedWords} 字` }}
+              </span>
+            </span>
+            <span class="draft-excerpt">{{ draft.excerpt || '等待生成内容…' }}</span>
+            <span class="draft-time">{{ draftTime(draft.createdAt) }}</span>
+          </button>
+        </template>
+        <p v-if="!props.draftsLoading && !props.drafts?.length" class="draft-state">
+          生成结果会保存在这里，刷新页面后仍可找回。
+        </p>
+      </div>
+    </template>
+
     <template v-else-if="tab === 'refs'">
       <div class="wk-head"><span>本章引用</span><span class="wk-head-push">{{ refs.length }} 条</span></div>
       <button
@@ -270,3 +379,74 @@ const refs = computed(() => {
     </template>
   </div>
 </template>
+
+<style scoped>
+.draft-refresh {
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  color: var(--ink-3);
+  background: transparent;
+  border: 0;
+  border-radius: 4px;
+  cursor: pointer;
+}
+.draft-refresh:hover { color: var(--ink); background: var(--panel-sunken); }
+.draft-refresh:focus-visible,
+.draft-row:focus-visible,
+.draft-back:focus-visible { outline: 2px solid var(--primary); outline-offset: -2px; }
+.draft-row {
+  display: grid;
+  gap: 5px;
+  width: 100%;
+  padding: var(--u3);
+  text-align: left;
+  color: var(--ink);
+  background: transparent;
+  border: 0;
+  border-bottom: var(--hair) solid var(--line);
+  cursor: pointer;
+}
+.draft-row:hover { background: var(--panel-sunken); }
+.draft-row strong { font-size: var(--fs); }
+.draft-excerpt {
+  display: -webkit-box;
+  overflow: hidden;
+  color: var(--ink-2);
+  font-size: var(--fs-sm);
+  line-height: 1.6;
+  white-space: normal;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+.draft-time,
+.draft-meta { color: var(--ink-4); font-family: var(--font-mono); font-size: var(--fs-xs); }
+.draft-status-failed { color: var(--alert-ink); font-size: var(--fs-sm); }
+.draft-state { margin: 0; padding: var(--u5) var(--u3); color: var(--ink-3); line-height: 1.7; }
+.draft-state-error { color: var(--alert-ink); }
+.draft-detail { display: grid; gap: var(--u3); padding: var(--u3); }
+.draft-back {
+  justify-self: start;
+  padding: 0;
+  color: var(--ink-3);
+  background: transparent;
+  border: 0;
+  cursor: pointer;
+}
+.draft-back:hover { color: var(--ink); }
+.draft-prose {
+  max-height: min(52vh, 520px);
+  overflow: auto;
+  padding: var(--u3) 0;
+  color: var(--ink-2);
+  font-family: var(--font-serif);
+  line-height: 1.85;
+  white-space: pre-wrap;
+  border-top: var(--hair) solid var(--line);
+  border-bottom: var(--hair) solid var(--line);
+}
+.draft-warning { margin: 0; color: var(--alert-ink); font-size: var(--fs-sm); line-height: 1.6; }
+.draft-actions { display: flex; justify-content: flex-end; gap: var(--u2); }
+</style>

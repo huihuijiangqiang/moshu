@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import json
 import uuid
+from datetime import UTC, datetime
 from typing import AsyncIterator, Literal
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select
@@ -14,7 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from api.auth import ProjectPermission, get_current_user, verify_project_permission
 from db.models_core import Chapter, Project, User
-from db.models_usage import GenerationRun
+from db.models_usage import GenerationDraft, GenerationRun
 from db.session import get_db
 from memory.tokenizer import tokenizer
 from services.generation import (
@@ -106,14 +107,84 @@ def _generation_response(
     db: AsyncSession,
     gateway: GenerationGateway,
     reservation: UsageReservation,
+    request_summary: dict,
 ) -> StreamingResponse:
+    draft_id = uuid.uuid4().hex
+
     async def event_stream() -> AsyncIterator[str]:
         usage: dict = {}
         chunks: list[str] = []
         finalized = False
+        generated_length = 0
+        checkpoint_length = 0
+        draft = GenerationDraft(
+            id=draft_id,
+            user_id=user.id,
+            project_id=package.project.id,
+            chapter_id=package.chapter.id,
+            kind="chapter" if package.task == "chapter" else "inline",
+            status="streaming",
+            content_text="",
+            generated_words=0,
+            request_summary=request_summary,
+        )
+        db.add(draft)
+        try:
+            await db.commit()
+        except Exception:
+            await db.rollback()
+            await release_reservation(db, reservation, reason="draft_persistence_error")
+            await db.commit()
+            finalized = True
+            yield _sse(
+                {
+                    "type": "error",
+                    "code": "draft_persistence_error",
+                    "message": "候选草稿无法保存，本次生成没有开始。请稍后重试。",
+                }
+            )
+            return
+
+        async def persist_failed_draft(error_code: str) -> None:
+            await db.rollback()
+            failed_draft = await db.get(GenerationDraft, draft_id)
+            if failed_draft is None:
+                return
+            prose = "".join(chunks)
+            if prose and failed_draft.run_id is None:
+                cached = usage.get("prompt_tokens_details") or {}
+                run = GenerationRun(
+                    id=uuid.uuid4().hex,
+                    user_id=user.id,
+                    project_id=package.project.id,
+                    chapter_id=package.chapter.id,
+                    task_type="chapter" if package.task == "chapter" else "inline",
+                    model_tier=package.model_tier,
+                    prompt_tokens=int(usage.get("prompt_tokens") or package.prompt_tokens),
+                    cached_tokens=int(cached.get("cached_tokens") or 0),
+                    completion_tokens=int(usage.get("completion_tokens") or tokenizer.count(prose)),
+                    generated_words=count_generated_words(prose),
+                    accepted_words=0,
+                    layer_report={
+                        **package.layer_report,
+                        "provenance": {
+                            "algorithm": PROVENANCE_ALGORITHM,
+                            "paragraph_hashes": generated_paragraph_hashes(prose),
+                        },
+                        "incomplete": True,
+                    },
+                )
+                db.add(run)
+                await db.flush()
+                failed_draft.run_id = run.id
+            failed_draft.status = "failed"
+            failed_draft.content_text = prose
+            failed_draft.generated_words = count_generated_words(prose)
+            failed_draft.error_code = error_code
         yield _sse(
             {
                 "type": "meta",
+                "draftId": draft_id,
                 "skills": package.skills.ids,
                 "scene": package.skills.scene,
                 "layers": package.layer_report,
@@ -125,7 +196,14 @@ def _generation_response(
             async for event in retryable_stream(gateway, package):
                 if event.type == "chunk":
                     chunks.append(event.text)
+                    generated_length += len(event.text)
                     yield _sse({"type": "chunk", "text": event.text})
+                    if generated_length - checkpoint_length >= 1000:
+                        prose = "".join(chunks)
+                        draft.content_text = prose
+                        draft.generated_words = count_generated_words(prose)
+                        await db.commit()
+                        checkpoint_length = generated_length
                 elif event.usage:
                     usage = event.usage
 
@@ -155,6 +233,10 @@ def _generation_response(
             )
             db.add(run)
             await db.flush()
+            draft.run_id = run.id
+            draft.status = "ready"
+            draft.content_text = prose
+            draft.generated_words = run.generated_words
             charged = await settle_generation(
                 db,
                 reservation,
@@ -169,6 +251,7 @@ def _generation_response(
                 {
                     "type": "done",
                     "runId": run.id,
+                    "draftId": draft.id,
                     "generatedWords": run.generated_words,
                     "usage": {
                         "promptTokens": prompt_tokens,
@@ -180,13 +263,13 @@ def _generation_response(
             )
             yield "data: [DONE]\n\n"
         except GenerationProviderError as exc:
-            await db.rollback()
+            await persist_failed_draft("generation_provider_error")
             await release_reservation(db, reservation, reason="provider_error")
             await db.commit()
             finalized = True
             yield _sse({"type": "error", "code": "generation_provider_error", "message": str(exc)})
         except Exception:
-            await db.rollback()
+            await persist_failed_draft("generation_internal_error")
             await release_reservation(db, reservation, reason="internal_error")
             await db.commit()
             finalized = True
@@ -199,7 +282,7 @@ def _generation_response(
             )
         finally:
             if not finalized:
-                await db.rollback()
+                await persist_failed_draft("stream_interrupted")
                 await release_reservation(db, reservation, reason="stream_interrupted")
                 await db.commit()
 
@@ -259,7 +342,7 @@ async def generate_chapter(
 ):
     package = await _prepare(request, user, db)
     reservation = await _reserve(package, request, user, db)
-    return _generation_response(package, user, db, gateway, reservation)
+    return _generation_response(package, user, db, gateway, reservation, _request_summary(request))
 
 
 @router.post("/inline")
@@ -271,7 +354,121 @@ async def generate_inline(
 ):
     package = await _prepare(request, user, db)
     reservation = await _reserve(package, request, user, db)
-    return _generation_response(package, user, db, gateway, reservation)
+    return _generation_response(package, user, db, gateway, reservation, _request_summary(request))
+
+
+def _request_summary(request: ChapterGenerationRequest) -> dict:
+    summary = {
+        "model": request.model,
+        "targetWords": request.target_words,
+        "useStyleProfile": request.use_style_profile,
+        "dialogueDensity": request.dialogue_density,
+    }
+    if request.instruction.strip():
+        summary["instruction"] = request.instruction.strip()
+    if isinstance(request, InlineGenerationRequest):
+        summary["action"] = request.action
+    return summary
+
+
+def _draft_payload(draft: GenerationDraft, *, include_content: bool = False) -> dict:
+    content = draft.content_text or ""
+    payload = {
+        "id": draft.id,
+        "runId": draft.run_id,
+        "projectId": draft.project_id,
+        "chapterId": draft.chapter_id,
+        "kind": draft.kind,
+        "status": draft.status,
+        "generatedWords": draft.generated_words,
+        "excerpt": content[:160] + ("…" if len(content) > 160 else ""),
+        "requestSummary": draft.request_summary or {},
+        "errorCode": draft.error_code,
+        "createdAt": draft.created_at.isoformat() if draft.created_at else None,
+        "updatedAt": draft.updated_at.isoformat() if draft.updated_at else None,
+        "acceptedAt": draft.accepted_at.isoformat() if draft.accepted_at else None,
+    }
+    if include_content:
+        payload["content"] = content
+    return payload
+
+
+async def _load_draft(draft_id: str, user: User, db: AsyncSession, *, lock: bool = False) -> GenerationDraft:
+    statement = select(GenerationDraft).where(GenerationDraft.id == draft_id)
+    if lock:
+        statement = statement.with_for_update()
+    draft = (await db.execute(statement)).scalar_one_or_none()
+    if draft is None:
+        raise HTTPException(status_code=404, detail="Draft not found")
+    await verify_project_permission(draft.project_id, ProjectPermission.EDIT_BODY, user, db)
+    return draft
+
+
+@router.get("/drafts")
+async def list_drafts(
+    chapter_id: str = Query(alias="chapterId", min_length=1, max_length=32),
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    chapter, _ = await _load_scope(chapter_id, user, db, ProjectPermission.EDIT_BODY)
+    drafts = (
+        await db.execute(
+            select(GenerationDraft)
+            .where(
+                GenerationDraft.chapter_id == chapter.id,
+                GenerationDraft.status.in_(["streaming", "ready", "failed"]),
+            )
+            .order_by(GenerationDraft.created_at.desc())
+            .limit(50)
+        )
+    ).scalars().all()
+    return {"items": [_draft_payload(draft) for draft in drafts]}
+
+
+@router.get("/drafts/{draft_id}")
+async def get_draft(
+    draft_id: str,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    return _draft_payload(await _load_draft(draft_id, user, db), include_content=True)
+
+
+@router.post("/drafts/{draft_id}/accept")
+async def accept_draft(
+    draft_id: str,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    draft = await _load_draft(draft_id, user, db, lock=True)
+    if draft.status == "accepted":
+        return _draft_payload(draft, include_content=True)
+    if draft.status not in {"ready", "failed"} or not draft.content_text:
+        raise HTTPException(status_code=409, detail={"code": "DRAFT_NOT_ACCEPTABLE"})
+    draft.status = "accepted"
+    draft.accepted_at = datetime.now(UTC)
+    await db.commit()
+    await db.refresh(draft)
+    return _draft_payload(draft, include_content=True)
+
+
+@router.delete("/drafts/{draft_id}", status_code=204)
+async def reject_draft(
+    draft_id: str,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    draft = await _load_draft(draft_id, user, db, lock=True)
+    if draft.status == "rejected":
+        return Response(status_code=204)
+    if draft.status == "accepted":
+        raise HTTPException(status_code=409, detail={"code": "DRAFT_ALREADY_ACCEPTED"})
+    if draft.status == "streaming":
+        raise HTTPException(status_code=409, detail={"code": "DRAFT_STILL_STREAMING"})
+    draft.status = "rejected"
+    draft.rejected_at = datetime.now(UTC)
+    await db.commit()
+    return Response(status_code=204)
 
 
 async def _reserve(

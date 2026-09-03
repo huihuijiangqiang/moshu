@@ -15,11 +15,23 @@ const labelText = computed(() =>
 function accept() {
   const pos = props.getPos()
   if (pos === undefined) return
+  if (typeof props.node.attrs.draftId === 'string') {
+    window.dispatchEvent(new CustomEvent('moshu:draft-action', {
+      detail: { action: 'accept', draftId: props.node.attrs.draftId }
+    }))
+    return
+  }
   props.editor.chain().focus().acceptDraftAt(pos).run()
 }
 function reject() {
   const pos = props.getPos()
   if (pos === undefined) return
+  if (typeof props.node.attrs.draftId === 'string') {
+    window.dispatchEvent(new CustomEvent('moshu:draft-action', {
+      detail: { action: 'reject', draftId: props.node.attrs.draftId }
+    }))
+    return
+  }
   props.editor.chain().focus().rejectDraftAt(pos).run()
 }
 function toggleLock() {
