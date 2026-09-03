@@ -193,6 +193,29 @@ async def remove_alias(db: AsyncSession, entry: CodexEntry, alias: str) -> bool:
     return True
 
 
+async def replace_aliases(
+    db: AsyncSession, entry: CodexEntry, aliases: Sequence[str]
+) -> bool:
+    """原子替换一个条目的全部别名，返回可检索文本是否变化。"""
+    normalized = normalize_aliases(aliases)
+    current = list(
+        (
+            await db.execute(
+                select(CodexAlias.alias).where(CodexAlias.entry_id == entry.id)
+            )
+        ).scalars()
+    )
+    if set(current) == set(normalized):
+        return False
+
+    await db.execute(delete(CodexAlias).where(CodexAlias.entry_id == entry.id))
+    for alias in normalized:
+        db.add(CodexAlias(entry_id=entry.id, alias=alias))
+    mark_embedding_stale(entry)
+    await db.flush()
+    return True
+
+
 async def refresh_embedding_if_stale(
     db: AsyncSession,
     provider: EmbeddingProvider,

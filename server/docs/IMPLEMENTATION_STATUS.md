@@ -7,8 +7,8 @@
 
 **关键事实**：
 - ✅ 34 张表完整 Alembic baseline，增量迁移已到 `011_guard_issue_arbitration`
-- ✅ 982 个单元/功能测试通过（SQLite in-memory，mock embedding/LLM）
-- ✅ 前端 61 个测试、TypeScript 类型检查和生产构建通过
+- ✅ 991 个单元/功能测试通过（SQLite in-memory，mock embedding/LLM）
+- ✅ 前端 65 个测试、TypeScript 类型检查和生产构建通过
 - ✅ 36 个集成测试已在本机真实 PostgreSQL + pgvector 环境通过
 - ✅ 已完成真实账号认证、作品创建、分卷章纲编辑与章节插入的首轮产品闭环
 - ✅ Refresh session 持久化轮换、防重放、注销即时吊销，系统管理员与项目 RBAC 已接通
@@ -22,6 +22,7 @@
 - ✅ Guard 已接入项目扫描、运行状态、真实告警证据与乐观锁处置
 - ✅ 确定性 Guard 告警已接入有依据的 LLM 二次复核；失败保留规则告警且不自动替作者判误报
 - ✅ Codex embedding 回填具有持久任务状态、失败次数、最后错误、耗尽标记与重试入口
+- ✅ 设定库页面已接通真实新建、编辑、忽略候选和安全删除；人物档案与通用关键事实分表单维护
 - ✅ 三条确定性规则已由真实 `RuleScanner` 跑过 120 正例、60 hard negatives、20 easy negatives，
   recall / 证据定位 / hard-negative precision 均为 100%
 - ⚠️ 上述结构化 claim 评测不覆盖正文抽取、LLM 仲裁质量和 P1 其余四类规则，不能据此宣称全链路生产就绪
@@ -308,7 +309,8 @@ PostgreSQL/pgvector 检索必须在真实部署上单独压测；该脚本只覆
 
 #### 设定库 (`api/codex.py`)
 - ✅ `POST /codex/{project_id}/entries` - 创建条目
-- ✅ `PATCH /codex/{project_id}/entries/{entry_id}` - 更新条目
+- ✅ `PATCH /codex/{project_id}/entries/{entry_id}` - 原子更新条目与全部别名，最多触发一次 embedding
+- ✅ `DELETE /codex/{project_id}/entries/{entry_id}` - 删除候选/未引用条目；已确认且被正文引用时返回 409
 - ✅ `POST /codex/{project_id}/entries/{entry_id}/aliases` - 添加别名
 - ✅ `DELETE /codex/{project_id}/entries/{entry_id}/aliases` - 删除别名
 - ✅ `POST /codex/{project_id}/backfill-embeddings` - 同步回填向量（受项目权限保护）
@@ -363,12 +365,12 @@ PostgreSQL/pgvector 检索必须在真实部署上单独压测；该脚本只覆
 
 ### 5. 测试覆盖
 
-#### 单元测试（982 passed，SQLite in-memory，mock providers）
+#### 单元测试（991 passed，SQLite in-memory，mock providers）
 
-**全量测试结果**：982 passed, 36 skipped（未设置集成测试 URL 时）, 4 warnings；前端 61 passed
+**全量测试结果**：991 passed, 36 skipped（未设置集成测试 URL 时）, 4 warnings；前端 65 passed
 
 主要测试覆盖（不逐文件列举测试数量，以实际 pytest 结果为准）：
-- ✅ Codex 设定库：CRUD、别名规范化、可检索文本判据、两段式事务、deferred 降级、httpx 错误重试
+- ✅ Codex 设定库：页面与 API 完整 CRUD、引用删除保护、原子别名替换、可检索文本判据、两段式事务、deferred 降级、httpx 错误重试
 - ✅ 章纲服务：独立版本控制、body_policy 约束、不变量测试、outbox 事件
 - ✅ 正文服务：content_hash 幂等性、paragraph ID 提取、CodexRef 提取
 - ✅ 一致性服务：Claim fingerprint、规则逻辑、hard negative 案例
@@ -430,6 +432,10 @@ PostgreSQL/pgvector 检索必须在真实部署上单独压测；该脚本只覆
 真实认证、作品创建、分卷章纲、章节插入、正文保存保护、Guard、设定库、导出、备份恢复、
 风格档、AI 来源占比和作者生成用量均已接通真实 API。生产就绪仍受后述评测规模、LLM 仲裁、
 长文本压测和后台模型成本台账限制，不能仅凭页面可用宣称全功能完工。
+
+设定库当前允许作者直接新建和编辑人物/势力/地点/物品/力量体系/伏笔，人物字段按内核、
+约束和人物弧维护，其他类型按“标签：内容”的关键事实维护。编辑时保留关系等未开放字段；
+待确认抽取候选可直接忽略，已确认且已有正文引用的条目禁止删除，避免丢失显式引用语义。
 
 ### 3. 全链路评测覆盖仍不足
 **状态**：三条确定性规则的结构化门禁已完成；真实正文与完整七规则未完成
@@ -657,9 +663,9 @@ baseline，增量实现 Codex embedding 回填、时间锚点解析、issue 生�
 - `server/tasks/consistency.py` - 一致性任务
 - `server/tasks/codex.py` - Codex 回填任务
 
-### 测试（982 passed；另有 36 个真实 PostgreSQL 测试通过）
-- `server/tests/` - 单元/功能测试（982 passed）
-- `app/src/**/*.spec.ts` - 前端测试（61 passed）
+### 测试（991 passed；另有 36 个真实 PostgreSQL 测试通过）
+- `server/tests/` - 单元/功能测试（991 passed）
+- `app/src/**/*.spec.ts` - 前端测试（65 passed）
 - `server/tests/integration/` - 集成测试（36 passed，需设置真实 PostgreSQL URL）
 
 ### 文档（1 个文件）
@@ -669,7 +675,7 @@ baseline，增量实现 Codex embedding 回填、时间锚点解析、issue 生�
 
 ## 总结
 
-墨枢一致性后端已完成核心数据模型、服务层、API 端点和异步任务定义，982 个单元/功能
+墨枢一致性后端已完成核心数据模型、服务层、API 端点和异步任务定义，991 个单元/功能
 测试在 SQLite in-memory + mock providers 环境下通过，另有 36 个集成测试在真实
 PostgreSQL + pgvector 环境通过。真实认证、可吊销会话、管理员、工作室 RBAC、作品创建、
 分卷章纲、章节插入、全量导出、非覆盖备份恢复、风格指纹、AI 来源账本与作者生成用量台账已经接通，前端 61 个测试与生产构建通过。

@@ -15,7 +15,7 @@
 import pytest
 
 from api.codex import get_embedding_provider
-from db.models_codex import CODEX_STATUSES, CodexAlias, CodexEntry
+from db.models_codex import CODEX_STATUSES, CodexAlias, CodexEntry, CodexRef, CodexRelation
 from services.codex import (
     add_alias,
     count_stale_entries,
@@ -25,6 +25,7 @@ from services.codex import (
     normalize_aliases,
     refresh_embedding_if_stale,
     remove_alias,
+    replace_aliases,
     update_entry,
 )
 from services.codex_embedding import (
@@ -823,6 +824,168 @@ async def test_confirming_an_entry_does_not_recompute_the_embedding(
     assert provider.call_count == calls_before
 
 
+async def test_a_pending_entry_can_be_discarded_with_its_source_reference(
+    codex_client, async_db_session, seed_project, auth_headers
+):
+    await seed_project()
+    entry = await create_entry(
+        async_db_session,
+        project_id="proj_a",
+        kind="character",
+        name="疑似路人",
+        status="pending",
+    )
+    await async_db_session.flush()
+    async_db_session.add(CodexRef(chapter_id="ch_a", entry_id=entry.id, count=1))
+    await async_db_session.commit()
+
+    response = await codex_client.delete(
+        f"/codex/proj_a/entries/{entry.id}", headers=auth_headers("user_a")
+    )
+
+    assert response.status_code == 204
+    assert await async_db_session.get(CodexEntry, entry.id) is None
+
+
+async def test_an_unreferenced_confirmed_entry_can_be_deleted(
+    codex_client, async_db_session, seed_project, auth_headers
+):
+    await seed_project()
+    entry = await create_entry(
+        async_db_session,
+        project_id="proj_a",
+        kind="rule",
+        name="废弃规则",
+        status="confirmed",
+    )
+    entry_id = entry.id
+    await async_db_session.commit()
+
+    response = await codex_client.delete(
+        f"/codex/proj_a/entries/{entry_id}", headers=auth_headers("user_a")
+    )
+
+    assert response.status_code == 204
+    assert await async_db_session.get(CodexEntry, entry_id) is None
+
+
+async def test_deleting_an_unreferenced_entry_also_removes_its_relations(
+    codex_client, async_db_session, seed_project, auth_headers
+):
+    from sqlalchemy import func, select
+
+    await seed_project()
+    target = await create_entry(
+        async_db_session, project_id="proj_a", kind="location", name="废弃渡口"
+    )
+    peer = await create_entry(
+        async_db_session, project_id="proj_a", kind="character", name="摆渡人"
+    )
+    await async_db_session.flush()
+    async_db_session.add_all(
+        [
+            CodexRelation(
+                id="cr_outgoing",
+                from_id=target.id,
+                to_id=peer.id,
+                relation_type="看守",
+            ),
+            CodexRelation(
+                id="cr_incoming",
+                from_id=peer.id,
+                to_id=target.id,
+                relation_type="往来",
+            ),
+        ]
+    )
+    await async_db_session.commit()
+
+    response = await codex_client.delete(
+        f"/codex/proj_a/entries/{target.id}", headers=auth_headers("user_a")
+    )
+
+    assert response.status_code == 204
+    remaining = int(
+        (
+            await async_db_session.execute(
+                select(func.count(CodexRelation.id)).where(
+                    CodexRelation.id.in_(["cr_outgoing", "cr_incoming"])
+                )
+            )
+        ).scalar_one()
+    )
+    assert remaining == 0
+
+
+async def test_a_referenced_confirmed_entry_cannot_be_deleted(
+    codex_client, async_db_session, seed_project, auth_headers
+):
+    await seed_project()
+    entry = await create_entry(
+        async_db_session,
+        project_id="proj_a",
+        kind="character",
+        name="许知微",
+        status="confirmed",
+    )
+    await async_db_session.flush()
+    async_db_session.add(CodexRef(chapter_id="ch_a", entry_id=entry.id, count=2))
+    await async_db_session.commit()
+
+    response = await codex_client.delete(
+        f"/codex/proj_a/entries/{entry.id}", headers=auth_headers("user_a")
+    )
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == {
+        "code": "CODEX_ENTRY_IN_USE",
+        "reference_count": 1,
+    }
+    assert await async_db_session.get(CodexEntry, entry.id) is not None
+
+
+async def test_deleting_an_entry_is_project_scoped(
+    codex_client, async_db_session, seed_project, make_project, auth_headers
+):
+    await seed_project()
+    async_db_session.add(make_project("proj_other", owner_id="user_a"))
+    entry = await create_entry(
+        async_db_session,
+        project_id="proj_a",
+        kind="location",
+        name="青河村",
+    )
+    await async_db_session.commit()
+
+    response = await codex_client.delete(
+        f"/codex/proj_other/entries/{entry.id}", headers=auth_headers("user_a")
+    )
+
+    assert response.status_code == 404
+    assert await async_db_session.get(CodexEntry, entry.id) is not None
+
+
+async def test_deleting_an_entry_in_someone_elses_project_is_denied(
+    codex_client, async_db_session, seed_project, make_user, auth_headers
+):
+    await seed_project()
+    async_db_session.add(make_user("user_b"))
+    entry = await create_entry(
+        async_db_session,
+        project_id="proj_a",
+        kind="item",
+        name="账册",
+    )
+    await async_db_session.commit()
+
+    response = await codex_client.delete(
+        f"/codex/proj_a/entries/{entry.id}", headers=auth_headers("user_b")
+    )
+
+    assert response.status_code == 403
+    assert await async_db_session.get(CodexEntry, entry.id) is not None
+
+
 # --- status 的合法取值 ----------------------------------------------------------
 
 
@@ -926,6 +1089,36 @@ async def test_updating_a_non_embedded_field_reports_fresh(
     assert response.status_code == 200
     assert response.json()["embedding_status"] == "fresh"
     assert provider.call_count == calls_before
+
+
+async def test_patch_replaces_aliases_and_recomputes_only_once(
+    codex_client, async_db_session, seed_project, auth_headers, provider
+):
+    await seed_project()
+    entry = await create_entry(
+        async_db_session,
+        project_id="proj_a",
+        kind="location",
+        name="白鹭洲",
+        description="旧描述",
+        aliases=["鹭洲", "白鹭渡"],
+    )
+    await async_db_session.commit()
+    await refresh_embedding_if_stale(async_db_session, provider, entry)
+    await async_db_session.commit()
+    calls_before = provider.call_count
+
+    response = await codex_client.patch(
+        f"/codex/proj_a/entries/{entry.id}",
+        json={"description": "新描述", "aliases": ["  鹭洲渡  ", "鹭洲渡"]},
+        headers=auth_headers("user_a"),
+    )
+
+    assert response.status_code == 200
+    assert response.json()["aliases"] == ["鹭洲渡"]
+    assert response.json()["embedding_status"] == "updated"
+    assert provider.call_count == calls_before + 1
+    assert await aliases_of(async_db_session, entry.id) == ["鹭洲渡"]
 
 
 async def test_updating_attrs_on_deferred_entry_reports_deferred_not_fresh(
@@ -1082,6 +1275,34 @@ async def test_adding_a_duplicate_alias_through_the_api_is_a_noop(
     assert response.json()["embedding_status"] == "fresh"
     assert provider.call_count == calls_before
     assert await aliases_of(async_db_session, entry.id) == ["长风"]
+
+
+async def test_replacing_aliases_is_atomic_and_idempotent(
+    async_db_session, seed_project, provider
+):
+    await seed_project()
+    entry = await create_entry(
+        async_db_session,
+        project_id="proj_a",
+        kind="character",
+        name="李长风",
+        aliases=["长风", "李剑仙"],
+    )
+    await async_db_session.commit()
+    await refresh_embedding_if_stale(async_db_session, provider, entry)
+    await async_db_session.commit()
+
+    assert await replace_aliases(async_db_session, entry, ["长风", "  新称呼  "]) is True
+    await async_db_session.commit()
+    assert await aliases_of(async_db_session, entry.id) == ["新称呼", "长风"]
+    assert await refresh_embedding_if_stale(async_db_session, provider, entry) == "updated"
+    await async_db_session.commit()
+    calls_after_change = provider.call_count
+
+    assert await replace_aliases(async_db_session, entry, ["新称呼", "长风", "新称呼"]) is False
+    await async_db_session.commit()
+    assert await refresh_embedding_if_stale(async_db_session, provider, entry) == "fresh"
+    assert provider.call_count == calls_after_change
 
 
 async def test_removing_an_alias_through_the_api(

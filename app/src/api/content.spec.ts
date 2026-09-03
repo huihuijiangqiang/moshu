@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
+import { reactive } from 'vue'
 import { ApiError } from './http'
-import { bodyConflictFromError, codexFromDto, guardIssueFromDto, guardOverviewFromDto, htmlToDocument } from './content'
+import { bodyConflictFromError, codexDraftAttrs, codexFromDto, guardIssueFromDto, guardOverviewFromDto, htmlToDocument } from './content'
 
 describe('htmlToDocument', () => {
   it('uses the backend paragraph pid contract', () => {
@@ -64,6 +65,7 @@ describe('codexFromDto', () => {
         personality: ['谨慎务实'],
         ability: '记账、议价',
         limitation: '不熟悉律例',
+        arc: { past: '只求自保', current: '开始护住家人', next: '主动争取田契' },
         relations: [{ target_id: 'p1-cx-char-02', name: '周何氏', relation: '人物关系', note: '共同持家' }]
       },
       resident: true,
@@ -78,7 +80,9 @@ describe('codexFromDto', () => {
     expect(entry.refChapters).toEqual([1, 5])
     expect(entry.conflicts).toBe(1)
     expect(entry.character?.ability).toBe('记账、议价')
+    expect(entry.character?.arc?.next).toBe('主动争取田契')
     expect(entry.relations?.[0].targetId).toBe('p1-cx-char-02')
+    expect(entry.rawAttrs?.relations).toBeTruthy()
   })
 
   it('maps backend rules to system facts', () => {
@@ -100,6 +104,61 @@ describe('codexFromDto', () => {
 
     expect(entry.kind).toBe('system')
     expect(entry.facts).toEqual([{ label: '货币', value: '一贯等于一千文' }])
+  })
+
+  it('preserves opaque relation attrs while replacing editable character fields', () => {
+    const attrs = codexDraftAttrs({
+      kind: 'character',
+      name: '许知微',
+      aliases: [],
+      summary: '',
+      resident: true,
+      status: 'confirmed',
+      character: { desire: '安稳立足', personality: ['谨慎', '务实'], arc: { next: '买下荒地' } }
+    }, {
+      id: 'cx_1', kind: 'character', name: '许知微', aliases: [], summary: '', resident: true,
+      status: 'confirmed', refChapters: [], conflicts: 0,
+      rawAttrs: {
+        desire: '旧目标', relation_version: 3, relations: [{ name: '周何氏' }],
+        character: { desire: '嵌套旧目标', custom_voice_id: 'voice-7' }
+      }
+    })
+
+    expect(attrs.desire).toBe('安稳立足')
+    expect(attrs.personality).toEqual(['谨慎', '务实'])
+    expect(attrs.arc).toEqual({ next: '买下荒地' })
+    expect(attrs.relation_version).toBe(3)
+    expect(attrs.relations).toEqual([{ name: '周何氏' }])
+    expect(attrs.character).toEqual({ custom_voice_id: 'voice-7' })
+  })
+
+  it('removes stale character fields when an entry changes to a generic kind', () => {
+    const attrs = codexDraftAttrs({
+      kind: 'place', name: '青河村', aliases: [], summary: '', resident: false,
+      status: 'confirmed', facts: [{ label: '方位', value: '县城以东' }]
+    }, {
+      id: 'cx_1', kind: 'character', name: '旧人物', aliases: [], summary: '', resident: false,
+      status: 'confirmed', refChapters: [], conflicts: 0,
+      rawAttrs: { role: '配角', character: { fear: '失去亲人' }, relations: [] }
+    })
+
+    expect(attrs.role).toBeUndefined()
+    expect(attrs.character).toBeUndefined()
+    expect(attrs.facts).toEqual([{ label: '方位', value: '县城以东' }])
+    expect(attrs.relations).toEqual([])
+  })
+
+  it('accepts the reactive entry object provided by Pinia', () => {
+    const existing = reactive({
+      id: 'cx_1', kind: 'place' as const, name: '白鹭洲', aliases: [], summary: '', resident: false,
+      status: 'confirmed' as const, refChapters: [], conflicts: 0,
+      rawAttrs: { relations: [{ name: '青河' }], facts: [{ label: '旧值', value: '待改' }] }
+    })
+
+    expect(() => codexDraftAttrs({
+      kind: 'place', name: '白鹭洲', aliases: [], summary: '', resident: false,
+      status: 'confirmed', facts: [{ label: '通行', value: '枯水期可达' }]
+    }, existing)).not.toThrow()
   })
 })
 

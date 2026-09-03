@@ -10,7 +10,7 @@
 —— 全项目回填会打满 embedding 网关配额，不能任人触发。
 """
 from datetime import datetime
-from typing import Literal, Optional, get_args
+from typing import Annotated, Literal, Optional, get_args
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, ConfigDict, Field
@@ -18,7 +18,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from api.auth import ProjectPermission, get_current_user, verify_project_permission
-from db.models_codex import CODEX_STATUSES, CodexAlias, CodexEntry
+from db.models_codex import CODEX_STATUSES, CodexAlias, CodexEntry, CodexRef
 from db.models_core import Project, User
 from db.models_embedding import CodexEmbeddingJob
 from db.session import get_db
@@ -28,6 +28,7 @@ from services.codex import (
     create_entry,
     refresh_embedding_if_stale,
     remove_alias,
+    replace_aliases,
     update_entry,
 )
 from services.codex_embedding import embed_missing_codex_entries
@@ -57,6 +58,7 @@ if VALID_CODEX_STATUSES != CODEX_STATUSES:
     )
 
 EmbeddingStatus = Literal["fresh", "updated", "deferred"]
+AliasValue = Annotated[str, Field(min_length=1, max_length=200)]
 
 
 def get_embedding_provider() -> EmbeddingProvider:
@@ -72,7 +74,7 @@ class CreateEntryRequest(BaseModel):
     kind: CodexKind
     name: str = Field(..., min_length=1, max_length=200)
     description: str = ""
-    aliases: list[str] = Field(default_factory=list)
+    aliases: list[AliasValue] = Field(default_factory=list)
     attrs: dict = Field(default_factory=dict)
     resident: bool = False
     status: CodexStatus = "confirmed"
@@ -87,10 +89,11 @@ class UpdateEntryRequest(BaseModel):
     attrs: Optional[dict] = None
     resident: Optional[bool] = None
     status: Optional[CodexStatus] = None
+    aliases: Optional[list[AliasValue]] = None
 
 
 class AliasRequest(BaseModel):
-    alias: str = Field(..., min_length=1, max_length=200)
+    alias: AliasValue
 
 
 class EntryResponse(BaseModel):
@@ -186,11 +189,11 @@ async def _embedding_job_response(
 
 
 async def _load_entry(db: AsyncSession, project_id: str, entry_id: str) -> CodexEntry:
-    """按项目取条目 —— project_id 参与过滤，避免跨项目按 id 直取。"""
+    """按项目锁定条目，隔离跨项目访问并串行化同一条目的写入。"""
     result = await db.execute(
         select(CodexEntry).where(
             CodexEntry.id == entry_id, CodexEntry.project_id == project_id
-        )
+        ).with_for_update()
     )
     entry = result.scalar_one_or_none()
     if not entry:
@@ -353,11 +356,54 @@ async def update_codex_entry(
     if not changes:
         raise HTTPException(status_code=422, detail="No fields to update")
 
-    text_changed = await update_entry(db, entry, changes)
+    aliases = changes.pop("aliases", None)
+    text_changed = await update_entry(db, entry, changes) if changes else False
+    if aliases is not None:
+        text_changed = await replace_aliases(db, entry, aliases) or text_changed
     await db.commit()
 
     embedding_status = await _settle_embedding(db, provider, entry, stale=text_changed)
     return await _entry_response(db, entry, embedding_status)
+
+
+@router.delete(
+    "/{project_id}/entries/{entry_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+)
+async def delete_codex_entry(
+    project_id: str,
+    entry_id: str,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> None:
+    """删除未使用的设定，或直接丢弃尚未确认的抽取候选。
+
+    已确认且被正文引用的条目不能静默删除。否则正文里的显式引用虽然会由外键
+    级联清理，作者却失去了这段引用原本指向谁的语义。待确认候选本来就是可丢弃
+    的抽取结果，即使记录了来源章节也允许删除。_load_entry 的行锁还会与正文保存
+    时外键检查取得的 key-share 锁互斥，避免检查引用后又并发插入新引用。
+    """
+    await verify_project_permission(project_id, ProjectPermission.MANAGE_CODEX, user, db)
+    entry = await _load_entry(db, project_id, entry_id)
+
+    reference_count = int(
+        (
+            await db.execute(
+                select(func.count(CodexRef.id)).where(CodexRef.entry_id == entry.id)
+            )
+        ).scalar_one()
+    )
+    if entry.status == "confirmed" and (reference_count > 0 or entry.ref_chapters):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "code": "CODEX_ENTRY_IN_USE",
+                "reference_count": max(reference_count, len(entry.ref_chapters)),
+            },
+        )
+
+    await db.delete(entry)
+    await db.commit()
 
 
 @router.post(

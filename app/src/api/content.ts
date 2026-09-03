@@ -1,6 +1,6 @@
 import { ApiError, USE_MOCK, request } from './http'
 import { mockApi } from './mock'
-import type { Chapter, ChapterPlanPatch, CodexEntry, CodexKind, ContextLayer, GuardIssue, GuardOverview, GuardResolutionAction, Project } from '@/types'
+import type { Chapter, ChapterPlanPatch, CodexEntry, CodexEntryDraft, CodexKind, ContextLayer, GuardIssue, GuardOverview, GuardResolutionAction, Project } from '@/types'
 
 interface ProjectDto {
   id: string
@@ -124,6 +124,15 @@ const CODEX_KIND_FROM_DTO: Record<CodexDto['kind'], CodexKind> = {
   rule: 'system'
 }
 
+const CODEX_KIND_TO_DTO: Record<CodexKind, CodexDto['kind']> = {
+  character: 'character',
+  place: 'location',
+  item: 'item',
+  faction: 'faction',
+  foreshadow: 'event',
+  system: 'rule'
+}
+
 const revisions = new Map<string, number>()
 const chapterCache = new Map<string, Chapter>()
 const codexProjectIds = new Map<string, string>()
@@ -231,6 +240,9 @@ export function codexFromDto(dto: CodexDto): CodexEntry {
     : undefined
   const plantedAt = chapterNumber(dto.planted_at)
   const expectedChapter = chapterNumber(dto.expected_by)
+  const arc = characterAttrs.arc && typeof characterAttrs.arc === 'object'
+    ? characterAttrs.arc as Record<string, unknown>
+    : undefined
 
   return {
     id: dto.id,
@@ -257,15 +269,80 @@ export function codexFromDto(dto: CodexDto): CodexEntry {
       appearance: stringValue(characterAttrs.appearance),
       speech: stringValue(characterAttrs.speech),
       background: stringValue(characterAttrs.background),
-      currentState: stringValue(characterAttrs.current_state) ?? stringValue(characterAttrs.currentState)
+      currentState: stringValue(characterAttrs.current_state) ?? stringValue(characterAttrs.currentState),
+      arc: arc ? {
+        past: stringValue(arc.past),
+        current: stringValue(arc.current),
+        next: stringValue(arc.next)
+      } : undefined
     } : undefined,
     facts,
     relations,
     plantedAt,
     expectedBy: dto.expected_by
       ? expectedChapter ? `第 ${expectedChapter} 章` : dto.expected_by
-      : undefined
+      : undefined,
+    rawAttrs: structuredClone(dto.attrs)
   }
+}
+
+const CHARACTER_ATTR_KEYS = [
+  'role', 'age', 'appearance', 'personality', 'desire', 'motivation', 'flaw',
+  'fear', 'ability', 'skills', 'limitation', 'limits', 'speech', 'background',
+  'current_state', 'currentState', 'arc', 'character'
+] as const
+
+function normalizedAliases(aliases: string[]): string[] {
+  return [...new Set(aliases.map((alias) => alias.trim()).filter(Boolean))]
+}
+
+function assignText(target: Record<string, unknown>, key: string, value?: string) {
+  const normalized = value?.trim()
+  if (normalized) target[key] = normalized
+}
+
+export function codexDraftAttrs(draft: CodexEntryDraft, existing?: CodexEntry): Record<string, unknown> {
+  // Pinia 会把 entry 变成 Proxy；structuredClone 不能克隆 Proxy。attrs 来自 JSON API，
+  // 用 JSON round-trip 可安全取得普通对象，同时严格保持后端支持的数据类型边界。
+  const attrs = JSON.parse(JSON.stringify(existing?.rawAttrs ?? {})) as Record<string, unknown>
+  const nestedCharacter = attrs.character && typeof attrs.character === 'object'
+    ? attrs.character as Record<string, unknown>
+    : undefined
+  const characterExtensions = nestedCharacter
+    ? Object.fromEntries(Object.entries(nestedCharacter).filter(([key]) => !CHARACTER_ATTR_KEYS.includes(key as typeof CHARACTER_ATTR_KEYS[number])))
+    : {}
+  CHARACTER_ATTR_KEYS.forEach((key) => delete attrs[key])
+  delete attrs.facts
+
+  if (draft.kind === 'character') {
+    const character = draft.character ?? {}
+    assignText(attrs, 'role', character.role)
+    assignText(attrs, 'age', character.age)
+    assignText(attrs, 'appearance', character.appearance)
+    assignText(attrs, 'desire', character.desire)
+    assignText(attrs, 'motivation', character.motivation)
+    assignText(attrs, 'flaw', character.flaw)
+    assignText(attrs, 'fear', character.fear)
+    assignText(attrs, 'ability', character.ability)
+    assignText(attrs, 'limitation', character.limitation)
+    assignText(attrs, 'speech', character.speech)
+    assignText(attrs, 'background', character.background)
+    assignText(attrs, 'current_state', character.currentState)
+    const personality = character.personality?.map((item) => item.trim()).filter(Boolean)
+    if (personality?.length) attrs.personality = personality
+    const arc = Object.fromEntries(
+      Object.entries(character.arc ?? {})
+        .map(([key, value]) => [key, value?.trim()])
+        .filter((entry): entry is [string, string] => Boolean(entry[1]))
+    )
+    if (Object.keys(arc).length) attrs.arc = arc
+    if (Object.keys(characterExtensions).length) attrs.character = characterExtensions
+  } else if (draft.facts?.length) {
+    attrs.facts = draft.facts
+      .map((fact) => ({ label: fact.label.trim(), value: fact.value.trim() }))
+      .filter((fact) => fact.label && fact.value)
+  }
+  return attrs
 }
 
 function projectFromDto(dto: ProjectDto): Project {
@@ -429,6 +506,40 @@ const realApi = {
     rows.forEach((row) => codexProjectIds.set(row.id, projectId))
     return rows.map(codexFromDto)
   },
+  async createCodexEntry(projectId: string, draft: CodexEntryDraft): Promise<CodexEntry> {
+    const dto = await request<CodexDto>(`/codex/${projectId}/entries`, {
+      method: 'POST',
+      body: JSON.stringify({
+        kind: CODEX_KIND_TO_DTO[draft.kind],
+        name: draft.name.trim(),
+        description: draft.summary.trim(),
+        aliases: normalizedAliases(draft.aliases),
+        attrs: codexDraftAttrs(draft),
+        resident: draft.resident,
+        status: draft.status
+      })
+    })
+    codexProjectIds.set(dto.id, projectId)
+    return codexFromDto(dto)
+  },
+  async updateCodexEntry(id: string, draft: CodexEntryDraft, existing: CodexEntry): Promise<CodexEntry> {
+    const projectId = codexProjectIds.get(id)
+    if (!projectId) throw new Error('codex_entry_not_loaded')
+    const aliases = normalizedAliases(draft.aliases)
+    const dto = await request<CodexDto>(`/codex/${projectId}/entries/${id}`, {
+      method: 'PATCH',
+      body: JSON.stringify({
+        kind: CODEX_KIND_TO_DTO[draft.kind],
+        name: draft.name.trim(),
+        description: draft.summary.trim(),
+        attrs: codexDraftAttrs(draft, existing),
+        resident: draft.resident,
+        status: draft.status,
+        aliases
+      })
+    })
+    return codexFromDto(dto)
+  },
   async confirmCodexEntry(id: string): Promise<void> {
     const projectId = codexProjectIds.get(id)
     if (!projectId) throw new Error('codex_entry_not_loaded')
@@ -437,8 +548,16 @@ const realApi = {
       body: JSON.stringify({ status: 'confirmed' })
     })
   },
-  async dropCodexEntry(): Promise<void> {
-    throw new Error('real_codex_drop_not_connected')
+  async dropCodexEntry(id: string): Promise<void> {
+    const projectId = codexProjectIds.get(id)
+    if (!projectId) throw new Error('codex_entry_not_loaded')
+    try {
+      await request(`/codex/${projectId}/entries/${id}`, { method: 'DELETE' })
+      codexProjectIds.delete(id)
+    } catch (error) {
+      if (error instanceof ApiError && error.status === 409) throw new Error('codex_entry_in_use')
+      throw error
+    }
   },
   async listGuardIssues(projectId: string): Promise<GuardIssue[]> {
     const rows = await request<GuardIssueDto[]>(`/consistency/issues/${projectId}`)

@@ -49,4 +49,24 @@ describe('codex store', () => {
     expect(s.resident.length).toBeGreaterThan(0)
     expect(s.resident.every((e) => e.resident)).toBe(true)
   })
+
+  it('新建、编辑和删除会更新同一份设定状态', async () => {
+    const s = useCodexStore()
+    await s.load('p1')
+    const created = await s.create('p1', {
+      kind: 'place', name: '白鹭洲', aliases: ['鹭洲'], summary: '青河下游的沙洲。',
+      resident: false, status: 'confirmed', facts: [{ label: '通行', value: '枯水期可步行抵达' }]
+    })
+
+    expect(s.byId.get(created.id)?.name).toBe('白鹭洲')
+    const updated = await s.update(created.id, {
+      kind: 'place', name: '白鹭洲渡口', aliases: ['鹭洲渡'], summary: '青河下游渡口。',
+      resident: true, status: 'confirmed', facts: [{ label: '通行', value: '仅白日摆渡' }]
+    })
+    expect(updated.name).toBe('白鹭洲渡口')
+    expect(s.byId.get(created.id)?.resident).toBe(true)
+
+    await s.drop(created.id)
+    expect(s.byId.has(created.id)).toBe(false)
+  })
 })

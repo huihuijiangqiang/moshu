@@ -1,7 +1,7 @@
 import { defineStore } from 'pinia'
 import { computed, ref } from 'vue'
 import { contentApi } from '@/api/content'
-import type { CodexEntry, CodexKind } from '@/types'
+import type { CodexEntry, CodexEntryDraft, CodexKind } from '@/types'
 
 function flattenSearchValue(value: unknown): string[] {
   if (typeof value === 'string') return [value]
@@ -71,10 +71,25 @@ export const useCodexStore = defineStore('codex', () => {
     if (e) e.status = 'confirmed'
   }
 
+  async function create(projectId: string, draft: CodexEntryDraft) {
+    const entry = await contentApi.createCodexEntry(projectId, draft)
+    entries.value.push(entry)
+    return entry
+  }
+
+  async function update(id: string, draft: CodexEntryDraft) {
+    const current = byId.value.get(id)
+    if (!current) throw new Error('codex_entry_not_loaded')
+    const entry = await contentApi.updateCodexEntry(id, draft, current)
+    const index = entries.value.findIndex((item) => item.id === id)
+    if (index >= 0) entries.value[index] = entry
+    return entry
+  }
+
   async function drop(id: string) {
     await contentApi.dropCodexEntry(id)
     entries.value = entries.value.filter((e) => e.id !== id)
   }
 
-  return { entries, kind, query, byId, resident, pending, counts, visible, search, load, confirm, drop, loadedProjectId }
+  return { entries, kind, query, byId, resident, pending, counts, visible, search, load, create, update, confirm, drop, loadedProjectId }
 })

@@ -1,7 +1,7 @@
 import { delay } from '../http'
 import * as seed from './seed'
 import { findShelfBook } from './shelf'
-import type { Chapter, ChapterPlanPatch, CodexEntry, GuardIssue, GuardOverview, GuardResolutionAction, Project, ContextLayer } from '@/types'
+import type { Chapter, ChapterPlanPatch, CodexEntry, CodexEntryDraft, GuardIssue, GuardOverview, GuardResolutionAction, Project, ContextLayer } from '@/types'
 
 /** 内存态副本：mock 下的写操作要真的改变数据，否则界面行为是假的。 */
 const state = {
@@ -134,6 +134,42 @@ export const mockApi = {
   async listCodex(projectId = 'p1'): Promise<CodexEntry[]> {
     await delay()
     return projectId === 'p1' ? structuredClone(state.codex) : []
+  },
+
+  async createCodexEntry(projectId: string, draft: CodexEntryDraft): Promise<CodexEntry> {
+    await delay(140)
+    const entry: CodexEntry = {
+      id: `cx_mock_${Date.now().toString(36)}`,
+      kind: draft.kind,
+      name: draft.name.trim(),
+      aliases: [...draft.aliases],
+      summary: draft.summary.trim(),
+      resident: draft.resident,
+      status: draft.status,
+      refChapters: [],
+      conflicts: 0,
+      character: draft.kind === 'character' ? structuredClone(draft.character ?? {}) : undefined,
+      facts: draft.kind === 'character' ? undefined : structuredClone(draft.facts ?? [])
+    }
+    if (projectId === 'p1') state.codex.push(entry)
+    return structuredClone(entry)
+  },
+
+  async updateCodexEntry(id: string, draft: CodexEntryDraft): Promise<CodexEntry> {
+    await delay(140)
+    const entry = state.codex.find((item) => item.id === id)
+    if (!entry) throw new Error('codex_entry_not_loaded')
+    Object.assign(entry, {
+      kind: draft.kind,
+      name: draft.name.trim(),
+      aliases: [...draft.aliases],
+      summary: draft.summary.trim(),
+      resident: draft.resident,
+      status: draft.status,
+      character: draft.kind === 'character' ? structuredClone(draft.character ?? {}) : undefined,
+      facts: draft.kind === 'character' ? undefined : structuredClone(draft.facts ?? [])
+    })
+    return structuredClone(entry)
   },
 
   async confirmCodexEntry(id: string): Promise<void> {
