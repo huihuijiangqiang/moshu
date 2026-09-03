@@ -1,6 +1,6 @@
 import { ApiError, USE_MOCK, request } from './http'
 import { mockApi } from './mock'
-import type { Chapter, ChapterPlanPatch, CodexEntry, CodexEntryDraft, CodexKind, ContextLayer, GuardIssue, GuardOverview, GuardResolutionAction, Project, ProjectPatch, ProjectTrash, Volume } from '@/types'
+import type { Chapter, ChapterPlanPatch, ChapterVersionDetail, ChapterVersionRestoreResult, ChapterVersionSummary, CodexEntry, CodexEntryDraft, CodexKind, ContextLayer, GuardIssue, GuardOverview, GuardResolutionAction, Project, ProjectPatch, ProjectTrash, Volume } from '@/types'
 
 interface ProjectDto {
   id: string
@@ -41,6 +41,30 @@ interface ChapterListDto {
 interface ChapterDto extends ChapterListDto {
   content_html: string
   rev: number
+}
+
+interface ChapterVersionSummaryDto {
+  id: number
+  rev: number
+  trigger: string
+  words: number
+  excerpt: string
+  created_at: string
+  is_current: boolean
+}
+
+interface ChapterVersionDetailDto extends ChapterVersionSummaryDto {
+  content_html: string
+  content_json: Record<string, unknown>
+}
+
+interface ChapterVersionRestoreDto {
+  rev: number
+  restored_from_rev: number
+  content_html: string
+  content_json: Record<string, unknown>
+  words: number
+  consistency_status: string
 }
 
 export interface ChapterSaveResult {
@@ -394,6 +418,18 @@ function chapterFromDto(dto: ChapterListDto, status: Chapter['status']): Chapter
   }
 }
 
+function chapterVersionSummaryFromDto(dto: ChapterVersionSummaryDto): ChapterVersionSummary {
+  return {
+    id: dto.id,
+    rev: dto.rev,
+    trigger: dto.trigger,
+    words: dto.words,
+    excerpt: dto.excerpt,
+    createdAt: dto.created_at,
+    isCurrent: dto.is_current
+  }
+}
+
 export function htmlToDocument(html: string): Record<string, unknown> {
   const document = new DOMParser().parseFromString(html, 'text/html')
   const content = Array.from(document.body.children).map((element, index) => ({
@@ -446,6 +482,50 @@ const realApi = {
     const chapter = { ...chapterFromDto(dto, dto.words > 0 ? 'done' : 'outlined'), content: dto.content_html, rev: dto.rev }
     chapterCache.set(id, chapter)
     return chapter
+  },
+
+  async listChapterVersions(id: string): Promise<ChapterVersionSummary[]> {
+    const rows = await request<ChapterVersionSummaryDto[]>(`/chapters/${id}/versions`)
+    return rows.map(chapterVersionSummaryFromDto)
+  },
+
+  async getChapterVersion(id: string, rev: number): Promise<ChapterVersionDetail> {
+    const dto = await request<ChapterVersionDetailDto>(`/chapters/${id}/versions/${rev}`)
+    return {
+      ...chapterVersionSummaryFromDto(dto),
+      content: dto.content_html,
+      contentJson: dto.content_json
+    }
+  },
+
+  async restoreChapterVersion(id: string, rev: number): Promise<ChapterVersionRestoreResult> {
+    try {
+      const dto = await request<ChapterVersionRestoreDto>(`/chapters/${id}/versions/${rev}/restore`, {
+        method: 'POST',
+        headers: { 'Idempotency-Key': crypto.randomUUID() },
+        body: JSON.stringify({ base_rev: revisions.get(id) ?? 0 })
+      })
+      revisions.set(id, dto.rev)
+      const cached = chapterCache.get(id)
+      if (cached) Object.assign(cached, { content: dto.content_html, rev: dto.rev, words: dto.words })
+      return {
+        rev: dto.rev,
+        restoredFromRev: dto.restored_from_rev,
+        content: dto.content_html,
+        contentJson: dto.content_json,
+        words: dto.words,
+        consistencyStatus: dto.consistency_status
+      }
+    } catch (error) {
+      if (error instanceof ApiError) {
+        const conflict = bodyConflictFromError(id, error)
+        if (conflict) {
+          revisions.set(id, conflict.serverRev)
+          throw new BodyConflictError(conflict)
+        }
+      }
+      throw error
+    }
   },
 
   async saveChapter(id: string, patch: Partial<Chapter>): Promise<ChapterSaveResult> {

@@ -49,11 +49,13 @@ export function useAutosave(chapterId: Ref<string | null>, html: Ref<string>, th
     }
   }
 
-  async function flush() {
+  async function flush(targetChapterId?: string) {
     if (saving || pendingByChapter.size === 0) return
     if (!online.value) { state.value = 'offline'; return }
     if (conflict.value) { state.value = 'conflict'; return }
-    const draft = pendingByChapter.values().next().value as PendingDraft
+    const requestedDraft = targetChapterId ? pendingByChapter.get(targetChapterId) : undefined
+    if (targetChapterId && !requestedDraft) return
+    const draft = requestedDraft ?? pendingByChapter.values().next().value as PendingDraft
     if (cleanByChapter.get(draft.chapterId) === draft.html) {
       pendingByChapter.delete(draft.chapterId)
       await removeStoredDraft(draft.chapterId)
@@ -171,6 +173,20 @@ export function useAutosave(chapterId: Ref<string | null>, html: Ref<string>, th
     await flush()
   }
 
+  async function recordConflict(next: BodyConflict) {
+    conflict.value = next
+    pendingByChapter.set(next.chapterId, {
+      chapterId: next.chapterId,
+      html: next.clientContentHtml
+    })
+    state.value = 'conflict'
+    try {
+      await idbSet(`draft:${next.chapterId}`, { html: next.clientContentHtml, at: Date.now() })
+    } catch {
+      storageWarning.value = true
+    }
+  }
+
   async function retry() {
     if (!pendingByChapter.size || saving) return
     state.value = 'dirty'
@@ -205,6 +221,7 @@ export function useAutosave(chapterId: Ref<string | null>, html: Ref<string>, th
 
   return {
     state, savedAt, online, recoveryDraft, conflict, storageWarning, flush, retry, markClean,
-    prepareChapter, restoreLocalDraft, discardLocalDraft, acceptServerVersion, keepLocalVersion
+    prepareChapter, restoreLocalDraft, discardLocalDraft, acceptServerVersion, keepLocalVersion,
+    recordConflict
   }
 }

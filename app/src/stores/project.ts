@@ -67,7 +67,7 @@ export const useProjectStore = defineStore('project', () => {
     const target = chapters.value.find((c) => c.id === id)
     if (!target || target.content !== undefined) return
     const full = await contentApi.getChapter(id)
-    if (full) target.content = full.content ?? ''
+    if (full) Object.assign(target, { content: full.content ?? '', rev: full.rev })
   }
 
   function setWords(id: string, words: number) {

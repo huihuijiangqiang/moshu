@@ -1,19 +1,20 @@
 """
 章节 API - 使用真实的 body save service
 """
-from fastapi import APIRouter, Depends, Header, HTTPException, status
-from pydantic import BaseModel, ConfigDict
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, status
+from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from api.auth import ProjectPermission, get_current_user, verify_project_permission
-from db import Chapter, ChapterBody
+from db import Chapter, ChapterBody, ChapterVersion
 from db.models_core import User
 from db.session import get_db
 from services.body import (
     BodyRevisionConflictError,
     IdempotencyInProgressError,
     InvalidCodexRefError,
+    count_words,
     save_chapter_body,
 )
 from services.idempotency import IdempotencyConflictError
@@ -66,6 +67,76 @@ class ConflictResponse(BaseModel):
     server_rev: int
     client_content_html: str
     client_content_json: dict
+
+
+class ChapterVersionSummary(BaseModel):
+    id: int
+    rev: int
+    trigger: str
+    words: int
+    excerpt: str
+    created_at: str
+    is_current: bool
+
+
+class ChapterVersionDetail(ChapterVersionSummary):
+    content_html: str
+    content_json: dict
+
+
+class RestoreChapterVersionRequest(BaseModel):
+    base_rev: int = Field(ge=0)
+
+
+class RestoreChapterVersionResponse(BaseModel):
+    rev: int
+    restored_from_rev: int
+    content_html: str
+    content_json: dict
+    words: int
+    consistency_status: str
+
+
+def _document_excerpt(content_json: dict, limit: int = 140) -> str:
+    parts: list[str] = []
+
+    def walk(nodes: object) -> None:
+        if not isinstance(nodes, list):
+            return
+        for node in nodes:
+            if not isinstance(node, dict):
+                continue
+            text = node.get("text")
+            if isinstance(text, str):
+                parts.append(text)
+            walk(node.get("content"))
+
+    walk(content_json.get("content"))
+    text = "".join(parts).strip()
+    if not text:
+        return "空白正文"
+    return f"{text[:limit]}…" if len(text) > limit else text
+
+
+def _version_summary(version: ChapterVersion, current_rev: int) -> ChapterVersionSummary:
+    return ChapterVersionSummary(
+        id=version.id,
+        rev=version.rev,
+        trigger=version.trigger,
+        words=count_words(version.content_json),
+        excerpt=_document_excerpt(version.content_json),
+        created_at=version.created_at.isoformat(),
+        is_current=version.rev == current_rev,
+    )
+
+
+async def _active_chapter(chapter_id: str, db: AsyncSession) -> Chapter:
+    chapter = await db.scalar(
+        select(Chapter).where(Chapter.id == chapter_id, Chapter.deleted_at.is_(None))
+    )
+    if chapter is None:
+        raise HTTPException(status_code=404, detail={"code": "CHAPTER_NOT_FOUND"})
+    return chapter
 
 
 @router.get("/{chapter_id}", response_model=ChapterOut)
@@ -125,6 +196,145 @@ async def get_chapter(
         content_json=body.content_json,
         rev=body.rev,
         updated_at=chapter.updated_at.isoformat(),
+    )
+
+
+@router.get("/{chapter_id}/versions", response_model=list[ChapterVersionSummary])
+async def list_chapter_versions(
+    chapter_id: str,
+    limit: int = Query(default=50, ge=1, le=100),
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> list[ChapterVersionSummary]:
+    """List lightweight immutable snapshots without loading every historical body."""
+    chapter = await _active_chapter(chapter_id, db)
+    await verify_project_permission(chapter.project_id, ProjectPermission.VIEW, user, db)
+    current_rev = await db.scalar(
+        select(ChapterBody.rev).where(ChapterBody.chapter_id == chapter_id)
+    ) or 0
+    versions = list(
+        (
+            await db.execute(
+                select(ChapterVersion)
+                .where(ChapterVersion.chapter_id == chapter_id)
+                .order_by(ChapterVersion.rev.desc(), ChapterVersion.id.desc())
+                .limit(limit)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    return [_version_summary(version, current_rev) for version in versions]
+
+
+@router.get("/{chapter_id}/versions/{revision}", response_model=ChapterVersionDetail)
+async def get_chapter_version(
+    chapter_id: str,
+    revision: int,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> ChapterVersionDetail:
+    chapter = await _active_chapter(chapter_id, db)
+    await verify_project_permission(chapter.project_id, ProjectPermission.VIEW, user, db)
+    version = await db.scalar(
+        select(ChapterVersion)
+        .where(ChapterVersion.chapter_id == chapter_id, ChapterVersion.rev == revision)
+        .order_by(ChapterVersion.id.desc())
+        .limit(1)
+    )
+    if version is None:
+        raise HTTPException(status_code=404, detail={"code": "CHAPTER_VERSION_NOT_FOUND"})
+    current_rev = await db.scalar(
+        select(ChapterBody.rev).where(ChapterBody.chapter_id == chapter_id)
+    ) or 0
+    summary = _version_summary(version, current_rev)
+    return ChapterVersionDetail(
+        **summary.model_dump(),
+        content_html=version.content_html,
+        content_json=version.content_json,
+    )
+
+
+@router.post("/{chapter_id}/versions/{revision}/restore", response_model=RestoreChapterVersionResponse)
+async def restore_chapter_version(
+    chapter_id: str,
+    revision: int,
+    request: RestoreChapterVersionRequest,
+    idempotency_key: str = Header(..., alias="Idempotency-Key"),
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> RestoreChapterVersionResponse:
+    """Restore a snapshot as a new head revision; never rewrite immutable history."""
+    chapter = await _active_chapter(chapter_id, db)
+    await verify_project_permission(chapter.project_id, ProjectPermission.EDIT_BODY, user, db)
+    version = await db.scalar(
+        select(ChapterVersion)
+        .where(ChapterVersion.chapter_id == chapter_id, ChapterVersion.rev == revision)
+        .order_by(ChapterVersion.id.desc())
+        .limit(1)
+    )
+    if version is None:
+        raise HTTPException(status_code=404, detail={"code": "CHAPTER_VERSION_NOT_FOUND"})
+
+    version_html = version.content_html
+    version_json = version.content_json
+    body_stmt = select(ChapterBody).where(ChapterBody.chapter_id == chapter_id)
+    try:
+        result = await save_chapter_body(
+            db,
+            chapter_id=chapter_id,
+            content_html=version_html,
+            content_json=version_json,
+            base_rev=request.base_rev,
+            idempotency_key=idempotency_key,
+            trigger="restore_version",
+        )
+        await db.commit()
+    except BodyRevisionConflictError:
+        await db.rollback()
+        body = await db.scalar(body_stmt)
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=ConflictResponse(
+                server_content_html=body.content_html if body else "",
+                server_content_json=body.content_json if body else {},
+                server_rev=body.rev if body else 0,
+                client_content_html=version_html,
+                client_content_json=version_json,
+            ).model_dump(),
+        )
+    except InvalidCodexRefError as error:
+        await db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=str(error),
+        )
+    except IdempotencyConflictError as error:
+        await db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Idempotency key conflict: {error.key}",
+        )
+    except IdempotencyInProgressError:
+        await db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_202_ACCEPTED,
+            detail="Request is being processed, please retry later",
+        )
+    except Exception as error:
+        await db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=str(error),
+        )
+
+    return RestoreChapterVersionResponse(
+        rev=result["rev"],
+        restored_from_rev=revision,
+        content_html=version_html,
+        content_json=version_json,
+        words=count_words(version_json),
+        consistency_status=result["consistency_status"],
     )
 
 

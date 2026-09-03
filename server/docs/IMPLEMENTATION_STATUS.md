@@ -7,8 +7,8 @@
 
 **关键事实**：
 - ✅ 34 张表完整 Alembic baseline，增量迁移已到 `012_content_lifecycle`
-- ✅ 997 个单元/功能测试通过（SQLite in-memory，mock embedding/LLM）
-- ✅ 前端 67 个测试、TypeScript 类型检查和生产构建通过
+- ✅ 1001 个单元/功能测试通过（SQLite in-memory，mock embedding/LLM）
+- ✅ 前端 73 个测试、TypeScript 类型检查和生产构建通过
 - ✅ 36 个集成测试已在本机真实 PostgreSQL + pgvector 环境通过
 - ✅ 已完成真实账号认证、作品创建、作品归档、分卷与章节增删改排、回收站和章纲编辑闭环
 - ✅ Refresh session 持久化轮换、防重放、注销即时吊销，系统管理员与项目 RBAC 已接通
@@ -147,6 +147,8 @@ PostgreSQL/pgvector 检索必须在真实部署上单独压测；该脚本只覆
 - ✅ 409 双版本解析与处置：采用云端，或基于最新 server_rev 保留本地再保存
 - ✅ 网络失败保留本地草稿并提供手工重试；离线恢复后自动续传
 - ✅ 编辑器正文同步回项目 store，切章返回不会重新灌入旧内容
+- ✅ 版本历史抽屉按需加载历史正文，提供段落级差异、完整纯文本预览与二次确认恢复
+- ✅ 恢复前强制保存当前章；离线、保存失败或冲突时禁止恢复，恢复结果作为新 head 且不改写旧快照
 
 #### 一致性服务 (`services/consistency.py`)
 - ✅ Claim fingerprint 计算（规范化主谓宾去重）
@@ -302,6 +304,9 @@ PostgreSQL/pgvector 检索必须在真实部署上单独压测；该脚本只覆
 
 #### 章节 (`api/chapters.py`)
 - ✅ `GET /chapters/{id}` - 章节详情（含正文 + rev）
+- ✅ `GET /chapters/{id}/versions` - 轻量版本元数据列表（默认最近 50 条，不返回完整正文）
+- ✅ `GET /chapters/{id}/versions/{rev}` - 按需读取单个历史正文
+- ✅ `POST /chapters/{id}/versions/{rev}/restore` - 带乐观锁与幂等键恢复为新 head，保留全部历史
 - ✅ `PUT /chapters/{id}/body` - 保存正文（乐观锁 + Idempotency-Key）
   - ✅ 409 冲突响应（双方内容）
   - ✅ 422 校验失败
@@ -371,9 +376,9 @@ PostgreSQL/pgvector 检索必须在真实部署上单独压测；该脚本只覆
 
 ### 5. 测试覆盖
 
-#### 单元测试（997 passed，SQLite in-memory，mock providers）
+#### 单元测试（1001 passed，SQLite in-memory，mock providers）
 
-**全量测试结果**：997 passed, 36 skipped（未设置集成测试 URL 时）, 0 warnings；前端 67 passed
+**全量测试结果**：1001 passed, 36 skipped（未设置集成测试 URL 时）, 0 warnings；前端 73 passed
 
 主要测试覆盖（不逐文件列举测试数量，以实际 pytest 结果为准）：
 - ✅ Codex 设定库：页面与 API 完整 CRUD、引用删除保护、原子别名替换、可检索文本判据、两段式事务、deferred 降级、httpx 错误重试
@@ -612,7 +617,7 @@ baseline，增量实现 Codex embedding 回填、时间锚点解析、issue 生�
    - 将自动一致性、摘要和 embedding 纳入后台成本台账
 
 3. **补齐创作工作流 P0 缺口**
-   - 正文版本历史浏览、对比与一键恢复（后端已有快照，前端尚无入口）
+   - ✅ 正文版本历史浏览、段落级对比与指定版本恢复已完成
    - AI 多候选草稿持久化，关闭页面后仍可继续比较与采纳
    - 全书查找替换，带范围、预览、撤销和设定名安全检查
 
@@ -679,9 +684,9 @@ baseline，增量实现 Codex embedding 回填、时间锚点解析、issue 生�
 - `server/tasks/consistency.py` - 一致性任务
 - `server/tasks/codex.py` - Codex 回填任务
 
-### 测试（997 passed；另有 36 个真实 PostgreSQL 测试通过）
-- `server/tests/` - 单元/功能测试（997 passed）
-- `app/src/**/*.spec.ts` - 前端测试（67 passed）
+### 测试（1001 passed；另有 36 个真实 PostgreSQL 测试通过）
+- `server/tests/` - 单元/功能测试（1001 passed）
+- `app/src/**/*.spec.ts` - 前端测试（73 passed）
 - `server/tests/integration/` - 集成测试（36 passed，需设置真实 PostgreSQL URL）
 
 ### 文档（1 个文件）
@@ -691,10 +696,10 @@ baseline，增量实现 Codex embedding 回填、时间锚点解析、issue 生�
 
 ## 总结
 
-墨枢一致性后端已完成核心数据模型、服务层、API 端点和异步任务定义，997 个单元/功能
+墨枢一致性后端已完成核心数据模型、服务层、API 端点和异步任务定义，1001 个单元/功能
 测试在 SQLite in-memory + mock providers 环境下通过，另有 36 个集成测试在真实
 PostgreSQL + pgvector 环境通过。真实认证、可吊销会话、管理员、工作室 RBAC、作品创建、
-作品归档、分卷与章节生命周期、章纲、全量导出、非覆盖备份恢复、风格指纹、AI 来源账本与作者生成用量台账已经接通，前端 67 个测试与生产构建通过。
+作品归档、分卷与章节生命周期、章纲、正文版本历史与恢复、全量导出、非覆盖备份恢复、风格指纹、AI 来源账本与作者生成用量台账已经接通，前端 73 个测试与生产构建通过。
 
 **关键限制**：
 1. 自动一致性与 embedding 后台模型成本尚未进入统一台账

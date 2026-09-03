@@ -48,4 +48,19 @@ describe('project store editor content', () => {
       rev: 7
     })
   })
+
+  it('keeps the body revision returned by the chapter detail endpoint', async () => {
+    const store = useProjectStore()
+    store.chapters = [{
+      id: 'ch-1', volumeId: 'v-1', index: 1, title: '第一章', words: 4,
+      status: 'drafting', outline: [], outlineNote: ''
+    }]
+    vi.spyOn(contentApi, 'getChapter').mockResolvedValue({
+      ...store.chapters[0]!, content: '<p>云端正文</p>', rev: 9
+    })
+
+    await store.openChapter('ch-1')
+
+    expect(store.chapters[0]).toMatchObject({ content: '<p>云端正文</p>', rev: 9 })
+  })
 })

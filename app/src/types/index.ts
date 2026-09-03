@@ -105,6 +105,30 @@ export interface Chapter {
   rev?: number
 }
 
+export interface ChapterVersionSummary {
+  id: number
+  rev: number
+  trigger: string
+  words: number
+  excerpt: string
+  createdAt: string
+  isCurrent: boolean
+}
+
+export interface ChapterVersionDetail extends ChapterVersionSummary {
+  content: string
+  contentJson: Record<string, unknown>
+}
+
+export interface ChapterVersionRestoreResult {
+  rev: number
+  restoredFromRev: number
+  content: string
+  contentJson: Record<string, unknown>
+  words: number
+  consistencyStatus: string
+}
+
 export interface ChapterPlanPatch {
   title: string
   outline: string[]

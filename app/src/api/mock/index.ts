@@ -1,7 +1,7 @@
 import { delay } from '../http'
 import * as seed from './seed'
 import { findShelfBook } from './shelf'
-import type { Chapter, ChapterPlanPatch, CodexEntry, CodexEntryDraft, GuardIssue, GuardOverview, GuardResolutionAction, Project, ContextLayer, ProjectPatch, ProjectTrash } from '@/types'
+import type { Chapter, ChapterPlanPatch, ChapterVersionDetail, ChapterVersionRestoreResult, ChapterVersionSummary, CodexEntry, CodexEntryDraft, GuardIssue, GuardOverview, GuardResolutionAction, Project, ContextLayer, ProjectPatch, ProjectTrash } from '@/types'
 
 /** 内存态副本：mock 下的写操作要真的改变数据，否则界面行为是假的。 */
 const state = {
@@ -14,6 +14,7 @@ const state = {
 const projectDrafts = new Map<string, Chapter[]>()
 const projectStates = new Map<string, Project>()
 const trashStates = new Map<string, ProjectTrash>()
+const chapterVersionStates = new Map<string, ChapterVersionDetail[]>()
 
 function projectFor(id: string): Project {
   if (id === seed.project.id) return state.project
@@ -84,6 +85,54 @@ function chaptersFor(id: string): Chapter[] {
   return rows
 }
 
+function findChapter(id: string): Chapter | undefined {
+  return [...state.chapters, ...projectDrafts.values()].flat().find((chapter) => chapter.id === id)
+}
+
+function plainText(content = ''): string {
+  return new DOMParser().parseFromString(content, 'text/html').body.textContent?.trim() ?? ''
+}
+
+function versionsFor(id: string): ChapterVersionDetail[] {
+  const existing = chapterVersionStates.get(id)
+  if (existing) return existing
+  const chapter = findChapter(id)
+  const text = plainText(chapter?.content)
+  const versions: ChapterVersionDetail[] = chapter?.content === undefined ? [] : [{
+    id: 1,
+    rev: chapter.rev ?? 1,
+    trigger: 'manual',
+    words: text.length,
+    excerpt: text.slice(0, 140) || '空白正文',
+    createdAt: new Date(Date.now() - 15 * 60_000).toISOString(),
+    isCurrent: true,
+    content: chapter.content,
+    contentJson: {}
+  }]
+  if (chapter && versions.length) chapter.rev = versions[0]!.rev
+  chapterVersionStates.set(id, versions)
+  return versions
+}
+
+function addMockVersion(chapter: Chapter, trigger: string): ChapterVersionDetail {
+  const rows = versionsFor(chapter.id)
+  rows.forEach((version) => { version.isCurrent = false })
+  const text = plainText(chapter.content)
+  const version: ChapterVersionDetail = {
+    id: Math.max(0, ...rows.map((item) => item.id)) + 1,
+    rev: chapter.rev ?? 1,
+    trigger,
+    words: text.length,
+    excerpt: text.length > 140 ? `${text.slice(0, 140)}…` : text || '空白正文',
+    createdAt: new Date().toISOString(),
+    isCurrent: true,
+    content: chapter.content ?? '',
+    contentJson: {}
+  }
+  rows.unshift(version)
+  return version
+}
+
 export const mockApi = {
   async getProject(projectId = 'p1'): Promise<Project> {
     await delay()
@@ -98,16 +147,50 @@ export const mockApi = {
 
   async getChapter(id: string): Promise<Chapter | undefined> {
     await delay(180)
-    const c = [...state.chapters, ...projectDrafts.values()].flat().find((x) => x.id === id)
+    const c = findChapter(id)
+    versionsFor(id)
     return c ? structuredClone(c) : undefined
+  },
+
+  async listChapterVersions(id: string): Promise<ChapterVersionSummary[]> {
+    await delay(120)
+    return structuredClone(versionsFor(id).map(({ content, contentJson, ...summary }) => summary))
+  },
+
+  async getChapterVersion(id: string, rev: number): Promise<ChapterVersionDetail> {
+    await delay(100)
+    const version = versionsFor(id).find((item) => item.rev === rev)
+    if (!version) throw new Error('chapter_version_not_found')
+    return structuredClone(version)
+  },
+
+  async restoreChapterVersion(id: string, rev: number): Promise<ChapterVersionRestoreResult> {
+    await delay(140)
+    const chapter = findChapter(id)
+    const selected = versionsFor(id).find((item) => item.rev === rev)
+    if (!chapter || !selected) throw new Error('chapter_version_not_found')
+    chapter.content = selected.content
+    chapter.words = selected.words
+    chapter.rev = (chapter.rev ?? 0) + 1
+    addMockVersion(chapter, 'restore_version')
+    return {
+      rev: chapter.rev,
+      restoredFromRev: rev,
+      content: chapter.content,
+      contentJson: selected.contentJson,
+      words: chapter.words,
+      consistencyStatus: 'queued'
+    }
   },
 
   async saveChapter(id: string, patch: Partial<Chapter>): Promise<{ rev: number }> {
     await delay(120)
-    const c = [...state.chapters, ...projectDrafts.values()].flat().find((x) => x.id === id)
+    const c = findChapter(id)
     if (!c) return { rev: 0 }
+    versionsFor(id)
     Object.assign(c, patch)
     c.rev = (c.rev ?? 0) + 1
+    addMockVersion(c, 'manual')
     return { rev: c.rev }
   },
 

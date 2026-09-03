@@ -5,6 +5,7 @@ import { EditorContent } from '@tiptap/vue-3'
 import ChapterPanel from '@/components/layout/ChapterPanel.vue'
 import AiSidePanel from '@/components/layout/AiSidePanel.vue'
 import AiFloatingBar from '@/components/editor/AiFloatingBar.vue'
+import ChapterVersionDrawer from '@/components/editor/ChapterVersionDrawer.vue'
 import CodexSuggestList from '@/components/editor/CodexSuggestList.vue'
 import AppIcon from '@/components/ui/AppIcon.vue'
 import { useNovelEditor } from '@/editor/use-novel-editor'
@@ -12,6 +13,7 @@ import { useAutosave } from '@/composables/use-autosave'
 import { useProjectNavigation } from '@/composables/use-project-navigation'
 import { useProjectStore } from '@/stores/project'
 import { useShellStore } from '@/stores/shell'
+import { BodyConflictError, contentApi } from '@/api/content'
 import { streamChapter, streamInline } from '@/api/generation'
 import type { GenerationControls, InlineGenerateOptions } from '@/types'
 
@@ -27,6 +29,9 @@ const chapterId = computed(() => store.activeId)
 const generating = ref(false)
 const generationError = ref('')
 const paneTab = ref<'body' | 'outline'>('body')
+const versionOpen = ref(false)
+const restoringVersion = ref(false)
+const restoreError = ref('')
 let abort: (() => void) | null = null
 let disposed = false
 
@@ -50,7 +55,10 @@ const {
   restoreLocalDraft,
   discardLocalDraft,
   acceptServerVersion,
-  keepLocalVersion
+  keepLocalVersion,
+  flush,
+  markClean,
+  recordConflict
 } = useAutosave(chapterId, html)
 
 const requestedChapterId = computed(() => typeof route.query.chapter === 'string' ? route.query.chapter : null)
@@ -158,6 +166,13 @@ const saveLabel = computed(() => {
 
 const activeRecovery = computed(() => recoveryDraft.value?.chapterId === store.activeId ? recoveryDraft.value : null)
 const activeSaveConflict = computed(() => saveConflict.value?.chapterId === store.activeId ? saveConflict.value : null)
+const restoreDisabledReason = computed(() => {
+  if (!online.value) return '联网后才能恢复历史版本。当前草稿仍保存在本地。'
+  if (saveConflict.value) return '请先处理正文版本冲突，再恢复历史版本。'
+  if (saveState.value === 'saving') return '当前正文正在保存，请稍候。'
+  if (saveState.value === 'error') return '当前正文尚未保存成功，请先重试保存。'
+  return undefined
+})
 
 function excerpt(content: string) {
   const text = new DOMParser().parseFromString(content, 'text/html').body.textContent?.trim() ?? ''
@@ -189,6 +204,42 @@ async function useServerVersion() {
   const accepted = await acceptServerVersion()
   if (accepted && accepted.chapterId === store.activeId) {
     replaceEditorContent(accepted.html, accepted.rev)
+  }
+}
+
+function openVersionHistory() {
+  if (!store.activeId) return
+  restoreError.value = ''
+  versionOpen.value = true
+}
+
+async function restoreVersion(revision: number) {
+  const id = store.activeId
+  if (!id || restoringVersion.value || restoreDisabledReason.value) return
+  restoreError.value = ''
+  restoringVersion.value = true
+  try {
+    await flush(id)
+    if (saveState.value === 'error' || saveState.value === 'offline' || saveState.value === 'conflict') {
+      restoreError.value = '当前正文未能安全保存，历史版本没有恢复。'
+      return
+    }
+    const restored = await contentApi.restoreChapterVersion(id, revision)
+    markClean(id, restored.content)
+    replaceEditorContent(restored.content, restored.rev)
+    store.setWords(id, restored.words)
+    versionOpen.value = false
+  } catch (error) {
+    if (error instanceof BodyConflictError) {
+      await recordConflict(error.conflict)
+      replaceEditorContent(error.conflict.clientContentHtml)
+      store.setWords(id, new DOMParser().parseFromString(error.conflict.clientContentHtml, 'text/html').body.textContent?.length ?? 0)
+      versionOpen.value = false
+      return
+    }
+    restoreError.value = '历史版本恢复失败，正文没有被更改。请重试。'
+  } finally {
+    restoringVersion.value = false
   }
 }
 
@@ -321,6 +372,9 @@ function editChapterPlan() {
             fontWeight: saveState === 'offline' || saveState === 'error' ? 700 : 400
           }"
         >{{ saveLabel }}</span>
+        <button class="paper-history-button" type="button" title="正文版本历史" aria-label="正文版本历史" @click="openVersionHistory">
+          <AppIcon name="history" :size="16" />
+        </button>
         <button class="wk-btn wk-btn-xs" type="button" :title="shell.zen ? '退出纯净模式 ⌘\\' : '纯净模式 ⌘\\'" @click="shell.toggleZen()">
           {{ shell.zen ? '退出纯净' : '纯净模式' }}
         </button>
@@ -434,5 +488,34 @@ function editChapterPlan() {
     </aside>
 
     <CodexSuggestList />
+    <ChapterVersionDrawer
+      v-if="versionOpen && store.activeId"
+      :chapter-id="store.activeId"
+      :chapter-title="store.active?.title || '未命名章节'"
+      :current-content="html"
+      :restore-disabled-reason="restoreDisabledReason"
+      :restoring="restoringVersion"
+      :restore-error="restoreError"
+      @close="versionOpen = false"
+      @restore="restoreVersion"
+    />
   </div>
 </template>
+
+<style scoped>
+.paper-history-button {
+  display: grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  flex: none;
+  padding: 0;
+  color: var(--ink-3);
+  background: transparent;
+  border: var(--hair) solid transparent;
+  border-radius: 4px;
+  cursor: pointer;
+}
+.paper-history-button:hover { color: var(--ink); background: var(--panel-sunken); border-color: var(--line); }
+.paper-history-button:focus-visible { outline: 2px solid var(--primary); outline-offset: 1px; }
+</style>

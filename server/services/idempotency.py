@@ -36,6 +36,11 @@ class IdempotencyInProgressError(Exception):
         super().__init__(f"Idempotency request in progress: scope={scope}, key={key}")
 
 
+def _utc(value: datetime) -> datetime:
+    """SQLite drops timezone metadata; PostgreSQL returns aware timestamps."""
+    return value.replace(tzinfo=timezone.utc) if value.tzinfo is None else value.astimezone(timezone.utc)
+
+
 class IdempotencyService:
     """幂等性服务"""
 
@@ -140,7 +145,7 @@ class IdempotencyService:
 
         # 检查是否已完成
         if existing.status == "completed":
-            if existing.expires_at < now:
+            if _utc(existing.expires_at) < now:
                 # 过期记录：删除并重试
                 await db.delete(existing)
                 await db.flush()
@@ -155,7 +160,7 @@ class IdempotencyService:
             }
 
         # status == "pending"
-        if existing.lease_until and existing.lease_until > now:
+        if existing.lease_until and _utc(existing.lease_until) > now:
             # 租约有效，请求正在处理中
             return {"action": "wait"}
 
