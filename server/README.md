@@ -73,7 +73,7 @@ cp .env.example .env
 
 ### 3. 启动数据库
 
-在仓库根目录使用 Docker Compose：
+在仓库根目录只启动开发依赖：
 
 ```bash
 docker compose up -d postgres redis
@@ -81,6 +81,16 @@ docker compose up -d postgres redis
 
 容器使用 `pgvector/pgvector:pg16` 和 `redis:7-alpine`，默认端口分别为 5432、6379，
 并带健康检查与持久卷。
+
+也可以一次启动完整产品环境：
+
+```bash
+docker compose up -d --build
+```
+
+该命令先执行 Alembic migration，再启动 API、Celery worker/dispatcher/beat 和前端
+Nginx。前端监听 `5180`，API 监听 `8000`；本地密钥只从被 Git 忽略的 `server/.env`
+注入容器。
 
 ### 4. 运行迁移
 
@@ -98,7 +108,8 @@ uvicorn main:app --reload --host 0.0.0.0 --port 8000
 访问 API 文档：http://localhost:8000/docs
 
 容器探针：`GET /health` 仅检查 Web 进程存活；`GET /health/ready` 会实际探测
-PostgreSQL 与 Redis，全部通过时返回 200，否则返回 503 和逐项状态。
+PostgreSQL、Redis 与 Alembic head，全部通过时返回 200，否则返回 503 和逐项状态。
+响应包含 `BUILD_REVISION`，用于判断正在运行的实例是否与待验收提交一致。
 
 ## 已实现
 

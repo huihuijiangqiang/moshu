@@ -45,6 +45,7 @@ class Settings(BaseSettings):
     debug: bool = False
     cors_origins: str = "http://localhost:5173"
     log_level: str = "INFO"
+    build_revision: str = "local"
 
     # Consistency pipeline - 抽取/摘要/嵌入使用的网关与模型（不得在代码里硬编码）
     consistency_gateway_tier: str = "main"  # cheap, main, premium

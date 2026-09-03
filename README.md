@@ -2,7 +2,7 @@
 
 墨枢是面向长篇网文创作的 AI 写作平台。项目以一键成章为入口，重点解决长程设定记忆、一致性检查、伏笔追踪和作者风格保真。
 
-当前仓库包含可运行的 Vue 3 前端原型、FastAPI 后端骨架，以及产品调研、需求、界面设计和开发规划。
+当前仓库包含 Vue 3 写作前端、FastAPI API、PostgreSQL/pgvector、Redis 与 Celery 异步任务，以及产品调研、需求和开发文档。
 
 ## 仓库结构
 
@@ -43,6 +43,21 @@ uv pip install -e ".[dev]"
 cp .env.example .env
 uvicorn main:app --reload --port 8000
 ```
+
+## 完整环境启动
+
+准备好仅保存在本机的 `server/.env` 后，可在仓库根目录一次启动迁移、API、前端与异步任务：
+
+```bash
+docker compose up -d --build
+```
+
+- 前端：http://localhost:5180
+- API 文档：http://localhost:8000/docs
+- 就绪探针：http://localhost:8000/health/ready
+
+`migration` 会在 API 和 worker 启动前执行 `alembic upgrade head`。就绪探针同时检查
+PostgreSQL、Redis 与数据库迁移版本；任一项不满足就返回 503。
 
 ## 核心约束
 

@@ -3,7 +3,10 @@ FastAPI 应用入口
 """
 
 from contextlib import asynccontextmanager
+from pathlib import Path
 
+from alembic.config import Config as AlembicConfig
+from alembic.script import ScriptDirectory
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -31,6 +34,14 @@ from api import (
 )
 from config import settings
 from db.session import engine
+
+
+def _migration_head() -> str:
+    config = AlembicConfig(str(Path(__file__).with_name("alembic.ini")))
+    return ScriptDirectory.from_config(config).get_current_head()
+
+
+MIGRATION_HEAD = _migration_head()
 
 
 @asynccontextmanager
@@ -63,13 +74,18 @@ app.add_middleware(
 @app.get("/")
 async def root():
     """健康检查"""
-    return {"status": "ok", "service": "moshu-server"}
+    return {
+        "status": "ok",
+        "service": "moshu-server",
+        "version": app.version,
+        "revision": settings.build_revision,
+    }
 
 
 @app.get("/health")
 async def health():
     """健康检查端点"""
-    return {"status": "healthy"}
+    return {"status": "healthy", "revision": settings.build_revision}
 
 
 @app.get("/health/ready")
@@ -83,10 +99,14 @@ async def readiness():
     checks: dict[str, str] = {}
     try:
         async with engine.connect() as connection:
-            await connection.execute(text("SELECT 1"))
+            migration_result = await connection.execute(text("SELECT version_num FROM alembic_version"))
         checks["postgres"] = "ok"
+        checks["migrations"] = (
+            "ok" if migration_result.scalar_one_or_none() == MIGRATION_HEAD else "outdated"
+        )
     except Exception:
         checks["postgres"] = "failed"
+        checks["migrations"] = "unknown"
 
     if redis is None:
         checks["redis"] = "failed"
@@ -107,7 +127,11 @@ async def readiness():
                     pass
 
     ready = all(value == "ok" for value in checks.values())
-    payload = {"status": "ready" if ready else "not_ready", "checks": checks}
+    payload = {
+        "status": "ready" if ready else "not_ready",
+        "revision": settings.build_revision,
+        "checks": checks,
+    }
     return JSONResponse(status_code=200 if ready else 503, content=payload)
 
 
@@ -125,7 +149,3 @@ app.include_router(orgs.router, prefix="/orgs", tags=["组织"])
 app.include_router(usage.router, prefix="/usage", tags=["用量"])
 app.include_router(styles.router, tags=["风格档"])
 app.include_router(provenance.router, tags=["AI 来源"])
-
-# TODO: 挂载后续路由
-# from api import guard
-# app.include_router(guard.router, prefix="/guard", tags=["守卫"])

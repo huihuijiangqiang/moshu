@@ -6,11 +6,17 @@ import main
 
 
 class _Connection:
+    def __init__(self, migration_version=main.MIGRATION_HEAD):
+        self.migration_version = migration_version
+
     async def execute(self, _statement):
-        return None
+        return SimpleNamespace(scalar_one_or_none=lambda: self.migration_version)
 
 
 class _Engine:
+    def __init__(self, migration_version=main.MIGRATION_HEAD):
+        self.migration_version = migration_version
+
     def connect(self):
         engine = self
 
@@ -18,7 +24,7 @@ class _Engine:
             async def __aenter__(self):
                 if getattr(engine, "fail", False):
                     raise RuntimeError("database unavailable")
-                return _Connection()
+                return _Connection(engine.migration_version)
 
             async def __aexit__(self, *_args):
                 return False
@@ -48,7 +54,9 @@ async def test_readiness_reports_all_dependencies_ready(monkeypatch):
     response = await main.readiness()
 
     assert response.status_code == 200
-    assert response.body == b'{"status":"ready","checks":{"postgres":"ok","redis":"ok"}}'
+    assert response.status_code == 200
+    assert b'"status":"ready"' in response.body
+    assert b'"migrations":"ok"' in response.body
     assert fake_redis.closed is True
 
 
@@ -63,7 +71,10 @@ async def test_readiness_returns_503_without_leaking_dependency_errors(monkeypat
     response = await main.readiness()
 
     assert response.status_code == 503
-    assert response.body == b'{"status":"not_ready","checks":{"postgres":"failed","redis":"failed"}}'
+    assert b'"status":"not_ready"' in response.body
+    assert b'"postgres":"failed"' in response.body
+    assert b'"migrations":"unknown"' in response.body
+    assert b'"redis":"failed"' in response.body
     assert b"unavailable" not in response.body
     assert fake_redis.closed is True
 
@@ -80,4 +91,23 @@ async def test_readiness_handles_invalid_redis_configuration(monkeypatch):
     response = await main.readiness()
 
     assert response.status_code == 503
-    assert response.body == b'{"status":"not_ready","checks":{"postgres":"ok","redis":"failed"}}'
+    assert b'"status":"not_ready"' in response.body
+    assert b'"postgres":"ok"' in response.body
+    assert b'"migrations":"ok"' in response.body
+    assert b'"redis":"failed"' in response.body
+
+
+@pytest.mark.asyncio
+async def test_readiness_rejects_database_behind_migration_head(monkeypatch):
+    monkeypatch.setattr(main, "engine", _Engine("010_claim_temporal_evidence"))
+    monkeypatch.setattr(
+        main,
+        "redis",
+        SimpleNamespace(from_url=lambda *_args, **_kwargs: _Redis()),
+    )
+
+    response = await main.readiness()
+
+    assert response.status_code == 503
+    assert b'"postgres":"ok"' in response.body
+    assert b'"migrations":"outdated"' in response.body
