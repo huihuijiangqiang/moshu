@@ -1,7 +1,7 @@
 import { delay } from '../http'
 import * as seed from './seed'
 import { findShelfBook } from './shelf'
-import type { Chapter, ChapterPlanPatch, CodexEntry, CodexEntryDraft, GuardIssue, GuardOverview, GuardResolutionAction, Project, ContextLayer } from '@/types'
+import type { Chapter, ChapterPlanPatch, CodexEntry, CodexEntryDraft, GuardIssue, GuardOverview, GuardResolutionAction, Project, ContextLayer, ProjectPatch, ProjectTrash } from '@/types'
 
 /** 内存态副本：mock 下的写操作要真的改变数据，否则界面行为是假的。 */
 const state = {
@@ -12,13 +12,19 @@ const state = {
 }
 
 const projectDrafts = new Map<string, Chapter[]>()
+const projectStates = new Map<string, Project>()
+const trashStates = new Map<string, ProjectTrash>()
 
 function projectFor(id: string): Project {
   if (id === seed.project.id) return state.project
+  const existing = projectStates.get(id)
+  if (existing) return existing
   const book = findShelfBook(id)
-  return {
+  const project: Project = {
     id,
     title: book?.title ?? '未命名作品',
+    genre: book?.genre ?? null,
+    status: book?.status === 'finished' ? 'finished' : 'ongoing',
     wordCount: book?.words ?? 0,
     chapterCount: book?.chapters ?? 0,
     dailyGoal: 3000,
@@ -26,6 +32,20 @@ function projectFor(id: string): Project {
     styleProfile: null,
     volumes: [{ id: `${id}-v1`, index: 1, title: book?.status === 'planning' ? '故事构思' : '第一卷' }]
   }
+  projectStates.set(id, project)
+  return project
+}
+
+function trashFor(id: string): ProjectTrash {
+  const existing = trashStates.get(id)
+  if (existing) return existing
+  const trash: ProjectTrash = { volumes: [], chapters: [] }
+  trashStates.set(id, trash)
+  return trash
+}
+
+function renumberChapters(rows: Chapter[]) {
+  rows.sort((a, b) => a.index - b.index).forEach((chapter, index) => { chapter.index = index + 1 })
 }
 
 function chaptersFor(id: string): Chapter[] {
@@ -129,6 +149,121 @@ export const mockApi = {
     rows.push(chapter)
     if (projectId === state.project.id && state.project.chapterCount !== undefined) state.project.chapterCount += 1
     return structuredClone(chapter)
+  },
+
+  async updateProject(projectId: string, patch: ProjectPatch): Promise<Project> {
+    await delay(120)
+    const project = projectFor(projectId)
+    if (patch.title !== undefined) project.title = patch.title.trim()
+    if (patch.genre !== undefined) project.genre = patch.genre
+    if (patch.status !== undefined) project.status = patch.status
+    if (patch.dailyGoal !== undefined) project.dailyGoal = patch.dailyGoal
+    return structuredClone(project)
+  },
+
+  async createVolume(projectId: string, title: string, summary = '') {
+    await delay(120)
+    const project = projectFor(projectId)
+    const volume = { id: `${projectId}-v-${Date.now().toString(36)}`, index: project.volumes.length + 1, title: title.trim(), summary: summary.trim() || undefined }
+    project.volumes.push(volume)
+    return structuredClone(volume)
+  },
+
+  async updateVolume(projectId: string, volumeId: string, patch: { title?: string; summary?: string }): Promise<void> {
+    await delay(120)
+    const volume = projectFor(projectId).volumes.find((item) => item.id === volumeId)
+    if (!volume) throw new Error('volume_not_found')
+    if (patch.title !== undefined) volume.title = patch.title.trim()
+    if (patch.summary !== undefined) volume.summary = patch.summary.trim() || undefined
+  },
+
+  async reorderVolumes(projectId: string, volumeIds: string[]): Promise<void> {
+    await delay(120)
+    const project = projectFor(projectId)
+    const byId = new Map(project.volumes.map((volume) => [volume.id, volume]))
+    project.volumes = volumeIds.map((id, index) => ({ ...byId.get(id)!, index: index + 1 }))
+    const order = new Map(volumeIds.map((id, index) => [id, index]))
+    const rows = chaptersFor(projectId)
+    rows.sort((a, b) => (order.get(a.volumeId) ?? volumeIds.length) - (order.get(b.volumeId) ?? volumeIds.length) || a.index - b.index)
+    renumberChapters(rows)
+  },
+
+  async moveChapter(projectId: string, chapterId: string, volumeId: string, placement: 'first' | 'last' | 'after', afterChapterId?: string): Promise<void> {
+    await delay(120)
+    const rows = chaptersFor(projectId)
+    const chapter = rows.find((item) => item.id === chapterId)
+    if (!chapter) throw new Error('chapter_not_found')
+    rows.splice(rows.indexOf(chapter), 1)
+    const targets = rows.filter((item) => item.volumeId === volumeId)
+    let insertion = rows.length
+    if (placement === 'first' && targets[0]) insertion = rows.indexOf(targets[0])
+    if (placement === 'last' && targets.at(-1)) insertion = rows.indexOf(targets.at(-1)!) + 1
+    if (placement === 'after') {
+      const anchor = rows.find((item) => item.id === afterChapterId)
+      if (!anchor) throw new Error('after_chapter_not_found')
+      insertion = rows.indexOf(anchor) + 1
+    }
+    chapter.volumeId = volumeId
+    rows.splice(insertion, 0, chapter)
+    renumberChapters(rows)
+  },
+
+  async trashChapter(projectId: string, chapterId: string): Promise<void> {
+    await delay(100)
+    const rows = chaptersFor(projectId)
+    const index = rows.findIndex((item) => item.id === chapterId)
+    if (index < 0 || rows.length === 1) throw new Error('chapter_not_found')
+    const [chapter] = rows.splice(index, 1)
+    if (chapter) trashFor(projectId).chapters.unshift({
+      id: chapter.id, title: chapter.title, words: chapter.words, volumeId: chapter.volumeId,
+      volumeTitle: projectFor(projectId).volumes.find((item) => item.id === chapter.volumeId)?.title ?? null,
+      deletedAt: new Date().toISOString()
+    })
+    renumberChapters(rows)
+  },
+
+  async trashVolume(projectId: string, volumeId: string, targetVolumeId?: string): Promise<void> {
+    await delay(100)
+    const project = projectFor(projectId)
+    const index = project.volumes.findIndex((item) => item.id === volumeId)
+    if (index < 0 || project.volumes.length === 1) throw new Error('volume_not_found')
+    const volumeChapters = chaptersFor(projectId).filter((item) => item.volumeId === volumeId)
+    if (volumeChapters.length && !targetVolumeId) throw new Error('target_volume_required')
+    volumeChapters.forEach((chapter) => { chapter.volumeId = targetVolumeId! })
+    const [volume] = project.volumes.splice(index, 1)
+    project.volumes.forEach((item, volumeIndex) => { item.index = volumeIndex + 1 })
+    if (volume) trashFor(projectId).volumes.unshift({ id: volume.id, title: volume.title, deletedAt: new Date().toISOString() })
+  },
+
+  async getTrash(projectId: string): Promise<ProjectTrash> {
+    await delay(100)
+    return structuredClone(trashFor(projectId))
+  },
+
+  async restoreVolume(projectId: string, volumeId: string): Promise<void> {
+    await delay(100)
+    const trash = trashFor(projectId)
+    const index = trash.volumes.findIndex((item) => item.id === volumeId)
+    const [volume] = trash.volumes.splice(index, 1)
+    if (volume) projectFor(projectId).volumes.push({ id: volume.id, title: volume.title, index: projectFor(projectId).volumes.length + 1 })
+  },
+
+  async restoreChapter(projectId: string, chapterId: string, volumeId?: string): Promise<void> {
+    await delay(100)
+    const trash = trashFor(projectId)
+    const index = trash.chapters.findIndex((item) => item.id === chapterId)
+    const [item] = trash.chapters.splice(index, 1)
+    if (!item) return
+    const target = volumeId ?? item.volumeId ?? projectFor(projectId).volumes[0]!.id
+    const rows = chaptersFor(projectId)
+    rows.push({ id: item.id, volumeId: target, index: rows.length + 1, title: item.title, words: item.words, status: item.words ? 'done' : 'outlined', outline: [], outlineNote: '' })
+  },
+
+  async deleteTrashItem(projectId: string, kind: 'volumes' | 'chapters', id: string): Promise<void> {
+    await delay(100)
+    const rows = trashFor(projectId)[kind]
+    const index = rows.findIndex((item) => item.id === id)
+    if (index >= 0) rows.splice(index, 1)
   },
 
   async listCodex(projectId = 'p1'): Promise<CodexEntry[]> {

@@ -2,10 +2,12 @@
 项目（作品）API
 """
 import secrets
+from datetime import UTC, datetime
+from typing import Literal
 
-from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel, Field
-from sqlalchemy import func, or_, select, update
+from fastapi import APIRouter, Depends, HTTPException, Query
+from pydantic import BaseModel, ConfigDict, Field
+from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from api.auth import (
@@ -29,16 +31,16 @@ router = APIRouter()
 
 # Pydantic 模型
 class VolumeOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
     id: str
     title: str
     idx: int
     summary: str | None
 
-    class Config:
-        from_attributes = True
-
-
 class ProjectOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
     id: str
     title: str
     genre: str | None
@@ -51,12 +53,10 @@ class ProjectOut(BaseModel):
     created_at: str
     volumes: list[VolumeOut]
 
-    class Config:
-        from_attributes = True
-
-
 class ChapterListItem(BaseModel):
     """章节列表项 - 不含正文"""
+
+    model_config = ConfigDict(from_attributes=True)
 
     id: str
     volume_id: str | None
@@ -70,10 +70,6 @@ class ChapterListItem(BaseModel):
     outline_updated_at: str | None = None
     body_needs_revision: bool = False
     updated_at: str
-
-    class Config:
-        from_attributes = True
-
 
 class ProjectListItem(BaseModel):
     id: str
@@ -113,9 +109,148 @@ class ChapterCreate(BaseModel):
     after_index: int = Field(ge=0)
 
 
+class ProjectPatch(BaseModel):
+    title: str | None = Field(default=None, min_length=1, max_length=200)
+    genre: str | None = Field(default=None, max_length=100)
+    status: Literal["ongoing", "finished", "archived"] | None = None
+    target_words_daily: int | None = Field(default=None, ge=100, le=100_000)
+
+
+class VolumePatch(BaseModel):
+    title: str | None = Field(default=None, min_length=1, max_length=200)
+    summary: str | None = Field(default=None, max_length=20_000)
+
+
+class VolumeOrderRequest(BaseModel):
+    volume_ids: list[str] = Field(min_length=1, max_length=100)
+
+
+class ChapterPositionRequest(BaseModel):
+    volume_id: str = Field(min_length=1, max_length=32)
+    placement: Literal["first", "last", "after"] = "last"
+    after_chapter_id: str | None = Field(default=None, max_length=32)
+
+
+class RestoreChapterRequest(BaseModel):
+    volume_id: str | None = Field(default=None, max_length=32)
+
+
+class TrashVolumeOut(BaseModel):
+    id: str
+    title: str
+    deleted_at: str
+
+
+class TrashChapterOut(BaseModel):
+    id: str
+    title: str
+    words: int
+    volume_id: str | None
+    volume_title: str | None
+    deleted_at: str
+
+
+class ProjectTrashOut(BaseModel):
+    volumes: list[TrashVolumeOut]
+    chapters: list[TrashChapterOut]
+
+
+def _clean_required(value: str, code: str) -> str:
+    cleaned = value.strip()
+    if not cleaned:
+        raise HTTPException(status_code=422, detail={"code": code})
+    return cleaned
+
+
+async def _active_volumes(db: AsyncSession, project_id: str, *, lock: bool = False) -> list[Volume]:
+    statement = (
+        select(Volume)
+        .where(Volume.project_id == project_id, Volume.deleted_at.is_(None))
+        .order_by(Volume.idx, Volume.id)
+    )
+    if lock:
+        statement = statement.with_for_update()
+    return list((await db.execute(statement)).scalars().all())
+
+
+async def _active_chapters(db: AsyncSession, project_id: str, *, lock: bool = False) -> list[Chapter]:
+    statement = (
+        select(Chapter)
+        .where(Chapter.project_id == project_id, Chapter.deleted_at.is_(None))
+        .order_by(Chapter.idx, Chapter.id)
+    )
+    if lock:
+        statement = statement.with_for_update()
+    return list((await db.execute(statement)).scalars().all())
+
+
+def _renumber_volumes(volumes: list[Volume]) -> None:
+    for index, volume in enumerate(volumes, start=1):
+        volume.idx = index * 1024
+
+
+def _renumber_chapters(chapters: list[Chapter]) -> None:
+    for index, chapter in enumerate(chapters, start=1):
+        chapter.idx = index
+
+
+def _chapters_in_volume_order(chapters: list[Chapter], volumes: list[Volume]) -> list[Chapter]:
+    """Keep chapters grouped by active volume; legacy unassigned chapters sort last."""
+    order = {volume.id: index for index, volume in enumerate(volumes)}
+    return sorted(chapters, key=lambda chapter: (order.get(chapter.volume_id, len(volumes)), chapter.idx, chapter.id))
+
+
+def _touch_project(project: Project) -> None:
+    project.updated_at = datetime.now(UTC)
+
+
+def _volume_out(volume: Volume) -> VolumeOut:
+    return VolumeOut(id=volume.id, title=volume.title, idx=volume.idx, summary=volume.summary)
+
+
+async def _locked_active_volume(db: AsyncSession, project_id: str, volume_id: str) -> Volume:
+    result = await db.execute(
+        select(Volume)
+        .where(
+            Volume.id == volume_id,
+            Volume.project_id == project_id,
+            Volume.deleted_at.is_(None),
+        )
+        .with_for_update()
+    )
+    volume = result.scalar_one_or_none()
+    if volume is None:
+        raise HTTPException(status_code=422, detail={"code": "VOLUME_NOT_IN_PROJECT"})
+    return volume
+
+
+async def _lock_project(db: AsyncSession, project_id: str) -> None:
+    """Serialize structural edits for one book before taking volume/chapter locks."""
+    await db.execute(select(Project.id).where(Project.id == project_id).with_for_update())
+
+
+def _chapter_list_item(chapter: Chapter, state: ChapterOutlineState | None = None) -> ChapterListItem:
+    return ChapterListItem(
+        id=chapter.id,
+        volume_id=chapter.volume_id,
+        title=chapter.title,
+        idx=chapter.idx,
+        words=chapter.words,
+        outline=chapter.outline,
+        summary=chapter.summary,
+        outline_note=state.note if state else "",
+        outline_revision=state.revision if state else 0,
+        outline_updated_at=state.updated_at.isoformat() if state and state.updated_at else None,
+        body_needs_revision=state.body_needs_revision if state else False,
+        updated_at=chapter.updated_at.isoformat(),
+    )
+
+
 async def _project_out(db: AsyncSession, project: Project) -> ProjectOut:
     volumes_result = await db.execute(
-        select(Volume).where(Volume.project_id == project.id).order_by(Volume.idx)
+        select(Volume)
+        .where(Volume.project_id == project.id, Volume.deleted_at.is_(None))
+        .order_by(Volume.idx)
     )
     return ProjectOut(
         id=project.id,
@@ -144,13 +279,13 @@ async def list_projects(
     org_ids = select(OrgMember.org_id).where(OrgMember.user_id == user.id)
     chapter_count = (
         select(func.count(Chapter.id))
-        .where(Chapter.project_id == Project.id)
+        .where(Chapter.project_id == Project.id, Chapter.deleted_at.is_(None))
         .correlate(Project)
         .scalar_subquery()
     )
     word_count = (
         select(func.coalesce(func.sum(Chapter.words), 0))
-        .where(Chapter.project_id == Project.id)
+        .where(Chapter.project_id == Project.id, Chapter.deleted_at.is_(None))
         .correlate(Project)
         .scalar_subquery()
     )
@@ -168,7 +303,7 @@ async def list_projects(
     )
     latest_chapter_title = (
         select(Chapter.title)
-        .where(Chapter.project_id == Project.id)
+        .where(Chapter.project_id == Project.id, Chapter.deleted_at.is_(None))
         .order_by(Chapter.updated_at.desc(), Chapter.idx.desc())
         .limit(1)
         .correlate(Project)
@@ -176,7 +311,7 @@ async def list_projects(
     )
     latest_chapter_updated = (
         select(func.max(Chapter.updated_at))
-        .where(Chapter.project_id == Project.id)
+        .where(Chapter.project_id == Project.id, Chapter.deleted_at.is_(None))
         .correlate(Project)
         .scalar_subquery()
     )
@@ -326,6 +461,228 @@ async def get_project(
     return await _project_out(db, project)
 
 
+@router.patch("/{project_id}", response_model=ProjectOut)
+async def update_project(
+    project_id: str,
+    request: ProjectPatch,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> ProjectOut:
+    """Update shelf-level project metadata without replacing story settings."""
+    project = await verify_project_permission(project_id, ProjectPermission.MANAGE_PROJECT, user, db)
+    await _lock_project(db, project_id)
+    changes = request.model_dump(exclude_unset=True)
+    if "title" in changes:
+        changes["title"] = _clean_required(changes["title"], "PROJECT_TITLE_REQUIRED")
+    if "genre" in changes and changes["genre"] is not None:
+        changes["genre"] = changes["genre"].strip() or None
+    for field, value in changes.items():
+        setattr(project, field, value)
+    _touch_project(project)
+    await db.commit()
+    return await _project_out(db, project)
+
+
+@router.post("/{project_id}/volumes", response_model=VolumeOut, status_code=201)
+async def create_volume(
+    project_id: str,
+    request: VolumeCreate,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> VolumeOut:
+    project = await verify_project_permission(project_id, ProjectPermission.MANAGE_OUTLINE, user, db)
+    await _lock_project(db, project_id)
+    volumes = await _active_volumes(db, project_id, lock=True)
+    volume = Volume(
+        id=f"v_{secrets.token_hex(12)}",
+        project_id=project_id,
+        title=_clean_required(request.title, "VOLUME_TITLE_REQUIRED"),
+        summary=request.summary.strip() or None,
+        idx=(len(volumes) + 1) * 1024,
+    )
+    db.add(volume)
+    _touch_project(project)
+    await db.commit()
+    return _volume_out(volume)
+
+
+@router.patch("/{project_id}/volumes/{volume_id}", response_model=VolumeOut)
+async def update_volume(
+    project_id: str,
+    volume_id: str,
+    request: VolumePatch,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> VolumeOut:
+    project = await verify_project_permission(project_id, ProjectPermission.MANAGE_OUTLINE, user, db)
+    await _lock_project(db, project_id)
+    volume = await _locked_active_volume(db, project_id, volume_id)
+    changes = request.model_dump(exclude_unset=True)
+    if "title" in changes:
+        volume.title = _clean_required(changes["title"], "VOLUME_TITLE_REQUIRED")
+    if "summary" in changes:
+        volume.summary = changes["summary"].strip() or None
+    _touch_project(project)
+    await db.commit()
+    return _volume_out(volume)
+
+
+@router.put("/{project_id}/volumes/order", response_model=list[VolumeOut])
+async def reorder_volumes(
+    project_id: str,
+    request: VolumeOrderRequest,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> list[VolumeOut]:
+    project = await verify_project_permission(project_id, ProjectPermission.MANAGE_OUTLINE, user, db)
+    await _lock_project(db, project_id)
+    volumes = await _active_volumes(db, project_id, lock=True)
+    current = {volume.id: volume for volume in volumes}
+    if len(request.volume_ids) != len(set(request.volume_ids)) or set(request.volume_ids) != set(current):
+        raise HTTPException(status_code=422, detail={"code": "VOLUME_ORDER_MISMATCH"})
+    ordered = [current[volume_id] for volume_id in request.volume_ids]
+    _renumber_volumes(ordered)
+    chapters = await _active_chapters(db, project_id, lock=True)
+    _renumber_chapters(_chapters_in_volume_order(chapters, ordered))
+    _touch_project(project)
+    await db.commit()
+    return [_volume_out(volume) for volume in ordered]
+
+
+@router.delete("/{project_id}/volumes/{volume_id}", status_code=204)
+async def trash_volume(
+    project_id: str,
+    volume_id: str,
+    target_volume_id: str | None = Query(default=None, max_length=32),
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> None:
+    project = await verify_project_permission(project_id, ProjectPermission.MANAGE_OUTLINE, user, db)
+    await _lock_project(db, project_id)
+    volumes = await _active_volumes(db, project_id, lock=True)
+    current = next((volume for volume in volumes if volume.id == volume_id), None)
+    if current is None:
+        raise HTTPException(status_code=404, detail={"code": "VOLUME_NOT_FOUND"})
+    if len(volumes) == 1:
+        raise HTTPException(status_code=409, detail={"code": "LAST_VOLUME"})
+    chapters = await _active_chapters(db, project_id, lock=True)
+    contained = [chapter for chapter in chapters if chapter.volume_id == volume_id]
+    if contained:
+        if target_volume_id is None:
+            raise HTTPException(status_code=409, detail={"code": "TARGET_VOLUME_REQUIRED"})
+        if target_volume_id == volume_id:
+            raise HTTPException(status_code=422, detail={"code": "INVALID_TARGET_VOLUME"})
+        await _locked_active_volume(db, project_id, target_volume_id)
+        for chapter in contained:
+            chapter.volume_id = target_volume_id
+    current.deleted_at = datetime.now(UTC)
+    remaining_volumes = [volume for volume in volumes if volume.id != volume_id]
+    _renumber_volumes(remaining_volumes)
+    _renumber_chapters(_chapters_in_volume_order(chapters, remaining_volumes))
+    _touch_project(project)
+    await db.commit()
+
+
+@router.get("/{project_id}/trash", response_model=ProjectTrashOut)
+async def get_project_trash(
+    project_id: str,
+    _project: Project = Depends(verify_project_access),
+    db: AsyncSession = Depends(get_db),
+) -> ProjectTrashOut:
+    deleted_volumes = list(
+        (
+            await db.execute(
+                select(Volume)
+                .where(Volume.project_id == project_id, Volume.deleted_at.is_not(None))
+                .order_by(Volume.deleted_at.desc())
+            )
+        ).scalars().all()
+    )
+    volume_titles = {
+        volume.id: volume.title
+        for volume in (
+            await db.execute(select(Volume).where(Volume.project_id == project_id))
+        ).scalars().all()
+    }
+    deleted_chapters = list(
+        (
+            await db.execute(
+                select(Chapter)
+                .where(Chapter.project_id == project_id, Chapter.deleted_at.is_not(None))
+                .order_by(Chapter.deleted_at.desc())
+            )
+        ).scalars().all()
+    )
+    return ProjectTrashOut(
+        volumes=[
+            TrashVolumeOut(id=volume.id, title=volume.title, deleted_at=volume.deleted_at.isoformat())
+            for volume in deleted_volumes
+        ],
+        chapters=[
+            TrashChapterOut(
+                id=chapter.id,
+                title=chapter.title,
+                words=chapter.words,
+                volume_id=chapter.volume_id,
+                volume_title=volume_titles.get(chapter.volume_id),
+                deleted_at=chapter.deleted_at.isoformat(),
+            )
+            for chapter in deleted_chapters
+        ],
+    )
+
+
+@router.post("/{project_id}/trash/volumes/{volume_id}/restore", response_model=VolumeOut)
+async def restore_volume(
+    project_id: str,
+    volume_id: str,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> VolumeOut:
+    project = await verify_project_permission(project_id, ProjectPermission.MANAGE_OUTLINE, user, db)
+    await _lock_project(db, project_id)
+    result = await db.execute(
+        select(Volume)
+        .where(Volume.id == volume_id, Volume.project_id == project_id, Volume.deleted_at.is_not(None))
+        .with_for_update()
+    )
+    volume = result.scalar_one_or_none()
+    if volume is None:
+        raise HTTPException(status_code=404, detail={"code": "TRASH_VOLUME_NOT_FOUND"})
+    active = await _active_volumes(db, project_id, lock=True)
+    volume.deleted_at = None
+    active.append(volume)
+    _renumber_volumes(active)
+    _touch_project(project)
+    await db.commit()
+    return _volume_out(volume)
+
+
+@router.delete("/{project_id}/trash/volumes/{volume_id}", status_code=204)
+async def delete_volume_permanently(
+    project_id: str,
+    volume_id: str,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> None:
+    project = await verify_project_permission(project_id, ProjectPermission.MANAGE_OUTLINE, user, db)
+    await _lock_project(db, project_id)
+    result = await db.execute(
+        select(Volume)
+        .where(Volume.id == volume_id, Volume.project_id == project_id, Volume.deleted_at.is_not(None))
+        .with_for_update()
+    )
+    volume = result.scalar_one_or_none()
+    if volume is None:
+        raise HTTPException(status_code=404, detail={"code": "TRASH_VOLUME_NOT_FOUND"})
+    chapter_count = await db.scalar(select(func.count(Chapter.id)).where(Chapter.volume_id == volume_id))
+    if chapter_count:
+        raise HTTPException(status_code=409, detail={"code": "TRASH_VOLUME_NOT_EMPTY"})
+    await db.delete(volume)
+    _touch_project(project)
+    await db.commit()
+
+
 @router.get("/{project_id}/permissions", response_model=list[str])
 async def list_project_permissions(
     project_id: str,
@@ -353,7 +710,7 @@ async def list_chapters(
     stmt = (
         select(Chapter, ChapterOutlineState)
         .outerjoin(ChapterOutlineState, ChapterOutlineState.chapter_id == Chapter.id)
-        .where(Chapter.project_id == project_id)
+        .where(Chapter.project_id == project_id, Chapter.deleted_at.is_(None))
         .order_by(Chapter.idx)
     )
     result = await db.execute(stmt)
@@ -386,47 +743,180 @@ async def create_chapter(
     db: AsyncSession = Depends(get_db),
 ) -> ChapterListItem:
     """Insert a chapter and atomically keep book-wide chapter indexes contiguous."""
-    await verify_project_permission(project_id, ProjectPermission.MANAGE_OUTLINE, user, db)
-    volume_result = await db.execute(
-        select(Volume)
-        .where(Volume.id == request.volume_id, Volume.project_id == project_id)
-        .with_for_update()
-    )
-    volume = volume_result.scalar_one_or_none()
-    if volume is None:
-        raise HTTPException(status_code=422, detail={"code": "VOLUME_NOT_IN_PROJECT"})
-
-    chapter_result = await db.execute(
-        select(Chapter).where(Chapter.project_id == project_id).order_by(Chapter.idx).with_for_update()
-    )
-    chapters = list(chapter_result.scalars().all())
-    if request.after_index > 0 and not any(chapter.idx == request.after_index for chapter in chapters):
-        raise HTTPException(status_code=422, detail={"code": "AFTER_CHAPTER_NOT_FOUND"})
-
-    await db.execute(
-        update(Chapter)
-        .where(Chapter.project_id == project_id, Chapter.idx > request.after_index)
-        .values(idx=Chapter.idx + 1)
-    )
-    new_index = request.after_index + 1
+    project = await verify_project_permission(project_id, ProjectPermission.MANAGE_OUTLINE, user, db)
+    await _lock_project(db, project_id)
+    volume = await _locked_active_volume(db, project_id, request.volume_id)
+    chapters = await _active_chapters(db, project_id, lock=True)
+    if request.after_index > 0:
+        anchor = next((chapter for chapter in chapters if chapter.idx == request.after_index), None)
+        if anchor is None:
+            raise HTTPException(status_code=422, detail={"code": "AFTER_CHAPTER_NOT_FOUND"})
+        if anchor.volume_id != volume.id:
+            raise HTTPException(status_code=422, detail={"code": "AFTER_CHAPTER_NOT_IN_VOLUME"})
+        insertion_index = chapters.index(anchor) + 1
+    else:
+        volume_chapter_indexes = [
+            index for index, existing in enumerate(chapters) if existing.volume_id == volume.id
+        ]
+        if volume_chapter_indexes:
+            insertion_index = volume_chapter_indexes[0]
+        else:
+            volumes = await _active_volumes(db, project_id, lock=True)
+            order = {item.id: index for index, item in enumerate(volumes)}
+            insertion_index = next(
+                (
+                    index
+                    for index, existing in enumerate(chapters)
+                    if order.get(existing.volume_id, len(volumes)) > order[volume.id]
+                ),
+                len(chapters),
+            )
     chapter = Chapter(
         id=f"ch_{secrets.token_hex(12)}",
         project_id=project_id,
         volume_id=volume.id,
-        title=f"第 {new_index} 章 · 待规划",
-        idx=new_index,
+        title="新章节 · 待规划",
+        idx=0,
         words=0,
         outline=[],
     )
     db.add(chapter)
+    chapters.insert(insertion_index, chapter)
+    _renumber_chapters(chapters)
+    chapter.title = f"第 {chapter.idx} 章 · 待规划"
+    _touch_project(project)
     await db.commit()
-    return ChapterListItem(
-        id=chapter.id,
-        volume_id=chapter.volume_id,
-        title=chapter.title,
-        idx=chapter.idx,
-        words=0,
-        outline=[],
-        summary=None,
-        updated_at=chapter.updated_at.isoformat(),
+    await db.refresh(chapter)
+    return _chapter_list_item(chapter)
+
+
+@router.put("/{project_id}/chapters/{chapter_id}/position", response_model=ChapterListItem)
+async def move_chapter(
+    project_id: str,
+    chapter_id: str,
+    request: ChapterPositionRequest,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> ChapterListItem:
+    """Move a chapter within the book or into another active volume."""
+    project = await verify_project_permission(project_id, ProjectPermission.MANAGE_OUTLINE, user, db)
+    await _lock_project(db, project_id)
+    volumes = await _active_volumes(db, project_id, lock=True)
+    volume_ids = {volume.id for volume in volumes}
+    if request.volume_id not in volume_ids:
+        raise HTTPException(status_code=422, detail={"code": "VOLUME_NOT_IN_PROJECT"})
+    chapters = await _active_chapters(db, project_id, lock=True)
+    chapter = next((item for item in chapters if item.id == chapter_id), None)
+    if chapter is None:
+        raise HTTPException(status_code=404, detail={"code": "CHAPTER_NOT_FOUND"})
+    chapters.remove(chapter)
+
+    if request.placement == "after":
+        if not request.after_chapter_id or request.after_chapter_id == chapter_id:
+            raise HTTPException(status_code=422, detail={"code": "AFTER_CHAPTER_REQUIRED"})
+        anchor = next((item for item in chapters if item.id == request.after_chapter_id), None)
+        if anchor is None or anchor.volume_id != request.volume_id:
+            raise HTTPException(status_code=422, detail={"code": "AFTER_CHAPTER_NOT_IN_VOLUME"})
+        insertion_index = chapters.index(anchor) + 1
+    else:
+        target_indexes = [index for index, item in enumerate(chapters) if item.volume_id == request.volume_id]
+        if target_indexes:
+            insertion_index = target_indexes[0] if request.placement == "first" else target_indexes[-1] + 1
+        else:
+            volume_order = {volume.id: index for index, volume in enumerate(volumes)}
+            target_order = volume_order[request.volume_id]
+            insertion_index = next(
+                (
+                    index
+                    for index, item in enumerate(chapters)
+                    if volume_order.get(item.volume_id, len(volumes)) > target_order
+                ),
+                len(chapters),
+            )
+
+    chapter.volume_id = request.volume_id
+    chapters.insert(insertion_index, chapter)
+    _renumber_chapters(chapters)
+    _touch_project(project)
+    await db.commit()
+    await db.refresh(chapter)
+    return _chapter_list_item(chapter)
+
+
+@router.delete("/{project_id}/chapters/{chapter_id}", status_code=204)
+async def trash_chapter(
+    project_id: str,
+    chapter_id: str,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> None:
+    project = await verify_project_permission(project_id, ProjectPermission.MANAGE_OUTLINE, user, db)
+    await _lock_project(db, project_id)
+    chapters = await _active_chapters(db, project_id, lock=True)
+    chapter = next((item for item in chapters if item.id == chapter_id), None)
+    if chapter is None:
+        raise HTTPException(status_code=404, detail={"code": "CHAPTER_NOT_FOUND"})
+    if len(chapters) == 1:
+        raise HTTPException(status_code=409, detail={"code": "LAST_CHAPTER"})
+    chapter.deleted_at = datetime.now(UTC)
+    _renumber_chapters([item for item in chapters if item.id != chapter_id])
+    _touch_project(project)
+    await db.commit()
+
+
+@router.post("/{project_id}/trash/chapters/{chapter_id}/restore", response_model=ChapterListItem)
+async def restore_chapter(
+    project_id: str,
+    chapter_id: str,
+    request: RestoreChapterRequest,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> ChapterListItem:
+    project = await verify_project_permission(project_id, ProjectPermission.MANAGE_OUTLINE, user, db)
+    await _lock_project(db, project_id)
+    result = await db.execute(
+        select(Chapter)
+        .where(Chapter.id == chapter_id, Chapter.project_id == project_id, Chapter.deleted_at.is_not(None))
+        .with_for_update()
     )
+    chapter = result.scalar_one_or_none()
+    if chapter is None:
+        raise HTTPException(status_code=404, detail={"code": "TRASH_CHAPTER_NOT_FOUND"})
+    volumes = await _active_volumes(db, project_id, lock=True)
+    active_volume_ids = {volume.id for volume in volumes}
+    target_volume_id = request.volume_id or chapter.volume_id
+    if target_volume_id not in active_volume_ids:
+        if request.volume_id is not None:
+            raise HTTPException(status_code=422, detail={"code": "VOLUME_NOT_IN_PROJECT"})
+        target_volume_id = volumes[0].id
+    chapters = await _active_chapters(db, project_id, lock=True)
+    chapter.deleted_at = None
+    chapter.volume_id = target_volume_id
+    chapters.append(chapter)
+    _renumber_chapters(_chapters_in_volume_order(chapters, volumes))
+    _touch_project(project)
+    await db.commit()
+    await db.refresh(chapter)
+    return _chapter_list_item(chapter)
+
+
+@router.delete("/{project_id}/trash/chapters/{chapter_id}", status_code=204)
+async def delete_chapter_permanently(
+    project_id: str,
+    chapter_id: str,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> None:
+    project = await verify_project_permission(project_id, ProjectPermission.MANAGE_OUTLINE, user, db)
+    await _lock_project(db, project_id)
+    result = await db.execute(
+        select(Chapter)
+        .where(Chapter.id == chapter_id, Chapter.project_id == project_id, Chapter.deleted_at.is_not(None))
+        .with_for_update()
+    )
+    chapter = result.scalar_one_or_none()
+    if chapter is None:
+        raise HTTPException(status_code=404, detail={"code": "TRASH_CHAPTER_NOT_FOUND"})
+    await db.delete(chapter)
+    _touch_project(project)
+    await db.commit()

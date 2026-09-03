@@ -40,7 +40,7 @@ async def provenance_report(
     statement = (
         select(Chapter, ChapterBody)
         .outerjoin(ChapterBody, ChapterBody.chapter_id == Chapter.id)
-        .where(Chapter.project_id == project_id)
+        .where(Chapter.project_id == project_id, Chapter.deleted_at.is_(None))
         .order_by(Chapter.idx)
     )
     if scope == "chapter":

@@ -85,4 +85,26 @@ describe('continuous outline editing', () => {
     expect(store.chapters.some((chapter) => chapter.index === 90 && chapter.status === 'outlined')).toBe(true)
     wrapper.unmount()
   })
+
+  it('creates and edits volumes and exposes the recycle bin', async () => {
+    const { wrapper, store } = await mountOutline()
+    const before = store.project?.volumes.length ?? 0
+
+    const topbarButtons = Array.from(document.querySelectorAll<HTMLButtonElement>('#topbar-actions button'))
+    topbarButtons.find((button) => button.textContent?.trim() === '新建卷')?.click()
+    await flushPromises()
+    await wrapper.get('input[placeholder="例如：第一卷 · 落脚"]').setValue('终卷 · 归乡')
+    await wrapper.get('textarea[placeholder="记录本卷目标、转折与收束"]').setValue('收束主线。')
+    await wrapper.get('.outline-dialog footer button[data-primary="true"]').trigger('click')
+    await new Promise((resolve) => setTimeout(resolve, 520))
+    await flushPromises()
+
+    expect(store.project?.volumes).toHaveLength(before + 1)
+    expect(wrapper.text()).toContain('终卷 · 归乡')
+
+    topbarButtons.find((button) => button.textContent?.trim() === '回收站')?.click()
+    await waitForSave()
+    expect(wrapper.get('[aria-label="作品回收站"]').text()).toContain('没有已删除章节')
+    wrapper.unmount()
+  })
 })

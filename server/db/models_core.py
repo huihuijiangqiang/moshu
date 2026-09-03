@@ -74,10 +74,11 @@ class Volume(Base, TimestampMixin):
     title: Mapped[str] = mapped_column(String(200))
     idx: Mapped[int] = mapped_column(Integer)  # 稀疏索引，步长 1024
     summary: Mapped[Optional[str]] = mapped_column(Text, nullable=True)  # 卷摘要（每10章压缩一次）
+    deleted_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
 
     # 关系
     project: Mapped["Project"] = relationship(back_populates="volumes")
-    chapters: Mapped[list["Chapter"]] = relationship(back_populates="volume", cascade="all, delete-orphan")
+    chapters: Mapped[list["Chapter"]] = relationship(back_populates="volume")
 
 
 class Chapter(Base, TimestampMixin):
@@ -95,6 +96,7 @@ class Chapter(Base, TimestampMixin):
     words: Mapped[int] = mapped_column(Integer, default=0)
     outline: Mapped[list[str]] = mapped_column(JSONB, default=list)  # 章纲节点
     summary: Mapped[Optional[str]] = mapped_column(Text, nullable=True)  # 200字章摘要
+    deleted_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
 
     # 关系
     project: Mapped["Project"] = relationship(back_populates="chapters")

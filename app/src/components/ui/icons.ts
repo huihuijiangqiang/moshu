@@ -18,6 +18,9 @@ export type IconName =
   | 'close'
   | 'chevron'
   | 'collapse'
+  | 'edit'
+  | 'trash'
+  | 'restore'
 
 /**
  * 自己画而不引图标库：只用 12 个图标，装一个几千图标的包不值得，
@@ -41,5 +44,8 @@ export const ICON_PATHS: Record<IconName, string> = {
   more: 'M4.5 10h.1M9.9 10h.1M15.4 10h.1',
   close: 'M4.5 4.5l11 11M15.5 4.5l-11 11',
   chevron: 'M7.5 5l5 5-5 5',
-  collapse: 'M12.5 5l-5 5 5 5'
+  collapse: 'M12.5 5l-5 5 5 5',
+  edit: 'M4 14.5l.7-3.2L13 3l4 4-8.3 8.3-3.2.7zM11.5 4.5l4 4',
+  trash: 'M3.5 5.5h13M7 5.5V3.5h6v2M5.5 5.5l.7 11h7.6l.7-11M8.5 8.5v5M11.5 8.5v5',
+  restore: 'M5.5 6H2.8V3.3M3.2 5.8A7 7 0 1110 17M3.2 5.8A7 7 0 0115.8 8'
 }

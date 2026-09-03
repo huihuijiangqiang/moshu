@@ -6,11 +6,11 @@
 所有声明基于实际代码与测试结果，不夸大、不省略已知缺口。
 
 **关键事实**：
-- ✅ 34 张表完整 Alembic baseline，增量迁移已到 `011_guard_issue_arbitration`
-- ✅ 991 个单元/功能测试通过（SQLite in-memory，mock embedding/LLM）
-- ✅ 前端 65 个测试、TypeScript 类型检查和生产构建通过
+- ✅ 34 张表完整 Alembic baseline，增量迁移已到 `012_content_lifecycle`
+- ✅ 997 个单元/功能测试通过（SQLite in-memory，mock embedding/LLM）
+- ✅ 前端 67 个测试、TypeScript 类型检查和生产构建通过
 - ✅ 36 个集成测试已在本机真实 PostgreSQL + pgvector 环境通过
-- ✅ 已完成真实账号认证、作品创建、分卷章纲编辑与章节插入的首轮产品闭环
+- ✅ 已完成真实账号认证、作品创建、作品归档、分卷与章节增删改排、回收站和章纲编辑闭环
 - ✅ Refresh session 持久化轮换、防重放、注销即时吊销，系统管理员与项目 RBAC 已接通
 - ✅ 工作室成员管理、角色调整和作品共享已有真实 API 与 UI
 - ✅ TXT/Markdown/DOCX/EPUB、分章 ZIP、完整 JSON 备份与非覆盖恢复已接通真实数据库
@@ -58,6 +58,8 @@ PostgreSQL/pgvector 检索必须在真实部署上单独压测；该脚本只覆
 
 `003_product_workflows.py` 在 baseline 之上补充账号密码字段、作品灵感/简介/故事骨架、
 卷纲，以及章节章纲备注与修改时间，支持当前真实产品流程。
+`012_content_lifecycle.py` 为卷和章节增加软删除时间与索引；正文读取、生成、记忆组装、
+一致性扫描、来源分析和导出均排除回收站内容。
 
 #### 设定库 (4 张)
 - `codex_entries` - 设定条目（HALFVEC(2048) embedding 列）
@@ -107,7 +109,7 @@ PostgreSQL/pgvector 检索必须在真实部署上单独压测；该脚本只覆
   `halfvec_cosine_ops` 重建 HNSW 索引；upgrade/downgrade 均会要求重新回填向量
 - ✅ `alembic upgrade head --sql` 与 `alembic downgrade -1 --sql` 语法验证通过
 - ✅ 36 个集成测试已在本机真实 PostgreSQL + pgvector 运行通过；当前审核数据库已真实执行
-  `004_auth_admin_rbac -> 005_usage_ledger -> 006_usage_reservation_expiry -> 007_style_profiles -> 008_embedding_job_visibility -> 009_embedding_dispatch_attempts -> 010_claim_temporal_evidence -> 011_guard_issue_arbitration` 并到达 head
+  `004_auth_admin_rbac -> 005_usage_ledger -> 006_usage_reservation_expiry -> 007_style_profiles -> 008_embedding_job_visibility -> 009_embedding_dispatch_attempts -> 010_claim_temporal_evidence -> 011_guard_issue_arbitration` 并到达当时的 head；`012_content_lifecycle` 已通过迁移 parity 测试，待本批 Docker 重建时应用到审核库
 
 ---
 
@@ -290,9 +292,13 @@ PostgreSQL/pgvector 检索必须在真实部署上单独压测；该脚本只覆
 
 #### 项目 (`api/projects.py`)
 - ✅ `POST /projects` - 创建作品、分卷、首章和初始设定条目
-- ✅ `GET /projects/{id}` - 项目详情
+- ✅ `GET/PATCH /projects/{id}` - 项目详情与书名、题材、状态、每日目标设置
 - ✅ `GET /projects/{id}/chapters` - 章节列表（含章纲状态，不含正文）
 - ✅ `POST /projects/{id}/chapters` - 在指定位置插入章节并重排全局序号
+- ✅ 卷新建、编辑、整体重排与软删除；非空卷删除前必须明确章节接收卷
+- ✅ 章节卷内排序、跨卷移动与软删除；禁止删除作品最后一个有效卷或章节
+- ✅ `GET /projects/{id}/trash` 及卷/章恢复、永久删除端点；永久删除非空卷会被拒绝
+- ✅ 回收站章节不会被读取、保存、生成、扫描、用于 RAG/长文本上下文或导出
 
 #### 章节 (`api/chapters.py`)
 - ✅ `GET /chapters/{id}` - 章节详情（含正文 + rev）
@@ -365,9 +371,9 @@ PostgreSQL/pgvector 检索必须在真实部署上单独压测；该脚本只覆
 
 ### 5. 测试覆盖
 
-#### 单元测试（991 passed，SQLite in-memory，mock providers）
+#### 单元测试（997 passed，SQLite in-memory，mock providers）
 
-**全量测试结果**：991 passed, 36 skipped（未设置集成测试 URL 时）, 4 warnings；前端 65 passed
+**全量测试结果**：997 passed, 36 skipped（未设置集成测试 URL 时）, 0 warnings；前端 67 passed
 
 主要测试覆盖（不逐文件列举测试数量，以实际 pytest 结果为准）：
 - ✅ Codex 设定库：页面与 API 完整 CRUD、引用删除保护、原子别名替换、可检索文本判据、两段式事务、deferred 降级、httpx 错误重试
@@ -380,7 +386,7 @@ PostgreSQL/pgvector 检索必须在真实部署上单独压测；该脚本只覆
 - ✅ 时间锚点：ISO-8601、确定性相对时长、跨章事件引用、源锚点与事件标签原文校验
 - ✅ 增量影响集：新旧实体重绑定、未解析主体、谓词族闭包、全项目安全降级与扫描遥测
 - ✅ LLM 仲裁：不可变版本取证、600 字截断、20 条分批、陌生/缺失/畸形响应、失败降级、事务释放与前端映射
-- ✅ 项目、章节、章纲 CRUD、乐观锁冲突、Outbox 与幂等性
+- ✅ 项目、卷、章节、章纲 CRUD，跨卷排序、软删除/恢复/永久删除、乐观锁冲突、Outbox 与幂等性
 - ✅ Foreshadow 伏笔倒计时、用量统计、风格档案
 - ✅ 风格档跨租户隔离、默认唯一、抽取成功/失败、失败退款、owner 绑定、删除自动解绑与提示隐私
 - ✅ AI 来源：真实 run/段落指纹校验、编辑后分类、重复与跨章节伪造防护、采纳字数回落
@@ -605,6 +611,11 @@ baseline，增量实现 Codex embedding 回填、时间锚点解析、issue 生�
    - 用扩充评测集统计各 verdict 的准确率、覆盖率与失败率
    - 将自动一致性、摘要和 embedding 纳入后台成本台账
 
+3. **补齐创作工作流 P0 缺口**
+   - 正文版本历史浏览、对比与一键恢复（后端已有快照，前端尚无入口）
+   - AI 多候选草稿持久化，关闭页面后仍可继续比较与采纳
+   - 全书查找替换，带范围、预览、撤销和设定名安全检查
+
 ### 中期优先级（3-4 周）
 1. **增量影响集优化**
    - ✅ 按实体与 predicate family 构造影响集，只扫描相关 claims
@@ -613,6 +624,11 @@ baseline，增量实现 Codex embedding 回填、时间锚点解析、issue 生�
 2. **时间锚点 LLM 辅助**
    - 模糊时间表达规范化
    - 已持久化锚点的依赖图与下游自动重算
+
+3. **竞品常见的深度规划与审稿能力**
+   - 多剧情线时间板、人物出场与视角统计、设定随章节变化的状态历史
+   - 资料与正文并排、批注/审稿流程、Prompt Preview 与用户自带模型配置
+   - 关系图、地图、日历、出版排版和平台发布数据属于后续增强，不阻塞核心写作闭环
 
 ---
 
@@ -663,9 +679,9 @@ baseline，增量实现 Codex embedding 回填、时间锚点解析、issue 生�
 - `server/tasks/consistency.py` - 一致性任务
 - `server/tasks/codex.py` - Codex 回填任务
 
-### 测试（991 passed；另有 36 个真实 PostgreSQL 测试通过）
-- `server/tests/` - 单元/功能测试（991 passed）
-- `app/src/**/*.spec.ts` - 前端测试（65 passed）
+### 测试（997 passed；另有 36 个真实 PostgreSQL 测试通过）
+- `server/tests/` - 单元/功能测试（997 passed）
+- `app/src/**/*.spec.ts` - 前端测试（67 passed）
 - `server/tests/integration/` - 集成测试（36 passed，需设置真实 PostgreSQL URL）
 
 ### 文档（1 个文件）
@@ -675,10 +691,10 @@ baseline，增量实现 Codex embedding 回填、时间锚点解析、issue 生�
 
 ## 总结
 
-墨枢一致性后端已完成核心数据模型、服务层、API 端点和异步任务定义，991 个单元/功能
+墨枢一致性后端已完成核心数据模型、服务层、API 端点和异步任务定义，997 个单元/功能
 测试在 SQLite in-memory + mock providers 环境下通过，另有 36 个集成测试在真实
 PostgreSQL + pgvector 环境通过。真实认证、可吊销会话、管理员、工作室 RBAC、作品创建、
-分卷章纲、章节插入、全量导出、非覆盖备份恢复、风格指纹、AI 来源账本与作者生成用量台账已经接通，前端 61 个测试与生产构建通过。
+作品归档、分卷与章节生命周期、章纲、全量导出、非覆盖备份恢复、风格指纹、AI 来源账本与作者生成用量台账已经接通，前端 67 个测试与生产构建通过。
 
 **关键限制**：
 1. 自动一致性与 embedding 后台模型成本尚未进入统一台账

@@ -115,9 +115,30 @@ export interface ChapterPlanPatch {
 
 export interface Volume { id: string; index: number; title: string; summary?: string }
 
+export interface ProjectTrash {
+  volumes: Array<{ id: string; title: string; deletedAt: string }>
+  chapters: Array<{
+    id: string
+    title: string
+    words: number
+    volumeId: string | null
+    volumeTitle: string | null
+    deletedAt: string
+  }>
+}
+
+export interface ProjectPatch {
+  title?: string
+  genre?: string | null
+  status?: 'ongoing' | 'finished' | 'archived'
+  dailyGoal?: number
+}
+
 export interface Project {
   id: string
   title: string
+  genre?: string | null
+  status?: 'ongoing' | 'finished' | 'archived'
   volumes: Volume[]
   /** 全书统计来自项目摘要，不等于当前已加载到内存的章节列表。 */
   wordCount?: number

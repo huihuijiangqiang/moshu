@@ -53,10 +53,18 @@ def html_to_text(value: str) -> str:
 
 async def collect_project_archive(db: AsyncSession, project: Project) -> dict[str, Any]:
     volumes = (
-        await db.execute(select(Volume).where(Volume.project_id == project.id).order_by(Volume.idx, Volume.id))
+        await db.execute(
+            select(Volume)
+            .where(Volume.project_id == project.id, Volume.deleted_at.is_(None))
+            .order_by(Volume.idx, Volume.id)
+        )
     ).scalars().all()
     chapters = (
-        await db.execute(select(Chapter).where(Chapter.project_id == project.id).order_by(Chapter.idx, Chapter.id))
+        await db.execute(
+            select(Chapter)
+            .where(Chapter.project_id == project.id, Chapter.deleted_at.is_(None))
+            .order_by(Chapter.idx, Chapter.id)
+        )
     ).scalars().all()
     chapter_ids = [chapter.id for chapter in chapters]
     bodies = {}

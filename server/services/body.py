@@ -229,7 +229,9 @@ async def save_chapter_body(
 
     # 5. 锁定章节和正文行
     chapter_result = await db.execute(
-        select(Chapter).where(Chapter.id == chapter_id).with_for_update()
+        select(Chapter)
+        .where(Chapter.id == chapter_id, Chapter.deleted_at.is_(None))
+        .with_for_update()
     )
     chapter = chapter_result.scalar_one_or_none()
     if chapter is None:

@@ -1,13 +1,27 @@
 import { ApiError, USE_MOCK, request } from './http'
 import { mockApi } from './mock'
-import type { Chapter, ChapterPlanPatch, CodexEntry, CodexEntryDraft, CodexKind, ContextLayer, GuardIssue, GuardOverview, GuardResolutionAction, Project } from '@/types'
+import type { Chapter, ChapterPlanPatch, CodexEntry, CodexEntryDraft, CodexKind, ContextLayer, GuardIssue, GuardOverview, GuardResolutionAction, Project, ProjectPatch, ProjectTrash, Volume } from '@/types'
 
 interface ProjectDto {
   id: string
   title: string
+  genre: string | null
+  status: 'ongoing' | 'finished' | 'archived'
   target_words_daily: number
   style_profile_id: string | null
   volumes: Array<{ id: string; title: string; idx: number; summary?: string | null }>
+}
+
+interface TrashDto {
+  volumes: Array<{ id: string; title: string; deleted_at: string }>
+  chapters: Array<{
+    id: string
+    title: string
+    words: number
+    volume_id: string | null
+    volume_title: string | null
+    deleted_at: string
+  }>
 }
 
 interface ChapterListDto {
@@ -349,6 +363,8 @@ function projectFromDto(dto: ProjectDto): Project {
   return {
     id: dto.id,
     title: dto.title,
+    genre: dto.genre,
+    status: dto.status,
     dailyGoal: dto.target_words_daily,
     dailyWords: 0,
     styleProfile: dto.style_profile_id,
@@ -499,6 +515,76 @@ const realApi = {
     const chapter = chapterFromDto(dto, 'outlined')
     chapterCache.set(chapter.id, chapter)
     return chapter
+  },
+
+  async updateProject(projectId: string, patch: ProjectPatch): Promise<Project> {
+    return projectFromDto(await request<ProjectDto>(`/projects/${projectId}`, {
+      method: 'PATCH',
+      body: JSON.stringify({
+        ...(patch.title !== undefined ? { title: patch.title } : {}),
+        ...(patch.genre !== undefined ? { genre: patch.genre } : {}),
+        ...(patch.status !== undefined ? { status: patch.status } : {}),
+        ...(patch.dailyGoal !== undefined ? { target_words_daily: patch.dailyGoal } : {})
+      })
+    }))
+  },
+
+  async createVolume(projectId: string, title: string, summary = ''): Promise<Volume> {
+    const dto = await request<{ id: string; title: string; idx: number; summary: string | null }>(`/projects/${projectId}/volumes`, {
+      method: 'POST', body: JSON.stringify({ title, summary })
+    })
+    return { id: dto.id, index: 0, title: dto.title, summary: dto.summary ?? undefined }
+  },
+
+  async updateVolume(projectId: string, volumeId: string, patch: { title?: string; summary?: string }): Promise<void> {
+    await request(`/projects/${projectId}/volumes/${volumeId}`, { method: 'PATCH', body: JSON.stringify(patch) })
+  },
+
+  async reorderVolumes(projectId: string, volumeIds: string[]): Promise<void> {
+    await request(`/projects/${projectId}/volumes/order`, {
+      method: 'PUT', body: JSON.stringify({ volume_ids: volumeIds })
+    })
+  },
+
+  async moveChapter(projectId: string, chapterId: string, volumeId: string, placement: 'first' | 'last' | 'after', afterChapterId?: string): Promise<void> {
+    await request(`/projects/${projectId}/chapters/${chapterId}/position`, {
+      method: 'PUT',
+      body: JSON.stringify({ volume_id: volumeId, placement, after_chapter_id: afterChapterId })
+    })
+  },
+
+  async trashChapter(projectId: string, chapterId: string): Promise<void> {
+    await request(`/projects/${projectId}/chapters/${chapterId}`, { method: 'DELETE' })
+  },
+
+  async trashVolume(projectId: string, volumeId: string, targetVolumeId?: string): Promise<void> {
+    const query = targetVolumeId ? `?target_volume_id=${encodeURIComponent(targetVolumeId)}` : ''
+    await request(`/projects/${projectId}/volumes/${volumeId}${query}`, { method: 'DELETE' })
+  },
+
+  async getTrash(projectId: string): Promise<ProjectTrash> {
+    const dto = await request<TrashDto>(`/projects/${projectId}/trash`)
+    return {
+      volumes: dto.volumes.map((item) => ({ id: item.id, title: item.title, deletedAt: item.deleted_at })),
+      chapters: dto.chapters.map((item) => ({
+        id: item.id, title: item.title, words: item.words, volumeId: item.volume_id,
+        volumeTitle: item.volume_title, deletedAt: item.deleted_at
+      }))
+    }
+  },
+
+  async restoreVolume(projectId: string, volumeId: string): Promise<void> {
+    await request(`/projects/${projectId}/trash/volumes/${volumeId}/restore`, { method: 'POST' })
+  },
+
+  async restoreChapter(projectId: string, chapterId: string, volumeId?: string): Promise<void> {
+    await request(`/projects/${projectId}/trash/chapters/${chapterId}/restore`, {
+      method: 'POST', body: JSON.stringify({ volume_id: volumeId })
+    })
+  },
+
+  async deleteTrashItem(projectId: string, kind: 'volumes' | 'chapters', id: string): Promise<void> {
+    await request(`/projects/${projectId}/trash/${kind}/${id}`, { method: 'DELETE' })
   },
 
   async listCodex(projectId = 'p1'): Promise<CodexEntry[]> {

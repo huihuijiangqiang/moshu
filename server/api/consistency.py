@@ -230,10 +230,12 @@ async def get_consistency_status(
     """获取章节版本的一致性处理状态"""
     result = await db.execute(
         select(ConsistencyRun)
+        .join(Chapter, Chapter.id == ConsistencyRun.chapter_id)
         .where(
             ConsistencyRun.chapter_id == chapter_id,
             ConsistencyRun.body_rev == body_rev,
             ConsistencyRun.pipeline_version == pipeline_version,
+            Chapter.deleted_at.is_(None),
         )
         .limit(1)
     )
@@ -270,7 +272,9 @@ async def trigger_consistency_scan(
 ):
     """触发一致性扫描"""
     # Get chapter and verify access
-    result = await db.execute(select(Chapter).where(Chapter.id == request.chapter_id))
+    result = await db.execute(
+        select(Chapter).where(Chapter.id == request.chapter_id, Chapter.deleted_at.is_(None))
+    )
     chapter = result.scalar_one_or_none()
     if not chapter:
         raise HTTPException(status_code=404, detail="Chapter not found")
@@ -321,7 +325,7 @@ async def trigger_project_scan(
     result = await db.execute(
         select(Chapter, ChapterBody)
         .join(ChapterBody, ChapterBody.chapter_id == Chapter.id)
-        .where(Chapter.project_id == project_id, ChapterBody.rev > 0)
+        .where(Chapter.project_id == project_id, Chapter.deleted_at.is_(None), ChapterBody.rev > 0)
         .order_by(Chapter.idx)
     )
 
@@ -365,7 +369,7 @@ async def get_project_consistency_overview(
     result = await db.execute(
         select(ConsistencyRun, Chapter)
         .join(Chapter, Chapter.id == ConsistencyRun.chapter_id)
-        .where(ConsistencyRun.project_id == project_id)
+        .where(ConsistencyRun.project_id == project_id, Chapter.deleted_at.is_(None))
         .order_by(ConsistencyRun.chapter_id, ConsistencyRun.body_rev.desc(), ConsistencyRun.id.desc())
     )
     latest_by_chapter: dict[str, tuple[ConsistencyRun, Chapter]] = {}
@@ -444,7 +448,7 @@ async def list_issues(
     query = (
         select(GuardIssue, Chapter)
         .join(Chapter, Chapter.id == GuardIssue.chapter_id)
-        .where(GuardIssue.project_id == project_id)
+        .where(GuardIssue.project_id == project_id, Chapter.deleted_at.is_(None))
     )
 
     if chapter_id:
@@ -511,9 +515,12 @@ async def get_issue_detail(
     await verify_project_permission(project_id, ProjectPermission.VIEW, user, db)
 
     result = await db.execute(
-        select(GuardIssue).where(
+        select(GuardIssue)
+        .join(Chapter, Chapter.id == GuardIssue.chapter_id)
+        .where(
             GuardIssue.id == issue_id,
             GuardIssue.project_id == project_id,
+            Chapter.deleted_at.is_(None),
         )
     )
     issue = result.scalar_one_or_none()
@@ -573,6 +580,7 @@ async def resolve_issue(
             GuardIssue.id == issue_id,
             GuardIssue.project_id == project_id,
             GuardIssue.issue_rev == request.issue_rev,
+            GuardIssue.chapter_id.in_(select(Chapter.id).where(Chapter.deleted_at.is_(None))),
         )
         .values(
             status="false_positive" if request.action == "false_positive" else "resolved",
@@ -587,9 +595,12 @@ async def resolve_issue(
     if update_result.rowcount == 0:
         # 要么 issue 不存在（404），要么 issue_rev 不匹配（409）
         existing = await db.execute(
-            select(GuardIssue.issue_rev).where(
+            select(GuardIssue.issue_rev)
+            .join(Chapter, Chapter.id == GuardIssue.chapter_id)
+            .where(
                 GuardIssue.id == issue_id,
                 GuardIssue.project_id == project_id,
+                Chapter.deleted_at.is_(None),
             )
         )
         current_rev = existing.scalar_one_or_none()

@@ -2,7 +2,7 @@
 章节 API - 使用真实的 body save service
 """
 from fastapi import APIRouter, Depends, Header, HTTPException, status
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -25,6 +25,8 @@ router = APIRouter()
 class ChapterOut(BaseModel):
     """章节详情 - 含正文"""
 
+    model_config = ConfigDict(from_attributes=True)
+
     id: str
     project_id: str
     volume_id: str | None
@@ -37,10 +39,6 @@ class ChapterOut(BaseModel):
     content_json: dict
     rev: int  # 乐观锁版本号
     updated_at: str
-
-    class Config:
-        from_attributes = True
-
 
 class SaveChapterRequest(BaseModel):
     """保存章节请求"""
@@ -82,7 +80,7 @@ async def get_chapter(
 
     注意：rev 必须返回，前端离线冲突判定要用
     """
-    stmt = select(Chapter).where(Chapter.id == chapter_id)
+    stmt = select(Chapter).where(Chapter.id == chapter_id, Chapter.deleted_at.is_(None))
     result = await db.execute(stmt)
     chapter = result.scalar_one_or_none()
 
@@ -154,7 +152,7 @@ async def save_chapter_body_endpoint(
         422: 无效的 CodexRef（cross-project 或不存在）
     """
     # 查询当前章节和正文
-    stmt = select(Chapter).where(Chapter.id == chapter_id)
+    stmt = select(Chapter).where(Chapter.id == chapter_id, Chapter.deleted_at.is_(None))
     result = await db.execute(stmt)
     chapter = result.scalar_one_or_none()
 

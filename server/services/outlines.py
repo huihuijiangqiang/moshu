@@ -61,7 +61,9 @@ def _result(chapter: Chapter, state: ChapterOutlineState | None) -> OutlineResul
 
 
 async def get_outline(db: AsyncSession, chapter_id: str) -> OutlineResult:
-    chapter_result = await db.execute(select(Chapter).where(Chapter.id == chapter_id))
+    chapter_result = await db.execute(
+        select(Chapter).where(Chapter.id == chapter_id, Chapter.deleted_at.is_(None))
+    )
     chapter = chapter_result.scalar_one_or_none()
     if chapter is None:
         raise ChapterNotFoundError(chapter_id)
@@ -83,7 +85,11 @@ async def update_outline(
 ) -> OutlineResult:
     """Update plan state and history without exposing a body-write operation."""
 
-    chapter_result = await db.execute(select(Chapter).where(Chapter.id == chapter_id).with_for_update())
+    chapter_result = await db.execute(
+        select(Chapter)
+        .where(Chapter.id == chapter_id, Chapter.deleted_at.is_(None))
+        .with_for_update()
+    )
     chapter = chapter_result.scalar_one_or_none()
     if chapter is None:
         raise ChapterNotFoundError(chapter_id)
@@ -173,7 +179,11 @@ async def acknowledge_body_revision(
 ) -> OutlineResult:
     """Clear only the workflow marker; this operation cannot edit body content."""
 
-    chapter_result = await db.execute(select(Chapter).where(Chapter.id == chapter_id).with_for_update())
+    chapter_result = await db.execute(
+        select(Chapter)
+        .where(Chapter.id == chapter_id, Chapter.deleted_at.is_(None))
+        .with_for_update()
+    )
     chapter = chapter_result.scalar_one_or_none()
     if chapter is None:
         raise ChapterNotFoundError(chapter_id)

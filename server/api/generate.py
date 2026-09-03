@@ -70,7 +70,9 @@ async def _load_scope(
     permission: ProjectPermission = ProjectPermission.VIEW,
 ) -> tuple[Chapter, Project]:
     result = await db.execute(
-        select(Chapter, Project).join(Project, Project.id == Chapter.project_id).where(Chapter.id == chapter_id)
+        select(Chapter, Project)
+        .join(Project, Project.id == Chapter.project_id)
+        .where(Chapter.id == chapter_id, Chapter.deleted_at.is_(None))
     )
     row = result.one_or_none()
     if row is None:

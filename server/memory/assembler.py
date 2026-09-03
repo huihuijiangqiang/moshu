@@ -276,7 +276,9 @@ class ContextAssembler:
         - 当前卷的已有章节摘要（200字/章）
         - 更早的卷摘要（每10章压缩一次）
         """
-        current_result = await self.db.execute(select(Chapter).where(Chapter.id == chapter_id))
+        current_result = await self.db.execute(
+            select(Chapter).where(Chapter.id == chapter_id, Chapter.deleted_at.is_(None))
+        )
         current = current_result.scalar_one_or_none()
         if current is None or current.project_id != project_id:
             return ContextLayer(key="summary", content="", tokens=0, items=[])
@@ -287,7 +289,9 @@ class ContextAssembler:
         # Earlier volume summaries are more compact than replaying every old chapter.
         if current.volume_id:
             volume_result = await self.db.execute(
-                select(Volume).where(Volume.project_id == project_id).order_by(Volume.idx)
+                select(Volume)
+                .where(Volume.project_id == project_id, Volume.deleted_at.is_(None))
+                .order_by(Volume.idx)
             )
             volumes = list(volume_result.scalars().all())
             current_volume = next((volume for volume in volumes if volume.id == current.volume_id), None)
@@ -300,7 +304,13 @@ class ContextAssembler:
                     items.append({"id": volume.id, "name": volume.title, "kind": "volume"})
 
         chapters_result = await self.db.execute(
-            select(Chapter).where(Chapter.project_id == project_id, Chapter.idx < current.idx).order_by(Chapter.idx)
+            select(Chapter)
+            .where(
+                Chapter.project_id == project_id,
+                Chapter.deleted_at.is_(None),
+                Chapter.idx < current.idx,
+            )
+            .order_by(Chapter.idx)
         )
         previous = list(chapters_result.scalars().all())
         # Current-volume chapter summaries carry recent causal state.  Without a volume,
@@ -337,7 +347,9 @@ class ContextAssembler:
         - 前2章全文
         - 从章末往前截取（开头往往是过渡，章末才是情节推进）
         """
-        current_result = await self.db.execute(select(Chapter).where(Chapter.id == chapter_id))
+        current_result = await self.db.execute(
+            select(Chapter).where(Chapter.id == chapter_id, Chapter.deleted_at.is_(None))
+        )
         current = current_result.scalar_one_or_none()
         if current is None:
             return ContextLayer(key="adjacent", content="", tokens=0, items=[])
@@ -345,7 +357,11 @@ class ContextAssembler:
         result = await self.db.execute(
             select(Chapter, ChapterBody)
             .join(ChapterBody, ChapterBody.chapter_id == Chapter.id)
-            .where(Chapter.project_id == current.project_id, Chapter.idx < current.idx)
+            .where(
+                Chapter.project_id == current.project_id,
+                Chapter.deleted_at.is_(None),
+                Chapter.idx < current.idx,
+            )
             .order_by(Chapter.idx.desc())
             .limit(2)
         )

@@ -85,7 +85,9 @@ async def _verify_chapter_access(
     user: User,
     permission: ProjectPermission = ProjectPermission.VIEW,
 ) -> Chapter:
-    result = await db.execute(select(Chapter).where(Chapter.id == chapter_id))
+    result = await db.execute(
+        select(Chapter).where(Chapter.id == chapter_id, Chapter.deleted_at.is_(None))
+    )
     chapter = result.scalar_one_or_none()
     if chapter is None:
         raise HTTPException(status_code=404, detail={"code": "CHAPTER_NOT_FOUND"})

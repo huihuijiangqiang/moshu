@@ -16,6 +16,13 @@ export interface CreateBookInput {
   volumes: Array<{ title: string; summary: string }>
 }
 
+export interface UpdateBookInput {
+  title: string
+  genre: string
+  status: 'ongoing' | 'finished' | 'archived'
+  dailyGoal: number
+}
+
 interface ProjectListDto {
   id: string
   title: string
@@ -41,7 +48,8 @@ interface ProjectCreateDto {
 const coverTones: ShelfBook['coverTone'][] = ['mountain', 'city', 'river', 'spring', 'space']
 
 function statusFromDto(status: string, chapters: number): ShelfBook['status'] {
-  if (status === 'finished' || status === 'archived') return 'finished'
+  if (status === 'archived') return 'archived'
+  if (status === 'finished') return 'finished'
   return chapters === 0 ? 'planning' : 'ongoing'
 }
 
@@ -108,6 +116,29 @@ const realShelfApi = {
       progress: 0,
       todayWords: 0,
       coverTone: 'mountain'
+    }
+  },
+
+  async updateBook(id: string, input: UpdateBookInput): Promise<ShelfBook> {
+    const project = await request<{
+      id: string; title: string; genre: string | null; status: string; target_words_daily: number
+    }>(`/projects/${id}`, {
+      method: 'PATCH',
+      body: JSON.stringify({
+        title: input.title,
+        genre: input.genre,
+        status: input.status,
+        target_words_daily: input.dailyGoal
+      })
+    })
+    const existing = (await realShelfApi.listBooks()).find((book) => book.id === id)
+    if (!existing) throw new Error('book_not_found')
+    return {
+      ...existing,
+      title: project.title,
+      genre: project.genre ?? '题材待补充',
+      status: statusFromDto(project.status, existing.chapters),
+      dailyGoal: project.target_words_daily
     }
   }
 }

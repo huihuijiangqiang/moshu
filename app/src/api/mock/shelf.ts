@@ -4,7 +4,7 @@ export interface ShelfBook {
   id: string
   title: string
   genre: string
-  status: 'ongoing' | 'finished' | 'planning'
+  status: 'ongoing' | 'finished' | 'planning' | 'archived'
   words: number
   chapters: number
   codexCount: number
@@ -95,6 +95,17 @@ export const shelfApi = {
       coverTone: 'mountain'
     }
     writeCreatedBooks([book, ...readCreatedBooks()])
+    return structuredClone(book)
+  },
+
+  async updateBook(id: string, patch: { title: string; genre: string; status: 'ongoing' | 'finished' | 'archived'; dailyGoal: number }): Promise<ShelfBook> {
+    await delay(120)
+    const created = readCreatedBooks()
+    const createdIndex = created.findIndex((book) => book.id === id)
+    const book = createdIndex >= 0 ? created[createdIndex] : SHELF_BOOKS.find((item) => item.id === id)
+    if (!book) throw new Error('book_not_found')
+    Object.assign(book, patch)
+    if (createdIndex >= 0) writeCreatedBooks(created)
     return structuredClone(book)
   },
 

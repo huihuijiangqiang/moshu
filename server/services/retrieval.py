@@ -185,7 +185,7 @@ class ConsistencyRetrieval:
         # Get current chapter position (Chapter 的排序列是 idx，没有 sort_order)
         current_result = await db.execute(
             select(Chapter.idx, Chapter.project_id)
-            .where(Chapter.id == chapter_id)
+            .where(Chapter.id == chapter_id, Chapter.deleted_at.is_(None))
         )
         current = current_result.one_or_none()
         if not current:
@@ -197,7 +197,7 @@ class ConsistencyRetrieval:
         # 正确做法：按 idx 排序后取当前章前后各 window 条。
         ordered_result = await db.execute(
             select(Chapter.id, Chapter.title, Chapter.idx)
-            .where(Chapter.project_id == project_id)
+            .where(Chapter.project_id == project_id, Chapter.deleted_at.is_(None))
             .order_by(Chapter.idx)
         )
         ordered_chapters = ordered_result.all()
