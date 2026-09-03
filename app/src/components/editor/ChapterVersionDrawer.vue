@@ -32,7 +32,9 @@ const triggerLabels: Record<string, string> = {
   manual: '正文保存',
   autosave: '自动保存',
   accept_draft: '采纳 AI 草稿',
-  restore_version: '恢复历史版本'
+  restore_version: '恢复历史版本',
+  bulk_replace: '全书替换',
+  bulk_replace_undo: '撤销全书替换'
 }
 
 const diff = computed(() => selected.value ? chapterDiff(selected.value.content, props.currentContent) : [])

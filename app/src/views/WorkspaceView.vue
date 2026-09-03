@@ -6,6 +6,7 @@ import ChapterPanel from '@/components/layout/ChapterPanel.vue'
 import AiSidePanel from '@/components/layout/AiSidePanel.vue'
 import AiFloatingBar from '@/components/editor/AiFloatingBar.vue'
 import ChapterVersionDrawer from '@/components/editor/ChapterVersionDrawer.vue'
+import TextReplacementDrawer from '@/components/editor/TextReplacementDrawer.vue'
 import CodexSuggestList from '@/components/editor/CodexSuggestList.vue'
 import AppIcon from '@/components/ui/AppIcon.vue'
 import { useNovelEditor } from '@/editor/use-novel-editor'
@@ -15,7 +16,7 @@ import { useProjectStore } from '@/stores/project'
 import { useShellStore } from '@/stores/shell'
 import { BodyConflictError, contentApi } from '@/api/content'
 import { generationDraftApi, streamChapter, streamInline } from '@/api/generation'
-import type { GenerationControls, GenerationDraftDetail, GenerationDraftSummary, InlineGenerateOptions } from '@/types'
+import type { GenerationControls, GenerationDraftDetail, GenerationDraftSummary, InlineGenerateOptions, TextReplacementRun } from '@/types'
 
 defineOptions({ name: 'WorkspaceView' })
 
@@ -30,6 +31,7 @@ const generating = ref(false)
 const generationError = ref('')
 const paneTab = ref<'body' | 'outline'>('body')
 const versionOpen = ref(false)
+const replacementOpen = ref(false)
 const restoringVersion = ref(false)
 const restoreError = ref('')
 const generationDrafts = ref<GenerationDraftSummary[]>([])
@@ -38,6 +40,7 @@ let abort: (() => void) | null = null
 let disposed = false
 let draftLoadSequence = 0
 let stoppedDraftTimer: ReturnType<typeof setTimeout> | null = null
+let locateParagraphId: string | null = null
 
 const editor = useNovelEditor(html.value, (next, chars) => {
   html.value = next
@@ -61,6 +64,7 @@ const {
   acceptServerVersion,
   keepLocalVersion,
   flush,
+  flushAll,
   markClean,
   recordConflict
 } = useAutosave(chapterId, html)
@@ -85,6 +89,12 @@ watch(
     if (!currentEditor || currentEditor.isDestroyed) return
     currentEditor.commands.setContent(content, { emitUpdate: false })
     html.value = content
+    await nextTick()
+    if (locateParagraphId) {
+      const target = document.querySelector(`[data-paragraph-id="${CSS.escape(locateParagraphId)}"]`)
+      target?.scrollIntoView({ block: 'center', behavior: 'smooth' })
+      locateParagraphId = null
+    }
 
     // 查询参数只负责一次跨页定位，消费后移除，避免用户在章节栏切换时被拉回旧章节。
     if (requestedId === id) {
@@ -129,11 +139,19 @@ function handleChapterPick() {
   if (window.innerWidth <= 840) shell.leftOpen = false
 }
 
+function handleWorkspaceShortcut(event: KeyboardEvent) {
+  if ((event.ctrlKey || event.metaKey) && event.shiftKey && event.key.toLowerCase() === 'f') {
+    event.preventDefault()
+    void openTextReplacement()
+  }
+}
+
 onMounted(() => {
   shell.setCrumb(crumb.value)
   syncViewport()
   window.addEventListener('resize', syncViewport)
   window.addEventListener('moshu:draft-action', handleDraftAction as EventListener)
+  window.addEventListener('keydown', handleWorkspaceShortcut)
 })
 
 onBeforeUnmount(() => {
@@ -143,6 +161,7 @@ onBeforeUnmount(() => {
   if (stoppedDraftTimer) clearTimeout(stoppedDraftTimer)
   window.removeEventListener('resize', syncViewport)
   window.removeEventListener('moshu:draft-action', handleDraftAction as EventListener)
+  window.removeEventListener('keydown', handleWorkspaceShortcut)
 })
 
 /** 折叠不用 display:none —— 改列宽，编辑器实例保持挂载 */
@@ -178,6 +197,13 @@ const restoreDisabledReason = computed(() => {
   if (saveConflict.value) return '请先处理正文版本冲突，再恢复历史版本。'
   if (saveState.value === 'saving') return '当前正文正在保存，请稍候。'
   if (saveState.value === 'error') return '当前正文尚未保存成功，请先重试保存。'
+  return undefined
+})
+const replacementDisabledReason = computed(() => {
+  if (!online.value) return '联网后才能执行全书替换。当前草稿仍保存在本地。'
+  if (saveConflict.value) return '请先处理正文版本冲突，再执行全书替换。'
+  if (saveState.value === 'error') return '仍有正文未保存成功，请先重试保存。'
+  if (saveState.value === 'dirty' || saveState.value === 'saving') return '正在同步本地草稿，完成后即可预览。'
   return undefined
 })
 
@@ -218,6 +244,36 @@ function openVersionHistory() {
   if (!store.activeId) return
   restoreError.value = ''
   versionOpen.value = true
+}
+
+async function openTextReplacement() {
+  replacementOpen.value = true
+  await flushAll()
+}
+
+async function refreshAfterReplacement(run: TextReplacementRun) {
+  const ids = run.affectedChapters.map((item) => item.chapterId)
+  await store.reloadReplacedChapters(ids)
+  const active = store.active
+  if (!active || !ids.includes(active.id)) return
+  const content = active.content ?? ''
+  markClean(active.id, content)
+  replaceEditorContent(content, active.rev)
+}
+
+async function locateReplacement(chapterId: string, paragraphId?: string) {
+  locateParagraphId = paragraphId ?? null
+  replacementOpen.value = false
+  if (store.activeId !== chapterId) {
+    store.activeId = chapterId
+    return
+  }
+  await nextTick()
+  if (locateParagraphId) {
+    const target = document.querySelector(`[data-paragraph-id="${CSS.escape(locateParagraphId)}"]`)
+    target?.scrollIntoView({ block: 'center', behavior: 'smooth' })
+    locateParagraphId = null
+  }
 }
 
 async function restoreVersion(revision: number) {
@@ -456,6 +512,9 @@ function editChapterPlan() {
         <button class="paper-history-button" type="button" title="正文版本历史" aria-label="正文版本历史" @click="openVersionHistory">
           <AppIcon name="history" :size="16" />
         </button>
+        <button class="paper-history-button" type="button" title="全书查找与替换" aria-label="全书查找与替换" @click="openTextReplacement">
+          <AppIcon name="search" :size="15" />
+        </button>
         <button class="wk-btn wk-btn-xs" type="button" :title="shell.zen ? '退出纯净模式 ⌘\\' : '纯净模式 ⌘\\'" @click="shell.toggleZen()">
           {{ shell.zen ? '退出纯净' : '纯净模式' }}
         </button>
@@ -584,6 +643,16 @@ function editChapterPlan() {
       :restore-error="restoreError"
       @close="versionOpen = false"
       @restore="restoreVersion"
+    />
+    <TextReplacementDrawer
+      v-if="replacementOpen && store.project"
+      :project-id="store.project.id"
+      :active-chapter-id="store.activeId ?? undefined"
+      :active-volume-id="store.active?.volumeId || undefined"
+      :disabled-reason="replacementDisabledReason"
+      @close="replacementOpen = false"
+      @changed="refreshAfterReplacement"
+      @locate="locateReplacement"
     />
   </div>
 </template>

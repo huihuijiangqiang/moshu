@@ -6,9 +6,9 @@
 所有声明基于实际代码与测试结果，不夸大、不省略已知缺口。
 
 **关键事实**：
-- ✅ 35 张表完整 Alembic baseline，增量迁移已到 `013_generation_drafts`
-- ✅ 1013 个单元/功能测试通过（SQLite in-memory，mock embedding/LLM）
-- ✅ 前端 76 个测试、TypeScript 类型检查和生产构建通过
+- ✅ 36 张表完整 Alembic baseline，增量迁移已到 `014_text_replacement_runs`
+- ✅ 1028 个单元/功能测试通过（SQLite in-memory，mock embedding/LLM）
+- ✅ 前端 80 个测试、TypeScript 类型检查和生产构建通过
 - ✅ 36 个集成测试已在本机真实 PostgreSQL + pgvector 环境通过
 - ✅ 已完成真实账号认证、作品创建、作品归档、分卷与章节增删改排、回收站和章纲编辑闭环
 - ✅ Refresh session 持久化轮换、防重放、注销即时吊销，系统管理员与项目 RBAC 已接通
@@ -18,6 +18,7 @@
 - ✅ 风格档已接通用户隔离 CRUD、真实六维抽取、作品绑定、生成提示与用量结算
 - ✅ AI 来源账本已接通真实生成 run、段落指纹校验、编辑分类与采纳字数回写
 - ✅ AI 生成候选独立持久化，成功、中断和失败输出均可在刷新后恢复、预览、采纳或舍弃
+- ✅ 全书查找替换支持本章/本卷/全书范围、逐处预览确认、设定名风险提示、原子提交和整批撤销
 - ✅ Docker Compose 已接通 migration、API、前端、PostgreSQL、Redis、Celery worker/dispatcher/beat 与 transactional outbox
 - ✅ `/health/ready` 会实际探测 PostgreSQL、Redis 与 Alembic head，并以 503 暴露未就绪依赖
 - ✅ 后端镜像内置 tiktoken `cl100k_base` 缓存，API/worker 冷启动不依赖公共网络下载
@@ -48,7 +49,7 @@ PostgreSQL/pgvector 检索必须在真实部署上单独压测；该脚本只覆
 
 ## 已完成模块
 
-### 1. 数据模型（35 张表，100% Alembic 覆盖）
+### 1. 数据模型（36 张表，100% Alembic 覆盖）
 
 #### 核心骨架 (6 张)
 - `users` - 用户账号
@@ -106,13 +107,16 @@ PostgreSQL/pgvector 检索必须在真实部署上单独压测；该脚本只覆
 - `ratio_reports` - 用量占比报告
 - `foreshadows` - 伏笔倒计时
 
+#### 跨章编辑操作 (1 张)
+- `text_replacement_runs` - 全书查找替换的范围、版本边界、影响章节与撤销状态
+
 **Alembic 与 pgvector 状态**：
 - ✅ **代码与迁移已实现**：`001_initial.py` 建立 baseline，
   `002_embedding_halfvec_2048.py` 清理旧向量并迁移到 HALFVEC(2048)，以
   `halfvec_cosine_ops` 重建 HNSW 索引；upgrade/downgrade 均会要求重新回填向量
 - ✅ `alembic upgrade head --sql` 与 `alembic downgrade -1 --sql` 语法验证通过
 - ✅ 36 个集成测试已在本机真实 PostgreSQL + pgvector 运行通过；当前审核数据库已真实执行
-  `004_auth_admin_rbac -> 005_usage_ledger -> 006_usage_reservation_expiry -> 007_style_profiles -> 008_embedding_job_visibility -> 009_embedding_dispatch_attempts -> 010_claim_temporal_evidence -> 011_guard_issue_arbitration -> 012_content_lifecycle -> 013_generation_drafts`；当前审核数据库已到 `013_generation_drafts (head)`
+  `004_auth_admin_rbac -> 005_usage_ledger -> 006_usage_reservation_expiry -> 007_style_profiles -> 008_embedding_job_visibility -> 009_embedding_dispatch_attempts -> 010_claim_temporal_evidence -> 011_guard_issue_arbitration -> 012_content_lifecycle -> 013_generation_drafts -> 014_text_replacement_runs`；当前审核数据库已到 `014_text_replacement_runs (head)`
 
 ---
 
@@ -161,6 +165,15 @@ PostgreSQL/pgvector 检索必须在真实部署上单独压测；该脚本只覆
 - ✅ `streaming -> ready/failed -> accepted/rejected` 状态机，采纳与舍弃加行锁且重复请求幂等
 - ✅ 写作台“候选”页支持刷新恢复、逐条预览、放回正文检查和舍弃；服务端不直接改正文，继续沿用正文乐观锁与自动保存
 - ✅ 未采纳候选不会进入正文版本、Codex、摘要、RAG、Guard、来源占比或导出
+
+#### 全书校订 (`api/text_replacement.py`, `app/src/components/editor/TextReplacementDrawer.vue`)
+- ✅ 按本章、本卷或全书检索正文文本节点，最多返回 5000 处结果；回收站章节不参与
+- ✅ 每处命中可单独勾选并打开原文段落，替换前显示校样式前后对照
+- ✅ 执行前锁定范围内正文并校验预览版本；任一正文变化则整批拒绝，不会只替换一部分
+- ✅ 替换保持段落 `pid`、格式节点、AI 来源属性与 CodexRef 结构，写入继续复用正文版本和 outbox 管道
+- ✅ 查找内容涉及已确认设定名或别名时必须显式确认；正文替换不会冒充设定库改名
+- ✅ 每批操作持久记录受影响章节及前后版本，可原子撤销；章节后续已有修改时拒绝覆盖
+- ✅ 打开工具前先排空所有章节的本地待保存队列，离线、保存失败或冲突状态禁止执行
 
 #### 一致性服务 (`services/consistency.py`)
 - ✅ Claim fingerprint 计算（规范化主谓宾去重）
@@ -325,6 +338,11 @@ PostgreSQL/pgvector 检索必须在真实部署上单独压测；该脚本只覆
   - ✅ 202 异步入队
   - ✅ 调用 `services.body.save_chapter_body`
 
+#### 全书校订 (`api/text_replacement.py`)
+- ✅ `POST /projects/{id}/text-replacements/preview` - 按范围返回章节级和逐处命中，不执行写入
+- ✅ `POST /projects/{id}/text-replacements` - 幂等、权限保护、预览版本校验后的原子批量替换
+- ✅ `POST /projects/{id}/text-replacements/{run_id}/undo` - 仅在所有正文仍位于替换后版本时整批撤销
+
 #### 章纲 (`api/outlines.py`)
 - ✅ `PUT /chapters/{id}/outline` - 保存章纲（独立乐观锁）
 - ✅ `GET /chapters/{id}/outline/revisions` - 章纲历史
@@ -388,9 +406,9 @@ PostgreSQL/pgvector 检索必须在真实部署上单独压测；该脚本只覆
 
 ### 5. 测试覆盖
 
-#### 单元测试（1013 passed，SQLite in-memory，mock providers）
+#### 单元测试（1028 passed，SQLite in-memory，mock providers）
 
-**全量测试结果**：1013 passed, 36 skipped（未设置集成测试 URL 时）, 0 warnings；前端 76 passed
+**全量测试结果**：1028 passed, 36 skipped（未设置集成测试 URL 时）, 0 warnings；前端 80 passed
 
 主要测试覆盖（不逐文件列举测试数量，以实际 pytest 结果为准）：
 - ✅ Codex 设定库：页面与 API 完整 CRUD、引用删除保护、原子别名替换、可检索文本判据、两段式事务、deferred 降级、httpx 错误重试
@@ -399,7 +417,7 @@ PostgreSQL/pgvector 检索必须在真实部署上单独压测；该脚本只覆
 - ✅ 一致性服务：Claim fingerprint、规则逻辑、hard negative 案例
 - ✅ RuleScanner：三条规则检测、timeline-aware 跳过、stale 标记、fingerprint 去重
 - ✅ 认证授权：JWT 解码、项目权限、Idempotency-Key 必需性
-- ✅ Alembic 迁移：35 张表、pgvector extension、部分唯一索引、downgrade 完整性
+- ✅ Alembic 迁移：36 张表、pgvector extension、部分唯一索引、downgrade 完整性
 - ✅ 时间锚点：ISO-8601、确定性相对时长、跨章事件引用、源锚点与事件标签原文校验
 - ✅ 增量影响集：新旧实体重绑定、未解析主体、谓词族闭包、全项目安全降级与扫描遥测
 - ✅ LLM 仲裁：不可变版本取证、600 字截断、20 条分批、陌生/缺失/畸形响应、失败降级、事务释放与前端映射
@@ -631,7 +649,7 @@ baseline，增量实现 Codex embedding 回填、时间锚点解析、issue 生�
 3. **补齐创作工作流 P0 缺口**
    - ✅ 正文版本历史浏览、段落级对比与指定版本恢复已完成
    - ✅ AI 多候选草稿持久化，关闭页面后仍可继续预览、比较与采纳
-   - 全书查找替换，带范围、预览、撤销和设定名安全检查
+   - ✅ 全书查找替换，带范围、逐处预览、原子提交、整批撤销和设定名安全检查
 
 ### 中期优先级（3-4 周）
 1. **增量影响集优化**
@@ -651,7 +669,7 @@ baseline，增量实现 Codex embedding 回填、时间锚点解析、issue 生�
 
 ## 文件清单
 
-### 数据模型（7 个文件）
+### 数据模型（8 个文件）
 - `server/db/models_core.py` - 核心骨架 6 张表
 - `server/db/models_codex.py` - 设定库 4 张表
 - `server/db/models_guard.py` - 守卫 2 张表
@@ -660,8 +678,9 @@ baseline，增量实现 Codex embedding 回填、时间锚点解析、issue 生�
 - `server/db/models_usage.py` - 风格/生成/用量 5 张表
 - `server/db/models_org.py` - 组织 3 张表
 - `server/db/models_admin.py` - 会话、运行设置与审计 3 张表
+- `server/db/models_editing.py` - 跨章节原子编辑操作 1 张表
 
-### 服务层（13 个文件）
+### 服务层（14 个文件）
 - `server/services/codex.py` - 设定库 CRUD
 - `server/services/codex_embedding.py` - Embedding 生命周期
 - `server/services/outlines.py` - 章纲服务
@@ -676,8 +695,9 @@ baseline，增量实现 Codex embedding 回填、时间锚点解析、issue 生�
 - `server/services/idempotency.py` - 幂等服务
 - `server/services/usage.py` - 用量预留、结算、退款与月度额度
 - `server/services/style_profiles.py` - 风格样文采样、网关抽取与六维结果校验
+- `server/services/text_replacement.py` - 保持正文结构的逐处查找替换
 
-### API 端点（12 个文件）
+### API 端点（13 个文件）
 - `server/api/auth.py` - 认证与授权
 - `server/api/projects.py` - 项目管理
 - `server/api/chapters.py` - 章节读写
@@ -689,6 +709,7 @@ baseline，增量实现 Codex embedding 回填、时间锚点解析、issue 生�
 - `server/api/exports.py` - 全量导出、备份与恢复
 - `server/api/usage.py` - 真实余额、聚合和逐笔用量
 - `server/api/styles.py` - 风格档 CRUD、抽取与作品绑定
+- `server/api/text_replacement.py` - 全书校订预览、执行与整批撤销
 - `server/main.py` - FastAPI 入口
 
 ### 异步任务（3 个文件）
@@ -696,9 +717,9 @@ baseline，增量实现 Codex embedding 回填、时间锚点解析、issue 生�
 - `server/tasks/consistency.py` - 一致性任务
 - `server/tasks/codex.py` - Codex 回填任务
 
-### 测试（1013 passed；另有 36 个真实 PostgreSQL 测试通过）
-- `server/tests/` - 单元/功能测试（1013 passed）
-- `app/src/**/*.spec.ts` - 前端测试（76 passed）
+### 测试（1028 passed；另有 36 个真实 PostgreSQL 测试通过）
+- `server/tests/` - 单元/功能测试（1028 passed）
+- `app/src/**/*.spec.ts` - 前端测试（80 passed）
 - `server/tests/integration/` - 集成测试（36 passed，需设置真实 PostgreSQL URL）
 
 ### 文档（1 个文件）
@@ -708,10 +729,10 @@ baseline，增量实现 Codex embedding 回填、时间锚点解析、issue 生�
 
 ## 总结
 
-墨枢一致性后端已完成核心数据模型、服务层、API 端点和异步任务定义，1013 个单元/功能
+墨枢一致性后端已完成核心数据模型、服务层、API 端点和异步任务定义，1028 个单元/功能
 测试在 SQLite in-memory + mock providers 环境下通过，另有 36 个集成测试在真实
 PostgreSQL + pgvector 环境通过。真实认证、可吊销会话、管理员、工作室 RBAC、作品创建、
-作品归档、分卷与章节生命周期、章纲、正文版本历史与恢复、AI 多候选草稿、全量导出、非覆盖备份恢复、风格指纹、AI 来源账本与作者生成用量台账已经接通，前端 76 个测试与生产构建通过。
+作品归档、分卷与章节生命周期、章纲、正文版本历史与恢复、AI 多候选草稿、全书查找替换、全量导出、非覆盖备份恢复、风格指纹、AI 来源账本与作者生成用量台账已经接通，前端 80 个测试与生产构建通过。
 
 **关键限制**：
 1. 自动一致性与 embedding 后台模型成本尚未进入统一台账

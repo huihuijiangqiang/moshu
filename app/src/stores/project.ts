@@ -70,6 +70,17 @@ export const useProjectStore = defineStore('project', () => {
     if (full) Object.assign(target, { content: full.content ?? '', rev: full.rev })
   }
 
+  async function reloadReplacedChapters(ids: string[]) {
+    const affected = new Set(ids)
+    chapters.value.forEach((chapter) => {
+      if (!affected.has(chapter.id)) return
+      chapter.content = undefined
+      chapter.rev = undefined
+    })
+    await refreshStructure()
+    if (activeId.value && affected.has(activeId.value)) await openChapter(activeId.value)
+  }
+
   function setWords(id: string, words: number) {
     const c = chapters.value.find((x) => x.id === id)
     if (!c) return
@@ -179,7 +190,7 @@ export const useProjectStore = defineStore('project', () => {
 
   return {
     project, chapters, activeId, active, byVolume, totalWords, totalChapters, loading, loadedProjectId,
-    load, refreshStructure, openChapter, setWords, setContent, setStyleProfile, updateChapterPlan,
+    load, refreshStructure, openChapter, reloadReplacedChapters, setWords, setContent, setStyleProfile, updateChapterPlan,
     insertChapterAfter, updateProject, createVolume, updateVolume, reorderVolumes, moveChapter,
     trashChapter, trashVolume, getTrash, restoreTrash, deleteTrash
   }

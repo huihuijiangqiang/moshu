@@ -129,6 +129,65 @@ export interface ChapterVersionRestoreResult {
   consistencyStatus: string
 }
 
+export type TextReplacementScope = 'chapter' | 'volume' | 'project'
+
+export interface TextReplacementSpec {
+  query: string
+  replacement: string
+  scope: TextReplacementScope
+  chapterId?: string
+  volumeId?: string
+  caseSensitive: boolean
+}
+
+export interface TextReplacementMatch {
+  id: string
+  chapterId: string
+  chapterTitle: string
+  chapterIndex: number
+  paragraphId?: string
+  before: string
+  matched: string
+  after: string
+  replacement: string
+}
+
+export interface TextReplacementWarning {
+  entryId: string
+  name: string
+  kind: string
+  matchedTerm: string
+  referencedChapters: number
+}
+
+export interface TextReplacementPreview {
+  previewToken: string
+  totalMatches: number
+  chapters: Array<{
+    id: string
+    title: string
+    index: number
+    volumeId?: string
+    rev: number
+    matchCount: number
+  }>
+  matches: TextReplacementMatch[]
+  warnings: TextReplacementWarning[]
+}
+
+export interface TextReplacementRun {
+  id: string
+  status: 'applied' | 'undone'
+  totalMatches: number
+  affectedChapters: Array<{
+    chapterId: string
+    chapterTitle: string
+    beforeRev: number
+    afterRev: number
+    matchCount: number
+  }>
+}
+
 export interface ChapterPlanPatch {
   title: string
   outline: string[]

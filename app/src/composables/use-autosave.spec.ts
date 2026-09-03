@@ -93,6 +93,24 @@ describe('useAutosave', () => {
     wrapper.unmount()
   })
 
+  it('flushes every queued chapter before a project-wide operation', async () => {
+    const save = vi.spyOn(contentApi, 'saveChapter').mockResolvedValue({ rev: 1 })
+    const { chapterId, html, autosave, wrapper } = setup()
+
+    autosave.markClean('ch-1', '<p>one</p>')
+    html.value = '<p>one edited</p>'
+    await nextTick()
+    chapterId.value = 'ch-2'
+    autosave.markClean('ch-2', '<p>two</p>')
+    html.value = '<p>two edited</p>'
+    await nextTick()
+
+    expect(await autosave.flushAll()).toBe(true)
+    expect(save).toHaveBeenNthCalledWith(1, 'ch-1', { content: '<p>one edited</p>' })
+    expect(save).toHaveBeenNthCalledWith(2, 'ch-2', { content: '<p>two edited</p>' })
+    wrapper.unmount()
+  })
+
   it('does not mark an unsynced draft clean when switching back to its chapter', async () => {
     const save = vi.spyOn(contentApi, 'saveChapter').mockResolvedValue({ rev: 1 })
     const { chapterId, html, autosave, wrapper } = setup()

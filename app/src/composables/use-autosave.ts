@@ -96,6 +96,16 @@ export function useAutosave(chapterId: Ref<string | null>, html: Ref<string>, th
     }
   }
 
+  async function flushAll(): Promise<boolean> {
+    while (pendingByChapter.size && online.value && !conflict.value) {
+      const pendingBefore = pendingByChapter.size
+      await flush()
+      if (state.value === 'error' || state.value === 'offline' || state.value === 'conflict') break
+      if (pendingByChapter.size >= pendingBefore) break
+    }
+    return pendingByChapter.size === 0
+  }
+
   function schedule() {
     window.clearTimeout(timer)
     if (disposed) {
@@ -220,7 +230,7 @@ export function useAutosave(chapterId: Ref<string | null>, html: Ref<string>, th
   })
 
   return {
-    state, savedAt, online, recoveryDraft, conflict, storageWarning, flush, retry, markClean,
+    state, savedAt, online, recoveryDraft, conflict, storageWarning, flush, flushAll, retry, markClean,
     prepareChapter, restoreLocalDraft, discardLocalDraft, acceptServerVersion, keepLocalVersion,
     recordConflict
   }
