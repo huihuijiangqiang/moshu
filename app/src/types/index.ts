@@ -65,6 +65,10 @@ export interface CodexEntry {
   /** 仅 foreshadow：埋设章与预计回收点 */
   plantedAt?: number
   expectedBy?: string
+  plantedChapterId?: string
+  expectedChapterId?: string
+  foreshadowResolved?: boolean
+  resolvedChapterId?: string
   /** 后端完整结构化属性；编辑已知字段时用于保留关系等尚未开放的扩展数据。 */
   rawAttrs?: Record<string, unknown>
 }
@@ -78,6 +82,10 @@ export interface CodexEntryDraft {
   status: 'confirmed' | 'pending'
   character?: CharacterProfile
   facts?: CodexFact[]
+  plantedChapterId?: string
+  expectedChapterId?: string
+  foreshadowResolved?: boolean
+  resolvedChapterId?: string
 }
 
 export type ChapterStatus = 'outlined' | 'drafting' | 'done'

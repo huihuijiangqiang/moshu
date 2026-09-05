@@ -106,6 +106,24 @@ describe('codexFromDto', () => {
     expect(entry.facts).toEqual([{ label: '货币', value: '一贯等于一千文' }])
   })
 
+  it('maps the complete foreshadow lifecycle', () => {
+    const entry = codexFromDto({
+      id: 'p1-cx-foreshadow-01', project_id: 'p1', kind: 'event', name: '旧井铜钥匙',
+      description: '开启粮仓暗门', aliases: [], attrs: {}, resident: false,
+      status: 'confirmed', ref_chapters: ['p1-ch01', 'p1-ch08'], conflicts: [],
+      planted_at: 'p1-ch01', expected_by: 'p1-ch06', foreshadow_resolved: true,
+      resolved_at: 'p1-ch08'
+    })
+
+    expect(entry.kind).toBe('foreshadow')
+    expect(entry.plantedAt).toBe(1)
+    expect(entry.expectedBy).toBe('第 6 章')
+    expect(entry.plantedChapterId).toBe('p1-ch01')
+    expect(entry.expectedChapterId).toBe('p1-ch06')
+    expect(entry.foreshadowResolved).toBe(true)
+    expect(entry.resolvedChapterId).toBe('p1-ch08')
+  })
+
   it('preserves opaque relation attrs while replacing editable character fields', () => {
     const attrs = codexDraftAttrs({
       kind: 'character',
@@ -183,6 +201,24 @@ describe('Guard DTO mapping', () => {
     expect(issue.arbitrationStatus).toBe('unsupported')
     expect(issue.arbitrationConfidence).toBe(0.81)
     expect(issue.arbitrationRationale).toBe('上下文暗示这是梦境。')
+  })
+
+  it.each([
+    ['timeline_conflict', '时间线冲突'],
+    ['ability_boundary', '能力边界冲突'],
+    ['location_conflict', '地点冲突'],
+    ['foreshadow_overdue', '伏笔逾期']
+  ])('maps %s to a specific guard category', (issueType, label) => {
+    const issue = guardIssueFromDto({
+      id: `g-${issueType}`, chapter_id: 'ch1', issue_type: issueType, severity: 'medium',
+      description: '测试问题', status: 'open', resolved: false, issue_rev: 1,
+      confidence: 0.9, chapter_index: 1, chapter_title: '第一章', evidence: [],
+      actions: ['false_positive'], arbitration_status: 'not_requested',
+      arbitration_confidence: null, arbitration_rationale: null,
+      updated_at: '2026-09-03T10:00:00Z'
+    })
+
+    expect(issue.category).toBe(label)
   })
 
   it('maps outbox and phase state without inventing a completed scan', () => {

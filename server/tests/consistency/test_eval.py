@@ -9,7 +9,7 @@ from sqlalchemy import select
 
 from db.models_codex import CodexEntry
 from db.models_consistency_extended import GuardIssueEvidence
-from db.models_guard import GuardIssue
+from db.models_guard import Foreshadow, GuardIssue
 from services.rule_scanner import RuleScanner
 from tests.consistency.fixtures_eval import CORPUS_VERSION, get_all_fixtures
 
@@ -151,6 +151,12 @@ async def _seed_corpus(async_db_session, seed_project, make_claim, make_run):
             if claim.get("object_entry_id")
         }
     )
+    foreshadow_specs = [
+        case["foreshadow"]
+        for cases in fixtures.values()
+        for case in cases
+        if case.get("foreshadow")
+    ]
     async_db_session.add_all(
         [
             CodexEntry(
@@ -166,6 +172,34 @@ async def _seed_corpus(async_db_session, seed_project, make_claim, make_run):
                 conflicts=[],
             )
             for item_id in item_ids
+        ]
+        + [
+            CodexEntry(
+                id=spec["entry_id"],
+                project_id="proj_eval",
+                kind="event",
+                name=spec["entry_id"],
+                description="一致性评测伏笔",
+                attrs={},
+                resident=False,
+                status="confirmed",
+                ref_chapters=[spec["planted_chapter_id"]],
+                conflicts=[],
+                planted_at=spec["planted_chapter_id"],
+                expected_by=spec["expected_chapter_id"],
+            )
+            for spec in foreshadow_specs
+        ]
+    )
+    await async_db_session.flush()
+    async_db_session.add_all(
+        [
+            Foreshadow(
+                project_id="proj_eval",
+                description="一致性评测伏笔",
+                **spec,
+            )
+            for spec in foreshadow_specs
         ]
     )
     await async_db_session.flush()
@@ -258,7 +292,11 @@ async def run_rule_evaluation(
                 issue
                 for issue in issues
                 if issue.issue_type == case["expected_issue_type"]
-                and claim_ids == issue_claim_ids[issue.id]
+                and (
+                    issue.entry_id == case["expected_entry_id"]
+                    if case["expected_entry_id"]
+                    else claim_ids == issue_claim_ids[issue.id]
+                )
             ),
             None,
         )
@@ -279,7 +317,10 @@ async def run_rule_evaluation(
         for case in fixtures[split]:
             claim_ids = case_claim_ids[case["id"]]
             incorrectly_flagged = any(
-                claim_ids == ids for ids in issue_claim_ids.values()
+                issue.entry_id == case["expected_entry_id"]
+                if case["expected_entry_id"]
+                else claim_ids == issue_claim_ids[issue.id]
+                for issue in issues
             )
             result.add_negative(
                 split,
@@ -306,8 +347,8 @@ async def test_real_rule_evaluation_meets_p0_quality_gate(
     metrics = result.compute_metrics()
     print(result.report())
 
-    assert result.total_positive >= 100
-    assert result.total_hard_negative >= 50
+    assert result.total_positive >= 280
+    assert result.total_hard_negative >= 140
     assert metrics["recall"] >= 0.70
     assert metrics["macro_recall"] >= 0.70
     assert metrics["evidence_recall"] >= 0.90
@@ -320,13 +361,17 @@ def test_corpus_has_versioned_balanced_rule_coverage():
     positive_rules = {case["rule"] for case in fixtures["positive"]}
     hard_negative_rules = {case["rule"] for case in fixtures["hard_negative"]}
 
-    assert len(fixtures["positive"]) == 120
-    assert len(fixtures["hard_negative"]) == 60
+    assert len(fixtures["positive"]) == 280
+    assert len(fixtures["hard_negative"]) == 140
     assert len(fixtures["easy_negative"]) == 20
     assert positive_rules == {
         "alive_conflict",
         "ownership_conflict",
         "knowledge_boundary",
+        "timeline_conflict",
+        "ability_boundary",
+        "location_conflict",
+        "foreshadow_overdue",
     }
     assert hard_negative_rules == positive_rules
     assert all(

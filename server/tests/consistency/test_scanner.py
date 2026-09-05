@@ -12,7 +12,7 @@ import pytest
 from sqlalchemy import select
 
 from db.models_consistency_extended import ConsistencyClaim, GuardIssueEvidence
-from db.models_guard import GuardIssue
+from db.models_guard import Foreshadow, GuardIssue
 from services.rule_scanner import ISSUE_ACTIONS, RuleScanner
 
 RESOLUTION_ACTIONS = {
@@ -269,6 +269,57 @@ async def test_knowledge_predicate_family_is_included_in_impact_set(
     }
 
 
+async def test_ability_predicate_family_is_included_in_impact_set(
+    scanner, async_db_session, scan_context, add_claim
+):
+    await add_claim(
+        subject_text="沈青禾",
+        predicate="uses_ability",
+        object_type="ability",
+        object_value="灵泉",
+    )
+    await add_claim(
+        chapter_id="ch_b",
+        subject_text="沈青禾",
+        predicate="acquires_ability",
+        object_type="ability",
+        object_value="灵泉",
+        fingerprint="fp_acquires_spring",
+    )
+
+    claims = await scanner._load_impacted_claims(
+        async_db_session, project_id="proj_a", chapter_id="ch_a"
+    )
+
+    assert {claim.predicate for claim in claims} == {"uses_ability", "acquires_ability"}
+
+
+async def test_temporal_event_ref_is_included_in_impact_set(
+    scanner, async_db_session, scan_context, add_claim
+):
+    await add_claim(
+        subject_text="沈青禾",
+        predicate="other",
+        temporal_event_ref="秋收祭",
+    )
+    await add_claim(
+        chapter_id="ch_b",
+        subject_text="周砚",
+        predicate="other",
+        temporal_event_ref=" 秋收祭 ",
+        fingerprint="fp_same_event_other_subject",
+    )
+
+    claims = await scanner._load_impacted_claims(
+        async_db_session, project_id="proj_a", chapter_id="ch_a"
+    )
+
+    assert {claim.fingerprint for claim in claims} == {
+        "fp_沈青禾_other_true",
+        "fp_same_event_other_subject",
+    }
+
+
 # --- 规则 1：生死冲突 ----------------------------------------------------------
 
 
@@ -453,6 +504,416 @@ async def test_conflict_across_chapters_is_detected(
     issues = await load_issues(async_db_session)
     # issue 归属到出问题的那一章，而非被扫描的那一章
     assert issues[0].chapter_id == "ch_b"
+
+
+# --- 规则 4：时间线冲突 --------------------------------------------------------
+
+
+async def test_same_event_at_different_reliable_times_is_reported(
+    scanner, async_db_session, scan_context, add_claim
+):
+    first = await add_claim(
+        subject_text="秋收祭",
+        predicate="other",
+        temporal_event_ref="秋收祭",
+        temporal_anchor_value="2026-09-01",
+        timeline_id="main",
+        story_order=100.0,
+    )
+    second = await add_claim(
+        chapter_id="ch_b",
+        subject_text="沈青禾",
+        predicate="other",
+        temporal_event_ref=" 秋收祭 ",
+        temporal_anchor_value="2026-09-03",
+        timeline_id="main",
+        story_order=200.0,
+        fingerprint="fp_conflicting_festival_time",
+    )
+
+    await run_scan(scanner, async_db_session, scan_context)
+    issue = (await load_issues(async_db_session))[0]
+
+    assert issue.issue_type == "timeline_conflict"
+    assert issue.evidence["claim_ids"] == [first.id, second.id]
+    assert issue.chapter_id == "ch_b"
+
+
+async def test_same_event_time_does_not_conflict_across_timelines(
+    scanner, async_db_session, scan_context, add_claim
+):
+    await add_claim(
+        subject_text="秋收祭",
+        predicate="other",
+        temporal_event_ref="秋收祭",
+        timeline_id="main",
+        story_order=100.0,
+    )
+    await add_claim(
+        subject_text="秋收祭",
+        predicate="other",
+        temporal_event_ref="秋收祭",
+        timeline_id="dream",
+        story_order=200.0,
+        fingerprint="fp_dream_festival",
+    )
+
+    assert await run_scan(scanner, async_db_session, scan_context) == []
+
+
+async def test_same_event_without_reliable_order_is_skipped(
+    scanner, async_db_session, scan_context, add_claim
+):
+    await add_claim(
+        subject_text="秋收祭",
+        predicate="other",
+        temporal_event_ref="秋收祭",
+        timeline_id="main",
+        story_order=None,
+    )
+    await add_claim(
+        subject_text="秋收祭",
+        predicate="other",
+        temporal_event_ref="秋收祭",
+        timeline_id="main",
+        story_order=200.0,
+        fingerprint="fp_only_reliable_festival",
+    )
+
+    assert await run_scan(scanner, async_db_session, scan_context) == []
+
+
+# --- 规则 5：能力边界 ----------------------------------------------------------
+
+
+async def test_using_ability_before_acquiring_it_is_reported(
+    scanner, async_db_session, scan_context, add_claim
+):
+    used = await add_claim(
+        subject_text="沈青禾",
+        predicate="uses_ability",
+        object_type="ability",
+        object_value="灵泉",
+        timeline_id="main",
+        story_order=100.0,
+    )
+    acquired = await add_claim(
+        chapter_id="ch_b",
+        subject_text="沈青禾",
+        predicate="acquires_ability",
+        object_type="ability",
+        object_value="灵泉",
+        timeline_id="main",
+        story_order=200.0,
+        fingerprint="fp_acquired_spring_later",
+    )
+
+    await run_scan(scanner, async_db_session, scan_context)
+    issue = (await load_issues(async_db_session))[0]
+
+    assert issue.issue_type == "ability_boundary"
+    assert issue.evidence["claim_ids"] == [used.id, acquired.id]
+    assert issue.chapter_id == "ch_a"
+
+
+async def test_using_ability_after_acquiring_it_is_allowed(
+    scanner, async_db_session, scan_context, add_claim
+):
+    await add_claim(
+        subject_text="沈青禾",
+        predicate="acquires_ability",
+        object_type="ability",
+        object_value="灵泉",
+        timeline_id="main",
+        story_order=100.0,
+    )
+    await add_claim(
+        subject_text="沈青禾",
+        predicate="uses_ability",
+        object_type="ability",
+        object_value="灵泉",
+        timeline_id="main",
+        story_order=200.0,
+        fingerprint="fp_used_spring_later",
+    )
+
+    assert await run_scan(scanner, async_db_session, scan_context) == []
+
+
+async def test_ability_boundary_requires_same_ability_and_timeline(
+    scanner, async_db_session, scan_context, add_claim
+):
+    await add_claim(
+        subject_text="沈青禾",
+        predicate="uses_ability",
+        object_type="ability",
+        object_value="灵泉",
+        timeline_id="main",
+        story_order=100.0,
+    )
+    await add_claim(
+        subject_text="沈青禾",
+        predicate="acquires_ability",
+        object_type="ability",
+        object_value="御风",
+        timeline_id="dream",
+        story_order=200.0,
+        fingerprint="fp_other_ability_timeline",
+    )
+
+    assert await run_scan(scanner, async_db_session, scan_context) == []
+
+
+async def test_ability_boundary_ignores_missing_ability_object(
+    scanner, async_db_session, scan_context, add_claim
+):
+    await add_claim(
+        subject_text="沈青禾", predicate="uses_ability", object_type="ability",
+        object_value=None, timeline_id="main", story_order=100.0,
+    )
+    await add_claim(
+        subject_text="沈青禾", predicate="acquires_ability", object_type="ability",
+        object_value=None, timeline_id="main", story_order=200.0,
+        fingerprint="fp_missing_ability_acquire",
+    )
+
+    assert await run_scan(scanner, async_db_session, scan_context) == []
+
+
+# --- 规则 6：地点冲突 ----------------------------------------------------------
+
+
+async def test_two_locations_at_same_reliable_time_are_reported(
+    scanner, async_db_session, scan_context, add_claim
+):
+    first = await add_claim(
+        subject_text="沈青禾",
+        predicate="located_at",
+        object_type="location",
+        object_value="青石村",
+        timeline_id="main",
+        story_order=100.0,
+        valid_from_order=100.0,
+    )
+    second = await add_claim(
+        chapter_id="ch_b",
+        subject_text="沈青禾",
+        predicate="located_at",
+        object_type="location",
+        object_value="京城",
+        timeline_id="main",
+        story_order=100.0,
+        valid_from_order=100.0,
+        fingerprint="fp_capital_same_time",
+    )
+
+    await run_scan(scanner, async_db_session, scan_context)
+    issue = (await load_issues(async_db_session))[0]
+
+    assert issue.issue_type == "location_conflict"
+    assert issue.evidence["claim_ids"] == [first.id, second.id]
+
+
+async def test_non_overlapping_location_intervals_are_allowed(
+    scanner, async_db_session, scan_context, add_claim
+):
+    await add_claim(
+        subject_text="沈青禾",
+        predicate="located_at",
+        object_type="location",
+        object_value="青石村",
+        timeline_id="main",
+        story_order=100.0,
+        valid_from_order=100.0,
+        valid_to_order=200.0,
+    )
+    await add_claim(
+        subject_text="沈青禾",
+        predicate="located_at",
+        object_type="location",
+        object_value="京城",
+        timeline_id="main",
+        story_order=200.0,
+        valid_from_order=200.0,
+        fingerprint="fp_capital_after_travel",
+    )
+
+    assert await run_scan(scanner, async_db_session, scan_context) == []
+
+
+async def test_open_earlier_location_does_not_imply_character_never_travelled(
+    scanner, async_db_session, scan_context, add_claim
+):
+    await add_claim(
+        subject_text="沈青禾",
+        predicate="located_at",
+        object_type="location",
+        object_value="青石村",
+        timeline_id="main",
+        story_order=100.0,
+        valid_from_order=100.0,
+    )
+    await add_claim(
+        chapter_id="ch_b",
+        subject_text="沈青禾",
+        predicate="located_at",
+        object_type="location",
+        object_value="京城",
+        timeline_id="main",
+        story_order=200.0,
+        valid_from_order=200.0,
+        fingerprint="fp_open_location_then_travel",
+    )
+
+    assert await run_scan(scanner, async_db_session, scan_context) == []
+
+
+async def test_location_conflict_is_not_inferred_from_travel_speed(
+    scanner, async_db_session, scan_context, add_claim
+):
+    await add_claim(
+        subject_text="沈青禾",
+        predicate="located_at",
+        object_type="location",
+        object_value="青石村",
+        timeline_id="main",
+        story_order=100.0,
+        valid_from_order=100.0,
+        valid_to_order=101.0,
+    )
+    await add_claim(
+        subject_text="沈青禾",
+        predicate="located_at",
+        object_type="location",
+        object_value="千里外京城",
+        timeline_id="main",
+        story_order=101.0,
+        valid_from_order=101.0,
+        fingerprint="fp_far_away_but_no_distance_model",
+    )
+
+    assert await run_scan(scanner, async_db_session, scan_context) == []
+
+
+# --- 规则 7：伏笔逾期 ----------------------------------------------------------
+
+
+async def test_unresolved_foreshadow_past_expected_chapter_is_reported(
+    scanner, async_db_session, scan_context, add_entry
+):
+    entry = await add_entry("cx_foreshadow", kind="event")
+    async_db_session.add(
+        Foreshadow(
+            id="fs_overdue",
+            project_id="proj_a",
+            entry_id=entry.id,
+            planted_chapter_id="ch_a",
+            expected_chapter_id="ch_a",
+            description="旧井里的铜钥匙",
+            resolved=False,
+        )
+    )
+    await async_db_session.flush()
+
+    await run_scan(scanner, async_db_session, scan_context, chapter_id="ch_b")
+    issue = (await load_issues(async_db_session))[0]
+
+    assert issue.issue_type == "foreshadow_overdue"
+    assert issue.entry_id == entry.id
+    assert issue.chapter_id == "ch_a"
+    assert issue.evidence["claim_ids"] == []
+    assert issue.anchor["entry_id"] == entry.id
+    evidence = await load_evidence(async_db_session, issue.id)
+    assert len(evidence) == 1
+    assert evidence[0].source_kind == "codex"
+    assert evidence[0].codex_entry_id == entry.id
+    assert entry.name in (evidence[0].quote or "")
+
+
+async def test_resolved_or_not_yet_due_foreshadow_is_not_reported(
+    scanner, async_db_session, scan_context, add_entry
+):
+    resolved_entry = await add_entry("cx_resolved", kind="event")
+    pending_entry = await add_entry("cx_pending", kind="event")
+    async_db_session.add_all([
+        Foreshadow(
+            id="fs_resolved",
+            project_id="proj_a",
+            entry_id=resolved_entry.id,
+            planted_chapter_id="ch_a",
+            expected_chapter_id="ch_a",
+            description="已经回收",
+            resolved=True,
+            resolved_chapter_id="ch_b",
+        ),
+        Foreshadow(
+            id="fs_pending",
+            project_id="proj_a",
+            entry_id=pending_entry.id,
+            planted_chapter_id="ch_a",
+            expected_chapter_id="ch_b",
+            description="本章才到期",
+            resolved=False,
+        ),
+    ])
+    await async_db_session.flush()
+
+    assert await run_scan(
+        scanner, async_db_session, scan_context, chapter_id="ch_b"
+    ) == []
+
+
+async def test_foreshadow_with_deleted_expected_chapter_is_not_reported(
+    scanner, async_db_session, scan_context, add_entry
+):
+    from datetime import datetime, timezone
+
+    from db.models_core import Chapter
+
+    entry = await add_entry("cx_deleted_expected", kind="event")
+    async_db_session.add(
+        Foreshadow(
+            id="fs_deleted_expected",
+            project_id="proj_a",
+            entry_id=entry.id,
+            planted_chapter_id="ch_a",
+            expected_chapter_id="ch_a",
+            description="预计章已删除",
+            resolved=False,
+        )
+    )
+    chapter = await async_db_session.get(Chapter, "ch_a")
+    chapter.deleted_at = datetime.now(timezone.utc)
+    await async_db_session.flush()
+
+    assert await run_scan(
+        scanner, async_db_session, scan_context, chapter_id="ch_b"
+    ) == []
+
+
+async def test_resolving_foreshadow_makes_open_issue_stale_on_next_scan(
+    scanner, async_db_session, scan_context, add_entry
+):
+    entry = await add_entry("cx_stale_foreshadow", kind="event")
+    lifecycle = Foreshadow(
+        id="fs_stale",
+        project_id="proj_a",
+        entry_id=entry.id,
+        planted_chapter_id="ch_a",
+        expected_chapter_id="ch_a",
+        description="待回收",
+        resolved=False,
+    )
+    async_db_session.add(lifecycle)
+    await async_db_session.flush()
+    await run_scan(scanner, async_db_session, scan_context, chapter_id="ch_b")
+
+    lifecycle.resolved = True
+    lifecycle.resolved_chapter_id = "ch_b"
+    await run_scan(scanner, async_db_session, scan_context, chapter_id="ch_b")
+
+    issue = (await load_issues(async_db_session))[0]
+    assert issue.status == "stale"
 
 
 # --- 锚点 ---------------------------------------------------------------------

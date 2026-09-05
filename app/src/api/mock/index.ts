@@ -367,7 +367,11 @@ export const mockApi = {
       refChapters: [],
       conflicts: 0,
       character: draft.kind === 'character' ? structuredClone(draft.character ?? {}) : undefined,
-      facts: draft.kind === 'character' ? undefined : structuredClone(draft.facts ?? [])
+      facts: draft.kind === 'character' ? undefined : structuredClone(draft.facts ?? []),
+      plantedChapterId: draft.plantedChapterId,
+      expectedChapterId: draft.expectedChapterId,
+      foreshadowResolved: draft.foreshadowResolved,
+      resolvedChapterId: draft.resolvedChapterId
     }
     if (projectId === 'p1') state.codex.push(entry)
     return structuredClone(entry)
@@ -385,7 +389,11 @@ export const mockApi = {
       resident: draft.resident,
       status: draft.status,
       character: draft.kind === 'character' ? structuredClone(draft.character ?? {}) : undefined,
-      facts: draft.kind === 'character' ? undefined : structuredClone(draft.facts ?? [])
+      facts: draft.kind === 'character' ? undefined : structuredClone(draft.facts ?? []),
+      plantedChapterId: draft.plantedChapterId,
+      expectedChapterId: draft.expectedChapterId,
+      foreshadowResolved: draft.foreshadowResolved,
+      resolvedChapterId: draft.resolvedChapterId
     })
     return structuredClone(entry)
   },

@@ -5,10 +5,11 @@ from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import select
 
+from db.models_codex import CodexEntry
 from db.models_consistency import OutboxEvent
 from db.models_consistency_extended import GuardIssueEvidence, GuardResolution
 from db.models_core import ChapterBody
-from db.models_guard import GuardIssue
+from db.models_guard import Foreshadow, GuardIssue
 
 
 def build_issue(run_id: int, *, issue_id: str = "gi_1", issue_rev: int = 1) -> GuardIssue:
@@ -78,6 +79,74 @@ async def test_resolve_issue_persists_resolution_and_bumps_rev(
     assert resolution.created_by == "user_a"
     assert resolution.issue_rev == 1
     assert resolution.action == "accept_new_fact"
+
+
+async def test_fixed_foreshadow_issue_marks_lifecycle_resolved_at_scanned_chapter(
+    app_client, async_db_session, seed_project, make_run, auth_headers
+):
+    await seed_project(chapter_ids=("ch_a", "ch_b"))
+    entry = CodexEntry(
+        id="cx_foreshadow",
+        project_id="proj_a",
+        kind="event",
+        name="旧井铜钥匙",
+        description="待回收",
+        attrs={},
+        resident=False,
+        status="confirmed",
+        ref_chapters=["ch_a"],
+        conflicts=[],
+        planted_at="ch_a",
+        expected_by="ch_a",
+    )
+    async_db_session.add(entry)
+    await async_db_session.flush()
+    lifecycle = Foreshadow(
+        id="fs_foreshadow",
+        project_id="proj_a",
+        entry_id=entry.id,
+        planted_chapter_id="ch_a",
+        expected_chapter_id="ch_a",
+        description="待回收",
+        resolved=False,
+    )
+    async_db_session.add(lifecycle)
+    run = make_run(project_id="proj_a", chapter_id="ch_b")
+    async_db_session.add(run)
+    await async_db_session.flush()
+    issue = GuardIssue(
+        id="gi_foreshadow",
+        project_id="proj_a",
+        chapter_id="ch_a",
+        run_id=run.id,
+        entry_id=entry.id,
+        issue_type="foreshadow_overdue",
+        rule_version="1.0.0",
+        fingerprint="fp_foreshadow_overdue",
+        severity="medium",
+        confidence=1.0,
+        description="伏笔已逾期",
+        evidence={},
+        anchor={"entry_id": entry.id},
+        actions=["fixed_in_body"],
+        status="open",
+        issue_rev=1,
+        resolved=False,
+        false_positive=False,
+    )
+    async_db_session.add(issue)
+    await async_db_session.commit()
+
+    response = await app_client.post(
+        "/consistency/issues/proj_a/gi_foreshadow/resolve",
+        json={"action": "fixed_in_body", "issue_rev": 1},
+        headers=auth_headers("user_a"),
+    )
+
+    assert response.status_code == 200
+    await async_db_session.refresh(lifecycle)
+    assert lifecycle.resolved is True
+    assert lifecycle.resolved_chapter_id == "ch_b"
 
 
 async def test_resolve_issue_rejects_stale_issue_rev(

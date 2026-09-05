@@ -6,9 +6,9 @@
 所有声明基于实际代码与测试结果，不夸大、不省略已知缺口。
 
 **关键事实**：
-- ✅ 36 张表完整 Alembic baseline，增量迁移已到 `014_text_replacement_runs`
-- ✅ 1028 个单元/功能测试通过（SQLite in-memory，mock embedding/LLM）
-- ✅ 前端 80 个测试、TypeScript 类型检查和生产构建通过
+- ✅ 36 张表完整 Alembic baseline，增量迁移已到 `015_foreshadow_lifecycle`
+- ✅ 1049 个单元/功能测试通过（SQLite in-memory，mock embedding/LLM）
+- ✅ 前端 85 个测试、TypeScript 类型检查和生产构建通过
 - ✅ 36 个集成测试已在本机真实 PostgreSQL + pgvector 环境通过
 - ✅ 已完成真实账号认证、作品创建、作品归档、分卷与章节增删改排、回收站和章纲编辑闭环
 - ✅ Refresh session 持久化轮换、防重放、注销即时吊销，系统管理员与项目 RBAC 已接通
@@ -26,9 +26,9 @@
 - ✅ 确定性 Guard 告警已接入有依据的 LLM 二次复核；失败保留规则告警且不自动替作者判误报
 - ✅ Codex embedding 回填具有持久任务状态、失败次数、最后错误、耗尽标记与重试入口
 - ✅ 设定库页面已接通真实新建、编辑、忽略候选和安全删除；人物档案与通用关键事实分表单维护
-- ✅ 三条确定性规则已由真实 `RuleScanner` 跑过 120 正例、60 hard negatives、20 easy negatives，
+- ✅ 七类确定性规则已由真实 `RuleScanner` 跑过 280 正例、140 hard negatives、20 easy negatives，
   recall / 证据定位 / hard-negative precision 均为 100%
-- ⚠️ 上述结构化 claim 评测不覆盖正文抽取、LLM 仲裁质量和 P1 其余四类规则，不能据此宣称全链路生产就绪
+- ⚠️ 上述结构化评测不覆盖正文抽取和 LLM 仲裁的真实盲评质量，不能据此宣称全链路生产就绪
 
 ### 性能基准（可重复）
 
@@ -116,7 +116,7 @@ PostgreSQL/pgvector 检索必须在真实部署上单独压测；该脚本只覆
   `halfvec_cosine_ops` 重建 HNSW 索引；upgrade/downgrade 均会要求重新回填向量
 - ✅ `alembic upgrade head --sql` 与 `alembic downgrade -1 --sql` 语法验证通过
 - ✅ 36 个集成测试已在本机真实 PostgreSQL + pgvector 运行通过；当前审核数据库已真实执行
-  `004_auth_admin_rbac -> 005_usage_ledger -> 006_usage_reservation_expiry -> 007_style_profiles -> 008_embedding_job_visibility -> 009_embedding_dispatch_attempts -> 010_claim_temporal_evidence -> 011_guard_issue_arbitration -> 012_content_lifecycle -> 013_generation_drafts -> 014_text_replacement_runs`；当前审核数据库已到 `014_text_replacement_runs (head)`
+  `004_auth_admin_rbac -> 005_usage_ledger -> 006_usage_reservation_expiry -> 007_style_profiles -> 008_embedding_job_visibility -> 009_embedding_dispatch_attempts -> 010_claim_temporal_evidence -> 011_guard_issue_arbitration -> 012_content_lifecycle -> 013_generation_drafts -> 014_text_replacement_runs -> 015_foreshadow_lifecycle`；部署后以 readiness 返回的 Alembic head 为准
 
 ---
 
@@ -179,10 +179,14 @@ PostgreSQL/pgvector 检索必须在真实部署上单独压测；该脚本只覆
 - ✅ Claim fingerprint 计算（规范化主谓宾去重）
 - ✅ 实体别名解析（Unicode NFC + 首尾 trim）
 - ✅ Claim upsert 幂等（版本绑定，旧版本标 `superseded`）
-- ✅ 三条确定性规则实现：
+- ✅ 七类确定性规则实现：
   1. `check_alive_conflict` - 生死冲突（时间线区间重叠）
   2. `check_ownership_conflict` - 物品归属冲突（同时刻不同归属）
   3. `check_knowledge_boundary` - 知情边界违规（先用后知）
+  4. `timeline_conflict` - 同一具名事件的可靠时间锚点冲突
+  5. `ability_boundary` - 同一时间线内先使用、后获得能力
+  6. `location_conflict` - 同一可靠时刻或明确重叠区间的双重地点
+  7. `foreshadow_overdue` - 项目进度超过预计回收章且伏笔未回收
 
 #### RuleScanner (`services/rule_scanner.py`)
 - ✅ `compute_issue_fingerprint`（SHA-256 issue_type + 排序证据键）
@@ -406,37 +410,37 @@ PostgreSQL/pgvector 检索必须在真实部署上单独压测；该脚本只覆
 
 ### 5. 测试覆盖
 
-#### 单元测试（1028 passed，SQLite in-memory，mock providers）
+#### 单元测试（1049 passed，SQLite in-memory，mock providers）
 
-**全量测试结果**：1028 passed, 36 skipped（未设置集成测试 URL 时）, 0 warnings；前端 80 passed
+**全量测试结果**：1049 passed, 36 skipped（未设置集成测试 URL 时）, 0 warnings；前端 85 passed
 
 主要测试覆盖（不逐文件列举测试数量，以实际 pytest 结果为准）：
 - ✅ Codex 设定库：页面与 API 完整 CRUD、引用删除保护、原子别名替换、可检索文本判据、两段式事务、deferred 降级、httpx 错误重试
 - ✅ 章纲服务：独立版本控制、body_policy 约束、不变量测试、outbox 事件
 - ✅ 正文服务：content_hash 幂等性、paragraph ID 提取、CodexRef 提取
 - ✅ 一致性服务：Claim fingerprint、规则逻辑、hard negative 案例
-- ✅ RuleScanner：三条规则检测、timeline-aware 跳过、stale 标记、fingerprint 去重
+- ✅ RuleScanner：七类规则检测、timeline-aware 跳过、stale 标记、fingerprint 去重
 - ✅ 认证授权：JWT 解码、项目权限、Idempotency-Key 必需性
 - ✅ Alembic 迁移：36 张表、pgvector extension、部分唯一索引、downgrade 完整性
 - ✅ 时间锚点：ISO-8601、确定性相对时长、跨章事件引用、源锚点与事件标签原文校验
 - ✅ 增量影响集：新旧实体重绑定、未解析主体、谓词族闭包、全项目安全降级与扫描遥测
 - ✅ LLM 仲裁：不可变版本取证、600 字截断、20 条分批、陌生/缺失/畸形响应、失败降级、事务释放与前端映射
 - ✅ 项目、卷、章节、章纲 CRUD，跨卷排序、软删除/恢复/永久删除、乐观锁冲突、Outbox 与幂等性
-- ✅ Foreshadow 伏笔倒计时、用量统计、风格档案
+- ✅ Foreshadow 可选埋设/预计/实际回收章、逾期守卫联动、用量统计、风格档案
 - ✅ 风格档跨租户隔离、默认唯一、抽取成功/失败、失败退款、owner 绑定、删除自动解绑与提示隐私
 - ✅ AI 来源：真实 run/段落指纹校验、编辑后分类、重复与跨章节伪造防护、采纳字数回落
 - ✅ **持久失败契约测试**：`test_documentation_reflects_persistent_dead_letter_visibility`
   守住 embedding 重试耗尽后仍可查询、可重试的任务契约
 
 #### 评测框架 (`tests/consistency/fixtures_eval.py`, `test_eval.py`)
-- ✅ 版本化 `rule-eval-v1`：120 正例 + 60 hard negatives + 20 easy negatives
-- ✅ 评测会把 400 条 claim 写进真实 ORM，调用公开的 `RuleScanner.scan_chapter()`，再读取持久化 issue/evidence；
+- ✅ 版本化 `rule-eval-v2`：280 正例 + 140 hard negatives + 20 easy negatives
+- ✅ 评测会把 claim 与伏笔生命周期写进真实 ORM，调用公开的 `RuleScanner.scan_chapter()`，再读取持久化 issue/evidence；
   不再依据 `expected_conflict` 假算检测结果
-- ✅ 指标计算：overall recall、三规则 macro recall、证据两端 `evidence_recall`、hard/easy-negative precision、额外告警数
-- ✅ 当前结果：recall 100% (120/120)、macro recall 100%、证据定位 100% (120/120)、
-  hard-negative precision 100% (60/60)、easy-negative precision 100% (20/20)、额外告警 0
-- ⚠️ 这是结构化 claim 层的合成边界评测，只覆盖生死、归属、知情边界三条 P0 规则；
-  尚未覆盖正文到 claim 的抽取误差、真实小说盲评、LLM 仲裁判断和 P1 其余四类规则
+- ✅ 指标计算：overall recall、七规则 macro recall、证据 `evidence_recall`、hard/easy-negative precision、额外告警数
+- ✅ 当前结果：recall 100% (280/280)、macro recall 100%、证据定位 100% (280/280)、
+  hard-negative precision 100% (140/140)、easy-negative precision 100% (20/20)、额外告警 0
+- ⚠️ 这是结构化 claim/生命周期层的合成边界评测；尚未覆盖正文到 claim 的抽取误差、
+  有授权真实小说盲评和 LLM 仲裁判断质量
 
 #### 集成测试（36 tests，真实 PostgreSQL + pgvector 已通过）
 - ✅ Docker PostgreSQL + pgvector 环境已执行 36 个测试并全部通过
@@ -479,31 +483,29 @@ PostgreSQL/pgvector 检索必须在真实部署上单独压测；该脚本只覆
 待确认抽取候选可直接忽略，已确认且已有正文引用的条目禁止删除，避免丢失显式引用语义。
 
 ### 3. 全链路评测覆盖仍不足
-**状态**：三条确定性规则的结构化门禁已完成；真实正文与完整七规则未完成
+**状态**：七条确定性规则的结构化门禁已完成；真实正文盲评未完成
 
 **当前规模**：
-- 正例：120 个（alive / ownership / knowledge boundary 各 40）
-- Hard negatives：60 个（每条规则 20 个，覆盖自然状态变化、不同时间线、未知顺序、合法转移、不同知识对象）
+- 正例：280 个（七类规则各 40）
+- Hard negatives：140 个（每条规则 20 个，覆盖合法状态变化、不同时间线、未知顺序、合法转移与未到期/已回收伏笔）
 - Easy negatives：20 个
-- **总计：200 个结构化 claim 案例，真实执行 scanner 并核对持久化证据**
+- **总计：440 个结构化 claim/生命周期案例，真实执行 scanner 并核对持久化证据**
 
 **架构要求**：
 - 首版上线集：≥100 正例 + ≥50 hard negatives
 - 数量门槛：已达到
-- 七类规则覆盖：3/7；真实正文盲评：未达到
+- 七类规则覆盖：7/7；真实正文盲评：未达到
 
 **当前 100% 指标的局限**：
 - 指标来自真实 scanner 输出，不再硬编码，但输入仍是人工构造的结构化 claim
 - 夹具不是正文，无法衡量 LLM 是否能从隐含、否定、转述和长距离上下文中正确抽取 claim
-- 尚未实现/评测时间、能力、地理、伏笔四类 P1 规则
 - 尚未对 LLM 仲裁做人工金标盲评
 - **不能据此宣称生产就绪的召回率/精度**
 
 **后续需要**：
-1. 实现时间、能力、地理、伏笔四类规则并为七类规则保持 macro recall 门禁
-2. 从有授权的真实小说/项目输出建立正文 -> claim -> issue 的人工金标 dev/holdout
-3. 对 LLM 仲裁的 supported / unsupported / uncertain 建立独立混淆矩阵和失败率
-4. 把真实 PostgreSQL 评测与 10/30/100 万字性能指标接入 CI/定期任务
+1. 从有授权的真实小说/项目输出建立正文 -> claim -> issue 的人工金标 dev/holdout
+2. 对 LLM 仲裁的 supported / unsupported / uncertain 建立独立混淆矩阵和失败率
+3. 把真实 PostgreSQL 评测与 10/30/100 万字性能指标接入 CI/定期任务
 
 ### 4. 时间锚点解析限制
 **状态**：确定性链已完成，模糊语义仍保守降级
@@ -601,11 +603,11 @@ baseline，增量实现 Codex embedding 回填、时间锚点解析、issue 生�
 **优先级**：高。继续记录真实耗时与失败率，再决定是否拆分更细任务或增加网关容量。
 
 ### 2. 全链路评测覆盖不足
-**描述**：三条确定性规则已有 200 个真实 scanner 合成案例，但正文抽取、LLM 仲裁和完整七规则没有达到盲评门禁。
+**描述**：七条确定性规则已有 440 个真实 scanner 合成案例，但正文抽取和 LLM 仲裁没有达到真实盲评门禁。
 
 **风险**：结构化 claim 层 100% 不能代表真实正文端到端召回率与误报率。
 
-**优先级**：高。补齐四类规则并建立真实正文 dev/holdout，不降低现有 120/60 结构化门禁。
+**优先级**：高。建立有授权真实正文 dev/holdout，不降低现有 280/140 结构化门禁。
 
 ### 3. 增量影响集尚未按时间区间裁剪
 **描述**：实体、谓词族和旧版事实的影响闭包已实现；同一实体在很长时间线上的全部相关事实仍会加载。
@@ -631,9 +633,9 @@ baseline，增量实现 Codex embedding 回填、时间锚点解析、issue 生�
    - ✅ AI 插入段落、之后的人工修改与可解释来源统计已经完成
 
 2. **扩充评测数据集**
-   - ✅ 三条确定性规则已达到 120 正例 + 60 hard negatives，真实执行 scanner
+   - ✅ 七条确定性规则已达到 280 正例 + 140 hard negatives，真实执行 scanner
    - ✅ 已设 overall/macro recall ≥70%、证据定位 ≥90%、hard-negative precision ≥80% 门禁
-   - 补齐时间、能力、地理、伏笔并建立真实小说正文 dev/holdout
+   - 建立有授权真实小说正文 dev/holdout
 
 ### 短期优先级（1-2 周）
 1. **实现 Codex Embedding 持久失败可见性**
@@ -717,9 +719,9 @@ baseline，增量实现 Codex embedding 回填、时间锚点解析、issue 生�
 - `server/tasks/consistency.py` - 一致性任务
 - `server/tasks/codex.py` - Codex 回填任务
 
-### 测试（1028 passed；另有 36 个真实 PostgreSQL 测试通过）
-- `server/tests/` - 单元/功能测试（1028 passed）
-- `app/src/**/*.spec.ts` - 前端测试（80 passed）
+### 测试（1049 passed；另有 36 个真实 PostgreSQL 测试通过）
+- `server/tests/` - 单元/功能测试（1049 passed）
+- `app/src/**/*.spec.ts` - 前端测试（85 passed）
 - `server/tests/integration/` - 集成测试（36 passed，需设置真实 PostgreSQL URL）
 
 ### 文档（1 个文件）
@@ -729,14 +731,14 @@ baseline，增量实现 Codex embedding 回填、时间锚点解析、issue 生�
 
 ## 总结
 
-墨枢一致性后端已完成核心数据模型、服务层、API 端点和异步任务定义，1028 个单元/功能
+墨枢一致性后端已完成核心数据模型、服务层、API 端点和异步任务定义，1049 个单元/功能
 测试在 SQLite in-memory + mock providers 环境下通过，另有 36 个集成测试在真实
 PostgreSQL + pgvector 环境通过。真实认证、可吊销会话、管理员、工作室 RBAC、作品创建、
-作品归档、分卷与章节生命周期、章纲、正文版本历史与恢复、AI 多候选草稿、全书查找替换、全量导出、非覆盖备份恢复、风格指纹、AI 来源账本与作者生成用量台账已经接通，前端 80 个测试与生产构建通过。
+作品归档、分卷与章节生命周期、章纲、正文版本历史与恢复、AI 多候选草稿、全书查找替换、全量导出、非覆盖备份恢复、风格指纹、AI 来源账本与作者生成用量台账已经接通，前端 85 个测试与生产构建通过。
 
 **关键限制**：
 1. 自动一致性与 embedding 后台模型成本尚未进入统一台账
-2. 三条确定性规则的 120/60 结构化评测门禁已完成，但真实正文盲评、其余四类规则、模糊时间区间与锚点依赖级联尚未完成
+2. 七条确定性规则的 280/140 结构化评测门禁已完成，但真实正文盲评、模糊时间区间与锚点依赖级联尚未完成
 3. 当前 100% 指标来自真实 scanner 而非硬编码，但输入仍是合成 claim，**不代表正文抽取和 LLM 仲裁的端到端质量**
 4. 模糊时间语义理解与影响集时间区间裁剪未实现；仲裁只提供建议，不自动处置
 5. 真实长文本扫描吞吐受上游模型网关稳定性和并发限制影响

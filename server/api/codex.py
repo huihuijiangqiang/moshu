@@ -9,6 +9,7 @@
 鉴权：所有端点都过 verify_project_access（owner 或 org 成员），回填端点同样如此
 —— 全项目回填会打满 embedding 网关配额，不能任人触发。
 """
+import secrets
 from datetime import datetime
 from typing import Annotated, Literal, Optional, get_args
 
@@ -19,8 +20,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from api.auth import ProjectPermission, get_current_user, verify_project_permission
 from db.models_codex import CODEX_STATUSES, CodexAlias, CodexEntry, CodexRef
-from db.models_core import Project, User
+from db.models_core import Chapter, Project, User
 from db.models_embedding import CodexEmbeddingJob
+from db.models_guard import Foreshadow
 from db.session import get_db
 from services.codex import (
     add_alias,
@@ -78,6 +80,10 @@ class CreateEntryRequest(BaseModel):
     attrs: dict = Field(default_factory=dict)
     resident: bool = False
     status: CodexStatus = "confirmed"
+    planted_at: str | None = None
+    expected_by: str | None = None
+    foreshadow_resolved: bool = False
+    resolved_at: str | None = None
 
 
 class UpdateEntryRequest(BaseModel):
@@ -90,6 +96,10 @@ class UpdateEntryRequest(BaseModel):
     resident: Optional[bool] = None
     status: Optional[CodexStatus] = None
     aliases: Optional[list[AliasValue]] = None
+    planted_at: str | None = None
+    expected_by: str | None = None
+    foreshadow_resolved: bool | None = None
+    resolved_at: str | None = None
 
 
 class AliasRequest(BaseModel):
@@ -112,6 +122,8 @@ class EntryResponse(BaseModel):
     conflicts: list[str]
     planted_at: str | None
     expected_by: str | None
+    foreshadow_resolved: bool
+    resolved_at: str | None
     embedding_status: EmbeddingStatus
 
 
@@ -201,6 +213,86 @@ async def _load_entry(db: AsyncSession, project_id: str, entry_id: str) -> Codex
     return entry
 
 
+async def _load_foreshadow(db: AsyncSession, entry_id: str) -> Foreshadow | None:
+    return (
+        await db.execute(select(Foreshadow).where(Foreshadow.entry_id == entry_id))
+    ).scalar_one_or_none()
+
+
+async def _chapter_map(
+    db: AsyncSession, project_id: str, chapter_ids: set[str]
+) -> dict[str, Chapter]:
+    if not chapter_ids:
+        return {}
+    chapters = list(
+        (
+            await db.execute(
+                select(Chapter).where(
+                    Chapter.project_id == project_id,
+                    Chapter.id.in_(chapter_ids),
+                    Chapter.deleted_at.is_(None),
+                )
+            )
+        ).scalars()
+    )
+    found = {chapter.id: chapter for chapter in chapters}
+    missing = sorted(chapter_ids - set(found))
+    if missing:
+        raise HTTPException(
+            status_code=422,
+            detail={"code": "INVALID_FORESHADOW_CHAPTER", "chapter_ids": missing},
+        )
+    return found
+
+
+async def _sync_foreshadow(
+    db: AsyncSession,
+    entry: CodexEntry,
+    *,
+    planted_at: str,
+    expected_by: str | None,
+    resolved: bool,
+    resolved_at: str | None,
+) -> Foreshadow:
+    chapter_ids = {planted_at}
+    chapter_ids.update(value for value in (expected_by, resolved_at) if value)
+    chapters = await _chapter_map(db, entry.project_id, chapter_ids)
+    # Every row in this map passed the project_id filter in _chapter_map, so
+    # order comparisons cannot cross tenant boundaries.
+    planted_idx = chapters[planted_at].idx
+    if expected_by and chapters[expected_by].idx < planted_idx:
+        raise HTTPException(status_code=422, detail={"code": "FORESHADOW_EXPECTED_BEFORE_PLANTED"})
+    if resolved and not resolved_at:
+        raise HTTPException(status_code=422, detail={"code": "FORESHADOW_RESOLUTION_CHAPTER_REQUIRED"})
+    if resolved_at and chapters[resolved_at].idx < planted_idx:
+        raise HTTPException(status_code=422, detail={"code": "FORESHADOW_RESOLVED_BEFORE_PLANTED"})
+
+    lifecycle = await _load_foreshadow(db, entry.id)
+    if lifecycle is None:
+        lifecycle = Foreshadow(
+            id=f"fs_{secrets.token_hex(12)}",
+            project_id=entry.project_id,
+            entry_id=entry.id,
+            planted_chapter_id=planted_at,
+            expected_chapter_id=expected_by,
+            description=entry.description,
+            resolved=resolved,
+            resolved_chapter_id=resolved_at if resolved else None,
+        )
+        db.add(lifecycle)
+    else:
+        lifecycle.planted_chapter_id = planted_at
+        lifecycle.expected_chapter_id = expected_by
+        lifecycle.description = entry.description
+        lifecycle.resolved = resolved
+        lifecycle.resolved_chapter_id = resolved_at if resolved else None
+    # Keep legacy response/export fields synchronized while Foreshadow owns state.
+    entry.planted_at = planted_at
+    entry.expected_by = expected_by
+    await db.flush()
+    return lifecycle
+
+
 async def _settle_embedding(
     db: AsyncSession, provider: EmbeddingProvider, entry: CodexEntry, *, stale: bool
 ) -> str:
@@ -230,6 +322,7 @@ async def _entry_response(
         .scalars()
         .all()
     )
+    lifecycle = await _load_foreshadow(db, entry.id)
     return EntryResponse(
         id=entry.id,
         project_id=entry.project_id,
@@ -244,6 +337,8 @@ async def _entry_response(
         conflicts=entry.conflicts,
         planted_at=entry.planted_at,
         expected_by=entry.expected_by,
+        foreshadow_resolved=lifecycle.resolved if lifecycle else False,
+        resolved_at=lifecycle.resolved_chapter_id if lifecycle else None,
         embedding_status=embedding_status,
     )
 
@@ -282,6 +377,15 @@ async def list_codex_entries(
     for entry_id, alias in alias_rows:
         aliases_by_entry.setdefault(entry_id, []).append(alias)
 
+    lifecycle_rows = list(
+        (
+            await db.execute(
+                select(Foreshadow).where(Foreshadow.entry_id.in_([entry.id for entry in entries]))
+            )
+        ).scalars()
+    )
+    lifecycle_by_entry = {row.entry_id: row for row in lifecycle_rows}
+
     return [
         EntryResponse(
             id=entry.id,
@@ -297,6 +401,13 @@ async def list_codex_entries(
             conflicts=entry.conflicts,
             planted_at=entry.planted_at,
             expected_by=entry.expected_by,
+            foreshadow_resolved=(
+                lifecycle_by_entry[entry.id].resolved if entry.id in lifecycle_by_entry else False
+            ),
+            resolved_at=(
+                lifecycle_by_entry[entry.id].resolved_chapter_id
+                if entry.id in lifecycle_by_entry else None
+            ),
             embedding_status=(
                 "fresh"
                 if entry.embedding is not None and entry.embedding_text_hash is not None
@@ -333,6 +444,19 @@ async def create_codex_entry(
         resident=request.resident,
         status=request.status,
     )
+    if request.kind == "event":
+        if not request.planted_at:
+            raise HTTPException(status_code=422, detail={"code": "FORESHADOW_PLANTED_CHAPTER_REQUIRED"})
+        await _sync_foreshadow(
+            db,
+            entry,
+            planted_at=request.planted_at,
+            expected_by=request.expected_by,
+            resolved=request.foreshadow_resolved,
+            resolved_at=request.resolved_at,
+        )
+    elif any((request.planted_at, request.expected_by, request.foreshadow_resolved, request.resolved_at)):
+        raise HTTPException(status_code=422, detail={"code": "FORESHADOW_FIELDS_REQUIRE_EVENT_KIND"})
     await db.commit()  # 第一段：条目 + 标脏落库，网关还没被碰过
 
     embedding_status = await _settle_embedding(db, provider, entry, stale=True)
@@ -357,9 +481,48 @@ async def update_codex_entry(
         raise HTTPException(status_code=422, detail="No fields to update")
 
     aliases = changes.pop("aliases", None)
+    lifecycle_changes = {
+        field: changes.pop(field)
+        for field in ("planted_at", "expected_by", "foreshadow_resolved", "resolved_at")
+        if field in changes
+    }
+    target_kind = changes.get("kind", entry.kind)
+    existing_lifecycle = await _load_foreshadow(db, entry.id)
     text_changed = await update_entry(db, entry, changes) if changes else False
     if aliases is not None:
         text_changed = await replace_aliases(db, entry, aliases) or text_changed
+    if target_kind == "event":
+        planted_at = lifecycle_changes.get(
+            "planted_at",
+            existing_lifecycle.planted_chapter_id if existing_lifecycle else entry.planted_at,
+        )
+        if not planted_at:
+            raise HTTPException(status_code=422, detail={"code": "FORESHADOW_PLANTED_CHAPTER_REQUIRED"})
+        expected_by = lifecycle_changes.get(
+            "expected_by",
+            existing_lifecycle.expected_chapter_id if existing_lifecycle else entry.expected_by,
+        )
+        resolved = lifecycle_changes.get(
+            "foreshadow_resolved", existing_lifecycle.resolved if existing_lifecycle else False
+        )
+        resolved_at = lifecycle_changes.get(
+            "resolved_at", existing_lifecycle.resolved_chapter_id if existing_lifecycle else None
+        )
+        await _sync_foreshadow(
+            db,
+            entry,
+            planted_at=planted_at,
+            expected_by=expected_by,
+            resolved=resolved,
+            resolved_at=resolved_at,
+        )
+    else:
+        if lifecycle_changes:
+            raise HTTPException(status_code=422, detail={"code": "FORESHADOW_FIELDS_REQUIRE_EVENT_KIND"})
+        if existing_lifecycle:
+            await db.delete(existing_lifecycle)
+        entry.planted_at = None
+        entry.expected_by = None
     await db.commit()
 
     embedding_status = await _settle_embedding(db, provider, entry, stale=text_changed)

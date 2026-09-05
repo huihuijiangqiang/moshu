@@ -19,6 +19,7 @@ Rule Scanner - Persistent consistency checking with fingerprinted issues
 """
 import hashlib
 import json
+import logging
 import secrets
 from datetime import datetime, timezone
 from typing import Any, Optional
@@ -27,14 +28,22 @@ from sqlalchemy import and_, func, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from db.models_codex import CodexEntry
 from db.models_consistency_extended import ConsistencyClaim, GuardIssueEvidence
-from db.models_guard import GuardIssue
+from db.models_core import Chapter
+from db.models_guard import Foreshadow, GuardIssue
+
+logger = logging.getLogger(__name__)
 
 #: 每类冲突可供作者选择的处置动作，取值必须落在 GuardResolution 的 CHECK 约束内。
 ISSUE_ACTIONS: dict[str, list[str]] = {
     "alive_conflict": ["accept_old_fact", "accept_new_fact", "intentional_exception", "false_positive"],
     "ownership_conflict": ["accept_old_fact", "accept_new_fact", "intentional_exception", "false_positive"],
     "knowledge_boundary": ["accept_new_fact", "intentional_exception", "fixed_in_body", "false_positive"],
+    "timeline_conflict": ["accept_old_fact", "accept_new_fact", "intentional_exception", "false_positive"],
+    "ability_boundary": ["accept_new_fact", "intentional_exception", "fixed_in_body", "false_positive"],
+    "location_conflict": ["accept_old_fact", "accept_new_fact", "intentional_exception", "false_positive"],
+    "foreshadow_overdue": ["fixed_in_body", "intentional_exception", "defer", "false_positive"],
 }
 DEFAULT_ACTIONS = ["accept_old_fact", "accept_new_fact", "intentional_exception", "false_positive"]
 
@@ -43,6 +52,10 @@ IMPACT_PREDICATE_FAMILIES = {
     "owns": frozenset({"owns"}),
     "uses_knowledge": frozenset({"uses_knowledge", "acquires_knowledge"}),
     "acquires_knowledge": frozenset({"uses_knowledge", "acquires_knowledge"}),
+    "uses_ability": frozenset({"uses_ability", "acquires_ability", "has_ability"}),
+    "acquires_ability": frozenset({"uses_ability", "acquires_ability", "has_ability"}),
+    "has_ability": frozenset({"uses_ability", "acquires_ability", "has_ability"}),
+    "located_at": frozenset({"located_at"}),
 }
 MAX_IMPACT_KEYS = 500
 
@@ -94,7 +107,10 @@ class RuleScanner:
             if entry_id
         }
         unresolved: dict[str, set[str]] = {}
+        temporal_event_refs: set[str] = set()
         for claim in source_rows:
+            if claim.temporal_event_ref:
+                temporal_event_refs.add(claim.temporal_event_ref.strip().casefold())
             if claim.subject_entry_id:
                 continue
             subject = claim.subject_text.strip().casefold()
@@ -107,7 +123,11 @@ class RuleScanner:
             for predicate in predicates:
                 unresolved.setdefault(predicate, set()).add(subject)
 
-        key_count = len(entity_ids) + sum(len(values) for values in unresolved.values())
+        key_count = (
+            len(entity_ids)
+            + len(temporal_event_refs)
+            + sum(len(values) for values in unresolved.values())
+        )
         if not source_rows or key_count == 0 or key_count > MAX_IMPACT_KEYS:
             self.last_scan_scope = "project"
             query = select(ConsistencyClaim).where(
@@ -128,6 +148,12 @@ class RuleScanner:
                     and_(
                         ConsistencyClaim.predicate == predicate,
                         func.lower(func.trim(ConsistencyClaim.subject_text)).in_(subjects),
+                    )
+                )
+            if temporal_event_refs:
+                clauses.append(
+                    func.lower(func.trim(ConsistencyClaim.temporal_event_ref)).in_(
+                        temporal_event_refs
                     )
                 )
             self.last_scan_scope = "impact"
@@ -218,6 +244,12 @@ class RuleScanner:
         detected_issues.extend(await self._check_alive_conflicts(db, project_id, all_claims))
         detected_issues.extend(await self._check_ownership_conflicts(db, project_id, all_claims))
         detected_issues.extend(await self._check_knowledge_boundary(db, project_id, all_claims))
+        detected_issues.extend(await self._check_timeline_conflicts(db, project_id, all_claims))
+        detected_issues.extend(await self._check_ability_boundary(db, project_id, all_claims))
+        detected_issues.extend(await self._check_location_conflicts(db, project_id, all_claims))
+        detected_issues.extend(
+            await self._check_foreshadow_overdue(db, project_id, chapter_id)
+        )
 
         # Upsert issues（同指纹先合并，一个指纹只写一次）
         issue_ids = []
@@ -242,6 +274,14 @@ class RuleScanner:
     def _subject_key(claim: ConsistencyClaim) -> str:
         """主体的稳定身份：优先已解析的 entry_id，否则退回文本。"""
         return claim.subject_entry_id or f"text:{claim.subject_text.strip().lower()}"
+
+    @staticmethod
+    def _object_key(claim: ConsistencyClaim) -> str:
+        """对象的稳定身份：优先条目 id，否则使用规范化文本。
+
+        调用方必须先过滤 object_entry_id 和 object_value 均为空的 claim。
+        """
+        return claim.object_entry_id or f"text:{(claim.object_value or '').strip().casefold()}"
 
     @staticmethod
     def _capped_severity(severity: str, claims: list[ConsistencyClaim]) -> str:
@@ -415,6 +455,225 @@ class RuleScanner:
 
         return issues
 
+    async def _check_timeline_conflicts(
+        self,
+        db: AsyncSession,
+        project_id: str,
+        claims: list[ConsistencyClaim],
+    ) -> list[dict]:
+        """同一时间线中的同一具名事件不能落在两个可靠绝对时刻。"""
+        del db, project_id
+        groups: dict[tuple[str, str], list[ConsistencyClaim]] = {}
+        for claim in claims:
+            event_ref = (claim.temporal_event_ref or "").strip().casefold()
+            if not event_ref or not claim.timeline_id or claim.story_order is None:
+                continue
+            groups.setdefault((claim.timeline_id, event_ref), []).append(claim)
+
+        issues = []
+        for (timeline_id, event_ref), group in groups.items():
+            ordered = sorted(group, key=lambda c: (c.story_order, c.id))
+            baseline = ordered[0]
+            conflicting = [claim for claim in ordered[1:] if claim.story_order != baseline.story_order]
+            if not conflicting:
+                continue
+            offender = conflicting[0]
+            evidence = [baseline, *conflicting]
+            issues.append({
+                "issue_type": "timeline_conflict",
+                "severity": self._capped_severity("high", evidence),
+                "confidence": 0.95,
+                "description": f"事件“{baseline.temporal_event_ref}”被标注为不同时间",
+                "evidence_claims": [claim.id for claim in evidence],
+                "anchor": claim_anchor(offender),
+                "identity_keys": [f"timeline:{timeline_id}", f"event:{event_ref}"],
+            })
+        return issues
+
+    async def _check_ability_boundary(
+        self,
+        db: AsyncSession,
+        project_id: str,
+        claims: list[ConsistencyClaim],
+    ) -> list[dict]:
+        """角色在同一时间线中先使用、后获得同一能力时报警。"""
+        del db, project_id
+        uses = [
+            claim
+            for claim in claims
+            if claim.predicate == "uses_ability"
+            and (claim.object_entry_id or (claim.object_value or "").strip())
+        ]
+        acquires = [
+            claim
+            for claim in claims
+            if claim.predicate == "acquires_ability"
+            and (claim.object_entry_id or (claim.object_value or "").strip())
+        ]
+        issues = []
+        for use_claim in uses:
+            if use_claim.story_order is None or not use_claim.timeline_id:
+                continue
+            matching = [
+                claim
+                for claim in acquires
+                if claim.story_order is not None
+                and claim.timeline_id == use_claim.timeline_id
+                and self._subject_key(claim) == self._subject_key(use_claim)
+                and self._object_key(claim) == self._object_key(use_claim)
+                and use_claim.story_order < claim.story_order
+            ]
+            if not matching:
+                continue
+            acquired = min(matching, key=lambda c: (c.story_order, c.id))
+            evidence = [use_claim, acquired]
+            issues.append({
+                "issue_type": "ability_boundary",
+                "severity": self._capped_severity("high", evidence),
+                "confidence": 0.90,
+                "description": (
+                    f"{use_claim.subject_text}在获得“{use_claim.object_value}”前使用了该能力"
+                ),
+                "evidence_claims": [use_claim.id, acquired.id],
+                "anchor": claim_anchor(use_claim),
+                "identity_keys": [
+                    self._subject_key(use_claim),
+                    f"ability:{self._object_key(use_claim)}",
+                    f"timeline:{use_claim.timeline_id}",
+                ],
+            })
+        return issues
+
+    async def _check_location_conflicts(
+        self,
+        db: AsyncSession,
+        project_id: str,
+        claims: list[ConsistencyClaim],
+    ) -> list[dict]:
+        """只检测同一可靠时刻或明确重叠区间内的双重地点。"""
+        del db, project_id
+        groups: dict[tuple[str, str], list[ConsistencyClaim]] = {}
+        for claim in claims:
+            if (
+                claim.predicate != "located_at"
+                or not claim.timeline_id
+                or claim.story_order is None
+                or not (claim.object_entry_id or (claim.object_value or "").strip())
+            ):
+                continue
+            groups.setdefault((self._subject_key(claim), claim.timeline_id), []).append(claim)
+
+        issues = []
+        for (subject_key, timeline_id), group in groups.items():
+            ordered = sorted(group, key=lambda c: (c.story_order, c.id))
+            for index, current in enumerate(ordered):
+                current_start = current.valid_from_order or current.story_order
+                for candidate in ordered[index + 1:]:
+                    if self._object_key(current) == self._object_key(candidate):
+                        continue
+                    candidate_start = candidate.valid_from_order or candidate.story_order
+                    # An open-ended earlier location is not proof that the character
+                    # stayed there forever. Ordinary travel commonly produces exactly
+                    # that shape across separate extraction batches. Outside the same
+                    # instant, require an explicit earlier interval end that overlaps
+                    # the later location before raising a hard conflict. Intervals
+                    # are half-open [from, to), so adjacent intervals do not overlap.
+                    overlaps = current_start == candidate_start or (
+                        current.valid_to_order is not None
+                        and current.valid_to_order > candidate_start
+                    )
+                    if not overlaps:
+                        continue
+                    evidence = [current, candidate]
+                    issues.append({
+                        "issue_type": "location_conflict",
+                        "severity": self._capped_severity("high", evidence),
+                        "confidence": 0.92,
+                        "description": (
+                            f"{candidate.subject_text}在同一时段同时位于“"
+                            f"{current.object_value}”和“{candidate.object_value}”"
+                        ),
+                        "evidence_claims": [current.id, candidate.id],
+                        "anchor": claim_anchor(candidate),
+                        "identity_keys": [
+                            subject_key,
+                            f"timeline:{timeline_id}",
+                            "locations:"
+                            + "|".join(sorted([self._object_key(current), self._object_key(candidate)])),
+                        ],
+                    })
+        return issues
+
+    async def _check_foreshadow_overdue(
+        self,
+        db: AsyncSession,
+        project_id: str,
+        scanned_chapter_id: str,
+    ) -> list[dict]:
+        """在当前故事进度超过预计章节后，提示仍未回收的登记伏笔。"""
+        current = (
+            await db.execute(
+                select(Chapter).where(
+                    Chapter.id == scanned_chapter_id,
+                    Chapter.project_id == project_id,
+                    Chapter.deleted_at.is_(None),
+                )
+            )
+        ).scalar_one_or_none()
+        if current is None:
+            logger.warning(
+                "Foreshadow overdue check skipped: active chapter %s not found in project %s",
+                scanned_chapter_id,
+                project_id,
+            )
+            return []
+
+        rows = list(
+            (
+                await db.execute(
+                    select(Foreshadow, CodexEntry, Chapter)
+                    .join(CodexEntry, CodexEntry.id == Foreshadow.entry_id)
+                    .join(Chapter, Chapter.id == Foreshadow.expected_chapter_id)
+                    .where(
+                        Foreshadow.project_id == project_id,
+                        Foreshadow.resolved.is_(False),
+                        Foreshadow.expected_chapter_id.is_not(None),
+                        CodexEntry.status == "confirmed",
+                        Chapter.deleted_at.is_(None),
+                        Chapter.idx < current.idx,
+                    )
+                    .order_by(Chapter.idx, Foreshadow.id)
+                )
+            ).all()
+        )
+        issues = []
+        for lifecycle, entry, expected in rows:
+            issues.append({
+                "issue_type": "foreshadow_overdue",
+                "severity": "medium",
+                "confidence": 1.0,
+                "description": f"伏笔“{entry.name}”已超过预计回收章节",
+                "evidence_claims": [],
+                "evidence_versions": [{
+                    "kind": "foreshadow",
+                    "entry_id": entry.id,
+                    "chapter_id": expected.id,
+                    "planted_chapter_id": lifecycle.planted_chapter_id,
+                    "expected_chapter_id": expected.id,
+                    "resolved": lifecycle.resolved,
+                    "updated_at": lifecycle.updated_at.isoformat() if lifecycle.updated_at else None,
+                }],
+                "anchor": {
+                    "chapter_id": expected.id,
+                    "body_rev": None,
+                    "pid": None,
+                    "entry_id": entry.id,
+                },
+                "entry_id": entry.id,
+                "identity_keys": [f"foreshadow:{entry.id}"],
+            })
+        return issues
+
     @staticmethod
     def _claim_versions(
         claim_ids: list[int],
@@ -504,7 +763,9 @@ class RuleScanner:
         """
         anchor = issue_data["anchor"]
         claim_ids = list(issue_data["evidence_claims"])
-        claim_versions = self._claim_versions(claim_ids, claims_by_id)
+        claim_versions = issue_data.get(
+            "evidence_versions", self._claim_versions(claim_ids, claims_by_id)
+        )
         signature = self._evidence_signature(claim_versions, anchor)
         evidence_payload = {
             "claim_ids": claim_ids,
@@ -526,6 +787,7 @@ class RuleScanner:
                 # 归属到出问题的那一章（可能不是被扫描的那一章）
                 chapter_id=anchor.get("chapter_id") or chapter_id,
                 run_id=run_id,
+                entry_id=issue_data.get("entry_id"),
                 issue_type=issue_data["issue_type"],
                 rule_version=self.rule_version,
                 fingerprint=fingerprint,
@@ -556,7 +818,13 @@ class RuleScanner:
                 if existing is None:
                     raise
             else:
-                await self._write_evidence(db, issue_id, claim_ids, claims_by_id)
+                await self._write_evidence(
+                    db,
+                    issue_id,
+                    claim_ids,
+                    claims_by_id,
+                    codex_entry_id=issue_data.get("entry_id"),
+                )
                 return issue_id
 
         stored_signature = (existing.evidence or {}).get("evidence_signature")
@@ -571,6 +839,7 @@ class RuleScanner:
 
         if evidence_changed:
             existing.chapter_id = anchor.get("chapter_id") or chapter_id
+            existing.entry_id = issue_data.get("entry_id")
             existing.severity = issue_data["severity"]
             existing.confidence = issue_data["confidence"]
             existing.description = issue_data["description"]
@@ -601,7 +870,13 @@ class RuleScanner:
         existing.updated_at = datetime.now(timezone.utc)
 
         if evidence_changed:
-            await self._write_evidence(db, existing.id, claim_ids, claims_by_id)
+            await self._write_evidence(
+                db,
+                existing.id,
+                claim_ids,
+                claims_by_id,
+                codex_entry_id=issue_data.get("entry_id"),
+            )
         await db.flush()
 
         return existing.id
@@ -616,6 +891,7 @@ class RuleScanner:
             "side": "expected" if idx == 0 else "actual",
             "source_kind": "claim",
             "claim_id": claim.id,
+            "codex_entry_id": None,
             "chapter_id": claim.chapter_id,
             "body_rev": claim.body_rev,
             "outline_rev": claim.outline_rev,
@@ -630,6 +906,8 @@ class RuleScanner:
         issue_id: str,
         claim_ids: list[int],
         claims_by_id: dict[int, ConsistencyClaim],
+        *,
+        codex_entry_id: str | None = None,
     ):
         """Write expected/actual GuardIssueEvidence records.
 
@@ -657,6 +935,21 @@ class RuleScanner:
                 claim_id for claim_id in claim_ids if claim_id in claims_by_id
             )
         ]
+        if not desired and codex_entry_id:
+            entry = await db.get(CodexEntry, codex_entry_id)
+            if entry is not None:
+                desired = [{
+                    "side": "expected",
+                    "source_kind": "codex",
+                    "claim_id": None,
+                    "codex_entry_id": entry.id,
+                    "chapter_id": None,
+                    "body_rev": None,
+                    "outline_rev": None,
+                    "paragraph_id": None,
+                    "quote": f"{entry.name}：{entry.description}" if entry.description else entry.name,
+                    "sort_order": 0,
+                }]
 
         dirty = False
         for row, values in zip(existing_rows, desired):
@@ -688,6 +981,10 @@ class RuleScanner:
         重新评估过（作者没有触发那一章的扫描），凭「这次没检出」把它标成 stale 就是
         在替作者做没有依据的判断。
         """
+        # 伏笔到期状态是项目进度函数，每次章节扫描都完整重算；回收后必须能
+        # 在任意后续扫描中变 stale，不能只等待再次编辑预计回收章。
+        if issue.issue_type == "foreshadow_overdue":
+            return True
         if issue.chapter_id == chapter_id:
             return True
         evidence = issue.evidence or {}

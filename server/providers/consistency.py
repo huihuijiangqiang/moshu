@@ -940,7 +940,7 @@ class ConsistencyProvider:
   "claims": [
     {{
       "subject_text": "character or entity name",
-      "predicate": "alive|dead|owns|knows|located_at|has_ability|etc",
+      "predicate": "alive|owns|uses_knowledge|acquires_knowledge|located_at|has_ability|uses_ability|acquires_ability|other",
       "object_type": "scalar|entity|location|ability|timestamp",
       "object_value": "the value or null",
       "polarity": "positive|negative",
@@ -963,6 +963,17 @@ class ConsistencyProvider:
 Valid object_type values: scalar, entity, location, ability, timestamp
 Valid polarity values: positive, negative
 Valid certainty values: explicit, inferred, uncertain
+
+PREDICATE ONTOLOGY:
+
+- Use `alive` with object_value `true` or `false`; do not emit a separate `dead` predicate.
+- Use `uses_knowledge` when a character acts on specific information and
+  `acquires_knowledge` when they learn it. Keep the same concise object_value for both.
+- Use `uses_ability` when an ability is exercised and `acquires_ability` when it is gained.
+  `has_ability` describes an ongoing possession state, not the act of gaining or using it.
+- Use `located_at` with object_type `location` for a person or movable object's position.
+- Reuse the same `temporal_event_ref` text for facts that explicitly describe the same event.
+- Use `other` only when none of the canonical predicates applies.
 
 SOURCE ANCHORS:
 

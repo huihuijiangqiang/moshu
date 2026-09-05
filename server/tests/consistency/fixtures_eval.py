@@ -1,4 +1,4 @@
-"""Versioned evaluation corpus for the three deterministic P0 rules.
+"""Versioned evaluation corpus for the seven deterministic consistency rules.
 
 The corpus deliberately keeps hard negatives on the same subjects, objects, and
 timelines as positive candidates. They exercise the scanner's actual candidate
@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from typing import Any
 
-CORPUS_VERSION = "rule-eval-v1"
+CORPUS_VERSION = "rule-eval-v2"
 POSITIVE_CASES_PER_RULE = 40
 HARD_NEGATIVE_CASES_PER_RULE = 20
 EASY_NEGATIVE_CASES = 20
@@ -53,6 +53,7 @@ def _case(
     description: str,
     claims: list[dict[str, Any]],
     reason: str | None = None,
+    foreshadow: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     return {
         "id": case_id,
@@ -65,6 +66,8 @@ def _case(
         "expected_issue_type": rule if split == "positive" else None,
         "expected_evidence": [claim["paragraph_id"] for claim in claims],
         "reason": reason,
+        "foreshadow": foreshadow,
+        "expected_entry_id": foreshadow["entry_id"] if foreshadow else None,
     }
 
 
@@ -100,6 +103,97 @@ def _positive_cases() -> list[dict[str, Any]]:
                         story_order=1001 + index * 10,
                     ),
                 ],
+            )
+        )
+
+        timeline_id = f"timeline-positive-{suffix}"
+        event_ref = f"秋收祭{suffix}"
+        cases.append(
+            _case(
+                timeline_id,
+                split="positive",
+                rule="timeline_conflict",
+                description="同一时间线中的同一具名事件被放在两个可靠时刻。",
+                claims=[
+                    _claim(
+                        timeline_id, 1, subject=event_ref, predicate="other",
+                        object_type="timestamp", object_value="第一日",
+                        story_order=3100 + index * 10, temporal_event_ref=event_ref,
+                    ),
+                    _claim(
+                        timeline_id, 2, subject=event_ref, predicate="other",
+                        object_type="timestamp", object_value="第三日",
+                        story_order=3101 + index * 10, temporal_event_ref=event_ref,
+                    ),
+                ],
+            )
+        )
+
+        ability_id = f"ability-positive-{suffix}"
+        ability_subject = f"能力正例人物{suffix}"
+        ability = f"灵泉能力{suffix}"
+        cases.append(
+            _case(
+                ability_id,
+                split="positive",
+                rule="ability_boundary",
+                description="角色在同一时间线中先使用、后获得同一能力。",
+                claims=[
+                    _claim(
+                        ability_id, 1, subject=ability_subject, predicate="uses_ability",
+                        object_type="ability", object_value=ability,
+                        story_order=3200 + index * 10,
+                    ),
+                    _claim(
+                        ability_id, 2, subject=ability_subject, predicate="acquires_ability",
+                        object_type="ability", object_value=ability,
+                        story_order=3201 + index * 10,
+                    ),
+                ],
+            )
+        )
+
+        location_id = f"location-positive-{suffix}"
+        location_subject = f"地点正例人物{suffix}"
+        location_base = 3300 + index * 10
+        cases.append(
+            _case(
+                location_id,
+                split="positive",
+                rule="location_conflict",
+                description="角色在明确重叠的可靠时段被放在两个地点。",
+                claims=[
+                    _claim(
+                        location_id, 1, subject=location_subject, predicate="located_at",
+                        object_type="location", object_value=f"青石村{suffix}",
+                        story_order=location_base, valid_from_order=location_base,
+                        valid_to_order=location_base + 2,
+                    ),
+                    _claim(
+                        location_id, 2, subject=location_subject, predicate="located_at",
+                        object_type="location", object_value=f"京城{suffix}",
+                        story_order=location_base + 1, valid_from_order=location_base + 1,
+                    ),
+                ],
+            )
+        )
+
+        foreshadow_id = f"foreshadow-positive-{suffix}"
+        cases.append(
+            _case(
+                foreshadow_id,
+                split="positive",
+                rule="foreshadow_overdue",
+                description="项目进度已经超过预计回收章，伏笔仍未回收。",
+                claims=[],
+                foreshadow={
+                    "id": f"fs-eval-positive-{suffix}",
+                    "entry_id": f"eval-foreshadow-positive-{suffix}",
+                    "planted_chapter_id": "ch_source",
+                    "expected_chapter_id": "ch_followup",
+                    "resolved": False,
+                    "resolved_chapter_id": None,
+                },
             )
         )
 
@@ -253,6 +347,106 @@ def _knowledge_hard_negative(index: int) -> dict[str, Any]:
     return _case(case_id, split="hard_negative", rule="knowledge_boundary", description="共享人物和信息的合法知情过程。", claims=claims, reason=reason)
 
 
+def _timeline_hard_negative(index: int) -> dict[str, Any]:
+    suffix = f"{index + 1:03d}"
+    case_id = f"timeline-hard-negative-{suffix}"
+    event_ref = f"庙会{suffix}"
+    base = 6100 + index * 10
+    if index < 8:
+        claims = [
+            _claim(case_id, 1, subject=event_ref, predicate="other", object_type="timestamp", object_value="同日", story_order=base, temporal_event_ref=event_ref),
+            _claim(case_id, 2, subject=event_ref, predicate="other", object_type="timestamp", object_value="同日", story_order=base, temporal_event_ref=event_ref),
+        ]
+        reason = "同一事件的多个事实落在相同可靠时刻。"
+    elif index < 14:
+        claims = [
+            _claim(case_id, 1, subject=event_ref, predicate="other", object_type="timestamp", object_value="主线", story_order=base, timeline_id="main", temporal_event_ref=event_ref),
+            _claim(case_id, 2, subject=event_ref, predicate="other", object_type="timestamp", object_value="梦境", story_order=base + 1, timeline_id="dream", temporal_event_ref=event_ref),
+        ]
+        reason = "不同时间线不直接比较事件时刻。"
+    else:
+        claims = [
+            _claim(case_id, 1, subject=event_ref, predicate="other", object_type="timestamp", object_value="未知", story_order=None, temporal_event_ref=event_ref),
+            _claim(case_id, 2, subject=event_ref, predicate="other", object_type="timestamp", object_value="已知", story_order=base + 1, temporal_event_ref=event_ref),
+        ]
+        reason = "只有一条可靠时刻时不能构成矛盾。"
+    return _case(case_id, split="hard_negative", rule="timeline_conflict", description="同一事件的合法时间描述。", claims=claims, reason=reason)
+
+
+def _ability_hard_negative(index: int) -> dict[str, Any]:
+    suffix = f"{index + 1:03d}"
+    case_id = f"ability-hard-negative-{suffix}"
+    subject = f"能力反例人物{suffix}"
+    ability = f"御风{suffix}"
+    base = 6200 + index * 10
+    if index < 8:
+        claims = [
+            _claim(case_id, 1, subject=subject, predicate="acquires_ability", object_type="ability", object_value=ability, story_order=base),
+            _claim(case_id, 2, subject=subject, predicate="uses_ability", object_type="ability", object_value=ability, story_order=base + 1),
+        ]
+        reason = "先获得再使用符合能力边界。"
+    elif index < 14:
+        claims = [
+            _claim(case_id, 1, subject=subject, predicate="uses_ability", object_type="ability", object_value=f"甲{ability}", story_order=base),
+            _claim(case_id, 2, subject=subject, predicate="acquires_ability", object_type="ability", object_value=f"乙{ability}", story_order=base + 1),
+        ]
+        reason = "不同能力不能串成边界冲突。"
+    else:
+        claims = [
+            _claim(case_id, 1, subject=subject, predicate="uses_ability", object_type="ability", object_value=ability, story_order=base, timeline_id="main"),
+            _claim(case_id, 2, subject=subject, predicate="acquires_ability", object_type="ability", object_value=ability, story_order=base + 1, timeline_id="dream"),
+        ]
+        reason = "不同时间线的能力状态相互独立。"
+    return _case(case_id, split="hard_negative", rule="ability_boundary", description="能力的合法获得与使用。", claims=claims, reason=reason)
+
+
+def _location_hard_negative(index: int) -> dict[str, Any]:
+    suffix = f"{index + 1:03d}"
+    case_id = f"location-hard-negative-{suffix}"
+    subject = f"地点反例人物{suffix}"
+    base = 6300 + index * 10
+    if index < 8:
+        claims = [
+            _claim(case_id, 1, subject=subject, predicate="located_at", object_type="location", object_value=f"村庄{suffix}", story_order=base, valid_from_order=base, valid_to_order=base + 1),
+            _claim(case_id, 2, subject=subject, predicate="located_at", object_type="location", object_value=f"县城{suffix}", story_order=base + 1, valid_from_order=base + 1),
+        ]
+        reason = "前一地点区间结束后移动到新地点。"
+    elif index < 14:
+        claims = [
+            _claim(case_id, 1, subject=subject, predicate="located_at", object_type="location", object_value=f"村庄{suffix}", story_order=base),
+            _claim(case_id, 2, subject=subject, predicate="located_at", object_type="location", object_value=f"村庄{suffix}", story_order=base + 1),
+        ]
+        reason = "同一地点的重复事实不冲突。"
+    else:
+        claims = [
+            _claim(case_id, 1, subject=subject, predicate="located_at", object_type="location", object_value=f"村庄{suffix}", story_order=base, timeline_id="main"),
+            _claim(case_id, 2, subject=subject, predicate="located_at", object_type="location", object_value=f"县城{suffix}", story_order=base + 1, timeline_id="dream"),
+        ]
+        reason = "不同时间线的地点不直接冲突。"
+    return _case(case_id, split="hard_negative", rule="location_conflict", description="合法地点变化。", claims=claims, reason=reason)
+
+
+def _foreshadow_hard_negative(index: int) -> dict[str, Any]:
+    suffix = f"{index + 1:03d}"
+    case_id = f"foreshadow-hard-negative-{suffix}"
+    lifecycle = {
+        "id": f"fs-eval-negative-{suffix}",
+        "entry_id": f"eval-foreshadow-negative-{suffix}",
+        "planted_chapter_id": "ch_source",
+        "expected_chapter_id": "ch_scan" if index < 8 else "ch_followup",
+        "resolved": 8 <= index < 14,
+        "resolved_chapter_id": "ch_followup" if 8 <= index < 14 else None,
+    }
+    if index >= 14:
+        lifecycle["expected_chapter_id"] = None
+    reasons = (
+        "当前章节刚到预计回收点，尚未逾期。" if index < 8
+        else "伏笔已经明确回收。" if index < 14
+        else "未设置预计回收章时不能判定逾期。"
+    )
+    return _case(case_id, split="hard_negative", rule="foreshadow_overdue", description="未构成逾期的伏笔。", claims=[], reason=reasons, foreshadow=lifecycle)
+
+
 def _hard_negative_cases() -> list[dict[str, Any]]:
     cases: list[dict[str, Any]] = []
     for index in range(HARD_NEGATIVE_CASES_PER_RULE):
@@ -261,6 +455,10 @@ def _hard_negative_cases() -> list[dict[str, Any]]:
                 _alive_hard_negative(index),
                 _ownership_hard_negative(index),
                 _knowledge_hard_negative(index),
+                _timeline_hard_negative(index),
+                _ability_hard_negative(index),
+                _location_hard_negative(index),
+                _foreshadow_hard_negative(index),
             ]
         )
     return cases

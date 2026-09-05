@@ -151,6 +151,8 @@ export interface CodexDto {
   conflicts: string[]
   planted_at: string | null
   expected_by: string | null
+  foreshadow_resolved?: boolean
+  resolved_at?: string | null
 }
 
 const CODEX_KIND_FROM_DTO: Record<CodexDto['kind'], CodexKind> = {
@@ -178,7 +180,11 @@ const codexProjectIds = new Map<string, string>()
 const ISSUE_LABELS: Record<string, string> = {
   alive_conflict: '生死状态冲突',
   ownership_conflict: '物品归属冲突',
-  knowledge_boundary: '知情边界冲突'
+  knowledge_boundary: '知情边界冲突',
+  timeline_conflict: '时间线冲突',
+  ability_boundary: '能力边界冲突',
+  location_conflict: '地点冲突',
+  foreshadow_overdue: '伏笔逾期'
 }
 
 const RESOLUTION_LABELS: Record<GuardResolutionAction, string> = {
@@ -317,6 +323,10 @@ export function codexFromDto(dto: CodexDto): CodexEntry {
     facts,
     relations,
     plantedAt,
+    plantedChapterId: dto.planted_at ?? undefined,
+    expectedChapterId: dto.expected_by ?? undefined,
+    foreshadowResolved: dto.foreshadow_resolved ?? false,
+    resolvedChapterId: dto.resolved_at ?? undefined,
     expectedBy: dto.expected_by
       ? expectedChapter ? `第 ${expectedChapter} 章` : dto.expected_by
       : undefined,
@@ -682,7 +692,11 @@ const realApi = {
         aliases: normalizedAliases(draft.aliases),
         attrs: codexDraftAttrs(draft),
         resident: draft.resident,
-        status: draft.status
+        status: draft.status,
+        planted_at: draft.kind === 'foreshadow' ? draft.plantedChapterId : undefined,
+        expected_by: draft.kind === 'foreshadow' ? draft.expectedChapterId ?? null : undefined,
+        foreshadow_resolved: draft.foreshadowResolved,
+        resolved_at: draft.kind === 'foreshadow' ? draft.resolvedChapterId ?? null : undefined
       })
     })
     codexProjectIds.set(dto.id, projectId)
@@ -701,7 +715,11 @@ const realApi = {
         attrs: codexDraftAttrs(draft, existing),
         resident: draft.resident,
         status: draft.status,
-        aliases
+        aliases,
+        planted_at: draft.kind === 'foreshadow' ? draft.plantedChapterId : undefined,
+        expected_by: draft.kind === 'foreshadow' ? draft.expectedChapterId ?? null : undefined,
+        foreshadow_resolved: draft.foreshadowResolved,
+        resolved_at: draft.kind === 'foreshadow' ? draft.resolvedChapterId ?? null : undefined
       })
     })
     return codexFromDto(dto)

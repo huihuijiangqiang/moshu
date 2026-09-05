@@ -54,6 +54,10 @@ interface CodexFormState {
   arcCurrent: string
   arcNext: string
   facts: string
+  plantedChapterId: string
+  expectedChapterId: string
+  foreshadowResolved: boolean
+  resolvedChapterId: string
 }
 
 function blankForm(kind: CodexKind = codex.kind): CodexFormState {
@@ -61,7 +65,9 @@ function blankForm(kind: CodexKind = codex.kind): CodexFormState {
     kind, name: '', aliases: '', summary: '', resident: false,
     role: '', age: '', personality: '', desire: '', motivation: '', flaw: '', fear: '',
     ability: '', limitation: '', speech: '', appearance: '', background: '', currentState: '',
-    arcPast: '', arcCurrent: '', arcNext: '', facts: ''
+    arcPast: '', arcCurrent: '', arcNext: '', facts: '',
+    plantedChapterId: '', expectedChapterId: '', foreshadowResolved: false,
+    resolvedChapterId: ''
   }
 }
 
@@ -263,7 +269,11 @@ function openEdit() {
     arcPast: character.arc?.past ?? '',
     arcCurrent: character.arc?.current ?? '',
     arcNext: character.arc?.next ?? '',
-    facts: entry.facts?.map((fact) => `${fact.label}：${fact.value}`).join('\n') ?? ''
+    facts: entry.facts?.map((fact) => `${fact.label}：${fact.value}`).join('\n') ?? '',
+    plantedChapterId: entry.plantedChapterId ?? '',
+    expectedChapterId: entry.expectedChapterId ?? '',
+    foreshadowResolved: entry.foreshadowResolved ?? false,
+    resolvedChapterId: entry.resolvedChapterId ?? ''
   }
   editingId.value = entry.id
   formError.value = ''
@@ -307,13 +317,36 @@ function formDraft(): CodexEntryDraft {
     resident: state.resident,
     status: editingId.value ? selected.value?.status ?? 'confirmed' : 'confirmed',
     character,
-    facts: state.kind === 'character' ? undefined : parseFacts(state.facts)
+    facts: state.kind === 'character' ? undefined : parseFacts(state.facts),
+    plantedChapterId: state.kind === 'foreshadow' ? state.plantedChapterId : undefined,
+    expectedChapterId: state.kind === 'foreshadow' ? state.expectedChapterId || undefined : undefined,
+    foreshadowResolved: state.kind === 'foreshadow' ? state.foreshadowResolved : undefined,
+    resolvedChapterId: state.kind === 'foreshadow' && state.foreshadowResolved
+      ? state.resolvedChapterId || undefined
+      : undefined
   }
 }
 
 async function submitEntry() {
   if (formBusy.value) return
   if (!form.value.name.trim()) { formError.value = '请填写设定名称。'; return }
+  if (form.value.kind === 'foreshadow' && !form.value.plantedChapterId) {
+    formError.value = '请选择伏笔埋设章节。'; return
+  }
+  if (form.value.kind === 'foreshadow' && form.value.foreshadowResolved && !form.value.resolvedChapterId) {
+    formError.value = '请选择实际回收章节。'; return
+  }
+  if (form.value.kind === 'foreshadow') {
+    const planted = project.chapters.find((chapter) => chapter.id === form.value.plantedChapterId)
+    const expected = project.chapters.find((chapter) => chapter.id === form.value.expectedChapterId)
+    const resolved = project.chapters.find((chapter) => chapter.id === form.value.resolvedChapterId)
+    if (planted && expected && expected.index < planted.index) {
+      formError.value = '预计回收章节不能早于埋设章节。'; return
+    }
+    if (planted && resolved && resolved.index < planted.index) {
+      formError.value = '实际回收章节不能早于埋设章节。'; return
+    }
+  }
   const projectId = project.loadedProjectId
   if (!projectId) { formError.value = '当前作品尚未加载完成。'; return }
   formBusy.value = true
@@ -571,7 +604,10 @@ async function deleteSelected() {
               去一致性守卫处理 {{ selected.conflicts }} 处冲突
             </button>
             <p v-if="selected.kind === 'foreshadow'" class="codex-foreshadow">
-              埋于第 {{ selected.plantedAt }} 章 · 预计在{{ selected.expectedBy }}回收。超过 30 章未提会自动提醒。
+              埋于第 {{ selected.plantedAt }} 章
+              <template v-if="selected.expectedBy"> · 预计在{{ selected.expectedBy }}回收</template>
+              <template v-if="selected.foreshadowResolved"> · 已回收</template>
+              <template v-else> · 未回收</template>
             </p>
             <div class="codex-chapters">
               <button
@@ -629,6 +665,18 @@ async function deleteSelected() {
               <label><span>当前</span><textarea v-model="form.arcCurrent" class="wk-input" rows="3" /></label>
               <label><span>下一步</span><textarea v-model="form.arcNext" class="wk-input" rows="3" /></label>
             </div>
+          </div>
+
+          <div v-else-if="form.kind === 'foreshadow'" class="codex-form-section">
+            <div class="codex-form-heading"><h3>伏笔生命周期</h3><p>章节用于守卫判断是否超过预计回收点。</p></div>
+            <div class="codex-form-grid">
+              <label><span>埋设章节</span><select v-model="form.plantedChapterId" class="wk-input" required><option value="" disabled>选择章节</option><option v-for="chapter in project.chapters" :key="chapter.id" :value="chapter.id">第 {{ chapter.index }} 章 · {{ chapter.title }}</option></select></label>
+              <label><span>预计回收章节</span><select v-model="form.expectedChapterId" class="wk-input"><option value="">暂不设期限</option><option v-for="chapter in project.chapters" :key="chapter.id" :value="chapter.id">第 {{ chapter.index }} 章 · {{ chapter.title }}</option></select></label>
+              <label class="codex-resident-toggle"><input v-model="form.foreshadowResolved" type="checkbox"><span><strong>已经回收</strong><small>记录实际回收章节并关闭逾期提醒</small></span></label>
+              <label v-if="form.foreshadowResolved"><span>实际回收章节</span><select v-model="form.resolvedChapterId" class="wk-input"><option value="" disabled>选择章节</option><option v-for="chapter in project.chapters" :key="chapter.id" :value="chapter.id">第 {{ chapter.index }} 章 · {{ chapter.title }}</option></select></label>
+            </div>
+            <div class="codex-form-heading codex-form-subheading"><h3>关键事实</h3><p>每行一项，格式为“标签：内容”。</p></div>
+            <textarea v-model="form.facts" class="wk-input codex-facts-input" rows="6" placeholder="埋设方式：旧井石缝中的半枚铜钥匙&#10;回收目标：打开周家粮仓暗门" />
           </div>
 
           <div v-else class="codex-form-section">

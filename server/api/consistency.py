@@ -14,7 +14,7 @@ from api.auth import ProjectPermission, get_current_user, verify_project_permiss
 from db.models_consistency import OutboxEvent
 from db.models_consistency_extended import ConsistencyRun, GuardIssueEvidence, GuardResolution
 from db.models_core import Chapter, ChapterBody, User
-from db.models_guard import GuardIssue
+from db.models_guard import Foreshadow, GuardIssue
 from db.session import get_db
 from services.consistency import PIPELINE_VERSION, get_or_create_run
 from services.outbox import OutboxService
@@ -612,6 +612,24 @@ async def resolve_issue(
             status_code=status.HTTP_409_CONFLICT,
             detail=f"Issue revision mismatch: expected {request.issue_rev}, current {current_rev}",
         )
+
+    if request.action == "fixed_in_body":
+        lifecycle_row = (
+            await db.execute(
+                select(Foreshadow, ConsistencyRun.chapter_id)
+                .join(GuardIssue, GuardIssue.entry_id == Foreshadow.entry_id)
+                .join(ConsistencyRun, ConsistencyRun.id == GuardIssue.run_id)
+                .where(
+                    GuardIssue.id == issue_id,
+                    GuardIssue.project_id == project_id,
+                    GuardIssue.issue_type == "foreshadow_overdue",
+                )
+            )
+        ).one_or_none()
+        if lifecycle_row:
+            lifecycle, resolved_chapter_id = lifecycle_row
+            lifecycle.resolved = True
+            lifecycle.resolved_chapter_id = resolved_chapter_id
 
     # 处置记录绑定被处置的那个 issue_rev，created_by 是 ORM 的真实字段名
     db.add(

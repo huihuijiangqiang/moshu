@@ -111,3 +111,7 @@ class Foreshadow(Base, TimestampMixin):
     # 关系
     project: Mapped["Project"] = relationship()
     entry: Mapped["CodexEntry"] = relationship()
+
+    __table_args__ = (
+        Index("uq_foreshadow_entry", "entry_id", unique=True),
+    )

@@ -670,6 +670,8 @@ async def test_listing_entries_is_project_scoped_and_returns_evidence_fields(
             "conflicts": ["gi_1"],
             "planted_at": None,
             "expected_by": None,
+            "foreshadow_resolved": False,
+            "resolved_at": None,
             "embedding_status": "deferred",
         }
     ]
@@ -740,6 +742,127 @@ async def test_creating_an_entry_returns_it_with_the_embedding_settled(
     assert provider.call_count == 1
     stored = await reload_entry(async_db_session, body["id"])
     assert stored.embedding is not None
+
+
+async def test_creating_foreshadow_requires_and_persists_lifecycle(
+    codex_client, async_db_session, seed_project, auth_headers
+):
+    from sqlalchemy import select
+
+    from db.models_guard import Foreshadow
+
+    await seed_project(chapter_ids=("ch_a", "ch_b", "ch_c"))
+    await async_db_session.commit()
+
+    missing = await codex_client.post(
+        "/codex/proj_a/entries",
+        json={"kind": "event", "name": "旧井铜钥匙"},
+        headers=auth_headers("user_a"),
+    )
+    assert missing.status_code == 422
+    assert missing.json()["detail"]["code"] == "FORESHADOW_PLANTED_CHAPTER_REQUIRED"
+
+    created = await codex_client.post(
+        "/codex/proj_a/entries",
+        json={
+            "kind": "event",
+            "name": "旧井铜钥匙",
+            "description": "在第一章埋下，第三章前回收",
+            "planted_at": "ch_a",
+            "expected_by": "ch_c",
+        },
+        headers=auth_headers("user_a"),
+    )
+
+    assert created.status_code == 201
+    body = created.json()
+    assert body["planted_at"] == "ch_a"
+    assert body["expected_by"] == "ch_c"
+    assert body["foreshadow_resolved"] is False
+    lifecycle = (
+        await async_db_session.execute(
+            select(Foreshadow).where(Foreshadow.entry_id == body["id"])
+        )
+    ).scalar_one()
+    assert lifecycle.planted_chapter_id == "ch_a"
+    assert lifecycle.expected_chapter_id == "ch_c"
+    assert lifecycle.description == "在第一章埋下，第三章前回收"
+
+
+async def test_foreshadow_rejects_cross_project_or_reverse_chapters(
+    codex_client, async_db_session, seed_project, make_project, make_chapter, auth_headers
+):
+    await seed_project(chapter_ids=("ch_a", "ch_b"))
+    async_db_session.add(make_project("proj_other", owner_id="user_a"))
+    await async_db_session.flush()
+    async_db_session.add(make_chapter("ch_other", project_id="proj_other", idx=1024))
+    await async_db_session.commit()
+
+    cross_project = await codex_client.post(
+        "/codex/proj_a/entries",
+        json={"kind": "event", "name": "越界伏笔", "planted_at": "ch_other"},
+        headers=auth_headers("user_a"),
+    )
+    assert cross_project.status_code == 422
+    assert cross_project.json()["detail"]["code"] == "INVALID_FORESHADOW_CHAPTER"
+
+    reverse = await codex_client.post(
+        "/codex/proj_a/entries",
+        json={
+            "kind": "event",
+            "name": "倒序伏笔",
+            "planted_at": "ch_b",
+            "expected_by": "ch_a",
+        },
+        headers=auth_headers("user_a"),
+    )
+    assert reverse.status_code == 422
+    assert reverse.json()["detail"]["code"] == "FORESHADOW_EXPECTED_BEFORE_PLANTED"
+
+
+async def test_foreshadow_can_be_marked_resolved_with_actual_chapter(
+    codex_client, async_db_session, seed_project, auth_headers
+):
+    from sqlalchemy import select
+
+    from db.models_guard import Foreshadow
+
+    await seed_project(chapter_ids=("ch_a", "ch_b"))
+    await async_db_session.commit()
+    created = await codex_client.post(
+        "/codex/proj_a/entries",
+        json={
+            "kind": "event",
+            "name": "铜钥匙",
+            "planted_at": "ch_a",
+            "expected_by": "ch_b",
+        },
+        headers=auth_headers("user_a"),
+    )
+    entry_id = created.json()["id"]
+
+    missing_actual = await codex_client.patch(
+        f"/codex/proj_a/entries/{entry_id}",
+        json={"foreshadow_resolved": True},
+        headers=auth_headers("user_a"),
+    )
+    assert missing_actual.status_code == 422
+
+    resolved = await codex_client.patch(
+        f"/codex/proj_a/entries/{entry_id}",
+        json={"foreshadow_resolved": True, "resolved_at": "ch_b"},
+        headers=auth_headers("user_a"),
+    )
+    assert resolved.status_code == 200
+    assert resolved.json()["foreshadow_resolved"] is True
+    assert resolved.json()["resolved_at"] == "ch_b"
+    lifecycle = (
+        await async_db_session.execute(
+            select(Foreshadow).where(Foreshadow.entry_id == entry_id)
+        )
+    ).scalar_one()
+    assert lifecycle.resolved is True
+    assert lifecycle.resolved_chapter_id == "ch_b"
 
 
 async def test_an_invalid_kind_is_rejected_before_any_write(
