@@ -6,9 +6,9 @@
 所有声明基于实际代码与测试结果，不夸大、不省略已知缺口。
 
 **关键事实**：
-- ✅ 38 张表完整 Alembic baseline，增量迁移已到 `020_codex_state_changes`
-- ✅ 1120 个单元/功能测试通过（SQLite in-memory，mock embedding/LLM）
-- ✅ 前端 114 个测试、TypeScript 类型检查和生产构建通过
+- ✅ 40 张表完整 Alembic baseline，增量迁移已到 `021_chapter_reviews`
+- ✅ 1139 个单元/功能测试通过（SQLite in-memory，mock embedding/LLM）
+- ✅ 前端 120 个测试、TypeScript 类型检查和生产构建通过
 - ✅ 36 个集成测试已在本机真实 PostgreSQL + pgvector 环境通过
 - ✅ 已完成真实账号认证、作品创建、作品归档、分卷与章节增删改排、回收站和章纲编辑闭环
 - ✅ Refresh session 持久化轮换、防重放、注销即时吊销，系统管理员与项目 RBAC 已接通
@@ -55,7 +55,7 @@ PostgreSQL/pgvector 检索必须在真实部署上单独压测；该脚本只覆
 
 ## 已完成模块
 
-### 1. 数据模型（38 张表，100% Alembic 覆盖）
+### 1. 数据模型（40 张表，100% Alembic 覆盖）
 
 #### 核心骨架 (6 张)
 - `users` - 用户账号
@@ -103,6 +103,10 @@ PostgreSQL/pgvector 检索必须在真实部署上单独压测；该脚本只覆
 - `org_members` - 组织成员
 - `chapter_assignments` - 章节分工
 
+#### 审稿协作 (2 张)
+- `chapter_review_rounds` - 绑定不可变正文版本的章节审稿轮次与决定
+- `review_comments` - 绑定提交版本段落 `pid` 的批注、选中文本证据与处理状态
+
 #### 认证与管理 (3 张)
 - `auth_sessions` - 可吊销登录会话与 refresh token 轮换状态
 - `system_settings` - 注册开关和新账号默认套餐/额度
@@ -128,7 +132,7 @@ PostgreSQL/pgvector 检索必须在真实部署上单独压测；该脚本只覆
   `halfvec_cosine_ops` 重建 HNSW 索引；upgrade/downgrade 均会要求重新回填向量
 - ✅ `alembic upgrade head --sql` 与 `alembic downgrade -1 --sql` 语法验证通过
 - ✅ 36 个集成测试已在本机真实 PostgreSQL + pgvector 运行通过；此前审核数据库已真实执行至
-  `018_timeline_entries`。`019_chapter_pov` 与 `020_codex_state_changes` 的 upgrade/downgrade SQL 已生成验证，
+  `018_timeline_entries`。`019_chapter_pov`、`020_codex_state_changes` 与 `021_chapter_reviews` 的 upgrade/downgrade SQL 已生成验证，
   但本轮 Docker daemon 未启动，尚未在真实 PostgreSQL 重复执行；部署后以 readiness 返回的 Alembic head 为准
 
 ---
@@ -187,6 +191,15 @@ PostgreSQL/pgvector 检索必须在真实部署上单独压测；该脚本只覆
 - ✅ `streaming -> ready/failed -> accepted/rejected` 状态机，采纳与舍弃加行锁且重复请求幂等
 - ✅ 写作台“候选”页支持刷新恢复、逐条预览、放回正文检查和舍弃；服务端不直接改正文，继续沿用正文乐观锁与自动保存
 - ✅ 未采纳候选不会进入正文版本、Codex、摘要、RAG、Guard、来源占比或导出
+
+#### 章节审稿与段落批注 (`api/reviews.py`, `services/reviews.py`, `app/src/components/editor/ReviewPanel.vue`)
+- ✅ 作者可提交当前已保存正文版本；同一章节同时只保留一个待审轮次
+- ✅ 编辑/主编可在提交快照的稳定段落 `pid` 上添加、修改批注，服务端校验段落与选中文本确实存在
+- ✅ 批注保留提交版本、段落摘录和选中文本；作者后续改稿不会让历史意见漂移
+- ✅ 开放批注阻止批准；打回必须有批注或明确说明；作者可标记意见已处理后再提交新版本
+- ✅ owner/lead/editor 具备审稿权限，writer 可提交正文审稿，viewer 只读；所有写操作使用乐观锁
+- ✅ 写作台右栏增加审稿页签，支持轮次状态、版本标记、段落定位、窄屏抽屉和快速切章响应保护
+- ✅ TipTap 段落节点持久化 `data-paragraph-id`，重复/缺失锚点在保存前自动修复
 
 #### 全书校订 (`api/text_replacement.py`, `app/src/components/editor/TextReplacementDrawer.vue`)
 - ✅ 按本章、本卷或全书检索正文文本节点，最多返回 5000 处结果；回收站章节不参与
@@ -440,9 +453,9 @@ PostgreSQL/pgvector 检索必须在真实部署上单独压测；该脚本只覆
 
 ### 5. 测试覆盖
 
-#### 单元测试（1120 passed，SQLite in-memory，mock providers）
+#### 单元测试（1139 passed，SQLite in-memory，mock providers）
 
-**全量测试结果**：1120 passed, 37 skipped（未设置集成测试 URL 时）, 0 warnings；前端 114 passed
+**全量测试结果**：1139 passed, 37 skipped（未设置集成测试 URL 时）, 0 warnings；前端 120 passed
 
 主要测试覆盖（不逐文件列举测试数量，以实际 pytest 结果为准）：
 - ✅ Codex 设定库：页面与 API 完整 CRUD、引用删除保护、原子别名替换、可检索文本判据、两段式事务、deferred 降级、httpx 错误重试
@@ -452,7 +465,7 @@ PostgreSQL/pgvector 检索必须在真实部署上单独压测；该脚本只覆
 - ✅ 一致性服务：Claim fingerprint、规则逻辑、hard negative 案例
 - ✅ RuleScanner：七类规则检测、timeline-aware 跳过、stale 标记、fingerprint 去重
 - ✅ 认证授权：JWT 解码、项目权限、Idempotency-Key 必需性
-- ✅ Alembic 迁移：38 张表、pgvector extension、部分唯一索引、downgrade 完整性
+- ✅ Alembic 迁移：40 张表、pgvector extension、部分唯一索引、downgrade 完整性
 - ✅ 时间锚点：ISO-8601、确定性相对时长、跨章事件引用、源锚点与事件标签原文校验
 - ✅ 增量影响集：新旧实体重绑定、未解析主体、谓词族闭包、全项目安全降级与扫描遥测
 - ✅ LLM 仲裁：不可变版本取证、600 字截断、20 条分批、陌生/缺失/畸形响应、失败降级、事务释放与前端映射
@@ -712,14 +725,15 @@ baseline，增量实现 Codex embedding 回填、时间锚点解析、issue 生�
    - ✅ 人物出场与视角统计：大纲指定 POV、人物档案汇总和逐章来源轨迹已接通
    - ✅ 设定随章节变化的状态历史：作者记录与已接受抽取事实合并展示，按目标章裁剪后进入生成上下文
    - ✅ 资料与正文并排：右栏支持本章/全库搜索、原地档案、写作约束和当前章有效状态
-   - 批注/审稿流程、Prompt Preview 与用户自带模型配置
+   - ✅ 批注/审稿流程（章节版本绑定、段落锚点、打回/批准与协作权限）
+   - Prompt Preview 与用户自带模型配置
    - 关系图、地图、日历、出版排版和平台发布数据属于后续增强，不阻塞核心写作闭环
 
 ---
 
 ## 文件清单
 
-### 数据模型（10 个文件）
+### 数据模型（11 个文件）
 - `server/db/models_core.py` - 核心骨架 6 张表
 - `server/db/models_codex.py` - 设定库 5 张表
 - `server/db/models_guard.py` - 守卫 2 张表
@@ -730,8 +744,9 @@ baseline，增量实现 Codex embedding 回填、时间锚点解析、issue 生�
 - `server/db/models_admin.py` - 会话、运行设置与审计 3 张表
 - `server/db/models_editing.py` - 跨章节原子编辑操作 1 张表
 - `server/db/models_timeline.py` - 作者人工计划事件 1 张表
+- `server/db/models_review.py` - 审稿轮次与段落批注 2 张表
 
-### 服务层（16 个文件）
+### 服务层（17 个文件）
 - `server/services/codex.py` - 设定库 CRUD
 - `server/services/codex_embedding.py` - Embedding 生命周期
 - `server/services/outlines.py` - 章纲服务
@@ -748,8 +763,9 @@ baseline，增量实现 Codex embedding 回填、时间锚点解析、issue 生�
 - `server/services/usage.py` - 用量预留、结算、退款与月度额度
 - `server/services/style_profiles.py` - 风格样文采样、网关抽取与六维结果校验
 - `server/services/text_replacement.py` - 保持正文结构的逐处查找替换
+- `server/services/reviews.py` - 章节审稿轮次、段落批注与乐观锁决定
 
-### API 端点（13 个文件）
+### API 端点（14 个文件）
 - `server/api/auth.py` - 认证与授权
 - `server/api/projects.py` - 项目管理
 - `server/api/chapters.py` - 章节读写
@@ -762,6 +778,7 @@ baseline，增量实现 Codex embedding 回填、时间锚点解析、issue 生�
 - `server/api/usage.py` - 真实余额、聚合和逐笔用量
 - `server/api/styles.py` - 风格档 CRUD、抽取与作品绑定
 - `server/api/text_replacement.py` - 全书校订预览、执行与整批撤销
+- `server/api/reviews.py` - 章节审稿、段落批注、处理和决定
 - `server/main.py` - FastAPI 入口
 
 ### 异步任务（3 个文件）
@@ -769,9 +786,9 @@ baseline，增量实现 Codex embedding 回填、时间锚点解析、issue 生�
 - `server/tasks/consistency.py` - 一致性任务
 - `server/tasks/codex.py` - Codex 回填任务
 
-### 测试（1120 passed；另有 36 个真实 PostgreSQL 测试通过）
-- `server/tests/` - 单元/功能测试（1120 passed）
-- `app/src/**/*.spec.ts` - 前端测试（108 passed）
+### 测试（1139 passed；另有 36 个真实 PostgreSQL 测试通过）
+- `server/tests/` - 单元/功能测试（1139 passed）
+- `app/src/**/*.spec.ts` - 前端测试（120 passed）
 - `server/tests/integration/` - 集成测试（36 passed，需设置真实 PostgreSQL URL）
 
 ### 文档（1 个文件）
@@ -781,10 +798,10 @@ baseline，增量实现 Codex embedding 回填、时间锚点解析、issue 生�
 
 ## 总结
 
-墨枢一致性后端已完成核心数据模型、服务层、API 端点和异步任务定义，1120 个单元/功能
+墨枢一致性后端已完成核心数据模型、服务层、API 端点和异步任务定义，1139 个单元/功能
 测试在 SQLite in-memory + mock providers 环境下通过，另有 36 个集成测试在真实
 PostgreSQL + pgvector 环境通过。真实认证、可吊销会话、管理员、工作室 RBAC、作品创建、
-作品归档、分卷与章节生命周期、虚拟化章节导航、章纲、章节 POV、人物出场轨迹、逐章设定状态沿革、资料与正文并排、故事/章节双序时间板、作者人工计划事件、正文版本历史与恢复、AI 多候选草稿、全书查找替换、全量导出、非覆盖备份恢复、风格指纹、AI 来源账本、作者生成用量与平台模型成本台账已经接通，前端 114 个测试与生产构建通过。
+作品归档、分卷与章节生命周期、虚拟化章节导航、章纲、章节 POV、人物出场轨迹、逐章设定状态沿革、资料与正文并排、故事/章节双序时间板、作者人工计划事件、正文版本历史与恢复、AI 多候选草稿、全书查找替换、章节审稿与段落批注、全量导出、非覆盖备份恢复、风格指纹、AI 来源账本、作者生成用量与平台模型成本台账已经接通，前端 120 个测试与生产构建通过。
 
 **关键限制**：
 1. 七条确定性规则的 280/140 结构化评测门禁、模糊区间人工确认和多剧情线时间板已完成，但真实正文盲评仍需补充

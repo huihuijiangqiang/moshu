@@ -16,7 +16,8 @@ import { useProjectStore } from '@/stores/project'
 import { useShellStore } from '@/stores/shell'
 import { BodyConflictError, contentApi } from '@/api/content'
 import { generationDraftApi, streamChapter, streamInline } from '@/api/generation'
-import type { GenerationControls, GenerationDraftDetail, GenerationDraftSummary, InlineGenerateOptions, TextReplacementRun } from '@/types'
+import { ReviewConflictError, reviewApi } from '@/api/reviews'
+import type { GenerationControls, GenerationDraftDetail, GenerationDraftSummary, InlineGenerateOptions, ReviewAnchor, ReviewComment, ReviewRound, ReviewWorkspace, TextReplacementRun } from '@/types'
 
 defineOptions({ name: 'WorkspaceView' })
 
@@ -36,10 +37,17 @@ const restoringVersion = ref(false)
 const restoreError = ref('')
 const generationDrafts = ref<GenerationDraftSummary[]>([])
 const draftsLoading = ref(false)
+const reviewWorkspace = ref<ReviewWorkspace>()
+const reviewAnchor = ref<ReviewAnchor>()
+const reviewLoading = ref(false)
+const reviewBusy = ref(false)
+const reviewError = ref('')
 let abort: (() => void) | null = null
 let disposed = false
 let draftLoadSequence = 0
+let reviewLoadSequence = 0
 let stoppedDraftTimer: ReturnType<typeof setTimeout> | null = null
+let reviewHighlightTimer: ReturnType<typeof setTimeout> | null = null
 let locateParagraphId: string | null = null
 
 const editor = useNovelEditor(html.value, (next, chars) => {
@@ -70,6 +78,7 @@ const {
 } = useAutosave(chapterId, html)
 
 const requestedChapterId = computed(() => typeof route.query.chapter === 'string' ? route.query.chapter : null)
+const projectId = computed(() => store.project?.id)
 
 // 切章或跨页打开指定章节：正文返回后再写入同一个编辑器实例。
 watch(
@@ -89,6 +98,7 @@ watch(
     if (!currentEditor || currentEditor.isDestroyed) return
     currentEditor.commands.setContent(content, { emitUpdate: false })
     html.value = content
+    syncReviewAnchor()
     await nextTick()
     if (locateParagraphId) {
       const target = document.querySelector(`[data-paragraph-id="${CSS.escape(locateParagraphId)}"]`)
@@ -152,6 +162,7 @@ onMounted(() => {
   window.addEventListener('resize', syncViewport)
   window.addEventListener('moshu:draft-action', handleDraftAction as EventListener)
   window.addEventListener('keydown', handleWorkspaceShortcut)
+  editor.value?.on('selectionUpdate', syncReviewAnchor)
 })
 
 onBeforeUnmount(() => {
@@ -159,6 +170,8 @@ onBeforeUnmount(() => {
   abort?.()
   abort = null
   if (stoppedDraftTimer) clearTimeout(stoppedDraftTimer)
+  if (reviewHighlightTimer) clearTimeout(reviewHighlightTimer)
+  editor.value?.off('selectionUpdate', syncReviewAnchor)
   window.removeEventListener('resize', syncViewport)
   window.removeEventListener('moshu:draft-action', handleDraftAction as EventListener)
   window.removeEventListener('keydown', handleWorkspaceShortcut)
@@ -206,6 +219,42 @@ const replacementDisabledReason = computed(() => {
   if (saveState.value === 'dirty' || saveState.value === 'saving') return '正在同步本地草稿，完成后即可预览。'
   return undefined
 })
+const reviewSubmitDisabledReason = computed(() => {
+  if (!online.value) return '联网后才能提交审稿。'
+  if (saveConflict.value) return '先处理正文版本冲突，再提交审稿。'
+  if (saveState.value === 'error') return '正文尚未保存成功。'
+  if (saveState.value === 'dirty' || saveState.value === 'saving') return '正文保存后即可提交审稿。'
+  return undefined
+})
+
+function syncReviewAnchor() {
+  const currentEditor = editor.value
+  if (!currentEditor || currentEditor.isDestroyed) {
+    reviewAnchor.value = undefined
+    return
+  }
+  const { from, to, $from } = currentEditor.state.selection
+  let depth = $from.depth
+  while (depth > 0) {
+    const node = $from.node(depth)
+    const pid = typeof node.attrs.pid === 'string' ? node.attrs.pid : ''
+    if (pid) {
+      const start = $from.start(depth)
+      const end = $from.end(depth)
+      const selected = currentEditor.state.doc.textBetween(
+        Math.max(from, start), Math.min(to, end), '\n'
+      ).trim()
+      reviewAnchor.value = {
+        paragraphId: pid,
+        paragraphText: node.textContent,
+        selectedText: selected || undefined
+      }
+      return
+    }
+    depth -= 1
+  }
+  reviewAnchor.value = undefined
+}
 
 function excerpt(content: string) {
   const text = new DOMParser().parseFromString(content, 'text/html').body.textContent?.trim() ?? ''
@@ -333,6 +382,117 @@ async function loadGenerationDrafts() {
 }
 
 watch(() => store.activeId, () => void loadGenerationDrafts(), { immediate: true })
+
+async function loadReviews() {
+  const pid = projectId.value
+  const cid = store.activeId
+  const sequence = ++reviewLoadSequence
+  if (!pid || !cid) {
+    reviewWorkspace.value = undefined
+    return
+  }
+  reviewLoading.value = true
+  reviewError.value = ''
+  try {
+    const result = await reviewApi.get(pid, cid)
+    if (!disposed && sequence === reviewLoadSequence && store.activeId === cid) reviewWorkspace.value = result
+  } catch (error) {
+    if (!disposed && sequence === reviewLoadSequence) {
+      reviewWorkspace.value = undefined
+      reviewError.value = error instanceof Error ? error.message : '审稿记录加载失败'
+    }
+  } finally {
+    if (!disposed && sequence === reviewLoadSequence) reviewLoading.value = false
+  }
+}
+
+watch([projectId, () => store.activeId], () => {
+  reviewAnchor.value = undefined
+  void loadReviews()
+}, { immediate: true })
+
+async function runReviewAction(action: () => Promise<ReviewWorkspace>, failure: string) {
+  if (reviewBusy.value) return
+  reviewBusy.value = true
+  reviewError.value = ''
+  try {
+    reviewWorkspace.value = await action()
+  } catch (error) {
+    if (error instanceof ReviewConflictError) {
+      await loadReviews()
+      reviewError.value = '审稿记录已被其他成员更新，已刷新为最新状态。'
+    } else {
+      reviewError.value = error instanceof Error && error.message ? error.message : failure
+    }
+  } finally {
+    reviewBusy.value = false
+  }
+}
+
+async function submitReview(note: string) {
+  const pid = projectId.value
+  const cid = store.activeId
+  if (!pid || !cid || reviewSubmitDisabledReason.value) return
+  await flush(cid)
+  if (reviewSubmitDisabledReason.value) {
+    reviewError.value = reviewSubmitDisabledReason.value
+    return
+  }
+  await runReviewAction(() => reviewApi.submit(pid, cid, note), '提交审稿失败')
+}
+
+async function addReviewComment(roundId: string, content: string) {
+  const pid = projectId.value
+  const anchor = reviewAnchor.value
+  if (!pid || !anchor) return
+  await runReviewAction(
+    () => reviewApi.addComment(pid, roundId, anchor.paragraphId, anchor.selectedText, content),
+    '添加批注失败'
+  )
+}
+
+async function updateReviewComment(roundId: string, comment: ReviewComment, content: string) {
+  const pid = projectId.value
+  if (!pid) return
+  await runReviewAction(
+    () => reviewApi.updateComment(pid, roundId, comment.id, comment.revision, content),
+    '修改批注失败'
+  )
+}
+
+async function resolveReviewComment(roundId: string, comment: ReviewComment) {
+  const pid = projectId.value
+  if (!pid) return
+  await runReviewAction(
+    () => reviewApi.resolveComment(pid, roundId, comment.id, comment.revision),
+    '更新批注状态失败'
+  )
+}
+
+async function decideReview(round: ReviewRound, decision: 'approved' | 'changes_requested', note: string) {
+  const pid = projectId.value
+  if (!pid) return
+  await runReviewAction(
+    () => reviewApi.decide(pid, round.id, round.revision, decision, note),
+    decision === 'approved' ? '批准审稿失败' : '退回修改失败'
+  )
+}
+
+async function locateReviewComment(comment: ReviewComment) {
+  paneTab.value = 'body'
+  await nextTick()
+  const target = document.querySelector<HTMLElement>(
+    `.wk-pane-paper [data-paragraph-id="${CSS.escape(comment.paragraphId)}"]`
+  )
+  if (!target) {
+    reviewError.value = `这条批注基于正文第 ${comment.bodyRevision} 版，当前正文中已没有对应段落。`
+    return
+  }
+  target.scrollIntoView({ block: 'center', behavior: 'smooth' })
+  target.classList.add('review-located-paragraph')
+  if (reviewHighlightTimer) clearTimeout(reviewHighlightTimer)
+  reviewHighlightTimer = setTimeout(() => target.classList.remove('review-located-paragraph'), 1800)
+}
 
 function attachDraftIdentity(meta: { draftId?: string }) {
   if (meta.draftId) editor.value?.commands.setDraftCandidateId(meta.draftId)
@@ -621,11 +781,24 @@ function editChapterPlan() {
         :generation-error="generationError"
         :drafts="generationDrafts"
         :drafts-loading="draftsLoading"
+        :review-workspace="reviewWorkspace"
+        :review-anchor="reviewAnchor"
+        :review-loading="reviewLoading"
+        :review-busy="reviewBusy"
+        :review-error="reviewError"
+        :review-submit-disabled-reason="reviewSubmitDisabledReason"
         @generate="generate"
         @stop="stop"
         @insert-draft="insertGenerationDraft"
         @reject-draft="rejectGenerationDraft"
         @refresh-drafts="loadGenerationDrafts"
+        @refresh-reviews="loadReviews"
+        @submit-review="submitReview"
+        @add-review-comment="addReviewComment"
+        @update-review-comment="updateReviewComment"
+        @resolve-review-comment="resolveReviewComment"
+        @decide-review="decideReview"
+        @locate-review-comment="locateReviewComment"
       />
       <button v-else class="wk-stub" type="button" title="展开 AI 面板 ⌘J" @click="shell.rightOpen = true">
         AI 面板
@@ -673,4 +846,9 @@ function editChapterPlan() {
 }
 .paper-history-button:hover { color: var(--ink); background: var(--panel-sunken); border-color: var(--line); }
 .paper-history-button:focus-visible { outline: 2px solid var(--primary); outline-offset: 1px; }
+:deep(.review-located-paragraph) {
+  background: var(--alert-soft);
+  box-shadow: -4px 0 0 var(--alert);
+  transition: background 160ms ease, box-shadow 160ms ease;
+}
 </style>

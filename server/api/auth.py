@@ -361,6 +361,7 @@ class ProjectPermission(StrEnum):
     EXPORT = "export"
     MANAGE_PROJECT = "manage_project"
     MANAGE_MEMBERS = "manage_members"
+    REVIEW_CHAPTER = "review_chapter"
 
 
 _ORG_ROLE_PERMISSIONS: dict[str, frozenset[ProjectPermission]] = {
@@ -375,6 +376,7 @@ _ORG_ROLE_PERMISSIONS: dict[str, frozenset[ProjectPermission]] = {
         ProjectPermission.RESOLVE_GUARD,
         ProjectPermission.GENERATE,
         ProjectPermission.EXPORT,
+        ProjectPermission.REVIEW_CHAPTER,
     }),
     "writer": frozenset({
         ProjectPermission.VIEW,
@@ -390,6 +392,7 @@ _ORG_ROLE_PERMISSIONS: dict[str, frozenset[ProjectPermission]] = {
         ProjectPermission.MANAGE_TIMELINE,
         ProjectPermission.RESOLVE_GUARD,
         ProjectPermission.EXPORT,
+        ProjectPermission.REVIEW_CHAPTER,
     }),
     "viewer": frozenset({ProjectPermission.VIEW}),
 }

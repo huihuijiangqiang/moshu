@@ -10,7 +10,8 @@ import { CODEX_KIND_LABEL, type CodexEntry, type CodexStateHistoryItem, type Con
 import { useProjectNavigation } from '@/composables/use-project-navigation'
 import { generationDraftApi } from '@/api/generation'
 import AppIcon from '@/components/ui/AppIcon.vue'
-import type { GenerationDraftDetail, GenerationDraftSummary } from '@/types'
+import ReviewPanel from '@/components/editor/ReviewPanel.vue'
+import type { GenerationDraftDetail, GenerationDraftSummary, ReviewAnchor, ReviewComment, ReviewRound, ReviewWorkspace } from '@/types'
 
 /**
  * AI 面板。三件事按重要性排：能不能生成（章纲 + 参数）、
@@ -22,6 +23,12 @@ const props = defineProps<{
   generationError?: string
   drafts?: GenerationDraftSummary[]
   draftsLoading?: boolean
+  reviewWorkspace?: ReviewWorkspace
+  reviewAnchor?: ReviewAnchor
+  reviewLoading?: boolean
+  reviewBusy?: boolean
+  reviewError?: string
+  reviewSubmitDisabledReason?: string
 }>()
 const emit = defineEmits<{
   generate: [options: GenerationControls]
@@ -29,6 +36,13 @@ const emit = defineEmits<{
   insertDraft: [draft: GenerationDraftDetail]
   rejectDraft: [id: string]
   refreshDrafts: []
+  refreshReviews: []
+  submitReview: [note: string]
+  addReviewComment: [roundId: string, content: string]
+  updateReviewComment: [roundId: string, comment: ReviewComment, content: string]
+  resolveReviewComment: [roundId: string, comment: ReviewComment]
+  decideReview: [round: ReviewRound, decision: 'approved' | 'changes_requested', note: string]
+  locateReviewComment: [comment: ReviewComment]
 }>()
 
 const router = useRouter()
@@ -39,7 +53,7 @@ const styles = useStylesStore()
 const { toProject } = useProjectNavigation()
 
 const layers = ref<ContextLayer[]>([])
-const tab = ref<'ai' | 'drafts' | 'refs' | 'notes'>('ai')
+const tab = ref<'ai' | 'drafts' | 'refs' | 'review' | 'notes'>('ai')
 const targetWords = ref(3000)
 const model = ref<'basic' | 'advanced'>('basic')
 const loadingContext = ref(false)
@@ -216,13 +230,29 @@ function rejectSelected() {
   emit('rejectDraft', selectedDraft.value.id)
   selectedDraft.value = null
 }
+
+function forwardReviewComment(roundId: string, content: string) {
+  emit('addReviewComment', roundId, content)
+}
+
+function forwardReviewCommentUpdate(roundId: string, comment: ReviewComment, content: string) {
+  emit('updateReviewComment', roundId, comment, content)
+}
+
+function forwardReviewCommentResolution(roundId: string, comment: ReviewComment) {
+  emit('resolveReviewComment', roundId, comment)
+}
+
+function forwardReviewDecision(round: ReviewRound, decision: 'approved' | 'changes_requested', note: string) {
+  emit('decideReview', round, decision, note)
+}
 </script>
 
 <template>
   <div>
     <div class="wk-tabs">
       <button
-        v-for="t in (['ai', 'drafts', 'refs', 'notes'] as const)"
+        v-for="t in (['ai', 'drafts', 'refs', 'review', 'notes'] as const)"
         :key="t"
         class="wk-tab"
         type="button"
@@ -230,7 +260,7 @@ function rejectSelected() {
         :aria-selected="tab === t"
         @click="tab = t"
       >
-        {{ t === 'ai' ? 'AI' : t === 'drafts' ? `候选 ${props.drafts?.length ?? 0}` : t === 'refs' ? '资料' : '笔记' }}
+        {{ t === 'ai' ? 'AI' : t === 'drafts' ? `候选 ${props.drafts?.length ?? 0}` : t === 'refs' ? '资料' : t === 'review' ? `审稿 ${props.reviewWorkspace?.rounds[0]?.comments.filter((item) => item.status === 'open').length ?? 0}` : '笔记' }}
       </button>
     </div>
 
@@ -479,6 +509,23 @@ function rejectSelected() {
         </p>
       </div>
     </template>
+
+    <ReviewPanel
+      v-else-if="tab === 'review'"
+      :workspace="reviewWorkspace"
+      :anchor="reviewAnchor"
+      :loading="reviewLoading"
+      :busy="reviewBusy"
+      :error="reviewError"
+      :submit-disabled-reason="reviewSubmitDisabledReason"
+      @refresh="emit('refreshReviews')"
+      @submit="emit('submitReview', $event)"
+      @add-comment="forwardReviewComment"
+      @update-comment="forwardReviewCommentUpdate"
+      @resolve-comment="forwardReviewCommentResolution"
+      @decide="forwardReviewDecision"
+      @locate="emit('locateReviewComment', $event)"
+    />
 
     <template v-else>
       <div class="wk-head"><span>笔记</span></div>

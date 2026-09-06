@@ -192,6 +192,59 @@ export interface ChapterVersionRestoreResult {
   consistencyStatus: string
 }
 
+export type ReviewRoundStatus = 'submitted' | 'changes_requested' | 'approved' | 'superseded'
+
+export interface ReviewAnchor {
+  paragraphId: string
+  paragraphText: string
+  selectedText?: string
+}
+
+export interface ReviewComment {
+  id: string
+  roundId: string
+  chapterId: string
+  bodyRevision: number
+  paragraphId: string
+  paragraphExcerpt: string
+  selectedText?: string
+  content: string
+  status: 'open' | 'resolved'
+  revision: number
+  authorId?: string
+  authorName?: string
+  resolvedBy?: string
+  createdAt: string
+  resolvedAt?: string
+}
+
+export interface ReviewRound {
+  id: string
+  chapterId: string
+  submittedBodyRevision: number
+  status: ReviewRoundStatus
+  submitNote?: string
+  decisionNote?: string
+  revision: number
+  submittedBy?: string
+  submittedByName?: string
+  reviewedBy?: string
+  reviewedByName?: string
+  submittedAt: string
+  reviewedAt?: string
+  stale: boolean
+  comments: ReviewComment[]
+}
+
+export interface ReviewWorkspace {
+  chapterId: string
+  currentBodyRevision: number
+  canSubmit: boolean
+  canReview: boolean
+  canResolve: boolean
+  rounds: ReviewRound[]
+}
+
 export type TextReplacementScope = 'chapter' | 'volume' | 'project'
 
 export interface TextReplacementSpec {

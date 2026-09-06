@@ -92,6 +92,7 @@ POSTGRES_ONLY_INDEXES = frozenset(
         "ix_codex_aliases_alias_gin",
         "ix_codex_entries_embedding",
         "uq_style_profiles_default_user",
+        "uq_chapter_review_active_submission",
     }
 )
 
