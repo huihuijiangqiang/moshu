@@ -8,7 +8,7 @@
 **关键事实**：
 - ✅ 37 张表完整 Alembic baseline，增量迁移已到 `018_timeline_entries`
 - ✅ 1101 个单元/功能测试通过（SQLite in-memory，mock embedding/LLM）
-- ✅ 前端 99 个测试、TypeScript 类型检查和生产构建通过
+- ✅ 前端 103 个测试、TypeScript 类型检查和生产构建通过
 - ✅ 36 个集成测试已在本机真实 PostgreSQL + pgvector 环境通过
 - ✅ 已完成真实账号认证、作品创建、作品归档、分卷与章节增删改排、回收站和章纲编辑闭环
 - ✅ Refresh session 持久化轮换、防重放、注销即时吊销，系统管理员与项目 RBAC 已接通
@@ -165,6 +165,7 @@ PostgreSQL/pgvector 检索必须在真实部署上单独压测；该脚本只覆
 - ✅ 版本历史抽屉按需加载历史正文，提供段落级差异、完整纯文本预览与二次确认恢复
 - ✅ 恢复前强制保存当前章；离线、保存失败或冲突时禁止恢复，恢复结果作为新 head 且不改写旧快照
 - ✅ 编辑器可显示多个 AI 候选块，但自动保存会剔除未采纳块；只有显式采纳后才进入正文、版本历史和一致性管道
+- ✅ 写作台章节树按固定行高虚拟化，300 章测试下只挂载视口邻近节点；支持当前章自动定位、筛选重置及方向键/Home/End/Enter 导航
 
 #### AI 生成候选 (`api/generate.py`, `app/src/components/layout/AiSidePanel.vue`)
 - ✅ 每次生成在独立 `generation_drafts` 行中保存候选，流式输出每 1000 字符 checkpoint
@@ -428,7 +429,7 @@ PostgreSQL/pgvector 检索必须在真实部署上单独压测；该脚本只覆
 
 #### 单元测试（1101 passed，SQLite in-memory，mock providers）
 
-**全量测试结果**：1101 passed, 37 skipped（未设置集成测试 URL 时）, 0 warnings；前端 99 passed
+**全量测试结果**：1101 passed, 37 skipped（未设置集成测试 URL 时）, 0 warnings；前端 103 passed
 
 主要测试覆盖（不逐文件列举测试数量，以实际 pytest 结果为准）：
 - ✅ Codex 设定库：页面与 API 完整 CRUD、引用删除保护、原子别名替换、可检索文本判据、两段式事务、deferred 降级、httpx 错误重试
@@ -754,7 +755,7 @@ baseline，增量实现 Codex embedding 回填、时间锚点解析、issue 生�
 
 ### 测试（1101 passed；另有 36 个真实 PostgreSQL 测试通过）
 - `server/tests/` - 单元/功能测试（1101 passed）
-- `app/src/**/*.spec.ts` - 前端测试（99 passed）
+- `app/src/**/*.spec.ts` - 前端测试（103 passed）
 - `server/tests/integration/` - 集成测试（36 passed，需设置真实 PostgreSQL URL）
 
 ### 文档（1 个文件）
@@ -767,7 +768,7 @@ baseline，增量实现 Codex embedding 回填、时间锚点解析、issue 生�
 墨枢一致性后端已完成核心数据模型、服务层、API 端点和异步任务定义，1101 个单元/功能
 测试在 SQLite in-memory + mock providers 环境下通过，另有 36 个集成测试在真实
 PostgreSQL + pgvector 环境通过。真实认证、可吊销会话、管理员、工作室 RBAC、作品创建、
-作品归档、分卷与章节生命周期、章纲、故事/章节双序时间板、作者人工计划事件、正文版本历史与恢复、AI 多候选草稿、全书查找替换、全量导出、非覆盖备份恢复、风格指纹、AI 来源账本、作者生成用量与平台模型成本台账已经接通，前端 99 个测试与生产构建通过。
+作品归档、分卷与章节生命周期、虚拟化章节导航、章纲、故事/章节双序时间板、作者人工计划事件、正文版本历史与恢复、AI 多候选草稿、全书查找替换、全量导出、非覆盖备份恢复、风格指纹、AI 来源账本、作者生成用量与平台模型成本台账已经接通，前端 103 个测试与生产构建通过。
 
 **关键限制**：
 1. 七条确定性规则的 280/140 结构化评测门禁、模糊区间人工确认和多剧情线时间板已完成，但真实正文盲评仍需补充
