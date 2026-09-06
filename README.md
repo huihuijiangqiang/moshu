@@ -59,6 +59,19 @@ docker compose up -d --build
 `migration` 会在 API 和 worker 启动前执行 `alembic upgrade head`。就绪探针同时检查
 PostgreSQL、Redis 与数据库迁移版本；任一项不满足就返回 503。
 
+### 数据目录（Windows）
+
+Compose 默认使用项目下的 `.docker-data` 目录作为开发兜底。部署前建议把数据放到非系统盘，
+在项目根目录创建仅本机使用的 `.env`（不要提交），例如：
+
+```dotenv
+MOSHU_POSTGRES_DATA_DIR=D:/moshu-data/postgres
+MOSHU_REDIS_DATA_DIR=D:/moshu-data/redis
+```
+
+这两个目录会以 bind mount 方式挂载，不使用 Docker Desktop 默认 named volume 位置。目录需提前创建，
+并在 Docker Desktop 中共享所在磁盘。
+
 ## 核心约束
 
 - 一章一文档，章节列表接口不返回正文。

@@ -7,7 +7,7 @@
 
 **关键事实**：
 - ✅ 41 张表完整 Alembic baseline，增量迁移已到 `022_user_model_configs`
-- ✅ 1161 个单元/功能测试通过（SQLite in-memory，mock embedding/LLM）
+- ✅ 1164 个单元/功能测试通过（SQLite in-memory，mock embedding/LLM）
 - ✅ 前端 122 个测试、TypeScript 类型检查和生产构建通过
 - ✅ 36 个集成测试已在本机真实 PostgreSQL + pgvector 环境通过
 - ✅ 已完成真实账号认证、作品创建、作品归档、分卷与章节增删改排、回收站和章纲编辑闭环
@@ -21,6 +21,7 @@
 - ✅ AI 生成候选独立持久化，成功、中断和失败输出均可在刷新后恢复、预览、采纳或舍弃
 - ✅ 全书查找替换支持本章/本卷/全书范围、逐处预览确认、设定名风险提示、原子提交和整批撤销
 - ✅ Docker Compose 已接通 migration、API、前端、PostgreSQL、Redis、Celery worker/dispatcher/beat 与 transactional outbox
+- ✅ Compose 数据卷支持 `MOSHU_POSTGRES_DATA_DIR` / `MOSHU_REDIS_DATA_DIR` 宿主机路径，可将 Windows 数据放到非系统盘；未设置时回退项目 `.docker-data`
 - ✅ `/health/ready` 会实际探测 PostgreSQL、Redis 与 Alembic head，并以 503 暴露未就绪依赖
 - ✅ 后端镜像内置 tiktoken `cl100k_base` 缓存，API/worker 冷启动不依赖公共网络下载
 - ✅ Guard 已接入项目扫描、运行状态、真实告警证据与乐观锁处置
@@ -698,6 +699,20 @@ baseline，增量实现 Codex embedding 回填、时间锚点解析、issue 生�
 
 **优先级**：高。与确定性规则一起纳入 100+ 正例、50+ hard negatives 的盲评。
 
+### 5. 真实正文评测入口已建立
+**状态**：✅ 已加入 `services/text_evaluation.py` 与 `scripts/evaluate_text_extraction.py`。
+评测语料不进入仓库，使用 UTF-8 JSONL，每行包含 `id`、`split`（`dev` 或 `holdout`）、
+`text_html` 和人工审核的 `gold_claims`；评测器调用生产 `ConsistencyProvider`，按语义 claim
+计算 precision/recall/F1，并单独计算 `source_anchor` 证据准确率。运行示例：
+
+```powershell
+cd server
+..\.venv\Scripts\python.exe scripts/evaluate_text_extraction.py --corpus C:\private\moshu-corpus.jsonl --split holdout
+```
+
+当前仓库只验证语料加载、split 隔离和指标计算，不伪造真实小说质量数字；接入有授权的正文与金标后，
+再记录 dev 调参和 holdout 最终结果。
+
 ---
 
 ## 下一步优先级
@@ -710,7 +725,8 @@ baseline，增量实现 Codex embedding 回填、时间锚点解析、issue 生�
 2. **扩充评测数据集**
    - ✅ 七条确定性规则已达到 280 正例 + 140 hard negatives，真实执行 scanner
    - ✅ 已设 overall/macro recall ≥70%、证据定位 ≥90%、hard-negative precision ≥80% 门禁
-   - 建立有授权真实小说正文 dev/holdout
+   - ✅ 建立有授权真实小说正文 dev/holdout 的 JSONL 评测入口（语料需部署者私下提供）
+   - 建立并标注首批有授权正文与金标 claim，跑出真实 dev/holdout 指标
 
 ### 短期优先级（1-2 周）
 1. **实现 Codex Embedding 持久失败可见性**
