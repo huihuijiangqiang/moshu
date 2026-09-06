@@ -56,4 +56,3 @@ async def test_arbitration_metrics_include_confusion_and_failure_rate(tmp_path):
     assert metrics["correct"] == 1
     assert metrics["failed"] == 0
     assert metrics["confusion"]["unsupported"]["uncertain"] == 1
-
