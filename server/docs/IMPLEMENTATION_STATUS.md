@@ -7,14 +7,14 @@
 
 **关键事实**：
 - ✅ 41 张表完整 Alembic baseline，增量迁移已到 `022_user_model_configs`
-- ✅ 1172 个单元/功能测试通过（SQLite in-memory，mock embedding/LLM）
-- ✅ 前端 126 个测试、TypeScript 类型检查和生产构建通过
+- ✅ 1175 个单元/功能测试通过（SQLite in-memory，mock embedding/LLM）
+- ✅ 前端 128 个测试、TypeScript 类型检查和生产构建通过
 - ✅ 36 个集成测试已在本机真实 PostgreSQL + pgvector 环境通过
 - ✅ 已完成真实账号认证、作品创建、作品归档、分卷与章节增删改排、回收站和章纲编辑闭环
 - ✅ 大纲页支持卷排序、同卷章节排序与跨卷拖放；键盘/按钮排序保留为无障碍回退
 - ✅ P1 拆书分析支持 TXT/Markdown/DOCX/EPUB，内存解析章节结构、节奏节点和爽点分布；不落库、不调用模型、不扣作者积分
 - ✅ Refresh session 持久化轮换、防重放、注销即时吊销，系统管理员与项目 RBAC 已接通
-- ✅ 工作室成员管理、角色调整和作品共享已有真实 API 与 UI
+- ✅ 工作室成员管理、角色调整、作品共享、章节派发/领取/退回/完成和产量看板已有真实 API 与 UI
 - ✅ TXT/Markdown/DOCX/EPUB、分章 ZIP、完整 JSON 备份与非覆盖恢复已接通真实数据库
 - ✅ 作者生成已接通真实用量台账、原子额度预留、按实际 token 结算、失败退款和过期预留回收
 - ✅ 自动事实抽取、摘要、冲突复核和 embedding 已进入统一平台成本台账，不扣作者积分
@@ -109,6 +109,13 @@ PostgreSQL/pgvector 检索必须在真实部署上单独压测；该脚本只覆
 - `orgs` - 组织
 - `org_members` - 组织成员
 - `chapter_assignments` - 章节分工
+
+#### 工作室产线 (`api/orgs.py`, `app/src/views/AccessView.vue`)
+- ✅ owner/lead 可按作品给可写成员派章或改派，viewer 不能承接写作任务
+- ✅ 负责人可领取、退回和完成自己的任务；服务端校验状态流转及跨成员越权
+- ✅ 章节任务表显示负责人、派发者、当前字数和说明，成员看板汇总进行中/完成章节与完成字数
+- ✅ 作品必须先加入工作室才开放产线，返回的 `org_id` 让前端不会把任务加载到错误工作室
+- ⚠️ 产量按任务所绑定章节的当前字数统计，不是逐次键入审计；MVP 仍不包含 Yjs/Hocuspocus 同屏实时编辑
 
 #### 审稿协作 (2 张)
 - `chapter_review_rounds` - 绑定不可变正文版本的章节审稿轮次与决定
@@ -480,9 +487,9 @@ PostgreSQL/pgvector 检索必须在真实部署上单独压测；该脚本只覆
 
 ### 5. 测试覆盖
 
-#### 单元测试（1139 passed，SQLite in-memory，mock providers）
+#### 单元测试（1175 passed，SQLite in-memory，mock providers）
 
-**全量测试结果**：1139 passed, 37 skipped（未设置集成测试 URL 时）, 0 warnings；前端 120 passed
+**全量测试结果**：1175 passed, 37 skipped（未设置集成测试 URL 时）, 0 warnings；前端 128 passed
 
 主要测试覆盖（不逐文件列举测试数量，以实际 pytest 结果为准）：
 - ✅ Codex 设定库：页面与 API 完整 CRUD、引用删除保护、原子别名替换、可检索文本判据、两段式事务、deferred 降级、httpx 错误重试
@@ -843,9 +850,9 @@ cd server
 - `server/tasks/consistency.py` - 一致性任务
 - `server/tasks/codex.py` - Codex 回填任务
 
-### 测试（1139 passed；另有 36 个真实 PostgreSQL 测试通过）
-- `server/tests/` - 单元/功能测试（1139 passed）
-- `app/src/**/*.spec.ts` - 前端测试（120 passed）
+### 测试（1175 passed；另有 36 个真实 PostgreSQL 测试通过）
+- `server/tests/` - 单元/功能测试（1175 passed）
+- `app/src/**/*.spec.ts` - 前端测试（128 passed）
 - `server/tests/integration/` - 集成测试（36 passed，需设置真实 PostgreSQL URL）
 
 ### 文档（1 个文件）
@@ -855,10 +862,10 @@ cd server
 
 ## 总结
 
-墨枢一致性后端已完成核心数据模型、服务层、API 端点和异步任务定义，1139 个单元/功能
+墨枢一致性后端已完成核心数据模型、服务层、API 端点和异步任务定义，1175 个单元/功能
 测试在 SQLite in-memory + mock providers 环境下通过，另有 36 个集成测试在真实
 PostgreSQL + pgvector 环境通过。真实认证、可吊销会话、管理员、工作室 RBAC、作品创建、
-作品归档、分卷与章节生命周期、虚拟化章节导航、章纲、章节 POV、人物出场轨迹、逐章设定状态沿革、资料与正文并排、故事/章节双序时间板、作者人工计划事件、正文版本历史与恢复、AI 多候选草稿、全书查找替换、章节审稿与段落批注、全量导出、非覆盖备份恢复、风格指纹、AI 来源账本、拆书分析、作者生成用量与平台模型成本台账已经接通，前端 126 个测试与生产构建通过。
+作品归档、分卷与章节生命周期、虚拟化章节导航、章纲、章节 POV、人物出场轨迹、逐章设定状态沿革、资料与正文并排、故事/章节双序时间板、作者人工计划事件、正文版本历史与恢复、AI 多候选草稿、全书查找替换、章节审稿与段落批注、工作室章节任务与产量看板、全量导出、非覆盖备份恢复、风格指纹、AI 来源账本、拆书分析、作者生成用量与平台模型成本台账已经接通，前端 128 个测试与生产构建通过。
 
 **关键限制**：
 1. 七条确定性规则的 280/140 结构化评测门禁、模糊区间人工确认和多剧情线时间板已完成，但真实正文盲评仍需补充

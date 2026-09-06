@@ -4,6 +4,7 @@ import type { Chapter, ChapterPlanPatch, ChapterVersionDetail, ChapterVersionRes
 
 interface ProjectDto {
   id: string
+  org_id: string | null
   title: string
   genre: string | null
   status: 'ongoing' | 'finished' | 'archived'
@@ -662,6 +663,7 @@ export function codexDraftAttrs(draft: CodexEntryDraft, existing?: CodexEntry): 
 function projectFromDto(dto: ProjectDto): Project {
   return {
     id: dto.id,
+    orgId: dto.org_id,
     title: dto.title,
     genre: dto.genre,
     status: dto.status,

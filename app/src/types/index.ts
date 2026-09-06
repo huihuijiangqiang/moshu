@@ -335,6 +335,7 @@ export interface ProjectPatch {
 
 export interface Project {
   id: string
+  orgId?: string | null
   title: string
   genre?: string | null
   status?: 'ongoing' | 'finished' | 'archived'

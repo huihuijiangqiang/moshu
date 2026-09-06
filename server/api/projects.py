@@ -49,6 +49,7 @@ class ProjectOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: str
+    org_id: str | None
     title: str
     genre: str | None
     status: str
@@ -278,6 +279,7 @@ async def _project_out(db: AsyncSession, project: Project) -> ProjectOut:
     )
     return ProjectOut(
         id=project.id,
+        org_id=project.org_id,
         title=project.title,
         genre=project.genre,
         status=project.status,
