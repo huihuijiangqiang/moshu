@@ -45,6 +45,7 @@ const navCmds = computed<Cmd[]>(() => [
     { id: 'nav-export', group: '当前作品', label: '导出作品', run: () => router.push(toProject('export')) }
   ] : []),
   { id: 'nav-shelf', group: '全局', label: '作品库', run: () => router.push('/') },
+  { id: 'nav-deconstruct', group: '全局', label: '拆书分析', run: () => router.push('/deconstruct') },
   { id: 'nav-usage', group: '全局', label: '用量与计费', run: () => router.push('/usage') },
   { id: 'nav-model-settings', group: '全局', label: '我的模型服务', run: () => router.push('/model-settings') }
 ])

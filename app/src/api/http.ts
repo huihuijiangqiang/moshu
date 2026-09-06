@@ -27,10 +27,11 @@ async function refreshAccessToken(): Promise<string | null> {
 
 export async function requestResponse(path: string, init?: RequestInit, retryAuth = true): Promise<Response> {
   const token = getAccessToken()
+  const isFormData = typeof FormData !== 'undefined' && init?.body instanceof FormData
   const res = await fetch(BASE + path, {
     ...init,
     headers: {
-      'Content-Type': 'application/json',
+      ...(!isFormData ? { 'Content-Type': 'application/json' } : {}),
       ...(token ? { Authorization: `Bearer ${token}` } : {}),
       ...(init?.headers ?? {})
     }

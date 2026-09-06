@@ -56,6 +56,17 @@ describe('authenticated API requests', () => {
     await expect(result.text()).resolves.toBe('manuscript')
   })
 
+  it('leaves multipart content type to the browser boundary generator', async () => {
+    const body = new FormData()
+    body.append('file', new Blob(['reference']), 'reference.txt')
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(response(200, { ok: true }))
+
+    await requestResponse('/analysis/deconstruct', { method: 'POST', body })
+
+    const headers = fetchMock.mock.calls[0]?.[1]?.headers as Record<string, string>
+    expect(headers['Content-Type']).toBeUndefined()
+  })
+
   it('refreshes once after a 401 and retries with the new access token', async () => {
     setSession({ access_token: 'expired', refresh_token: 'refresh-token', user })
     const fetchMock = vi.spyOn(globalThis, 'fetch')

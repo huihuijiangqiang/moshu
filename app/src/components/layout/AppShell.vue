@@ -44,6 +44,7 @@ const inProject = computed(() => route.meta.scope === 'project' && !!projectId.v
 const rail = computed<RailEntry[]>(() => {
   const entries: RailEntry[] = [{ to: '/', icon: 'shelf', label: '作品库', shortLabel: '作品' }]
   if (!projectId.value) {
+    entries.push({ to: '/deconstruct', icon: 'outline', label: '拆书分析', shortLabel: '拆书' })
     entries.push({ to: '/usage', icon: 'usage', label: '用量与计费', shortLabel: '用量' })
     entries.push({ to: '/model-settings', icon: 'key', label: '我的模型服务', shortLabel: '模型' })
     if (isAdmin) entries.push({ to: '/admin', icon: 'guard', label: '系统管理', shortLabel: '管理' })
@@ -61,6 +62,7 @@ const rail = computed<RailEntry[]>(() => {
 })
 
 const railFoot = computed<RailEntry[]>(() => projectId.value ? [
+  { to: '/deconstruct', icon: 'outline', label: '拆书分析', shortLabel: '拆书' },
   { to: projectPath(projectId.value, 'export'), icon: 'export', label: '导出', shortLabel: '导出' },
   { to: projectPath(projectId.value, 'access'), icon: 'codex', label: '协作与权限', shortLabel: '协作' },
   { to: '/usage', icon: 'usage', label: '用量与计费', shortLabel: '用量' },

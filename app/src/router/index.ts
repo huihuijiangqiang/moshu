@@ -7,6 +7,7 @@ export const router = createRouter({
   history: createWebHistory(),
   routes: [
     { path: '/', name: 'shelf', component: () => import('@/views/ShelfView.vue') },
+    { path: '/deconstruct', name: 'deconstruct', component: () => import('@/views/DeconstructView.vue') },
     { path: '/projects/:projectId/write', name: 'workspace', component: () => import('@/views/WorkspaceView.vue'), meta: { scope: 'project', section: 'write' } },
     { path: '/projects/:projectId/outline', name: 'outline', component: () => import('@/views/OutlineView.vue'), meta: { scope: 'project', section: 'outline' } },
     { path: '/projects/:projectId/timeline', name: 'timeline', component: () => import('@/views/TimelineView.vue'), meta: { scope: 'project', section: 'timeline' } },
