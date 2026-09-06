@@ -7,7 +7,7 @@
 
 **关键事实**：
 - ✅ 41 张表完整 Alembic baseline，增量迁移已到 `022_user_model_configs`
-- ✅ 1164 个单元/功能测试通过（SQLite in-memory，mock embedding/LLM）
+- ✅ 1166 个单元/功能测试通过（SQLite in-memory，mock embedding/LLM）
 - ✅ 前端 122 个测试、TypeScript 类型检查和生产构建通过
 - ✅ 36 个集成测试已在本机真实 PostgreSQL + pgvector 环境通过
 - ✅ 已完成真实账号认证、作品创建、作品归档、分卷与章节增删改排、回收站和章纲编辑闭环
@@ -573,7 +573,8 @@ PostgreSQL/pgvector 检索必须在真实部署上单独压测；该脚本只覆
 
 **后续需要**：
 1. 从有授权的真实小说/项目输出建立正文 -> claim -> issue 的人工金标 dev/holdout
-2. 对 LLM 仲裁的 supported / unsupported / uncertain 建立独立混淆矩阵和失败率
+2. ✅ 已建立 `services/arbitration_evaluation.py` 与 `scripts/evaluate_arbitration.py`，对 LLM 仲裁的
+   `supported` / `unsupported` / `uncertain` 输出独立统计混淆矩阵和失败率；仍需接入人工金标语料跑实际结果
 3. 把真实 PostgreSQL 评测与 10/30/100 万字性能指标接入 CI/定期任务
 
 ### 4. 时间锚点与依赖重算
