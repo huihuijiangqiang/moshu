@@ -3,10 +3,10 @@ import { computed, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { contentApi } from '@/api/content'
 import { useProjectStore } from '@/stores/project'
-import { useCodexStore } from '@/stores/codex'
+import { codexEntrySearchText, useCodexStore } from '@/stores/codex'
 import { useGuardStore } from '@/stores/guard'
 import { useStylesStore } from '@/stores/styles'
-import { CODEX_KIND_LABEL, type ContextLayer, type GenerationControls } from '@/types'
+import { CODEX_KIND_LABEL, type CodexEntry, type CodexStateHistoryItem, type ContextLayer, type GenerationControls } from '@/types'
 import { useProjectNavigation } from '@/composables/use-project-navigation'
 import { generationDraftApi } from '@/api/generation'
 import AppIcon from '@/components/ui/AppIcon.vue'
@@ -47,6 +47,13 @@ const contextError = ref('')
 const selectedDraft = ref<GenerationDraftDetail | null>(null)
 const draftDetailLoading = ref(false)
 const draftDetailError = ref('')
+const referenceScope = ref<'chapter' | 'all'>('chapter')
+const referenceQuery = ref('')
+const selectedReferenceId = ref<string | null>(null)
+const referenceStates = ref<CodexStateHistoryItem[]>([])
+const referenceStatesLoading = ref(false)
+const referenceStatesError = ref('')
+let referenceStateRequest = 0
 
 const BUDGET = 25000
 
@@ -106,10 +113,82 @@ const refs = computed(() => {
   return codex.entries.filter((e) => e.refChapters.includes(idx))
 })
 
+const referenceRows = computed(() => {
+  const query = referenceQuery.value.trim().toLowerCase()
+  const pool = referenceScope.value === 'chapter' && !query ? refs.value : codex.entries
+  return [...pool]
+    .filter((entry) => entry.status === 'confirmed')
+    .filter((entry) => !query || codexEntrySearchText(entry).includes(query))
+    .sort((left, right) => Number(right.resident) - Number(left.resident) || right.refChapters.length - left.refChapters.length)
+})
+
+const selectedReference = computed(() => selectedReferenceId.value ? codex.byId.get(selectedReferenceId.value) ?? null : null)
+
+const referenceFacts = computed(() => {
+  const entry = selectedReference.value
+  if (!entry) return []
+  if (entry.kind !== 'character') return entry.facts ?? []
+  return [
+    { label: '当前状态', value: entry.character?.currentState },
+    { label: '行动动机', value: entry.character?.motivation },
+    { label: '能力', value: entry.character?.ability },
+    { label: '能力边界', value: entry.character?.limitation },
+    { label: '语言习惯', value: entry.character?.speech }
+  ].filter((item): item is { label: string; value: string } => Boolean(item.value))
+})
+
+const effectiveReferenceStates = computed(() => {
+  const targetIndex = project.active?.index ?? Number.MAX_SAFE_INTEGER
+  const latest = new Map<string, CodexStateHistoryItem>()
+  referenceStates.value
+    .filter((item) => item.source === 'author' && item.chapterIndex <= targetIndex)
+    .forEach((item) => {
+      const previous = latest.get(item.stateKey)
+      if (!previous || previous.chapterIndex <= item.chapterIndex) latest.set(item.stateKey, item)
+    })
+  return [...latest.values()].sort((left, right) => left.stateKey.localeCompare(right.stateKey))
+})
+
 watch(() => project.activeId, () => {
+  ++referenceStateRequest
   selectedDraft.value = null
   draftDetailError.value = ''
+  selectedReferenceId.value = null
+  referenceStates.value = []
+  referenceStatesLoading.value = false
 })
+
+watch(
+  [selectedReferenceId, () => project.project?.id],
+  async ([entryId, projectId]) => {
+    const requestId = ++referenceStateRequest
+    referenceStates.value = []
+    referenceStatesError.value = ''
+    if (!entryId || !projectId) {
+      referenceStatesLoading.value = false
+      return
+    }
+    referenceStatesLoading.value = true
+    try {
+      const result = await contentApi.listCodexStateHistory(projectId, entryId)
+      if (requestId === referenceStateRequest) referenceStates.value = result
+    } catch {
+      if (requestId === referenceStateRequest) referenceStatesError.value = '当前状态加载失败。'
+    } finally {
+      if (requestId === referenceStateRequest) referenceStatesLoading.value = false
+    }
+  }
+)
+
+function openReference(entry: CodexEntry) {
+  selectedReferenceId.value = entry.id
+}
+
+function openFullReference(entry: CodexEntry) {
+  codex.kind = entry.kind
+  codex.query = entry.name
+  router.push(toProject('codex'))
+}
 
 async function openDraft(draft: GenerationDraftSummary) {
   draftDetailLoading.value = true
@@ -151,7 +230,7 @@ function rejectSelected() {
         :aria-selected="tab === t"
         @click="tab = t"
       >
-        {{ t === 'ai' ? 'AI' : t === 'drafts' ? `候选 ${props.drafts?.length ?? 0}` : t === 'refs' ? `引用 ${refs.length}` : '笔记' }}
+        {{ t === 'ai' ? 'AI' : t === 'drafts' ? `候选 ${props.drafts?.length ?? 0}` : t === 'refs' ? '资料' : '笔记' }}
       </button>
     </div>
 
@@ -343,28 +422,62 @@ function rejectSelected() {
     </template>
 
     <template v-else-if="tab === 'refs'">
-      <div class="wk-head"><span>本章引用</span><span class="wk-head-push">{{ refs.length }} 条</span></div>
-      <button
-        v-for="e in refs"
-        :key="e.id"
-        class="wk-row"
-        type="button"
-        :style="{ minHeight: 'auto', padding: 'var(--u2) var(--u3)', display: 'grid', gap: '2px' }"
-        @click="router.push(toProject('codex'))"
-      >
-        <span class="row" :style="{ gap: '6px' }">
-          <span :style="{ fontWeight: 700, color: 'var(--ink)' }">{{ e.name }}</span>
-          <span class="pill">{{ CODEX_KIND_LABEL[e.kind] }}</span>
-          <span v-if="e.resident" class="pill pill-soft">常驻</span>
-          <span v-if="e.conflicts" class="pill pill-alert">{{ e.conflicts }} 冲突</span>
-        </span>
-        <span :style="{ color: 'var(--ink-3)', fontSize: 'var(--fs-sm)', lineHeight: 1.6, whiteSpace: 'normal' }">
-          {{ e.summary }}
-        </span>
-      </button>
-      <p v-if="!refs.length" :style="{ padding: 'var(--u5) var(--u3)', color: 'var(--ink-3)', lineHeight: 1.7 }">
-        正文里以 <code>@</code> 插入的条目会出现在这里，并自动进入生成上下文。
-      </p>
+      <div v-if="selectedReference" class="reference-detail">
+        <div class="reference-detail-bar">
+          <button type="button" @click="selectedReferenceId = null">返回资料</button>
+          <button type="button" @click="openFullReference(selectedReference)">完整档案 →</button>
+        </div>
+        <header class="reference-identity">
+          <span class="wk-label">{{ CODEX_KIND_LABEL[selectedReference.kind] }}</span>
+          <h2>{{ selectedReference.name }}</h2>
+          <p v-if="selectedReference.aliases.length">又名 {{ selectedReference.aliases.join('、') }}</p>
+        </header>
+        <p class="reference-summary">{{ selectedReference.summary }}</p>
+
+        <section v-if="referenceFacts.length" class="reference-section">
+          <div class="wk-label">写作核对</div>
+          <dl>
+            <div v-for="fact in referenceFacts" :key="fact.label"><dt>{{ fact.label }}</dt><dd>{{ fact.value }}</dd></div>
+          </dl>
+        </section>
+
+        <section class="reference-section">
+          <div class="row-between"><span class="wk-label">本章有效状态</span><small>截至第 {{ project.active?.index ?? '—' }} 章</small></div>
+          <p v-if="referenceStatesLoading" class="reference-state-message">正在读取状态…</p>
+          <p v-else-if="referenceStatesError" class="reference-state-message is-error">{{ referenceStatesError }}</p>
+          <dl v-else-if="effectiveReferenceStates.length" class="reference-states">
+            <div v-for="item in effectiveReferenceStates" :key="item.stateKey">
+              <dt>{{ item.stateKey }} <small>第 {{ item.chapterIndex }} 章</small></dt><dd>{{ item.value }}</dd>
+            </div>
+          </dl>
+          <p v-else class="reference-state-message">当前章节之前没有作者状态记录。</p>
+        </section>
+
+        <section v-if="selectedReference.relations?.length" class="reference-section">
+          <div class="wk-label">关联</div>
+          <button v-for="relation in selectedReference.relations" :key="`${relation.name}-${relation.relation}`" class="reference-relation" type="button" :disabled="!relation.targetId" @click="relation.targetId && (selectedReferenceId = relation.targetId)">
+            <span><strong>{{ relation.name }}</strong><small>{{ relation.relation }}</small></span><span>→</span>
+          </button>
+        </section>
+      </div>
+
+      <div v-else class="reference-browser">
+        <div class="wk-head"><span>写作资料</span><span class="wk-head-push">{{ referenceRows.length }} 条</span></div>
+        <div class="reference-tools">
+          <input v-model="referenceQuery" class="wk-input" placeholder="搜索人物、地点或约束" aria-label="搜索写作资料">
+          <div class="reference-scope" aria-label="资料范围">
+            <button type="button" :aria-pressed="referenceScope === 'chapter'" @click="referenceScope = 'chapter'">本章 {{ refs.length }}</button>
+            <button type="button" :aria-pressed="referenceScope === 'all'" @click="referenceScope = 'all'">全部 {{ codex.entries.length }}</button>
+          </div>
+        </div>
+        <button v-for="entry in referenceRows" :key="entry.id" class="reference-row" type="button" :data-reference-id="entry.id" @click="openReference(entry)">
+          <span class="reference-row-title"><strong>{{ entry.name }}</strong><span>{{ CODEX_KIND_LABEL[entry.kind] }}</span><small v-if="entry.resident">常驻</small></span>
+          <span>{{ entry.summary }}</span>
+        </button>
+        <p v-if="!referenceRows.length" class="reference-empty">
+          {{ referenceQuery ? '没有匹配资料。可按人物动机、能力或地点名搜索。' : '本章还没有显式引用。切换“全部”可查阅整本设定库。' }}
+        </p>
+      </div>
     </template>
 
     <template v-else>
@@ -449,4 +562,43 @@ function rejectSelected() {
 }
 .draft-warning { margin: 0; color: var(--alert-ink); font-size: var(--fs-sm); line-height: 1.6; }
 .draft-actions { display: flex; justify-content: flex-end; gap: var(--u2); }
+.reference-tools { display: grid; gap: var(--u2); padding: var(--u3); border-bottom: var(--hair) solid var(--line); }
+.reference-tools .wk-input { width: 100%; }
+.reference-scope { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); height: 27px; border: var(--hair) solid var(--line-strong); border-radius: 3px; overflow: hidden; }
+.reference-scope button { min-width: 0; padding: 0 var(--u2); border: 0; border-left: var(--hair) solid var(--line); color: var(--ink-3); background: transparent; font-size: var(--fs-xs); cursor: pointer; }
+.reference-scope button:first-child { border-left: 0; }
+.reference-scope button[aria-pressed='true'] { color: var(--ink); background: var(--panel-sunken); font-weight: 700; }
+.reference-row { width: 100%; min-width: 0; display: grid; gap: 5px; padding: 11px var(--u3); border: 0; border-bottom: var(--hair) solid var(--line); color: var(--ink-3); background: transparent; text-align: left; cursor: pointer; }
+.reference-row:hover { background: var(--panel-sunken); }
+.reference-row > span:last-child { display: -webkit-box; overflow: hidden; font-size: var(--fs-sm); line-height: 1.55; white-space: normal; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
+.reference-row-title { min-width: 0; display: flex; align-items: center; gap: 5px; }
+.reference-row-title strong { overflow: hidden; color: var(--ink); font-size: var(--fs); text-overflow: ellipsis; white-space: nowrap; }
+.reference-row-title span, .reference-row-title small { flex: none; padding: 1px 4px; border: var(--hair) solid var(--line); color: var(--ink-4); font-size: 9px; }
+.reference-row-title small { border-color: var(--primary-line); color: var(--primary); }
+.reference-empty { margin: 0; padding: var(--u5) var(--u3); color: var(--ink-3); font-size: var(--fs-sm); line-height: 1.7; }
+.reference-detail { min-width: 0; padding-bottom: var(--u6); }
+.reference-detail-bar { min-height: 36px; display: flex; align-items: center; justify-content: space-between; gap: var(--u2); padding: 0 var(--u3); border-bottom: var(--hair) solid var(--line); }
+.reference-detail-bar button { padding: 0; border: 0; color: var(--ink-3); background: transparent; font-size: var(--fs-xs); cursor: pointer; }
+.reference-detail-bar button:hover { color: var(--primary); }
+.reference-identity { padding: var(--u4) var(--u3) var(--u3); }
+.reference-identity h2 { margin: 5px 0 0; font-family: var(--font-prose); font-size: 24px; font-weight: 600; }
+.reference-identity p { margin: 4px 0 0; color: var(--ink-4); font-size: var(--fs-xs); }
+.reference-summary { margin: 0; padding: 0 var(--u3) var(--u4); color: var(--ink-2); font-family: var(--font-prose); font-size: 14px; line-height: 1.75; overflow-wrap: anywhere; }
+.reference-section { padding: var(--u3); border-top: var(--hair) solid var(--line-strong); }
+.reference-section > .row-between small { color: var(--ink-4); font: 9px/1.4 var(--font-mono); }
+.reference-section dl { margin: var(--u2) 0 0; }
+.reference-section dl > div { padding: 8px 0; border-bottom: var(--hair) solid var(--line); }
+.reference-section dt { color: var(--ink-4); font-size: 9px; font-weight: 700; }
+.reference-section dd { margin: 3px 0 0; color: var(--ink-2); font-size: var(--fs-sm); line-height: 1.55; overflow-wrap: anywhere; }
+.reference-states dt { color: var(--primary); }
+.reference-states dt small { margin-left: 4px; color: var(--ink-4); font-family: var(--font-mono); font-weight: 400; }
+.reference-state-message { margin: var(--u2) 0 0; color: var(--ink-3); font-size: var(--fs-sm); line-height: 1.6; }
+.reference-state-message.is-error { color: var(--alert-ink); }
+.reference-relation { width: 100%; min-width: 0; display: flex; align-items: center; justify-content: space-between; gap: var(--u2); padding: 8px 0; border: 0; border-bottom: var(--hair) solid var(--line); color: var(--ink-3); background: transparent; text-align: left; cursor: pointer; }
+.reference-relation > span:first-child { min-width: 0; display: grid; gap: 2px; }
+.reference-relation strong { color: var(--ink); font-size: var(--fs-sm); }
+.reference-relation small { color: var(--ink-4); font-size: 9px; }
+.reference-relation:hover { color: var(--primary); }
+.reference-relation:disabled { cursor: default; opacity: .6; }
+.reference-row:focus-visible, .reference-detail-bar button:focus-visible, .reference-relation:focus-visible, .reference-scope button:focus-visible { outline: 2px solid var(--primary); outline-offset: -2px; }
 </style>
