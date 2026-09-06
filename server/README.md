@@ -160,6 +160,7 @@ PostgreSQL、Redis 与 Alembic head，全部通过时返回 200，否则返回 5
 
 ### API 端点
 - ✅ `GET /projects/:id` - 获取项目详情
+- ✅ `GET /projects/:id/writing-progress?days=N` - 连续日更历史与每日目标达成状态（默认近 30 天）
 - ✅ `GET /projects/:id/chapters` - 章节列表（不含正文）
 - ✅ `GET /chapters/:id` - 章节详情（含正文 + rev）
 - ✅ `PUT /chapters/:id/body` - 保存章节（带乐观锁）

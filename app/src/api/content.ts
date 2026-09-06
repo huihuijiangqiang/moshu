@@ -1,6 +1,6 @@
 import { ApiError, USE_MOCK, request } from './http'
 import { mockApi } from './mock'
-import type { Chapter, ChapterPlanPatch, ChapterVersionDetail, ChapterVersionRestoreResult, ChapterVersionSummary, CharacterStatistics, CodexEntry, CodexEntryDraft, CodexKind, CodexRelation, CodexRelationDraft, CodexStateDraft, CodexStateHistoryItem, CodexStateSource, ContextLayer, GuardIssue, GuardOverview, GuardResolutionAction, Project, ProjectNote, ProjectPatch, ProjectTrash, TemporalDecisionResult, TemporalReviewItem, TimelineBoard, TimelineEntry, TimelineEntryDraft, TimelinePlacementStatus, TimelineReflowResult, Volume } from '@/types'
+import type { Chapter, ChapterPlanPatch, ChapterVersionDetail, ChapterVersionRestoreResult, ChapterVersionSummary, CharacterStatistics, CodexEntry, CodexEntryDraft, CodexKind, CodexRelation, CodexRelationDraft, CodexStateDraft, CodexStateHistoryItem, CodexStateSource, ContextLayer, GuardIssue, GuardOverview, GuardResolutionAction, Project, ProjectNote, ProjectPatch, ProjectTrash, TemporalDecisionResult, TemporalReviewItem, TimelineBoard, TimelineEntry, TimelineEntryDraft, TimelinePlacementStatus, TimelineReflowResult, Volume, WritingProgressDay } from '@/types'
 
 interface ProjectDto {
   id: string
@@ -12,6 +12,14 @@ interface ProjectDto {
   today_words: number
   style_profile_id: string | null
   volumes: Array<{ id: string; title: string; idx: number; summary?: string | null }>
+}
+
+interface WritingProgressDayDto {
+  date: string
+  words_added: number
+  saves: number
+  target_words_daily: number
+  target_met: boolean
 }
 
 interface ProjectNoteDto {
@@ -813,6 +821,19 @@ export function bodyConflictFromError(chapterId: string, error: ApiError): BodyC
 const realApi = {
   async getProject(projectId = 'p1'): Promise<Project> {
     return projectFromDto(await request<ProjectDto>(`/projects/${projectId}`))
+  },
+
+  async getWritingProgress(projectId: string, days = 30): Promise<WritingProgressDay[]> {
+    const rows = await request<WritingProgressDayDto[]>(
+      `/projects/${projectId}/writing-progress?days=${encodeURIComponent(days)}`
+    )
+    return rows.map((row) => ({
+      date: row.date,
+      wordsAdded: row.words_added,
+      saves: row.saves,
+      targetWordsDaily: row.target_words_daily,
+      targetMet: row.target_met
+    }))
   },
 
   async listProjectNotes(projectId: string): Promise<ProjectNote[]> {

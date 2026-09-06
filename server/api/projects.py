@@ -2,7 +2,7 @@
 项目（作品）API
 """
 import secrets
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -96,6 +96,16 @@ class ProjectListItem(BaseModel):
     updated_at: str
     target_words_daily: int
     today_words: int
+
+
+class WritingProgressDayOut(BaseModel):
+    """One UTC calendar day's net-positive writing progress."""
+
+    date: str
+    words_added: int
+    saves: int
+    target_words_daily: int
+    target_met: bool
 
 
 class VolumeCreate(BaseModel):
@@ -563,6 +573,54 @@ async def get_project(
     对应前端 mock: getProject
     """
     return await _project_out(db, project)
+
+
+@router.get("/{project_id}/writing-progress", response_model=list[WritingProgressDayOut])
+async def get_writing_progress(
+    project_id: str,
+    days: int = Query(default=30, ge=1, le=365),
+    project: Project = Depends(verify_project_access),
+    db: AsyncSession = Depends(get_db),
+) -> list[WritingProgressDayOut]:
+    """Return a continuous UTC daily-writing series for one accessible project."""
+    today = datetime.now(UTC).date()
+    start = today - timedelta(days=days - 1)
+    rows = (
+        await db.execute(
+            select(
+                ProjectDailyWriting.day,
+                func.coalesce(func.sum(ProjectDailyWriting.words_added), 0),
+                func.coalesce(func.sum(ProjectDailyWriting.saves), 0),
+            )
+            .where(
+                ProjectDailyWriting.project_id == project.id,
+                ProjectDailyWriting.day >= start,
+                ProjectDailyWriting.day <= today,
+            )
+            .group_by(ProjectDailyWriting.day)
+            .order_by(ProjectDailyWriting.day)
+        )
+    ).all()
+    by_day = {
+        row_day: {"words_added": int(words_added), "saves": int(saves)}
+        for row_day, words_added, saves in rows
+    }
+    return [
+        WritingProgressDayOut(
+            date=(start + timedelta(days=offset)).isoformat(),
+            words_added=by_day.get(
+                start + timedelta(days=offset), {"words_added": 0, "saves": 0}
+            )["words_added"],
+            saves=by_day.get(
+                start + timedelta(days=offset), {"words_added": 0, "saves": 0}
+            )["saves"],
+            target_words_daily=project.target_words_daily,
+            target_met=by_day.get(
+                start + timedelta(days=offset), {"words_added": 0, "saves": 0}
+            )["words_added"] >= project.target_words_daily,
+        )
+        for offset in range(days)
+    ]
 
 
 @router.get("/{project_id}/notes", response_model=list[ProjectNoteOut])

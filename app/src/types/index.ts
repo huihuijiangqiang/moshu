@@ -359,6 +359,14 @@ export interface Project {
   styleProfile: string | null
 }
 
+export interface WritingProgressDay {
+  date: string
+  wordsAdded: number
+  saves: number
+  targetWordsDaily: number
+  targetMet: boolean
+}
+
 export interface ProjectNote {
   id: string
   projectId: string

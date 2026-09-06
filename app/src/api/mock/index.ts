@@ -1,7 +1,7 @@
 import { delay } from '../http'
 import * as seed from './seed'
 import { findShelfBook } from './shelf'
-import type { Chapter, ChapterPlanPatch, ChapterVersionDetail, ChapterVersionRestoreResult, ChapterVersionSummary, CharacterStatistics, CodexEntry, CodexEntryDraft, CodexRelation, CodexRelationDraft, CodexStateDraft, CodexStateHistoryItem, GuardIssue, GuardOverview, GuardResolutionAction, Project, ProjectNote, ContextLayer, ProjectPatch, ProjectTrash, TemporalDecisionResult, TemporalReviewItem, TimelineBoard, TimelineEntry, TimelineEntryDraft, TimelineReflowResult } from '@/types'
+import type { Chapter, ChapterPlanPatch, ChapterVersionDetail, ChapterVersionRestoreResult, ChapterVersionSummary, CharacterStatistics, CodexEntry, CodexEntryDraft, CodexRelation, CodexRelationDraft, CodexStateDraft, CodexStateHistoryItem, GuardIssue, GuardOverview, GuardResolutionAction, Project, ProjectNote, ContextLayer, ProjectPatch, ProjectTrash, TemporalDecisionResult, TemporalReviewItem, TimelineBoard, TimelineEntry, TimelineEntryDraft, TimelineReflowResult, WritingProgressDay } from '@/types'
 
 /** 内存态副本：mock 下的写操作要真的改变数据，否则界面行为是假的。 */
 const state = {
@@ -257,6 +257,25 @@ export const mockApi = {
   async getProject(projectId = 'p1'): Promise<Project> {
     await delay()
     return structuredClone(projectFor(projectId))
+  },
+
+  async getWritingProgress(projectId: string, days = 30): Promise<WritingProgressDay[]> {
+    await delay(40)
+    const project = projectFor(projectId)
+    const today = new Date()
+    today.setHours(0, 0, 0, 0)
+    return Array.from({ length: days }, (_, index) => {
+      const day = new Date(today)
+      day.setDate(today.getDate() - (days - index - 1))
+      const isToday = index === days - 1
+      return {
+        date: day.toISOString().slice(0, 10),
+        wordsAdded: isToday ? project.dailyWords : 0,
+        saves: isToday && project.dailyWords > 0 ? 1 : 0,
+        targetWordsDaily: project.dailyGoal,
+        targetMet: isToday && project.dailyWords >= project.dailyGoal
+      }
+    })
   },
 
   async listProjectNotes(projectId: string): Promise<ProjectNote[]> {

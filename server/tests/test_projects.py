@@ -1,6 +1,6 @@
 """作品书架 API 的鉴权、范围与聚合测试。"""
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import select
 
@@ -116,6 +116,90 @@ async def test_daily_writing_counts_net_positive_saved_words_in_project_list_and
     assert activity is not None
     assert activity.words_added == len("春风起，田埂暖")
     assert activity.saves == 2
+
+
+async def test_writing_progress_returns_continuous_history_and_target_status(
+    app_client,
+    async_db_session,
+    seed_project,
+    auth_headers,
+):
+    await seed_project(chapter_ids=("ch_history",))
+    today = datetime.now(UTC).date()
+    async_db_session.add_all(
+        [
+            ProjectDailyWriting(
+                project_id="proj_a",
+                chapter_id="ch_history",
+                day=today - timedelta(days=2),
+                words_added=3000,
+                saves=2,
+            ),
+            ProjectDailyWriting(
+                project_id="proj_a",
+                chapter_id="ch_history",
+                day=today,
+                words_added=1200,
+                saves=1,
+            ),
+        ]
+    )
+    await async_db_session.commit()
+
+    response = await app_client.get(
+        "/projects/proj_a/writing-progress?days=3",
+        headers=auth_headers("user_a"),
+    )
+
+    assert response.status_code == 200
+    assert response.json() == [
+        {
+            "date": (today - timedelta(days=2)).isoformat(),
+            "words_added": 3000,
+            "saves": 2,
+            "target_words_daily": 3000,
+            "target_met": True,
+        },
+        {
+            "date": (today - timedelta(days=1)).isoformat(),
+            "words_added": 0,
+            "saves": 0,
+            "target_words_daily": 3000,
+            "target_met": False,
+        },
+        {
+            "date": today.isoformat(),
+            "words_added": 1200,
+            "saves": 1,
+            "target_words_daily": 3000,
+            "target_met": False,
+        },
+    ]
+
+
+async def test_writing_progress_respects_project_access_and_day_limit(
+    app_client,
+    seed_project,
+    make_user,
+    auth_headers,
+    async_db_session,
+):
+    await seed_project()
+    async_db_session.add(make_user("user_b"))
+    await async_db_session.commit()
+
+    assert (
+        await app_client.get(
+            "/projects/proj_a/writing-progress?days=0",
+            headers=auth_headers("user_a"),
+        )
+    ).status_code == 422
+    assert (
+        await app_client.get(
+            "/projects/proj_a/writing-progress",
+            headers=auth_headers("user_b"),
+        )
+    ).status_code == 403
 
 
 async def test_project_detail_and_chapter_list_require_project_access(

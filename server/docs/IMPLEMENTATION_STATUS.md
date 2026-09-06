@@ -418,6 +418,7 @@ PostgreSQL/pgvector 检索必须在真实部署上单独压测；该脚本只覆
 #### 项目 (`api/projects.py`)
 - ✅ `POST /projects` - 创建作品、分卷、首章和初始设定条目
 - ✅ `GET/PATCH /projects/{id}` - 项目详情与书名、题材、状态、每日目标设置
+- ✅ `GET /projects/{id}/writing-progress?days=N` - 连续 UTC 日更历史（净新增字数、保存次数、目标达成状态）
 - ✅ `GET /projects/{id}/chapters` - 章节列表（含章纲状态，不含正文）
 - ✅ `POST /projects/{id}/chapters` - 在指定位置插入章节并重排全局序号
 - ✅ 卷新建、编辑、整体重排与软删除；非空卷删除前必须明确章节接收卷
