@@ -354,6 +354,7 @@ class ProjectPermission(StrEnum):
     EDIT_BODY = "edit_body"
     MANAGE_OUTLINE = "manage_outline"
     MANAGE_CODEX = "manage_codex"
+    MANAGE_TIMELINE = "manage_timeline"
     RUN_GUARD = "run_guard"
     RESOLVE_GUARD = "resolve_guard"
     GENERATE = "generate"
@@ -369,6 +370,7 @@ _ORG_ROLE_PERMISSIONS: dict[str, frozenset[ProjectPermission]] = {
         ProjectPermission.EDIT_BODY,
         ProjectPermission.MANAGE_OUTLINE,
         ProjectPermission.MANAGE_CODEX,
+        ProjectPermission.MANAGE_TIMELINE,
         ProjectPermission.RUN_GUARD,
         ProjectPermission.RESOLVE_GUARD,
         ProjectPermission.GENERATE,
@@ -378,12 +380,14 @@ _ORG_ROLE_PERMISSIONS: dict[str, frozenset[ProjectPermission]] = {
         ProjectPermission.VIEW,
         ProjectPermission.EDIT_BODY,
         ProjectPermission.MANAGE_OUTLINE,
+        ProjectPermission.MANAGE_TIMELINE,
         ProjectPermission.GENERATE,
     }),
     "editor": frozenset({
         ProjectPermission.VIEW,
         ProjectPermission.EDIT_BODY,
         ProjectPermission.MANAGE_CODEX,
+        ProjectPermission.MANAGE_TIMELINE,
         ProjectPermission.RESOLVE_GUARD,
         ProjectPermission.EXPORT,
     }),

@@ -6,7 +6,7 @@ from typing import Literal, Optional, get_args
 from uuid import uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -18,6 +18,13 @@ from db.models_guard import Foreshadow, GuardIssue
 from db.session import get_db
 from services.consistency import PIPELINE_VERSION, get_or_create_run
 from services.outbox import OutboxService
+from services.temporal_decisions import (
+    TemporalClaimNotFoundError,
+    TemporalDecisionConflictError,
+    TemporalDecisionError,
+    decide_temporal_review,
+    list_temporal_reviews,
+)
 from services.temporal_reflow import enqueue_temporal_rescans, reflow_project_timeline
 
 router = APIRouter(tags=["consistency"])
@@ -142,6 +149,34 @@ class TimelineReflowResponse(BaseModel):
     cycles: list[list[str]]
     rescans_queued: int
     rescan_run_ids: list[int]
+
+
+class TemporalReviewItemResponse(BaseModel):
+    claim_id: int
+    chapter_id: Optional[str]
+    chapter_index: Optional[int]
+    chapter_title: Optional[str]
+    event_ref: Optional[str]
+    relation: Optional[str]
+    relation_ref: Optional[str]
+    original: str
+    normalized: str
+    offset_min_seconds: float
+    offset_max_seconds: float
+    dependency_status: str
+    override_seconds: Optional[float]
+    override_version: int
+
+
+class TemporalDecisionRequest(BaseModel):
+    action: Literal["confirm", "clear"]
+    expected_version: int = Field(ge=0)
+    offset_seconds: Optional[float] = None
+
+
+class TemporalDecisionResponse(BaseModel):
+    item: TemporalReviewItemResponse
+    reflow: TimelineReflowResponse
 
 
 class RunOverview(BaseModel):
@@ -403,6 +438,69 @@ async def reflow_project_temporal_dependencies(
     )
 
 
+@router.get(
+    "/projects/{project_id}/timeline/reviews",
+    response_model=list[TemporalReviewItemResponse],
+)
+async def get_project_temporal_reviews(
+    project_id: str,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> list[TemporalReviewItemResponse]:
+    await verify_project_permission(project_id, ProjectPermission.VIEW, user, db)
+    items = await list_temporal_reviews(db, project_id=project_id)
+    return [TemporalReviewItemResponse(**item.as_dict()) for item in items]
+
+
+@router.post(
+    "/projects/{project_id}/timeline/reviews/{claim_id}",
+    response_model=TemporalDecisionResponse,
+)
+async def decide_project_temporal_review(
+    project_id: str,
+    claim_id: int,
+    request: TemporalDecisionRequest,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> TemporalDecisionResponse:
+    await verify_project_permission(project_id, ProjectPermission.MANAGE_TIMELINE, user, db)
+    if request.action == "confirm" and request.offset_seconds is None:
+        raise HTTPException(status_code=422, detail="offset_seconds is required for confirm")
+    try:
+        result = await decide_temporal_review(
+            db,
+            project_id=project_id,
+            claim_id=claim_id,
+            actor_id=user.id,
+            action=request.action,
+            expected_version=request.expected_version,
+            offset_seconds=request.offset_seconds,
+        )
+    except TemporalClaimNotFoundError as exc:
+        await db.rollback()
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except TemporalDecisionConflictError as exc:
+        await db.rollback()
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "TEMPORAL_DECISION_CONFLICT",
+                "message": str(exc),
+                "current_version": exc.current_version,
+            },
+        ) from exc
+    except TemporalDecisionError as exc:
+        await db.rollback()
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    await db.commit()
+    return TemporalDecisionResponse(
+        item=TemporalReviewItemResponse(**result.item.as_dict()),
+        reflow=TimelineReflowResponse(
+            **result.reflow.as_dict(),
+            rescans_queued=len(result.rescan_run_ids),
+            rescan_run_ids=result.rescan_run_ids,
+        ),
+    )
 @router.get("/projects/{project_id}/overview", response_model=ProjectConsistencyOverview)
 async def get_project_consistency_overview(
     project_id: str,

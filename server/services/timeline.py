@@ -33,7 +33,9 @@
 """
 from __future__ import annotations
 
+import math
 import re
+from copy import deepcopy
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Optional
@@ -185,6 +187,12 @@ _DAYPART_HOURS = {
     "深夜": (22, 24),
 }
 
+AUTHOR_TEMPORAL_KEYS = (
+    "author_override",
+    "author_override_version",
+    "author_override_history",
+)
+
 
 def normalize_relative_expression(value: Optional[str]) -> Optional[RelativeTimeResolution]:
     """Normalize exact and fuzzy relative calendar expressions into auditable ranges.
@@ -256,6 +264,62 @@ def normalize_relative_expression(value: Optional[str]) -> Optional[RelativeTime
     return None
 
 
+def merge_author_temporal_metadata(
+    previous: Optional[dict[str, Any]],
+    derived: Optional[dict[str, Any]],
+) -> Optional[dict[str, Any]]:
+    """Carry author decisions across deterministic diagnostic recomputation."""
+    merged = deepcopy(derived) if isinstance(derived, dict) else {}
+    if isinstance(previous, dict):
+        for key in AUTHOR_TEMPORAL_KEYS:
+            if key in previous:
+                merged[key] = deepcopy(previous[key])
+    return merged or None
+
+
+def author_override_offset(claim: dict[str, Any]) -> Optional[float]:
+    """Return a valid author-confirmed offset, otherwise fail closed."""
+    metadata = claim.get("temporal_resolution")
+    override = metadata.get("author_override") if isinstance(metadata, dict) else None
+    if not isinstance(override, dict):
+        return None
+    raw_offset = override.get("offset_seconds")
+    if isinstance(raw_offset, bool):
+        return None
+    try:
+        offset = float(raw_offset)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(offset):
+        return None
+    resolution = normalize_relative_expression(claim.get("temporal_anchor_text"))
+    if resolution is None or not (
+        resolution.offset_min_seconds <= offset <= resolution.offset_max_seconds
+    ):
+        return None
+    relation = claim.get("temporal_relation")
+    if relation == "after" and offset <= 0:
+        return None
+    if relation == "before" and offset >= 0:
+        return None
+    if relation == "simultaneous" and offset != 0:
+        return None
+    if relation not in {"before", "after", "simultaneous"}:
+        return None
+    return offset
+
+
+def effective_relative_offset(claim: dict[str, Any]) -> Optional[float]:
+    """Use a validated author decision, otherwise only an exact parser result."""
+    override = author_override_offset(claim)
+    if override is not None:
+        return override
+    resolution = normalize_relative_expression(claim.get("temporal_anchor_text"))
+    if resolution is None or not resolution.is_exact:
+        return None
+    return resolution.offset_min_seconds
+
+
 def build_temporal_dependency_graph(
     claims: list[dict], *, known_anchors: Optional[list[dict]] = None
 ) -> dict[str, Any]:
@@ -297,7 +361,8 @@ def build_temporal_dependency_graph(
             if _event_ref(candidate) == relation_ref and candidate.get("story_order") is not None:
                 candidates.add(float(candidate["story_order"]))
         resolution = normalize_relative_expression(claim.get("temporal_anchor_text"))
-        status = "resolved" if len(candidates) == 1 and resolution and resolution.is_exact else (
+        offset = effective_relative_offset(claim)
+        status = "resolved" if len(candidates) == 1 and offset is not None else (
             "ambiguous" if len(candidates) > 1 else "unresolved"
         )
         edges.append({
@@ -305,8 +370,12 @@ def build_temporal_dependency_graph(
             "to_ref": relation_ref,
             "timeline_id": timeline,
             "status": status,
-            "offset_min_seconds": resolution.offset_min_seconds if resolution else None,
-            "offset_max_seconds": resolution.offset_max_seconds if resolution else None,
+            "offset_min_seconds": offset if offset is not None else (
+                resolution.offset_min_seconds if resolution else None
+            ),
+            "offset_max_seconds": offset if offset is not None else (
+                resolution.offset_max_seconds if resolution else None
+            ),
         })
 
     adjacency: dict[str, set[str]] = {}
@@ -439,12 +508,7 @@ def assign_story_orders(
             reference = re.sub(
                 r"\s+", "", str(claim.get("temporal_relation_ref") or "")
             ).casefold()
-            resolution = normalize_relative_expression(claim.get("temporal_anchor_text"))
-            offset = (
-                resolution.offset_min_seconds
-                if resolution is not None and resolution.is_exact
-                else None
-            )
+            offset = effective_relative_offset(claim)
             relation = claim.get("temporal_relation")
             if not timeline_id or not reference or offset is None:
                 continue
@@ -478,10 +542,12 @@ def assign_story_orders(
 
 
 __all__ = [
+    "AUTHOR_TEMPORAL_KEYS",
     "GLOBAL_ORDER_BASES",
     "MIN_ORDER_CONFIDENCE",
     "VALID_ORDER_BASES",
     "UnparseableAnchorError",
+    "author_override_offset",
     "assign_story_orders",
     "is_globally_anchored",
     "parse_absolute_anchor",
@@ -489,4 +555,6 @@ __all__ = [
     "RelativeTimeResolution",
     "normalize_relative_expression",
     "build_temporal_dependency_graph",
+    "effective_relative_offset",
+    "merge_author_temporal_metadata",
 ]

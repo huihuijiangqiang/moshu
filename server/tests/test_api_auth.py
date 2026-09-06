@@ -91,6 +91,7 @@ async def test_unrelated_user_denied_on_personal_project(async_db_session, make_
         ("viewer", ProjectPermission.VIEW, True),
         ("viewer", ProjectPermission.EDIT_BODY, False),
         ("writer", ProjectPermission.EDIT_BODY, True),
+        ("writer", ProjectPermission.MANAGE_TIMELINE, True),
         ("writer", ProjectPermission.MANAGE_CODEX, False),
         ("editor", ProjectPermission.MANAGE_CODEX, True),
         ("editor", ProjectPermission.RUN_GUARD, False),

@@ -1,7 +1,7 @@
 import { delay } from '../http'
 import * as seed from './seed'
 import { findShelfBook } from './shelf'
-import type { Chapter, ChapterPlanPatch, ChapterVersionDetail, ChapterVersionRestoreResult, ChapterVersionSummary, CodexEntry, CodexEntryDraft, GuardIssue, GuardOverview, GuardResolutionAction, Project, ContextLayer, ProjectPatch, ProjectTrash, TimelineReflowResult } from '@/types'
+import type { Chapter, ChapterPlanPatch, ChapterVersionDetail, ChapterVersionRestoreResult, ChapterVersionSummary, CodexEntry, CodexEntryDraft, GuardIssue, GuardOverview, GuardResolutionAction, Project, ContextLayer, ProjectPatch, ProjectTrash, TemporalDecisionResult, TemporalReviewItem, TimelineReflowResult } from '@/types'
 
 /** 内存态副本：mock 下的写操作要真的改变数据，否则界面行为是假的。 */
 const state = {
@@ -15,6 +15,31 @@ const projectDrafts = new Map<string, Chapter[]>()
 const projectStates = new Map<string, Project>()
 const trashStates = new Map<string, ProjectTrash>()
 const chapterVersionStates = new Map<string, ChapterVersionDetail[]>()
+const temporalReviewStates = new Map<string, TemporalReviewItem[]>()
+
+function temporalReviewsFor(projectId: string): TemporalReviewItem[] {
+  const existing = temporalReviewStates.get(projectId)
+  if (existing) return existing
+  const rows: TemporalReviewItem[] = projectId === 'p1' ? [
+    {
+      claimId: 901,
+      chapterId: 'p1-ch05',
+      chapterIndex: 5,
+      chapterTitle: '县城初雪',
+      eventRef: '冬集开市',
+      relation: 'after',
+      relationRef: '许知微启程',
+      original: '过几日后的清晨',
+      normalized: '2-7日后+清晨',
+      offsetMinSeconds: 2 * 86400 + 4 * 3600,
+      offsetMaxSeconds: 7 * 86400 + 8 * 3600,
+      dependencyStatus: 'unresolved',
+      overrideVersion: 0
+    }
+  ] : []
+  temporalReviewStates.set(projectId, rows)
+  return rows
+}
 
 function projectFor(id: string): Project {
   if (id === seed.project.id) return state.project
@@ -448,6 +473,40 @@ export const mockApi = {
       cycles: [],
       rescansQueued: 2,
       rescanRunIds: [1, 2]
+    }
+  },
+  async listTemporalReviews(projectId = 'p1'): Promise<TemporalReviewItem[]> {
+    await delay(80)
+    return structuredClone(temporalReviewsFor(projectId))
+  },
+  async decideTemporalReview(
+    projectId: string,
+    claimId: number,
+    action: 'confirm' | 'clear',
+    expectedVersion: number,
+    offsetSeconds?: number
+  ): Promise<TemporalDecisionResult> {
+    await delay(120)
+    const item = temporalReviewsFor(projectId).find((row) => row.claimId === claimId)
+    if (!item) throw new Error('temporal_review_not_found')
+    if (item.overrideVersion !== expectedVersion) throw new Error('temporal_review_conflict')
+    item.overrideVersion += 1
+    item.overrideSeconds = action === 'confirm' ? offsetSeconds : undefined
+    item.dependencyStatus = action === 'confirm' ? 'resolved' : 'unresolved'
+    return {
+      item: structuredClone(item),
+      reflow: {
+        claimsExamined: 38,
+        claimsChanged: 1,
+        affectedChapterIds: [item.chapterId ?? ''],
+        resolved: action === 'confirm' ? 1 : 0,
+        unresolved: action === 'clear' ? 1 : 0,
+        ambiguous: 0,
+        cyclic: 0,
+        cycles: [],
+        rescansQueued: 1,
+        rescanRunIds: [12]
+      }
     }
   },
 

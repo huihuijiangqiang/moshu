@@ -18,7 +18,10 @@ function overview(status: GuardOverview['status'], running: number): GuardOvervi
 }
 
 describe('guard store', () => {
-  beforeEach(() => setActivePinia(createPinia()))
+  beforeEach(() => {
+    setActivePinia(createPinia())
+    vi.spyOn(contentApi, 'listTemporalReviews').mockResolvedValue([])
+  })
 
   afterEach(() => {
     vi.useRealTimers()
@@ -191,5 +194,79 @@ describe('guard store', () => {
     expect(store.loadedProjectId).toBe('p2')
     expect(store.timelineReflowPending).toBe(false)
     expect(store.timelineReflowResult).toBeNull()
+  })
+
+  it('confirms a fuzzy time with its optimistic version and refreshes it', async () => {
+    const review = {
+      claimId: 9,
+      original: '过几日后',
+      normalized: '2-7日后',
+      offsetMinSeconds: 2 * 86400,
+      offsetMaxSeconds: 7 * 86400,
+      dependencyStatus: 'unresolved',
+      overrideVersion: 0
+    }
+    vi.mocked(contentApi.listTemporalReviews)
+      .mockResolvedValueOnce([review])
+      .mockResolvedValueOnce([{ ...review, overrideSeconds: 4 * 86400, overrideVersion: 1 }])
+    vi.spyOn(contentApi, 'listGuardIssues').mockResolvedValue([])
+    vi.spyOn(contentApi, 'getGuardOverview').mockResolvedValue(overview('completed', 0))
+    const decide = vi.spyOn(contentApi, 'decideTemporalReview').mockResolvedValue({
+      item: { ...review, overrideSeconds: 4 * 86400, overrideVersion: 1 },
+      reflow: {
+        claimsExamined: 2, claimsChanged: 1, affectedChapterIds: ['ch1'],
+        resolved: 1, unresolved: 0, ambiguous: 0, cyclic: 0, cycles: [],
+        rescansQueued: 1, rescanRunIds: [3]
+      }
+    })
+    const store = useGuardStore()
+    await store.load('p1')
+
+    const saved = await store.decideTemporalReview(review, 'confirm', 4 * 86400)
+
+    expect(saved).toBe(true)
+    expect(decide).toHaveBeenCalledWith('p1', 9, 'confirm', 0, 4 * 86400)
+    expect(store.temporalReviews[0]?.overrideVersion).toBe(1)
+    expect(store.timelineReflowResult?.rescansQueued).toBe(1)
+  })
+
+  it('ignores a temporal decision that finishes after switching projects', async () => {
+    const review = {
+      claimId: 9,
+      original: '过几日后',
+      normalized: '2-7日后',
+      offsetMinSeconds: 2 * 86400,
+      offsetMaxSeconds: 7 * 86400,
+      dependencyStatus: 'unresolved',
+      overrideVersion: 0
+    }
+    vi.mocked(contentApi.listTemporalReviews).mockImplementation(async (projectId) =>
+      projectId === 'p1' ? [review] : []
+    )
+    vi.spyOn(contentApi, 'listGuardIssues').mockResolvedValue([])
+    vi.spyOn(contentApi, 'getGuardOverview').mockResolvedValue(overview('completed', 0))
+    let finishDecision!: (value: Awaited<ReturnType<typeof contentApi.decideTemporalReview>>) => void
+    vi.spyOn(contentApi, 'decideTemporalReview').mockImplementation(
+      () => new Promise((resolve) => { finishDecision = resolve })
+    )
+    const store = useGuardStore()
+    await store.load('p1')
+    const oldRequest = store.decideTemporalReview(review, 'confirm', 4 * 86400)
+
+    await store.load('p2')
+    finishDecision({
+      item: { ...review, overrideSeconds: 4 * 86400, overrideVersion: 1 },
+      reflow: {
+        claimsExamined: 2, claimsChanged: 1, affectedChapterIds: ['old-chapter'],
+        resolved: 1, unresolved: 0, ambiguous: 0, cyclic: 0, cycles: [],
+        rescansQueued: 0, rescanRunIds: []
+      }
+    })
+    await oldRequest
+
+    expect(store.loadedProjectId).toBe('p2')
+    expect(store.temporalReviews).toEqual([])
+    expect(store.timelineReflowResult).toBeNull()
+    expect(store.temporalDecisionPendingId).toBeNull()
   })
 })

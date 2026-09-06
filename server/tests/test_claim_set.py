@@ -124,6 +124,43 @@ async def test_temporal_evidence_is_persisted_and_refreshed(project):
     assert float(row.order_confidence) == pytest.approx(0.93)
 
 
+async def test_author_time_decision_survives_only_unchanged_temporal_evidence(project):
+    base = payload(
+        "fp_a",
+        timeline_id="main",
+        temporal_anchor_text="过几日后",
+        temporal_relation="after",
+        temporal_relation_ref="启程",
+        order_basis="relative_to_anchor",
+        temporal_resolution={
+            "author_override": {"offset_seconds": 4 * 86400},
+            "author_override_version": 1,
+            "author_override_history": [{"version": 1, "action": "confirm"}],
+        },
+    )
+    await replace_body_claim_set(project, claims=[base], **SCOPE)
+    await project.commit()
+
+    replay = {
+        **base,
+        "temporal_resolution": {
+            "original": "过几日后",
+            "offset_min_seconds": 2 * 86400,
+            "offset_max_seconds": 7 * 86400,
+        },
+    }
+    await replace_body_claim_set(project, claims=[replay], **SCOPE)
+    await project.commit()
+    row = (await load(project))[0]
+    assert row.temporal_resolution["author_override_version"] == 1
+
+    changed_evidence = {**replay, "temporal_anchor_text": "一月后"}
+    await replace_body_claim_set(project, claims=[changed_evidence], **SCOPE)
+    await project.commit()
+    row = (await load(project))[0]
+    assert "author_override" not in row.temporal_resolution
+
+
 # --- 行为 ---------------------------------------------------------------------
 
 

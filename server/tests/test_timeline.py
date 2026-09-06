@@ -14,6 +14,7 @@ from services.timeline import (
     MIN_ORDER_CONFIDENCE,
     VALID_ORDER_BASES,
     assign_story_orders,
+    author_override_offset,
     build_temporal_dependency_graph,
     is_globally_anchored,
     normalize_relative_expression,
@@ -38,6 +39,44 @@ def anchored_claim(**overrides) -> dict:
     }
     claim.update(overrides)
     return claim
+
+
+def fuzzy_relative_claim(**overrides) -> dict:
+    claim = {
+        "id": "fuzzy",
+        "timeline_id": "main",
+        "order_basis": "relative_to_anchor",
+        "order_confidence": 0.95,
+        "temporal_anchor_text": "过几日后",
+        "temporal_event_ref": "开市",
+        "temporal_relation": "after",
+        "temporal_relation_ref": "启程",
+    }
+    claim.update(overrides)
+    return claim
+
+
+def test_author_override_resolves_a_fuzzy_relative_claim():
+    root = anchored_claim(temporal_event_ref="启程")
+    fuzzy = fuzzy_relative_claim(
+        temporal_resolution={"author_override": {"offset_seconds": 4 * 86400}}
+    )
+
+    root_result, fuzzy_result = assign_story_orders([root, fuzzy])
+
+    assert fuzzy_result["story_order"] == root_result["story_order"] + 4 * 86400
+    graph = build_temporal_dependency_graph([root_result, fuzzy_result])
+    assert graph["edges"][0]["status"] == "resolved"
+    assert graph["edges"][0]["offset_min_seconds"] == 4 * 86400
+
+
+@pytest.mark.parametrize("offset", [86400, 8 * 86400, float("nan"), float("inf")])
+def test_author_override_outside_the_auditable_range_is_ignored(offset):
+    claim = fuzzy_relative_claim(
+        temporal_resolution={"author_override": {"offset_seconds": offset}}
+    )
+
+    assert author_override_offset(claim) is None
 
 
 # --- 锚点解析 -----------------------------------------------------------------

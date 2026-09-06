@@ -1,6 +1,6 @@
 import { ApiError, USE_MOCK, request } from './http'
 import { mockApi } from './mock'
-import type { Chapter, ChapterPlanPatch, ChapterVersionDetail, ChapterVersionRestoreResult, ChapterVersionSummary, CodexEntry, CodexEntryDraft, CodexKind, ContextLayer, GuardIssue, GuardOverview, GuardResolutionAction, Project, ProjectPatch, ProjectTrash, TimelineReflowResult, Volume } from '@/types'
+import type { Chapter, ChapterPlanPatch, ChapterVersionDetail, ChapterVersionRestoreResult, ChapterVersionSummary, CodexEntry, CodexEntryDraft, CodexKind, ContextLayer, GuardIssue, GuardOverview, GuardResolutionAction, Project, ProjectPatch, ProjectTrash, TemporalDecisionResult, TemporalReviewItem, TimelineReflowResult, Volume } from '@/types'
 
 interface ProjectDto {
   id: string
@@ -150,6 +150,28 @@ interface TimelineReflowDto {
   rescan_run_ids: number[]
 }
 
+interface TemporalReviewItemDto {
+  claim_id: number
+  chapter_id: string | null
+  chapter_index: number | null
+  chapter_title: string | null
+  event_ref: string | null
+  relation: 'before' | 'after' | 'simultaneous' | null
+  relation_ref: string | null
+  original: string
+  normalized: string
+  offset_min_seconds: number
+  offset_max_seconds: number
+  dependency_status: string
+  override_seconds: number | null
+  override_version: number
+}
+
+interface TemporalDecisionDto {
+  item: TemporalReviewItemDto
+  reflow: TimelineReflowDto
+}
+
 export interface CodexDto {
   id: string
   project_id: string
@@ -267,6 +289,25 @@ export function timelineReflowFromDto(dto: TimelineReflowDto): TimelineReflowRes
     cycles: dto.cycles,
     rescansQueued: dto.rescans_queued,
     rescanRunIds: dto.rescan_run_ids
+  }
+}
+
+export function temporalReviewFromDto(dto: TemporalReviewItemDto): TemporalReviewItem {
+  return {
+    claimId: dto.claim_id,
+    chapterId: dto.chapter_id ?? undefined,
+    chapterIndex: dto.chapter_index ?? undefined,
+    chapterTitle: dto.chapter_title ?? undefined,
+    eventRef: dto.event_ref ?? undefined,
+    relation: dto.relation ?? undefined,
+    relationRef: dto.relation_ref ?? undefined,
+    original: dto.original,
+    normalized: dto.normalized,
+    offsetMinSeconds: dto.offset_min_seconds,
+    offsetMaxSeconds: dto.offset_max_seconds,
+    dependencyStatus: dto.dependency_status,
+    overrideSeconds: dto.override_seconds ?? undefined,
+    overrideVersion: dto.override_version
   }
 }
 
@@ -784,6 +825,23 @@ const realApi = {
   async reflowProjectTimeline(projectId: string): Promise<TimelineReflowResult> {
     const dto = await request<TimelineReflowDto>(`/consistency/projects/${projectId}/timeline/reflow`, { method: 'POST' })
     return timelineReflowFromDto(dto)
+  },
+  async listTemporalReviews(projectId: string): Promise<TemporalReviewItem[]> {
+    const rows = await request<TemporalReviewItemDto[]>(`/consistency/projects/${projectId}/timeline/reviews`)
+    return rows.map(temporalReviewFromDto)
+  },
+  async decideTemporalReview(
+    projectId: string,
+    claimId: number,
+    action: 'confirm' | 'clear',
+    expectedVersion: number,
+    offsetSeconds?: number
+  ): Promise<TemporalDecisionResult> {
+    const dto = await request<TemporalDecisionDto>(`/consistency/projects/${projectId}/timeline/reviews/${claimId}`, {
+      method: 'POST',
+      body: JSON.stringify({ action, expected_version: expectedVersion, offset_seconds: offsetSeconds })
+    })
+    return { item: temporalReviewFromDto(dto.item), reflow: timelineReflowFromDto(dto.reflow) }
   },
   async resolveGuardIssue(projectId: string, id: string, issueRev: number, action: GuardResolutionAction): Promise<void> {
     await request(`/consistency/issues/${projectId}/${id}/resolve`, {

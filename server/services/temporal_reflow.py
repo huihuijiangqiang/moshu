@@ -21,7 +21,9 @@ from services.consistency import PIPELINE_VERSION, assign_narrative_positions
 from services.outbox import OutboxService
 from services.timeline import (
     assign_story_orders,
+    author_override_offset,
     build_temporal_dependency_graph,
+    merge_author_temporal_metadata,
     normalize_relative_expression,
 )
 
@@ -191,6 +193,11 @@ async def reflow_project_timeline(
                     "relation_ref": row.temporal_relation_ref,
                 }
             )
+            metadata = merge_author_temporal_metadata(row.temporal_resolution, metadata)
+            override_offset = author_override_offset(claim)
+            if metadata is not None and override_offset is not None:
+                metadata["effective_offset_seconds"] = override_offset
+                metadata["resolution_source"] = "author"
             status_counts[status] += 1
 
         row_changed = not (

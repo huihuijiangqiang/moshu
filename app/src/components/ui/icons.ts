@@ -21,6 +21,7 @@ export type IconName =
   | 'edit'
   | 'trash'
   | 'restore'
+  | 'check'
   | 'history'
 
 /**
@@ -49,5 +50,6 @@ export const ICON_PATHS: Record<IconName, string> = {
   edit: 'M4 14.5l.7-3.2L13 3l4 4-8.3 8.3-3.2.7zM11.5 4.5l4 4',
   trash: 'M3.5 5.5h13M7 5.5V3.5h6v2M5.5 5.5l.7 11h7.6l.7-11M8.5 8.5v5M11.5 8.5v5',
   restore: 'M5.5 6H2.8V3.3M3.2 5.8A7 7 0 1110 17M3.2 5.8A7 7 0 0115.8 8',
+  check: 'M3.5 10.5l4 4 9-9',
   history: 'M4 5.5h8.5M4 9.5h8.5M4 13.5h5.5M14.5 11.5v5M12 14h5'
 }

@@ -13,9 +13,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from db.models_codex import CodexEntry
-from db.models_consistency_extended import DocumentSummary
+from db.models_consistency_extended import ConsistencyClaim, DocumentSummary
 from db.models_core import Chapter, ChapterBody, Volume
 from services.retrieval import ConsistencyRetrieval
+from services.timeline import author_override_offset
 
 
 class _PlainTextParser(HTMLParser):
@@ -46,6 +47,20 @@ def html_to_text(content_html: str) -> str:
     parser = _PlainTextParser()
     parser.feed(content_html or "")
     return parser.text()
+
+
+def _format_temporal_offset(seconds: float) -> str:
+    if seconds == 0:
+        return "同一时刻"
+    direction = "之后" if seconds > 0 else "之前"
+    remaining = abs(seconds)
+    days = int(remaining // 86400)
+    hours = int(round((remaining % 86400) / 3600))
+    if hours == 24:
+        days += 1
+        hours = 0
+    value = "".join((f"{days}天" if days else "", f"{hours}小时" if hours else ""))
+    return f"{direction}{value or '不足1小时'}"
 
 
 @dataclass
@@ -80,6 +95,7 @@ class ContextAssembler:
     BUDGET_LAYER2 = 5000  # 检索条目
     BUDGET_LAYER3 = 4000  # 前情摘要
     BUDGET_LAYER4 = 10000  # 相邻原文
+    BUDGET_CONFIRMED_TIMELINE = 1500
 
     def __init__(
         self,
@@ -198,10 +214,59 @@ class ContextAssembler:
             lines.append(text)
             items.append({"id": entry.id, "name": entry.name, "kind": entry.kind})
 
+        resident_tokens = self.tokenizer.count("\n".join(lines))
+        timeline_budget = max(
+            0,
+            min(self.BUDGET_CONFIRMED_TIMELINE, self.BUDGET_LAYER1 - resident_tokens),
+        )
+        timeline = self._trim_layer(
+            await self._build_confirmed_temporal_facts(project_id),
+            timeline_budget,
+            keep_tail=True,
+        )
+        if timeline.content:
+            lines.append(f"# 作者确认的时间事实\n{timeline.content}")
+            items.extend(timeline.items)
+
         content = "\n".join(lines)
         tokens = self.tokenizer.count(content)
 
         return ContextLayer(key="resident", content=content, tokens=tokens, items=items)
+
+    async def _build_confirmed_temporal_facts(self, project_id: str) -> ContextLayer:
+        """Expose author-confirmed fuzzy-time decisions to generation, not only rules."""
+        result = await self.db.execute(
+            select(ConsistencyClaim, Chapter)
+            .outerjoin(Chapter, Chapter.id == ConsistencyClaim.chapter_id)
+            .where(
+                ConsistencyClaim.project_id == project_id,
+                ConsistencyClaim.status == "accepted",
+                ConsistencyClaim.order_basis == "relative_to_anchor",
+            )
+            .order_by(ConsistencyClaim.id)
+        )
+        lines: list[str] = []
+        items: list[dict] = []
+        for claim, chapter in result.all():
+            offset = author_override_offset(
+                {
+                    "temporal_resolution": claim.temporal_resolution,
+                    "temporal_anchor_text": claim.temporal_anchor_text,
+                    "temporal_relation": claim.temporal_relation,
+                }
+            )
+            if offset is None:
+                continue
+            event = claim.temporal_event_ref or claim.subject_text
+            reference = claim.temporal_relation_ref or "参照事件"
+            chapter_label = f"第{chapter.idx}章" if chapter else "全书设定"
+            lines.append(
+                f"- {event}：原文“{claim.temporal_anchor_text}”，作者确认为相对“{reference}”"
+                f"{_format_temporal_offset(offset)}（{chapter_label}）。"
+            )
+            items.append({"id": f"timeline:{claim.id}", "name": event, "kind": "timeline"})
+        content = "\n".join(lines)
+        return ContextLayer("confirmed_timeline", content, self.tokenizer.count(content), items)
 
     async def _build_layer2_retrieved(self, project_id: str, outline_nodes: list[str]) -> ContextLayer:
         """

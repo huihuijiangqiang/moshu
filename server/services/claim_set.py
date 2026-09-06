@@ -35,6 +35,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from db.models_consistency_extended import ConsistencyClaim
+from services.timeline import merge_author_temporal_metadata
 
 #: 指纹相同 = 同一条事实的同一次出现（见 services.claim_identity）。但重算结果
 #: 仍可能变化：实体链接解析出了 entry_id、时间线服务给出了 story_order、模型
@@ -233,7 +234,23 @@ async def replace_body_claim_set(
 
 def _refresh(row: ConsistencyClaim, claim_data: dict[str, Any], now: datetime) -> None:
     """刷新重算出来的字段。身份字段不动 —— 它们变了就不是同一条 claim。"""
-    for field, value in _mutable_values(claim_data).items():
+    same_temporal_evidence = all(
+        getattr(row, field) == claim_data.get(field)
+        for field in (
+            "timeline_id",
+            "temporal_anchor_text",
+            "temporal_relation",
+            "temporal_relation_ref",
+            "order_basis",
+        )
+    )
+    values = _mutable_values(claim_data)
+    if same_temporal_evidence:
+        values["temporal_resolution"] = merge_author_temporal_metadata(
+            row.temporal_resolution,
+            values["temporal_resolution"],
+        )
+    for field, value in values.items():
         setattr(row, field, value)
     row.updated_at = now
 

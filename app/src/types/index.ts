@@ -299,6 +299,28 @@ export interface TimelineReflowResult {
   rescanRunIds: number[]
 }
 
+export interface TemporalReviewItem {
+  claimId: number
+  chapterId?: string
+  chapterIndex?: number
+  chapterTitle?: string
+  eventRef?: string
+  relation?: 'before' | 'after' | 'simultaneous'
+  relationRef?: string
+  original: string
+  normalized: string
+  offsetMinSeconds: number
+  offsetMaxSeconds: number
+  dependencyStatus: string
+  overrideSeconds?: number
+  overrideVersion: number
+}
+
+export interface TemporalDecisionResult {
+  item: TemporalReviewItem
+  reflow: TimelineReflowResult
+}
+
 export interface ContextLayer {
   key: 'resident' | 'retrieved' | 'summary' | 'adjacent'
   label: string

@@ -7,7 +7,7 @@ from sqlalchemy import select
 
 from db.models_codex import CodexEntry
 from db.models_consistency import OutboxEvent
-from db.models_consistency_extended import GuardIssueEvidence, GuardResolution
+from db.models_consistency_extended import ConsistencyClaim, GuardIssueEvidence, GuardResolution
 from db.models_core import ChapterBody
 from db.models_guard import Foreshadow, GuardIssue
 
@@ -373,6 +373,124 @@ async def test_project_timeline_reflow_requires_guard_permission(
         headers=auth_headers("user_intruder"),
     )
     assert response.status_code == 403
+
+
+async def _seed_temporal_review(session, seed_project, make_claim):
+    await seed_project(chapter_ids=("ch_a", "ch_b"))
+    session.add_all(
+        [
+            make_claim(
+                project_id="proj_a",
+                chapter_id="ch_a",
+                fingerprint="root-review",
+                timeline_id="main",
+                temporal_event_ref="启程",
+                temporal_anchor_text="2026-01-01",
+                temporal_anchor_value="2026-01-01",
+                order_basis="absolute_datetime",
+                order_confidence=0.95,
+            ),
+            make_claim(
+                project_id="proj_a",
+                chapter_id="ch_b",
+                fingerprint="fuzzy-review",
+                timeline_id="main",
+                temporal_event_ref="开市",
+                temporal_relation="after",
+                temporal_relation_ref="启程",
+                temporal_anchor_text="过几日后",
+                order_basis="relative_to_anchor",
+                order_confidence=0.95,
+            ),
+        ]
+    )
+    await session.commit()
+    fuzzy = (
+        await session.execute(
+            select(ConsistencyClaim).where(ConsistencyClaim.fingerprint == "fuzzy-review")
+        )
+    ).scalar_one()
+    return fuzzy
+
+
+async def test_temporal_review_list_and_decision_are_author_operable(
+    app_client, async_db_session, seed_project, make_claim, auth_headers
+):
+    fuzzy = await _seed_temporal_review(async_db_session, seed_project, make_claim)
+    claim_id = fuzzy.id
+
+    listing = await app_client.get(
+        "/consistency/projects/proj_a/timeline/reviews",
+        headers=auth_headers("user_a"),
+    )
+    assert listing.status_code == 200
+    assert listing.json()[0]["claim_id"] == claim_id
+    assert listing.json()[0]["offset_min_seconds"] == 2 * 86400
+
+    confirmed = await app_client.post(
+        f"/consistency/projects/proj_a/timeline/reviews/{claim_id}",
+        json={"action": "confirm", "expected_version": 0, "offset_seconds": 4 * 86400},
+        headers=auth_headers("user_a"),
+    )
+    assert confirmed.status_code == 200
+    assert confirmed.json()["item"]["override_seconds"] == 4 * 86400
+    assert confirmed.json()["item"]["override_version"] == 1
+    assert confirmed.json()["reflow"]["resolved"] == 1
+
+    stale = await app_client.post(
+        f"/consistency/projects/proj_a/timeline/reviews/{claim_id}",
+        json={"action": "clear", "expected_version": 0},
+        headers=auth_headers("user_a"),
+    )
+    assert stale.status_code == 409
+    assert stale.json()["detail"]["current_version"] == 1
+    assert stale.json()["detail"]["code"] == "TEMPORAL_DECISION_CONFLICT"
+
+    invalid_version = await app_client.post(
+        f"/consistency/projects/proj_a/timeline/reviews/{claim_id}",
+        json={"action": "clear", "expected_version": -1},
+        headers=auth_headers("user_a"),
+    )
+    assert invalid_version.status_code == 422
+
+
+async def test_temporal_review_rejects_out_of_range_and_cross_project_claims(
+    app_client, async_db_session, seed_project, make_claim, auth_headers
+):
+    fuzzy = await _seed_temporal_review(async_db_session, seed_project, make_claim)
+    outside = await app_client.post(
+        f"/consistency/projects/proj_a/timeline/reviews/{fuzzy.id}",
+        json={"action": "confirm", "expected_version": 0, "offset_seconds": 9 * 86400},
+        headers=auth_headers("user_a"),
+    )
+    assert outside.status_code == 422
+
+    missing = await app_client.post(
+        "/consistency/projects/proj_a/timeline/reviews/999999",
+        json={"action": "clear", "expected_version": 0},
+        headers=auth_headers("user_a"),
+    )
+    assert missing.status_code == 404
+
+
+async def test_temporal_review_requires_access_and_resolution_permission(
+    app_client, async_db_session, seed_project, make_claim, make_user, auth_headers
+):
+    fuzzy = await _seed_temporal_review(async_db_session, seed_project, make_claim)
+    async_db_session.add(make_user("user_intruder"))
+    await async_db_session.commit()
+
+    listing = await app_client.get(
+        "/consistency/projects/proj_a/timeline/reviews",
+        headers=auth_headers("user_intruder"),
+    )
+    decision = await app_client.post(
+        f"/consistency/projects/proj_a/timeline/reviews/{fuzzy.id}",
+        json={"action": "confirm", "expected_version": 0, "offset_seconds": 4 * 86400},
+        headers=auth_headers("user_intruder"),
+    )
+    assert listing.status_code == 403
+    assert decision.status_code == 403
 
 
 async def test_project_scan_resets_failed_current_revision_for_retry(

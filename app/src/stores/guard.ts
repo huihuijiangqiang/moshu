@@ -1,7 +1,8 @@
 import { defineStore } from 'pinia'
 import { computed, ref } from 'vue'
 import { contentApi } from '@/api/content'
-import type { GuardIssue, GuardKind, GuardOverview, GuardResolutionAction, TimelineReflowResult } from '@/types'
+import { ApiError } from '@/api/http'
+import type { GuardIssue, GuardKind, GuardOverview, GuardResolutionAction, TemporalReviewItem, TimelineReflowResult } from '@/types'
 
 const EMPTY_OVERVIEW: GuardOverview = {
   status: 'idle', queued: 0, running: 0, completed: 0, failed: 0,
@@ -16,6 +17,9 @@ export const useGuardStore = defineStore('guard', () => {
   const timelineReflowPending = ref(false)
   const timelineReflowResult = ref<TimelineReflowResult | null>(null)
   const timelineReflowError = ref<string | null>(null)
+  const temporalReviews = ref<TemporalReviewItem[]>([])
+  const temporalDecisionPendingId = ref<number | null>(null)
+  const temporalDecisionError = ref<string | null>(null)
   const loaded = ref(false)
   const loadedProjectId = ref<string | null>(null)
   const overview = ref<GuardOverview>({ ...EMPTY_OVERVIEW })
@@ -23,6 +27,7 @@ export const useGuardStore = defineStore('guard', () => {
   let pollingProjectId: string | null = null
   let pollingGeneration = 0
   let timelineReflowGeneration = 0
+  let temporalDecisionGeneration = 0
 
   const open = computed(() => issues.value.filter((i) => !i.resolved))
   const counts = computed(() => ({
@@ -48,12 +53,15 @@ export const useGuardStore = defineStore('guard', () => {
   }
 
   async function refresh(projectId: string) {
-    const [nextIssues, nextOverview] = await Promise.all([
+    const [nextIssues, nextOverview, nextReviews] = await Promise.all([
       contentApi.listGuardIssues(projectId),
-      contentApi.getGuardOverview(projectId)
+      contentApi.getGuardOverview(projectId),
+      contentApi.listTemporalReviews(projectId)
     ])
+    if (loadedProjectId.value !== projectId) return
     issues.value = nextIssues
     overview.value = nextOverview
+    temporalReviews.value = nextReviews
     loadedProjectId.value = projectId
     loaded.value = true
   }
@@ -97,9 +105,13 @@ export const useGuardStore = defineStore('guard', () => {
     }
     if (loadedProjectId.value !== projectId) {
       ++timelineReflowGeneration
+      ++temporalDecisionGeneration
       timelineReflowPending.value = false
       timelineReflowResult.value = null
       timelineReflowError.value = null
+      temporalReviews.value = []
+      temporalDecisionPendingId.value = null
+      temporalDecisionError.value = null
       // Mark the route target before I/O so a late request from the previous
       // project cannot refresh its data back into this shared store.
       loadedProjectId.value = projectId
@@ -146,6 +158,45 @@ export const useGuardStore = defineStore('guard', () => {
     }
   }
 
+  async function decideTemporalReview(
+    item: TemporalReviewItem,
+    action: 'confirm' | 'clear',
+    offsetSeconds?: number
+  ) {
+    const projectId = loadedProjectId.value
+    if (!projectId || temporalDecisionPendingId.value !== null) return false
+    const generation = ++temporalDecisionGeneration
+    temporalDecisionPendingId.value = item.claimId
+    temporalDecisionError.value = null
+    try {
+      const result = await contentApi.decideTemporalReview(
+        projectId,
+        item.claimId,
+        action,
+        item.overrideVersion,
+        offsetSeconds
+      )
+      if (generation !== temporalDecisionGeneration || loadedProjectId.value !== projectId) return false
+      const index = temporalReviews.value.findIndex((row) => row.claimId === item.claimId)
+      if (index >= 0) temporalReviews.value[index] = result.item
+      timelineReflowResult.value = result.reflow
+      await refresh(projectId)
+      if (hasActiveWork(overview.value)) void pollUntilSettled(projectId).catch(() => undefined)
+      return true
+    } catch (error) {
+      if (generation !== temporalDecisionGeneration || loadedProjectId.value !== projectId) return false
+      temporalDecisionError.value = error instanceof ApiError && error.status === 409
+        ? '这条时间已被其他编辑修改，已重新载入最新值。'
+        : '时间确认未保存，请检查取值后重试。'
+      await refresh(projectId).catch(() => undefined)
+      return false
+    } finally {
+      if (generation === temporalDecisionGeneration && loadedProjectId.value === projectId) {
+        temporalDecisionPendingId.value = null
+      }
+    }
+  }
+
   async function resolve(id: string, action: GuardResolutionAction = 'defer') {
     const projectId = loadedProjectId.value
     const i = issues.value.find((item) => item.id === id)
@@ -156,7 +207,8 @@ export const useGuardStore = defineStore('guard', () => {
 
   return {
     issues, tab, scanning, scanRequestPending, timelineReflowPending,
-    timelineReflowResult, timelineReflowError, overview, open, counts, visible,
-    topThree, load, rescan, reflowTimeline, resolve, loadedProjectId
+    timelineReflowResult, timelineReflowError, temporalReviews,
+    temporalDecisionPendingId, temporalDecisionError, overview, open, counts, visible,
+    topThree, load, rescan, reflowTimeline, decideTemporalReview, resolve, loadedProjectId
   }
 })

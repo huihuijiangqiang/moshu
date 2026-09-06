@@ -8,6 +8,7 @@ from memory.tokenizer import tokenizer
 async def test_context_assembler_builds_all_four_layers(
     async_db_session,
     seed_project,
+    make_claim,
 ):
     chapters = await seed_project(
         user_id="writer",
@@ -50,6 +51,24 @@ async def test_context_assembler_builds_all_four_layers(
         conflicts=[],
     )
     async_db_session.add_all([resident, retrieved])
+    async_db_session.add(
+        make_claim(
+            project_id="novel",
+            chapter_id="ch2",
+            fingerprint="confirmed-fuzzy-time",
+            subject_text="青谷开市",
+            timeline_id="main",
+            temporal_event_ref="开市",
+            temporal_relation="after",
+            temporal_relation_ref="试种成功",
+            temporal_anchor_text="过几日后",
+            temporal_resolution={
+                "author_override": {"offset_seconds": 4 * 86400},
+                "author_override_version": 1,
+            },
+            order_basis="relative_to_anchor",
+        )
+    )
     await async_db_session.flush()
     async_db_session.add(CodexAlias(entry_id=retrieved.id, alias="周掌柜"))
     async_db_session.add(
@@ -69,6 +88,8 @@ async def test_context_assembler_builds_all_four_layers(
     context = await ContextAssembler(async_db_session, tokenizer).build("novel", "ch3", chapters[2].outline)
 
     assert "穿越限制" in context.layer1_resident.content
+    assert "作者确认的时间事实" in context.layer1_resident.content
+    assert "作者确认为相对“试种成功”之后4天" in context.layer1_resident.content
     assert "周万成" in context.layer2_retrieved.content
     assert "试种青谷成功" in context.layer3_summary.content
     assert "沈禾清出荒地" in context.layer4_adjacent.content

@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { reactive } from 'vue'
 import { ApiError } from './http'
-import { bodyConflictFromError, codexDraftAttrs, codexFromDto, guardIssueFromDto, guardOverviewFromDto, htmlToDocument, timelineReflowFromDto } from './content'
+import { bodyConflictFromError, codexDraftAttrs, codexFromDto, guardIssueFromDto, guardOverviewFromDto, htmlToDocument, temporalReviewFromDto, timelineReflowFromDto } from './content'
 
 describe('htmlToDocument', () => {
   it('uses the backend paragraph pid contract', () => {
@@ -255,5 +255,29 @@ describe('Guard DTO mapping', () => {
     expect(result.affectedChapterIds).toEqual(['ch1', 'ch2'])
     expect(result.ambiguous).toBe(1)
     expect(result.rescansQueued).toBe(2)
+  })
+
+  it('maps a fuzzy temporal review without losing range precision', () => {
+    const review = temporalReviewFromDto({
+      claim_id: 19,
+      chapter_id: 'ch5',
+      chapter_index: 5,
+      chapter_title: '县城初雪',
+      event_ref: '冬集开市',
+      relation: 'after',
+      relation_ref: '许知微启程',
+      original: '过几日后的清晨',
+      normalized: '2-7日后+清晨',
+      offset_min_seconds: 187200,
+      offset_max_seconds: 633600,
+      dependency_status: 'unresolved',
+      override_seconds: null,
+      override_version: 0
+    })
+
+    expect(review.claimId).toBe(19)
+    expect(review.chapterIndex).toBe(5)
+    expect(review.offsetMinSeconds).toBe(187200)
+    expect(review.overrideSeconds).toBeUndefined()
   })
 })
