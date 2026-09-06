@@ -1,7 +1,7 @@
 import { delay } from '../http'
 import * as seed from './seed'
 import { findShelfBook } from './shelf'
-import type { Chapter, ChapterPlanPatch, ChapterVersionDetail, ChapterVersionRestoreResult, ChapterVersionSummary, CodexEntry, CodexEntryDraft, GuardIssue, GuardOverview, GuardResolutionAction, Project, ContextLayer, ProjectPatch, ProjectTrash, TemporalDecisionResult, TemporalReviewItem, TimelineReflowResult } from '@/types'
+import type { Chapter, ChapterPlanPatch, ChapterVersionDetail, ChapterVersionRestoreResult, ChapterVersionSummary, CodexEntry, CodexEntryDraft, GuardIssue, GuardOverview, GuardResolutionAction, Project, ContextLayer, ProjectPatch, ProjectTrash, TemporalDecisionResult, TemporalReviewItem, TimelineBoard, TimelineReflowResult } from '@/types'
 
 /** 内存态副本：mock 下的写操作要真的改变数据，否则界面行为是假的。 */
 const state = {
@@ -473,6 +473,38 @@ export const mockApi = {
       cycles: [],
       rescansQueued: 2,
       rescanRunIds: [1, 2]
+    }
+  },
+  async getTimelineBoard(projectId = 'p1'): Promise<TimelineBoard> {
+    await delay(100)
+    if (projectId !== 'p1') {
+      return {
+        lanes: [], eventCount: 0, placedCount: 0, reviewCount: 0, unplacedCount: 0
+      }
+    }
+    return {
+      lanes: [
+        {
+          timelineId: 'main', label: '主线', eventCount: 5, placedCount: 4, reviewCount: 1,
+          events: [
+            { claimId: 801, timelineId: 'main', eventRef: '许知微醒在周家偏房', chapterId: 'p1-ch01', chapterIndex: 1, chapterTitle: '醒来', timeText: '腊月初三', storyOrder: 10, placementStatus: 'placed', dependencyStatus: 'resolved', confidence: 0.96 },
+            { claimId: 802, timelineId: 'main', eventRef: '拿出第一批腌菜换粮', chapterId: 'p1-ch02', chapterIndex: 2, chapterTitle: '灶间试味', timeText: '三日后', storyOrder: 13, placementStatus: 'placed', dependencyStatus: 'resolved', relation: 'after', relationRef: '许知微醒在周家偏房', confidence: 0.91 },
+            { claimId: 803, timelineId: 'main', eventRef: '县衙重查荒田契', chapterId: 'p1-ch04', chapterIndex: 4, chapterTitle: '旧契', timeText: '腊月初一', storyOrder: 8, placementStatus: 'placed', dependencyStatus: 'resolved', confidence: 0.94 },
+            { claimId: 804, timelineId: 'main', eventRef: '许知微启程去县城', chapterId: 'p1-ch05', chapterIndex: 5, chapterTitle: '县城初雪', timeText: '腊月初八', storyOrder: 18, placementStatus: 'placed', dependencyStatus: 'resolved', confidence: 0.95 },
+            { claimId: 901, timelineId: 'main', eventRef: '冬集开市', chapterId: 'p1-ch05', chapterIndex: 5, chapterTitle: '县城初雪', timeText: '过几日后的清晨', placementStatus: 'review', dependencyStatus: 'unresolved', relation: 'after', relationRef: '许知微启程去县城', confidence: 0.71 }
+          ]
+        },
+        {
+          timelineId: '周何氏支线', label: '周何氏支线', eventCount: 3, placedCount: 2, reviewCount: 0,
+          events: [
+            { claimId: 821, timelineId: '周何氏支线', eventRef: '周何氏藏起旧账册', chapterId: 'p1-ch03', chapterIndex: 3, chapterTitle: '夜半旧账', timeText: '上月廿七', storyOrder: 4, placementStatus: 'placed', dependencyStatus: 'resolved', confidence: 0.88 },
+            { claimId: 822, timelineId: '周何氏支线', eventRef: '周何氏交出钥匙', chapterId: 'p1-ch05', chapterIndex: 5, chapterTitle: '县城初雪', timeText: '启程前一夜', storyOrder: 17, placementStatus: 'placed', dependencyStatus: 'resolved', relation: 'before', relationRef: '许知微启程去县城', confidence: 0.87 },
+            { claimId: 823, timelineId: '周何氏支线', eventRef: '账册缺页被发现', chapterId: 'p1-ch05', chapterIndex: 5, chapterTitle: '县城初雪', timeText: '此前不久', placementStatus: 'ambiguous', dependencyStatus: 'ambiguous', confidence: 0.63 }
+          ]
+        }
+      ],
+      eventCount: 8, placedCount: 6, reviewCount: 1, unplacedCount: 2,
+      storyOrderMin: 4, storyOrderMax: 18
     }
   },
   async listTemporalReviews(projectId = 'p1'): Promise<TemporalReviewItem[]> {

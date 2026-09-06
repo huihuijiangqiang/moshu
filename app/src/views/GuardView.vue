@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue'
-import { useRouter } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import { useGuardStore } from '@/stores/guard'
 import { useProjectStore } from '@/stores/project'
 import { useShellStore } from '@/stores/shell'
@@ -16,6 +16,7 @@ import AppIcon from '@/components/ui/AppIcon.vue'
 const guard = useGuardStore()
 const project = useProjectStore()
 const shell = useShellStore()
+const route = useRoute()
 const router = useRouter()
 const { toProject } = useProjectNavigation()
 
@@ -151,9 +152,19 @@ watch(activeTemporalReview, (item) => {
     ?? (item.offsetMinSeconds + item.offsetMaxSeconds) / 2) / 86400
 }, { immediate: true })
 
+watch(
+  [() => route.query.temporalClaim, () => guard.temporalReviews],
+  ([value, reviews]) => {
+    if (typeof value !== 'string') return
+    const claimId = Number(value)
+    if (reviews.some((item) => item.claimId === claimId)) selectedTemporalClaimId.value = claimId
+  },
+  { immediate: true }
+)
+
 function act(issue: GuardIssue, action: string, index: number) {
   if (action.includes('查看时间线')) {
-    router.push(toProject('outline'))
+    router.push(toProject('timeline'))
     return
   }
   if (action.includes('改写') || action.includes('回到正文') || action.includes('补一段')) {

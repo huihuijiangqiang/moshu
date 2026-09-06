@@ -1,6 +1,6 @@
 import { ApiError, USE_MOCK, request } from './http'
 import { mockApi } from './mock'
-import type { Chapter, ChapterPlanPatch, ChapterVersionDetail, ChapterVersionRestoreResult, ChapterVersionSummary, CodexEntry, CodexEntryDraft, CodexKind, ContextLayer, GuardIssue, GuardOverview, GuardResolutionAction, Project, ProjectPatch, ProjectTrash, TemporalDecisionResult, TemporalReviewItem, TimelineReflowResult, Volume } from '@/types'
+import type { Chapter, ChapterPlanPatch, ChapterVersionDetail, ChapterVersionRestoreResult, ChapterVersionSummary, CodexEntry, CodexEntryDraft, CodexKind, ContextLayer, GuardIssue, GuardOverview, GuardResolutionAction, Project, ProjectPatch, ProjectTrash, TemporalDecisionResult, TemporalReviewItem, TimelineBoard, TimelinePlacementStatus, TimelineReflowResult, Volume } from '@/types'
 
 interface ProjectDto {
   id: string
@@ -150,6 +150,41 @@ interface TimelineReflowDto {
   rescan_run_ids: number[]
 }
 
+interface TimelineBoardEventDto {
+  claim_id: number
+  timeline_id: string
+  event_ref: string
+  chapter_id: string
+  chapter_index: number
+  chapter_title: string
+  time_text: string | null
+  story_order: number | null
+  placement_status: TimelinePlacementStatus
+  dependency_status: string
+  relation: string | null
+  relation_ref: string | null
+  source_anchor: string | null
+  confidence: number | null
+  resolution_source: string | null
+}
+
+interface TimelineBoardDto {
+  lanes: Array<{
+    timeline_id: string
+    label: string
+    event_count: number
+    placed_count: number
+    review_count: number
+    events: TimelineBoardEventDto[]
+  }>
+  event_count: number
+  placed_count: number
+  review_count: number
+  unplaced_count: number
+  story_order_min: number | null
+  story_order_max: number | null
+}
+
 interface TemporalReviewItemDto {
   claim_id: number
   chapter_id: string | null
@@ -289,6 +324,41 @@ export function timelineReflowFromDto(dto: TimelineReflowDto): TimelineReflowRes
     cycles: dto.cycles,
     rescansQueued: dto.rescans_queued,
     rescanRunIds: dto.rescan_run_ids
+  }
+}
+
+export function timelineBoardFromDto(dto: TimelineBoardDto): TimelineBoard {
+  return {
+    lanes: dto.lanes.map((lane) => ({
+      timelineId: lane.timeline_id,
+      label: lane.label,
+      eventCount: lane.event_count,
+      placedCount: lane.placed_count,
+      reviewCount: lane.review_count,
+      events: lane.events.map((event) => ({
+        claimId: event.claim_id,
+        timelineId: event.timeline_id,
+        eventRef: event.event_ref,
+        chapterId: event.chapter_id,
+        chapterIndex: event.chapter_index,
+        chapterTitle: event.chapter_title,
+        timeText: event.time_text ?? undefined,
+        storyOrder: event.story_order ?? undefined,
+        placementStatus: event.placement_status,
+        dependencyStatus: event.dependency_status,
+        relation: event.relation ?? undefined,
+        relationRef: event.relation_ref ?? undefined,
+        sourceAnchor: event.source_anchor ?? undefined,
+        confidence: event.confidence ?? undefined,
+        resolutionSource: event.resolution_source ?? undefined
+      }))
+    })),
+    eventCount: dto.event_count,
+    placedCount: dto.placed_count,
+    reviewCount: dto.review_count,
+    unplacedCount: dto.unplaced_count,
+    storyOrderMin: dto.story_order_min ?? undefined,
+    storyOrderMax: dto.story_order_max ?? undefined
   }
 }
 
@@ -825,6 +895,9 @@ const realApi = {
   async reflowProjectTimeline(projectId: string): Promise<TimelineReflowResult> {
     const dto = await request<TimelineReflowDto>(`/consistency/projects/${projectId}/timeline/reflow`, { method: 'POST' })
     return timelineReflowFromDto(dto)
+  },
+  async getTimelineBoard(projectId: string): Promise<TimelineBoard> {
+    return timelineBoardFromDto(await request<TimelineBoardDto>(`/consistency/projects/${projectId}/timeline/board`))
   },
   async listTemporalReviews(projectId: string): Promise<TemporalReviewItem[]> {
     const rows = await request<TemporalReviewItemDto[]>(`/consistency/projects/${projectId}/timeline/reviews`)

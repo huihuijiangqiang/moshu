@@ -3,6 +3,7 @@ export type IconName =
   | 'shelf'
   | 'write'
   | 'outline'
+  | 'timeline'
   | 'codex'
   | 'guard'
   | 'style'
@@ -32,6 +33,7 @@ export const ICON_PATHS: Record<IconName, string> = {
   shelf: 'M3 3.5h3.5v13H3zM8 3.5h3.5v13H8zM13.5 4.5l3 .5-2 12-3-.5z',
   write: 'M3.5 16.5l1-3.5 9-9 2.5 2.5-9 9zM11.5 5.5l2.5 2.5',
   outline: 'M3.5 5.5h4M3.5 10h13M3.5 14.5h8M10 5.5h6.5',
+  timeline: 'M3 5.5h14M3 10h14M3 14.5h14M6 3.5v4M13 8v4M8.5 12.5v4',
   codex: 'M3.5 6.5h9v10h-9zM6.5 3.5h10v10',
   guard: 'M10 2.5l6 2.5v4.5c0 4-2.6 6.8-6 8.2-3.4-1.4-6-4.2-6-8.2V5z',
   style: 'M2.5 12.5c2-7 3.5 3.5 5.5-3.5s2.5 8 4.5 2.5 2.5 2 5 2',

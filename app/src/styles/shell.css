@@ -858,11 +858,11 @@ body { font-family: var(--font-ui); font-size: var(--fs); }
   .rail-nav {
     height: 100%;
     display: grid;
-    grid-template-columns: repeat(5, minmax(0, 1fr));
+    grid-template-columns: repeat(6, minmax(0, 1fr));
     padding: 0;
   }
   .rail-nav .rail-item { height: 56px; }
-  .rail-nav .rail-item:nth-child(n + 6) { display: none; }
+  .rail-nav .rail-item:nth-child(n + 7) { display: none; }
   .rail-item[aria-current='true']::before { inset: 0 10px auto; width: auto; height: 2px; }
   .rail-tip { display: none; }
   .rail-dot { top: 8px; right: calc(50% - 14px); }

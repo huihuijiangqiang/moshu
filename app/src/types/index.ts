@@ -299,6 +299,45 @@ export interface TimelineReflowResult {
   rescanRunIds: number[]
 }
 
+export type TimelinePlacementStatus = 'placed' | 'review' | 'ambiguous' | 'cyclic' | 'unplaced'
+
+export interface TimelineBoardEvent {
+  claimId: number
+  timelineId: string
+  eventRef: string
+  chapterId: string
+  chapterIndex: number
+  chapterTitle: string
+  timeText?: string
+  storyOrder?: number
+  placementStatus: TimelinePlacementStatus
+  dependencyStatus: string
+  relation?: string
+  relationRef?: string
+  sourceAnchor?: string
+  confidence?: number
+  resolutionSource?: string
+}
+
+export interface TimelineBoardLane {
+  timelineId: string
+  label: string
+  eventCount: number
+  placedCount: number
+  reviewCount: number
+  events: TimelineBoardEvent[]
+}
+
+export interface TimelineBoard {
+  lanes: TimelineBoardLane[]
+  eventCount: number
+  placedCount: number
+  reviewCount: number
+  unplacedCount: number
+  storyOrderMin?: number
+  storyOrderMax?: number
+}
+
 export interface TemporalReviewItem {
   claimId: number
   chapterId?: string

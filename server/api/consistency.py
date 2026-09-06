@@ -26,6 +26,7 @@ from services.temporal_decisions import (
     list_temporal_reviews,
 )
 from services.temporal_reflow import enqueue_temporal_rescans, reflow_project_timeline
+from services.timeline_board import build_timeline_board
 
 router = APIRouter(tags=["consistency"])
 
@@ -177,6 +178,43 @@ class TemporalDecisionRequest(BaseModel):
 class TemporalDecisionResponse(BaseModel):
     item: TemporalReviewItemResponse
     reflow: TimelineReflowResponse
+
+
+class TimelineBoardEventResponse(BaseModel):
+    claim_id: int
+    timeline_id: str
+    event_ref: str
+    chapter_id: str
+    chapter_index: int
+    chapter_title: str
+    time_text: Optional[str]
+    story_order: Optional[float]
+    placement_status: Literal["placed", "review", "ambiguous", "cyclic", "unplaced"]
+    dependency_status: str
+    relation: Optional[str]
+    relation_ref: Optional[str]
+    source_anchor: Optional[str]
+    confidence: Optional[float]
+    resolution_source: Optional[str]
+
+
+class TimelineBoardLaneResponse(BaseModel):
+    timeline_id: str
+    label: str
+    event_count: int
+    placed_count: int
+    review_count: int
+    events: list[TimelineBoardEventResponse]
+
+
+class TimelineBoardResponse(BaseModel):
+    lanes: list[TimelineBoardLaneResponse]
+    event_count: int
+    placed_count: int
+    review_count: int
+    unplaced_count: int
+    story_order_min: Optional[float]
+    story_order_max: Optional[float]
 
 
 class RunOverview(BaseModel):
@@ -450,6 +488,20 @@ async def get_project_temporal_reviews(
     await verify_project_permission(project_id, ProjectPermission.VIEW, user, db)
     items = await list_temporal_reviews(db, project_id=project_id)
     return [TemporalReviewItemResponse(**item.as_dict()) for item in items]
+
+
+@router.get(
+    "/projects/{project_id}/timeline/board",
+    response_model=TimelineBoardResponse,
+)
+async def get_project_timeline_board(
+    project_id: str,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> TimelineBoardResponse:
+    await verify_project_permission(project_id, ProjectPermission.VIEW, user, db)
+    board = await build_timeline_board(db, project_id=project_id)
+    return TimelineBoardResponse(**board.as_dict())
 
 
 @router.post(

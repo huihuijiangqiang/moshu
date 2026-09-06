@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { reactive } from 'vue'
 import { ApiError } from './http'
-import { bodyConflictFromError, codexDraftAttrs, codexFromDto, guardIssueFromDto, guardOverviewFromDto, htmlToDocument, temporalReviewFromDto, timelineReflowFromDto } from './content'
+import { bodyConflictFromError, codexDraftAttrs, codexFromDto, guardIssueFromDto, guardOverviewFromDto, htmlToDocument, temporalReviewFromDto, timelineBoardFromDto, timelineReflowFromDto } from './content'
 
 describe('htmlToDocument', () => {
   it('uses the backend paragraph pid contract', () => {
@@ -279,5 +279,34 @@ describe('Guard DTO mapping', () => {
     expect(review.chapterIndex).toBe(5)
     expect(review.offsetMinSeconds).toBe(187200)
     expect(review.overrideSeconds).toBeUndefined()
+  })
+
+  it('maps multi-lane timeline events and preserves unresolved placement state', () => {
+    const board = timelineBoardFromDto({
+      lanes: [{
+        timeline_id: 'main', label: '主线', event_count: 2, placed_count: 1, review_count: 1,
+        events: [
+          {
+            claim_id: 11, timeline_id: 'main', event_ref: '启程', chapter_id: 'ch1',
+            chapter_index: 1, chapter_title: '离村', time_text: '2026-01-01', story_order: 10,
+            placement_status: 'placed', dependency_status: 'resolved', relation: null,
+            relation_ref: null, source_anchor: '第一章', confidence: 0.95, resolution_source: 'parser'
+          },
+          {
+            claim_id: 12, timeline_id: 'main', event_ref: '开市', chapter_id: 'ch5',
+            chapter_index: 5, chapter_title: '县城初雪', time_text: '过几日后', story_order: null,
+            placement_status: 'review', dependency_status: 'unresolved', relation: 'after',
+            relation_ref: '启程', source_anchor: null, confidence: 0.72, resolution_source: null
+          }
+        ]
+      }],
+      event_count: 2, placed_count: 1, review_count: 1, unplaced_count: 1,
+      story_order_min: 10, story_order_max: 10
+    })
+
+    expect(board.lanes[0]?.events[0]).toMatchObject({ eventRef: '启程', storyOrder: 10 })
+    expect(board.lanes[0]?.events[1]).toMatchObject({ eventRef: '开市', placementStatus: 'review' })
+    expect(board.lanes[0]?.events[1]?.storyOrder).toBeUndefined()
+    expect(board.storyOrderMin).toBe(10)
   })
 })

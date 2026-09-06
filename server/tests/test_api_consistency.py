@@ -454,6 +454,31 @@ async def test_temporal_review_list_and_decision_are_author_operable(
     assert invalid_version.status_code == 422
 
 
+async def test_timeline_board_exposes_project_lanes_and_requires_view_access(
+    app_client, async_db_session, seed_project, make_claim, make_user, auth_headers
+):
+    await _seed_temporal_review(async_db_session, seed_project, make_claim)
+
+    response = await app_client.get(
+        "/consistency/projects/proj_a/timeline/board",
+        headers=auth_headers("user_a"),
+    )
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["event_count"] == 2
+    assert payload["review_count"] == 1
+    assert payload["lanes"][0]["timeline_id"] == "main"
+    assert {event["event_ref"] for event in payload["lanes"][0]["events"]} == {"启程", "开市"}
+
+    async_db_session.add(make_user("timeline_intruder"))
+    await async_db_session.commit()
+    forbidden = await app_client.get(
+        "/consistency/projects/proj_a/timeline/board",
+        headers=auth_headers("timeline_intruder"),
+    )
+    assert forbidden.status_code == 403
+
+
 async def test_temporal_review_rejects_out_of_range_and_cross_project_claims(
     app_client, async_db_session, seed_project, make_claim, auth_headers
 ):
