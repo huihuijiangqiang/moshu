@@ -1,7 +1,7 @@
 import { delay } from '../http'
 import * as seed from './seed'
 import { findShelfBook } from './shelf'
-import type { Chapter, ChapterPlanPatch, ChapterVersionDetail, ChapterVersionRestoreResult, ChapterVersionSummary, CharacterStatistics, CodexEntry, CodexEntryDraft, CodexStateDraft, CodexStateHistoryItem, GuardIssue, GuardOverview, GuardResolutionAction, Project, ContextLayer, ProjectPatch, ProjectTrash, TemporalDecisionResult, TemporalReviewItem, TimelineBoard, TimelineEntry, TimelineEntryDraft, TimelineReflowResult } from '@/types'
+import type { Chapter, ChapterPlanPatch, ChapterVersionDetail, ChapterVersionRestoreResult, ChapterVersionSummary, CharacterStatistics, CodexEntry, CodexEntryDraft, CodexRelation, CodexRelationDraft, CodexStateDraft, CodexStateHistoryItem, GuardIssue, GuardOverview, GuardResolutionAction, Project, ContextLayer, ProjectPatch, ProjectTrash, TemporalDecisionResult, TemporalReviewItem, TimelineBoard, TimelineEntry, TimelineEntryDraft, TimelineReflowResult } from '@/types'
 
 /** 内存态副本：mock 下的写操作要真的改变数据，否则界面行为是假的。 */
 const state = {
@@ -21,6 +21,7 @@ const codexEntryStates = new Map<string, CodexEntry[]>()
 const codexStateHistoryStates = new Map<string, CodexStateHistoryItem[]>()
 let timelineEntrySequence = 1
 let codexStateSequence = 1
+let codexRelationSequence = 1
 
 function codexEntriesFor(projectId: string): CodexEntry[] {
   if (projectId === state.project.id) return state.codex
@@ -35,6 +36,38 @@ function confirmedCodexEntry(projectId: string, entryId: string): CodexEntry {
   const entry = codexEntriesFor(projectId).find((item) => item.id === entryId && item.status === 'confirmed')
   if (!entry) throw new Error('codex_state_not_found')
   return entry
+}
+
+function projectedCodexEntries(projectId: string): CodexEntry[] {
+  const rows = codexEntriesFor(projectId)
+  for (const source of rows) {
+    source.relations?.forEach((relation, index) => {
+      relation.id ??= `cr_mock_${source.id}_${index}`
+      relation.direction ??= 'outgoing'
+      relation.targetKind ??= rows.find((item) => item.id === relation.targetId)?.kind
+    })
+  }
+  const projected = structuredClone(rows)
+  projected.filter((entry) => entry.status !== 'confirmed').forEach((entry) => { entry.relations = [] })
+  for (const source of rows) {
+    if (source.status !== 'confirmed') continue
+    for (const relation of source.relations ?? []) {
+      if (relation.direction === 'incoming' || !relation.targetId || !relation.id) continue
+      const target = projected.find((item) => item.id === relation.targetId)
+      if (!target || target.status !== 'confirmed') continue
+      target.relations ??= []
+      target.relations.push({
+        id: relation.id,
+        targetId: source.id,
+        targetKind: source.kind,
+        direction: 'incoming',
+        name: source.name,
+        relation: relation.relation,
+        note: relation.note
+      })
+    }
+  }
+  return projected
 }
 
 function codexStateHistoryFor(projectId: string, entryId: string): CodexStateHistoryItem[] {
@@ -497,7 +530,7 @@ export const mockApi = {
 
   async listCodex(projectId = 'p1'): Promise<CodexEntry[]> {
     await delay()
-    return structuredClone(codexEntriesFor(projectId))
+    return projectedCodexEntries(projectId)
   },
 
   async createCodexEntry(projectId: string, draft: CodexEntryDraft): Promise<CodexEntry> {
@@ -559,15 +592,72 @@ export const mockApi = {
     const primaryIndex = state.codex.findIndex((item) => item.id === id)
     if (primaryIndex >= 0) {
       state.codex.splice(primaryIndex, 1)
+      state.codex.forEach((entry) => {
+        entry.relations = entry.relations?.filter((relation) => relation.targetId !== id)
+      })
       return
     }
     for (const rows of codexEntryStates.values()) {
       const index = rows.findIndex((item) => item.id === id)
       if (index >= 0) {
         rows.splice(index, 1)
+        rows.forEach((entry) => {
+          entry.relations = entry.relations?.filter((relation) => relation.targetId !== id)
+        })
         return
       }
     }
+  },
+
+  async createCodexRelation(projectId: string, entryId: string, draft: CodexRelationDraft): Promise<CodexRelation> {
+    await delay(120)
+    const source = confirmedCodexEntry(projectId, entryId)
+    const target = confirmedCodexEntry(projectId, draft.targetId)
+    const relationName = draft.relation.trim()
+    if (source.id === target.id || !relationName) throw new Error('invalid_codex_relation')
+    if (source.relations?.some((item) => item.direction !== 'incoming' && item.targetId === target.id && item.relation === relationName)) {
+      throw new Error('codex_relation_duplicate')
+    }
+    const relation: CodexRelation = {
+      id: `cr_mock_${Date.now().toString(36)}_${codexRelationSequence++}`,
+      targetId: target.id,
+      targetKind: target.kind,
+      direction: 'outgoing',
+      name: target.name,
+      relation: relationName,
+      note: draft.note?.trim() || undefined
+    }
+    source.relations ??= []
+    source.relations.push(relation)
+    return structuredClone(relation)
+  },
+
+  async updateCodexRelation(projectId: string, entryId: string, relationId: string, draft: CodexRelationDraft): Promise<CodexRelation> {
+    await delay(120)
+    const source = confirmedCodexEntry(projectId, entryId)
+    const target = confirmedCodexEntry(projectId, draft.targetId)
+    const relation = source.relations?.find((item) => item.id === relationId && item.direction !== 'incoming')
+    const relationName = draft.relation.trim()
+    if (!relation || source.id === target.id || !relationName) throw new Error('invalid_codex_relation')
+    if (source.relations?.some((item) => item.id !== relationId && item.direction !== 'incoming' && item.targetId === target.id && item.relation === relationName)) {
+      throw new Error('codex_relation_duplicate')
+    }
+    Object.assign(relation, {
+      targetId: target.id,
+      targetKind: target.kind,
+      name: target.name,
+      relation: relationName,
+      note: draft.note?.trim() || undefined
+    })
+    return structuredClone(relation)
+  },
+
+  async deleteCodexRelation(projectId: string, entryId: string, relationId: string): Promise<void> {
+    await delay(120)
+    const source = confirmedCodexEntry(projectId, entryId)
+    const index = source.relations?.findIndex((item) => item.id === relationId && item.direction !== 'incoming') ?? -1
+    if (index < 0) throw new Error('invalid_codex_relation')
+    source.relations!.splice(index, 1)
   },
 
   async listCodexStateHistory(projectId: string, entryId: string): Promise<CodexStateHistoryItem[]> {

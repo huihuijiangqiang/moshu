@@ -173,3 +173,66 @@ describe('chapter-aware Codex state history', () => {
     wrapper.unmount()
   })
 })
+
+describe('editable Codex relations', () => {
+  beforeEach(() => { document.body.innerHTML = '' })
+  afterEach(() => {
+    vi.restoreAllMocks()
+    document.body.innerHTML = ''
+  })
+
+  it('creates a relation from an always-visible section', async () => {
+    const create = vi.spyOn(contentApi, 'createCodexRelation').mockResolvedValue({
+      id: 'rel-new', targetId: 'c-zhoutou', targetKind: 'character', direction: 'outgoing',
+      name: '老周头', relation: '旧盟线索', note: '共同追查玄铁令'
+    })
+    const { wrapper } = await mountCodex()
+
+    await wrapper.get('.codex-relation-heading .wk-btn').trigger('click')
+    await wrapper.get('.codex-relation-dialog select').setValue('c-zhoutou')
+    await wrapper.get('.codex-relation-dialog input').setValue('旧盟线索')
+    await wrapper.get('.codex-relation-dialog textarea').setValue('共同追查玄铁令')
+    await wrapper.get('.codex-relation-dialog form').trigger('submit')
+    await flushPromises()
+
+    expect(create).toHaveBeenCalledWith('p1', 'c-shenyan', {
+      targetId: 'c-zhoutou', relation: '旧盟线索', note: '共同追查玄铁令'
+    })
+    wrapper.unmount()
+  })
+
+  it('keeps incoming relations read-only and opens their source entry', async () => {
+    const { wrapper } = await mountCodex()
+    const incoming = wrapper.get('.codex-relation-row[data-direction="incoming"]')
+
+    expect(incoming.text()).toContain('来自')
+    expect(incoming.find('.codex-relation-actions').exists()).toBe(false)
+    const sourceName = incoming.get('.codex-relation-target strong').text()
+    await incoming.get('.codex-relation-target').trigger('click')
+    await flushPromises()
+    expect(wrapper.get('.codex-identity h2').text()).toBe(sourceName)
+    wrapper.unmount()
+  })
+
+  it('edits and confirms deletion of an outgoing relation', async () => {
+    const update = vi.spyOn(contentApi, 'updateCodexRelation').mockResolvedValue({
+      id: 'rel-updated', targetId: 'c-zhoutou', targetKind: 'character', direction: 'outgoing',
+      name: '老周头', relation: '知情者', note: '补充后的说明'
+    })
+    const remove = vi.spyOn(contentApi, 'deleteCodexRelation').mockResolvedValue()
+    const { wrapper } = await mountCodex()
+    const outgoing = wrapper.get('.codex-relation-row[data-direction="outgoing"]')
+
+    await outgoing.findAll('.codex-relation-actions button')[0]!.trigger('click')
+    await wrapper.get('.codex-relation-dialog textarea').setValue('补充后的说明')
+    await wrapper.get('.codex-relation-dialog form').trigger('submit')
+    await flushPromises()
+    expect(update).toHaveBeenCalledWith('p1', 'c-shenyan', expect.any(String), expect.objectContaining({ note: '补充后的说明' }))
+
+    await wrapper.get('.codex-relation-row[data-direction="outgoing"] .codex-relation-actions button:last-child').trigger('click')
+    await wrapper.get('.codex-delete-dialog .codex-danger-button').trigger('click')
+    await flushPromises()
+    expect(remove).toHaveBeenCalledWith('p1', 'c-shenyan', expect.any(String))
+    wrapper.unmount()
+  })
+})

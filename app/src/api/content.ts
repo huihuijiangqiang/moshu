@@ -1,6 +1,6 @@
 import { ApiError, USE_MOCK, request } from './http'
 import { mockApi } from './mock'
-import type { Chapter, ChapterPlanPatch, ChapterVersionDetail, ChapterVersionRestoreResult, ChapterVersionSummary, CharacterStatistics, CodexEntry, CodexEntryDraft, CodexKind, CodexStateDraft, CodexStateHistoryItem, CodexStateSource, ContextLayer, GuardIssue, GuardOverview, GuardResolutionAction, Project, ProjectPatch, ProjectTrash, TemporalDecisionResult, TemporalReviewItem, TimelineBoard, TimelineEntry, TimelineEntryDraft, TimelinePlacementStatus, TimelineReflowResult, Volume } from '@/types'
+import type { Chapter, ChapterPlanPatch, ChapterVersionDetail, ChapterVersionRestoreResult, ChapterVersionSummary, CharacterStatistics, CodexEntry, CodexEntryDraft, CodexKind, CodexRelation, CodexRelationDraft, CodexStateDraft, CodexStateHistoryItem, CodexStateSource, ContextLayer, GuardIssue, GuardOverview, GuardResolutionAction, Project, ProjectPatch, ProjectTrash, TemporalDecisionResult, TemporalReviewItem, TimelineBoard, TimelineEntry, TimelineEntryDraft, TimelinePlacementStatus, TimelineReflowResult, Volume } from '@/types'
 
 interface ProjectDto {
   id: string
@@ -273,6 +273,15 @@ export interface CodexDto {
   expected_by: string | null
   foreshadow_resolved?: boolean
   resolved_at?: string | null
+  relations?: Array<{
+    id: string
+    target_id: string
+    target_name: string
+    target_kind: CodexDto['kind']
+    relation_type: string
+    description: string | null
+    direction: 'outgoing' | 'incoming'
+  }>
 }
 
 export interface CodexStateHistoryItemDto {
@@ -513,7 +522,7 @@ export function codexFromDto(dto: CodexDto): CodexEntry {
       return label && value ? [{ label, value }] : []
     })
     : undefined
-  const relations = Array.isArray(dto.attrs.relations)
+  const legacyRelations = Array.isArray(dto.attrs.relations)
     ? dto.attrs.relations.flatMap((relation) => {
       if (!relation || typeof relation !== 'object') return []
       const row = relation as Record<string, unknown>
@@ -525,10 +534,22 @@ export function codexFromDto(dto: CodexDto): CodexEntry {
         targetId: stringValue(row.target_id) ?? stringValue(row.targetId),
         name,
         relation: relationName,
-        note
+        note,
+        direction: 'outgoing' as const
       }]
     })
     : undefined
+  const relations = dto.relations !== undefined
+    ? dto.relations.map((relation) => ({
+      id: relation.id,
+      targetId: relation.target_id,
+      targetKind: CODEX_KIND_FROM_DTO[relation.target_kind],
+      direction: relation.direction,
+      name: relation.target_name,
+      relation: relation.relation_type,
+      note: relation.description ?? undefined
+    }))
+    : legacyRelations
   const plantedAt = chapterNumber(dto.planted_at)
   const expectedChapter = chapterNumber(dto.expected_by)
   const arc = characterAttrs.arc && typeof characterAttrs.arc === 'object'
@@ -1060,6 +1081,51 @@ const realApi = {
       if (error instanceof ApiError && error.status === 409) throw new Error('codex_entry_in_use')
       throw error
     }
+  },
+  async createCodexRelation(projectId: string, entryId: string, draft: CodexRelationDraft): Promise<CodexRelation> {
+    try {
+      const dto = await request<NonNullable<CodexDto['relations']>[number]>(`/codex/${projectId}/entries/${entryId}/relations`, {
+        method: 'POST',
+        body: JSON.stringify({
+          target_id: draft.targetId,
+          relation_type: draft.relation.trim(),
+          description: draft.note?.trim() || null
+        })
+      })
+      return {
+        id: dto.id, targetId: dto.target_id, targetKind: CODEX_KIND_FROM_DTO[dto.target_kind],
+        direction: dto.direction, name: dto.target_name, relation: dto.relation_type,
+        note: dto.description ?? undefined
+      }
+    } catch (error) {
+      if (error instanceof ApiError && error.status === 409) throw new Error('codex_relation_duplicate')
+      if (error instanceof ApiError && error.status === 422) throw new Error('invalid_codex_relation')
+      throw error
+    }
+  },
+  async updateCodexRelation(projectId: string, entryId: string, relationId: string, draft: CodexRelationDraft): Promise<CodexRelation> {
+    try {
+      const dto = await request<NonNullable<CodexDto['relations']>[number]>(`/codex/${projectId}/entries/${entryId}/relations/${relationId}`, {
+        method: 'PATCH',
+        body: JSON.stringify({
+          target_id: draft.targetId,
+          relation_type: draft.relation.trim(),
+          description: draft.note?.trim() || null
+        })
+      })
+      return {
+        id: dto.id, targetId: dto.target_id, targetKind: CODEX_KIND_FROM_DTO[dto.target_kind],
+        direction: dto.direction, name: dto.target_name, relation: dto.relation_type,
+        note: dto.description ?? undefined
+      }
+    } catch (error) {
+      if (error instanceof ApiError && error.status === 409) throw new Error('codex_relation_duplicate')
+      if (error instanceof ApiError && error.status === 422) throw new Error('invalid_codex_relation')
+      throw error
+    }
+  },
+  async deleteCodexRelation(projectId: string, entryId: string, relationId: string): Promise<void> {
+    await request(`/codex/${projectId}/entries/${entryId}/relations/${relationId}`, { method: 'DELETE' })
   },
   async listCodexStateHistory(projectId: string, entryId: string): Promise<CodexStateHistoryItem[]> {
     const rows = await request<CodexStateHistoryItemDto[]>(`/codex/${projectId}/entries/${entryId}/states`)

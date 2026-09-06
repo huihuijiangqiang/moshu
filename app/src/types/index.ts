@@ -38,10 +38,21 @@ export interface CodexFact {
 }
 
 export interface CodexRelation {
+  /** 旧 attrs 关系没有独立 id，因此只允许跳转，不开放编辑。 */
+  id?: string
   targetId?: string
+  targetKind?: CodexKind
+  /** attrs 与早期 mock 未标方向时视为 outgoing。 */
+  direction?: 'outgoing' | 'incoming'
   name: string
   relation: string
-  note: string
+  note?: string
+}
+
+export interface CodexRelationDraft {
+  targetId: string
+  relation: string
+  note?: string
 }
 
 export interface CodexEntry {

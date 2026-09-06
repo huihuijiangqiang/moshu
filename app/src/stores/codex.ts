@@ -1,7 +1,7 @@
 import { defineStore } from 'pinia'
 import { computed, ref } from 'vue'
 import { contentApi } from '@/api/content'
-import type { CodexEntry, CodexEntryDraft, CodexKind } from '@/types'
+import type { CodexEntry, CodexEntryDraft, CodexKind, CodexRelationDraft } from '@/types'
 
 function flattenSearchValue(value: unknown): string[] {
   if (typeof value === 'string') return [value]
@@ -58,8 +58,8 @@ export const useCodexStore = defineStore('codex', () => {
       .slice(0, limit)
   }
 
-  async function load(projectId = 'p1') {
-    if (loaded.value && loadedProjectId.value === projectId) return
+  async function load(projectId = 'p1', force = false) {
+    if (!force && loaded.value && loadedProjectId.value === projectId) return
     entries.value = await contentApi.listCodex(projectId)
     loadedProjectId.value = projectId
     loaded.value = true
@@ -91,5 +91,26 @@ export const useCodexStore = defineStore('codex', () => {
     entries.value = entries.value.filter((e) => e.id !== id)
   }
 
-  return { entries, kind, query, byId, resident, pending, counts, visible, search, load, create, update, confirm, drop, loadedProjectId }
+  async function createRelation(entryId: string, draft: CodexRelationDraft) {
+    const projectId = loadedProjectId.value
+    if (!projectId) throw new Error('codex_entry_not_loaded')
+    await contentApi.createCodexRelation(projectId, entryId, draft)
+    await load(projectId, true)
+  }
+
+  async function updateRelation(entryId: string, relationId: string, draft: CodexRelationDraft) {
+    const projectId = loadedProjectId.value
+    if (!projectId) throw new Error('codex_entry_not_loaded')
+    await contentApi.updateCodexRelation(projectId, entryId, relationId, draft)
+    await load(projectId, true)
+  }
+
+  async function deleteRelation(entryId: string, relationId: string) {
+    const projectId = loadedProjectId.value
+    if (!projectId) throw new Error('codex_entry_not_loaded')
+    await contentApi.deleteCodexRelation(projectId, entryId, relationId)
+    await load(projectId, true)
+  }
+
+  return { entries, kind, query, byId, resident, pending, counts, visible, search, load, create, update, confirm, drop, createRelation, updateRelation, deleteRelation, loadedProjectId }
 })

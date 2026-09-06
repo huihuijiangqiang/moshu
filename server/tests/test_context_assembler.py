@@ -1,4 +1,4 @@
-from db.models_codex import CodexAlias, CodexEntry, CodexStateChange
+from db.models_codex import CodexAlias, CodexEntry, CodexRelation, CodexStateChange
 from db.models_consistency_extended import DocumentSummary
 from db.models_core import ChapterBody
 from memory.assembler import ContextAssembler
@@ -116,6 +116,78 @@ def test_context_trim_uses_exact_token_budget_and_can_keep_tail():
     assert trimmed.tokens <= 30
     assert "关键章末" in trimmed.content
     assert trimmed.content.startswith("[前文已截断]")
+
+
+async def test_context_includes_confirmed_relations_without_leaking_invalid_targets(
+    async_db_session, seed_project, make_project
+):
+    chapters = await seed_project(
+        user_id="writer",
+        project_id="novel",
+        chapter_ids=("ch1", "ch2"),
+    )
+    chapters[1].outline = ["沈禾带着田契回到青河村"]
+    async_db_session.add(make_project("other_novel", owner_id="writer"))
+    await async_db_session.flush()
+    resident = CodexEntry(
+        id="resident_source", project_id="novel", kind="character", name="沈禾",
+        description="女主", attrs={}, resident=True, status="confirmed",
+        ref_chapters=[], conflicts=[],
+    )
+    retrieved = CodexEntry(
+        id="retrieved_source", project_id="novel", kind="item", name="田契",
+        description="荒田权属凭证", attrs={}, resident=False, status="confirmed",
+        ref_chapters=[], conflicts=[],
+    )
+    confirmed_target = CodexEntry(
+        id="confirmed_target", project_id="novel", kind="location", name="青河村",
+        description="故事起点", attrs={}, resident=False, status="confirmed",
+        ref_chapters=[], conflicts=[],
+    )
+    pending_target = CodexEntry(
+        id="pending_target", project_id="novel", kind="character", name="未确认掌柜",
+        description="不应进入上下文", attrs={}, resident=False, status="pending",
+        ref_chapters=[], conflicts=[],
+    )
+    cross_project_target = CodexEntry(
+        id="cross_target", project_id="other_novel", kind="location", name="越界县城",
+        description="不应进入上下文", attrs={}, resident=False, status="confirmed",
+        ref_chapters=[], conflicts=[],
+    )
+    async_db_session.add_all(
+        [resident, retrieved, confirmed_target, pending_target, cross_project_target]
+    )
+    await async_db_session.flush()
+    async_db_session.add_all(
+        [
+            CodexRelation(
+                id="rel_resident", from_id=resident.id, to_id=confirmed_target.id,
+                relation_type="居住于", description="在村东落脚",
+            ),
+            CodexRelation(
+                id="rel_retrieved", from_id=retrieved.id, to_id=confirmed_target.id,
+                relation_type="属于", description="对应村东荒田",
+            ),
+            CodexRelation(
+                id="rel_pending", from_id=resident.id, to_id=pending_target.id,
+                relation_type="认识", description="不应泄漏",
+            ),
+            CodexRelation(
+                id="rel_cross", from_id=resident.id, to_id=cross_project_target.id,
+                relation_type="前往", description="不应泄漏",
+            ),
+        ]
+    )
+    await async_db_session.commit()
+
+    context = await ContextAssembler(async_db_session, tokenizer).build(
+        "novel", "ch2", chapters[1].outline
+    )
+
+    assert "- 居住于 -> 青河村 (location) - 在村东落脚" in context.layer1_resident.content
+    assert "- 属于 -> 青河村 (location) - 对应村东荒田" in context.layer2_retrieved.content
+    assert "未确认掌柜" not in context.layer1_resident.content
+    assert "越界县城" not in context.layer1_resident.content
 
 
 async def test_context_uses_latest_author_state_without_leaking_future_changes(

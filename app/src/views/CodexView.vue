@@ -4,7 +4,7 @@ import { useRouter } from 'vue-router'
 import { useCodexStore, codexEntrySearchText } from '@/stores/codex'
 import { useProjectStore } from '@/stores/project'
 import { useShellStore } from '@/stores/shell'
-import { CODEX_KIND_LABEL, type CharacterProfile, type CodexEntry, type CodexEntryDraft, type CodexKind, type CodexStateDraft, type CodexStateHistoryItem, type CodexStateSource } from '@/types'
+import { CODEX_KIND_LABEL, type CharacterProfile, type CodexEntry, type CodexEntryDraft, type CodexKind, type CodexRelation, type CodexRelationDraft, type CodexStateDraft, type CodexStateHistoryItem, type CodexStateSource } from '@/types'
 import { useProjectNavigation } from '@/composables/use-project-navigation'
 import { embeddingApi, type EmbeddingJob } from '@/api/embedding'
 import { contentApi } from '@/api/content'
@@ -45,6 +45,14 @@ const stateDeleteTarget = ref<CodexStateHistoryItem | null>(null)
 const stateDeleteBusy = ref(false)
 const stateDeleteError = ref('')
 const stateForm = ref<CodexStateDraft>({ chapterId: '', stateKey: '', value: '', note: '' })
+const relationFormOpen = ref(false)
+const relationEditing = ref<CodexRelation | null>(null)
+const relationFormBusy = ref(false)
+const relationFormError = ref('')
+const relationDeleteTarget = ref<CodexRelation | null>(null)
+const relationDeleteBusy = ref(false)
+const relationDeleteError = ref('')
+const relationForm = ref<CodexRelationDraft>({ targetId: '', relation: '', note: '' })
 let embeddingTimer: ReturnType<typeof setTimeout> | null = null
 let characterStatisticsRequest = 0
 let stateHistoryRequest = 0
@@ -176,6 +184,9 @@ const rows = computed<CodexEntry[]>(() => {
 })
 
 const selected = computed(() => rows.value.find((entry) => entry.id === selectedId.value) ?? rows.value[0] ?? null)
+const relationTargets = computed(() => codex.entries
+  .filter((entry) => entry.status === 'confirmed' && entry.id !== selected.value?.id)
+  .sort((a, b) => CODEX_KIND_LABEL[a.kind].localeCompare(CODEX_KIND_LABEL[b.kind], 'zh-CN') || a.name.localeCompare(b.name, 'zh-CN')))
 const selectedInUse = computed(() => (selected.value?.refChapters.length ?? 0) > 0
   || (characterStatistics.value?.entryId === selected.value?.id && characterStatistics.value.povChapters > 0))
 const currentListLabel = computed(() => scope.value === 'kind' ? CODEX_KIND_LABEL[codex.kind] : scopes.find((item) => item.key === scope.value)?.label)
@@ -239,6 +250,8 @@ watch(
     stateHistoryError.value = ''
     stateFormOpen.value = false
     stateDeleteTarget.value = null
+    relationFormOpen.value = false
+    relationDeleteTarget.value = null
     if (!entryId || status !== 'confirmed' || !projectId) {
       stateHistoryLoading.value = false
       return
@@ -274,6 +287,73 @@ function selectRelation(targetId?: string) {
   if (target) codex.kind = target.kind
   selectedId.value = targetId
   mobileDetailOpen.value = true
+}
+
+function openCreateRelation() {
+  relationEditing.value = null
+  relationForm.value = { targetId: relationTargets.value[0]?.id ?? '', relation: '', note: '' }
+  relationFormError.value = ''
+  relationFormOpen.value = true
+}
+
+function openEditRelation(relation: CodexRelation) {
+  if (relation.direction === 'incoming' || !relation.id || !relation.targetId) return
+  relationEditing.value = relation
+  relationForm.value = {
+    targetId: relation.targetId,
+    relation: relation.relation,
+    note: relation.note ?? ''
+  }
+  relationFormError.value = ''
+  relationFormOpen.value = true
+}
+
+async function submitRelation() {
+  const entry = selected.value
+  if (!entry || !relationForm.value.targetId || !relationForm.value.relation.trim()) {
+    relationFormError.value = '请选择目标设定并填写关系类型。'
+    return
+  }
+  relationFormBusy.value = true
+  relationFormError.value = ''
+  try {
+    if (relationEditing.value?.id) {
+      await codex.updateRelation(entry.id, relationEditing.value.id, relationForm.value)
+    } else {
+      await codex.createRelation(entry.id, relationForm.value)
+    }
+    relationFormOpen.value = false
+  } catch (error) {
+    relationFormError.value = error instanceof Error && error.message === 'codex_relation_duplicate'
+      ? '这项关系已经存在，请修改原关系或更换类型。'
+      : error instanceof Error && error.message === 'invalid_codex_relation'
+        ? '关系两端必须是本作品内已确认的不同设定。'
+        : '关系保存失败，请稍后重试。'
+  } finally {
+    relationFormBusy.value = false
+  }
+}
+
+function openDeleteRelation(relation: CodexRelation) {
+  if (relation.direction === 'incoming' || !relation.id) return
+  relationDeleteTarget.value = relation
+  relationDeleteError.value = ''
+}
+
+async function deleteRelation() {
+  const entry = selected.value
+  const relation = relationDeleteTarget.value
+  if (!entry || !relation?.id) return
+  relationDeleteBusy.value = true
+  relationDeleteError.value = ''
+  try {
+    await codex.deleteRelation(entry.id, relation.id)
+    relationDeleteTarget.value = null
+  } catch {
+    relationDeleteError.value = '关系删除失败，请稍后重试。'
+  } finally {
+    relationDeleteBusy.value = false
+  }
 }
 
 const residentTokens = computed(() => codex.resident.length * 1900)
@@ -801,20 +881,31 @@ async function deleteSelected() {
             <p v-else class="codex-state-empty">还没有章节状态。人物迁居、物品易主、身份变化等发生时，在对应章节补一条记录。</p>
           </section>
 
-          <section v-if="selected.relations?.length" class="codex-section" aria-labelledby="codex-relations-title">
-            <div class="codex-section-heading"><h3 id="codex-relations-title">关联设定</h3><p>人物与世界如何彼此施力</p></div>
-            <div class="codex-relations">
-              <button
-                v-for="relation in selected.relations"
-                :key="`${relation.name}-${relation.relation}`"
-                type="button"
-                :disabled="!relation.targetId"
-                @click="selectRelation(relation.targetId)"
-              >
-                <span><strong>{{ relation.name }}</strong><small>{{ relation.relation }}</small></span>
-                <p>{{ relation.note }}</p><span v-if="relation.targetId" aria-hidden="true">→</span>
-              </button>
+          <section class="codex-section codex-relation-section" aria-labelledby="codex-relations-title">
+            <div class="codex-section-heading codex-relation-heading">
+              <div><h3 id="codex-relations-title">关联设定</h3><p>维护人物、势力、地点与物品之间可供写作调用的关系</p></div>
+              <button v-if="selected.status === 'confirmed'" class="wk-btn" type="button" :disabled="!relationTargets.length" @click="openCreateRelation">新增关系</button>
             </div>
+            <div v-if="selected.relations?.length" class="codex-relations">
+              <article
+                v-for="relation in selected.relations"
+                :key="`${relation.id ?? 'legacy'}-${relation.direction ?? 'outgoing'}-${relation.targetId}`"
+                class="codex-relation-row"
+                :data-direction="relation.direction ?? 'outgoing'"
+              >
+                <span class="codex-relation-direction">{{ relation.direction === 'incoming' ? '来自' : '指向' }}</span>
+                <button class="codex-relation-target" type="button" :disabled="!relation.targetId" @click="selectRelation(relation.targetId)">
+                  <strong>{{ relation.name }}</strong>
+                  <small>{{ relation.targetKind ? CODEX_KIND_LABEL[relation.targetKind] : '关联档案' }}</small>
+                </button>
+                <div class="codex-relation-copy"><strong>{{ relation.relation }}</strong><p>{{ relation.note || '未填写关系说明' }}</p></div>
+                <div v-if="relation.direction !== 'incoming' && relation.id" class="codex-relation-actions">
+                  <button type="button" @click="openEditRelation(relation)">编辑</button>
+                  <button type="button" @click="openDeleteRelation(relation)">删除</button>
+                </div>
+              </article>
+            </div>
+            <p v-else class="codex-relation-empty">还没有关系。把这项设定连接到人物、地点、势力或物品后，生成正文会同时获得这条关系。</p>
           </section>
 
           <section class="codex-section codex-evidence" aria-labelledby="codex-evidence-title">
@@ -879,6 +970,34 @@ async function deleteSelected() {
 
       <p v-else class="codex-empty">从左侧选择一条设定。</p>
     </main>
+
+    <div v-if="relationFormOpen" class="codex-dialog-backdrop" @click.self="relationFormOpen = false">
+      <section class="codex-dialog codex-relation-dialog" role="dialog" aria-modal="true" aria-labelledby="codex-relation-form-title">
+        <header>
+          <div><span>{{ relationEditing ? 'EDIT RELATION' : 'NEW RELATION' }}</span><h2 id="codex-relation-form-title">{{ relationEditing ? '编辑关系' : '新增关系' }}</h2></div>
+          <button type="button" aria-label="关闭" title="关闭" @click="relationFormOpen = false">×</button>
+        </header>
+        <form @submit.prevent="submitRelation">
+          <div class="codex-form-section codex-form-grid">
+            <label class="codex-form-wide"><span>目标设定</span><select v-model="relationForm.targetId" class="wk-input" required><option value="" disabled>选择目标设定</option><option v-for="entry in relationTargets" :key="entry.id" :value="entry.id">{{ CODEX_KIND_LABEL[entry.kind] }} · {{ entry.name }}</option></select></label>
+            <label class="codex-form-wide"><span>关系类型</span><input v-model="relationForm.relation" class="wk-input" maxlength="50" placeholder="例如：师徒、敌对、属于、居住于" required></label>
+            <label class="codex-form-wide"><span>关系说明</span><textarea v-model="relationForm.note" class="wk-input" maxlength="2000" rows="4" placeholder="可选。写清关系的现状、边界或变化方向。" /></label>
+          </div>
+          <p v-if="relationFormError" class="codex-dialog-error" role="alert">{{ relationFormError }}</p>
+          <footer><span>关系会进入后续章节的生成上下文。</span><div><button class="wk-btn" type="button" :disabled="relationFormBusy" @click="relationFormOpen = false">取消</button><button class="wk-btn" data-primary="true" type="submit" :disabled="relationFormBusy">{{ relationFormBusy ? '保存中…' : '保存关系' }}</button></div></footer>
+        </form>
+      </section>
+    </div>
+
+    <div v-if="relationDeleteTarget" class="codex-dialog-backdrop" @click.self="relationDeleteTarget = null">
+      <section class="codex-delete-dialog" role="alertdialog" aria-modal="true" aria-labelledby="codex-relation-delete-title">
+        <span class="wk-label">REMOVE RELATION</span>
+        <h2 id="codex-relation-delete-title">删除与“{{ relationDeleteTarget.name }}”的关系</h2>
+        <p>“{{ relationDeleteTarget.relation }}”将不再进入后续章节的生成上下文。</p>
+        <p v-if="relationDeleteError" class="codex-dialog-error" role="alert">{{ relationDeleteError }}</p>
+        <div><button class="wk-btn" type="button" :disabled="relationDeleteBusy" @click="relationDeleteTarget = null">取消</button><button class="wk-btn codex-danger-button" type="button" :disabled="relationDeleteBusy" @click="deleteRelation">{{ relationDeleteBusy ? '删除中…' : '确认删除' }}</button></div>
+      </section>
+    </div>
 
     <div v-if="stateFormOpen" class="codex-dialog-backdrop" @click.self="stateFormOpen = false">
       <section class="codex-dialog codex-state-dialog" role="dialog" aria-modal="true" aria-labelledby="codex-state-form-title">
@@ -1032,6 +1151,7 @@ async function deleteSelected() {
 .codex-state-actions button:hover { color: var(--primary); background: var(--primary-soft); }
 .codex-state-empty { margin: 0; padding: var(--u4) 0; border-block: var(--hair) solid var(--line); color: var(--ink-3); font-size: var(--fs-sm); line-height: 1.7; }
 .codex-state-dialog { width: min(620px, 100%); }
+.codex-relation-dialog { width: min(620px, 100%); }
 .codex-dialog-backdrop { position: fixed; inset: 0; z-index: 80; display: grid; place-items: center; padding: 18px; background: rgb(20 24 25 / 55%); }
 .codex-dialog { width: min(780px, 100%); max-height: calc(100vh - 36px); display: grid; grid-template-rows: auto minmax(0, 1fr); overflow: hidden; border: var(--hair) solid var(--line-strong); border-radius: 4px; background: var(--paper); box-shadow: 0 18px 56px rgb(0 0 0 / 24%); }
 .codex-dialog > header { min-height: 72px; display: flex; align-items: center; justify-content: space-between; padding: 14px 22px; border-bottom: 2px solid var(--ink); }

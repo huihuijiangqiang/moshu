@@ -673,8 +673,201 @@ async def test_listing_entries_is_project_scoped_and_returns_evidence_fields(
             "foreshadow_resolved": False,
             "resolved_at": None,
             "embedding_status": "deferred",
+            "relations": [],
         }
     ]
+
+
+async def test_relation_crud_is_project_scoped_and_listed_from_both_directions(
+    codex_client, async_db_session, seed_project, auth_headers
+):
+    await seed_project()
+    source = await create_entry(
+        async_db_session, project_id="proj_a", kind="character", name="许知微"
+    )
+    first_target = await create_entry(
+        async_db_session, project_id="proj_a", kind="character", name="周何氏"
+    )
+    second_target = await create_entry(
+        async_db_session, project_id="proj_a", kind="faction", name="青河商会"
+    )
+    await async_db_session.commit()
+
+    created = await codex_client.post(
+        f"/codex/proj_a/entries/{source.id}/relations",
+        json={
+            "target_id": first_target.id,
+            "relation_type": "共同持家",
+            "description": "从互相试探逐渐成为盟友",
+        },
+        headers=auth_headers("user_a"),
+    )
+
+    assert created.status_code == 201
+    relation_id = created.json()["id"]
+    assert created.json() == {
+        "id": relation_id,
+        "target_id": first_target.id,
+        "target_name": "周何氏",
+        "target_kind": "character",
+        "relation_type": "共同持家",
+        "description": "从互相试探逐渐成为盟友",
+        "direction": "outgoing",
+    }
+
+    listed = await codex_client.get(
+        "/codex/proj_a/entries", headers=auth_headers("user_a")
+    )
+    rows = {row["id"]: row for row in listed.json()}
+    assert rows[source.id]["relations"] == [created.json()]
+    assert rows[first_target.id]["relations"] == [
+        {
+            **created.json(),
+            "target_id": source.id,
+            "target_name": "许知微",
+            "target_kind": "character",
+            "direction": "incoming",
+        }
+    ]
+
+    updated = await codex_client.patch(
+        f"/codex/proj_a/entries/{source.id}/relations/{relation_id}",
+        json={
+            "target_id": second_target.id,
+            "relation_type": "合伙经营",
+            "description": "共同经营粮铺",
+        },
+        headers=auth_headers("user_a"),
+    )
+    assert updated.status_code == 200
+    assert updated.json()["target_id"] == second_target.id
+    assert updated.json()["relation_type"] == "合伙经营"
+
+    deleted = await codex_client.delete(
+        f"/codex/proj_a/entries/{source.id}/relations/{relation_id}",
+        headers=auth_headers("user_a"),
+    )
+    assert deleted.status_code == 204
+    listed_after_delete = await codex_client.get(
+        "/codex/proj_a/entries", headers=auth_headers("user_a")
+    )
+    assert all(not row["relations"] for row in listed_after_delete.json())
+
+
+async def test_relation_rejects_invalid_authority_and_endpoints(
+    codex_client,
+    async_db_session,
+    seed_project,
+    make_project,
+    make_user,
+    auth_headers,
+):
+    await seed_project()
+    async_db_session.add(make_user("user_b"))
+    async_db_session.add(make_project("proj_other", owner_id="user_a"))
+    await async_db_session.flush()
+    source = await create_entry(
+        async_db_session, project_id="proj_a", kind="character", name="许知微"
+    )
+    target = await create_entry(
+        async_db_session, project_id="proj_a", kind="location", name="青河村"
+    )
+    pending = await create_entry(
+        async_db_session,
+        project_id="proj_a",
+        kind="character",
+        name="待确认人物",
+        status="pending",
+    )
+    other_project = await create_entry(
+        async_db_session, project_id="proj_other", kind="location", name="越界地点"
+    )
+    async_db_session.add_all(
+        [
+            CodexRelation(
+                id="cr_pending_legacy",
+                from_id=source.id,
+                to_id=pending.id,
+                relation_type="旧待确认关系",
+            ),
+            CodexRelation(
+                id="cr_cross_legacy",
+                from_id=source.id,
+                to_id=other_project.id,
+                relation_type="旧越界关系",
+            ),
+        ]
+    )
+    await async_db_session.commit()
+    endpoint = f"/codex/proj_a/entries/{source.id}/relations"
+
+    listed = await codex_client.get(
+        "/codex/proj_a/entries", headers=auth_headers("user_a")
+    )
+    assert all(not row["relations"] for row in listed.json())
+
+    forbidden = await codex_client.post(
+        endpoint,
+        json={"target_id": target.id, "relation_type": "居住于"},
+        headers=auth_headers("user_b"),
+    )
+    assert forbidden.status_code == 403
+
+    for target_id, expected_code in (
+        (source.id, "CODEX_RELATION_SELF_REFERENCE"),
+        (pending.id, "CODEX_RELATION_REQUIRES_CONFIRMED"),
+        (other_project.id, "CODEX_RELATION_TARGET_INVALID"),
+    ):
+        response = await codex_client.post(
+            endpoint,
+            json={"target_id": target_id, "relation_type": "关联"},
+            headers=auth_headers("user_a"),
+        )
+        assert response.status_code == 422
+        assert response.json()["detail"]["code"] == expected_code
+
+
+async def test_relation_rejects_pending_source_and_duplicate(
+    codex_client, async_db_session, seed_project, auth_headers
+):
+    await seed_project()
+    source = await create_entry(
+        async_db_session, project_id="proj_a", kind="character", name="许知微"
+    )
+    target = await create_entry(
+        async_db_session, project_id="proj_a", kind="location", name="青河村"
+    )
+    pending_source = await create_entry(
+        async_db_session,
+        project_id="proj_a",
+        kind="character",
+        name="待确认来源",
+        status="pending",
+    )
+    await async_db_session.commit()
+
+    pending_response = await codex_client.post(
+        f"/codex/proj_a/entries/{pending_source.id}/relations",
+        json={"target_id": target.id, "relation_type": "居住于"},
+        headers=auth_headers("user_a"),
+    )
+    assert pending_response.status_code == 422
+    assert pending_response.json()["detail"]["code"] == "CODEX_RELATION_REQUIRES_CONFIRMED"
+
+    payload = {"target_id": target.id, "relation_type": "居住于"}
+    first = await codex_client.post(
+        f"/codex/proj_a/entries/{source.id}/relations",
+        json=payload,
+        headers=auth_headers("user_a"),
+    )
+    duplicate = await codex_client.post(
+        f"/codex/proj_a/entries/{source.id}/relations",
+        json=payload,
+        headers=auth_headers("user_a"),
+    )
+    assert first.status_code == 201
+    assert duplicate.status_code == 409
+    assert duplicate.json()["detail"]["code"] == "CODEX_RELATION_DUPLICATE"
 
 
 async def test_listing_entries_in_someone_elses_project_is_denied(

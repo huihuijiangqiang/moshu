@@ -10,9 +10,9 @@ from typing import Optional
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import selectinload
+from sqlalchemy.orm import aliased, selectinload
 
-from db.models_codex import CodexEntry
+from db.models_codex import CodexEntry, CodexRelation
 from db.models_consistency_extended import ConsistencyClaim, DocumentSummary
 from db.models_core import Chapter, ChapterBody, Volume
 from services.codex_states import latest_author_states
@@ -187,6 +187,32 @@ class ContextAssembler:
             trimmed_layers=trimmed,
         )
 
+    async def _outgoing_relation_lines(
+        self, project_id: str, entry_ids: list[str]
+    ) -> dict[str, list[str]]:
+        if not entry_ids:
+            return {}
+        target = aliased(CodexEntry)
+        rows = (
+            await self.db.execute(
+                select(CodexRelation, target.name, target.kind)
+                .join(target, target.id == CodexRelation.to_id)
+                .where(
+                    CodexRelation.from_id.in_(entry_ids),
+                    target.project_id == project_id,
+                    target.status == "confirmed",
+                )
+                .order_by(CodexRelation.from_id, CodexRelation.relation_type, target.name)
+            )
+        ).all()
+        by_entry: dict[str, list[str]] = {}
+        for relation, target_name, target_kind in rows:
+            detail = f" - {relation.description.strip()}" if relation.description else ""
+            by_entry.setdefault(relation.from_id, []).append(
+                f"- {relation.relation_type} -> {target_name} ({target_kind}){detail}"
+            )
+        return by_entry
+
     async def _build_layer1_resident(self, project_id: str, chapter_id: str) -> ContextLayer:
         """
         Layer 1: 常驻设定
@@ -205,6 +231,10 @@ class ContextAssembler:
         result = await self.db.execute(stmt)
         entries = result.scalars().all()
 
+        relations_by_entry = await self._outgoing_relation_lines(
+            project_id, [entry.id for entry in entries]
+        )
+
         # 序列化为文本
         lines = []
         items = []
@@ -212,6 +242,8 @@ class ContextAssembler:
             text = f"## {entry.name} ({entry.kind})\n{entry.description}\n"
             if entry.attrs:
                 text += f"属性: {json.dumps(entry.attrs, ensure_ascii=False, sort_keys=True)}\n"
+            if relations_by_entry.get(entry.id):
+                text += "关系:\n" + "\n".join(relations_by_entry[entry.id]) + "\n"
             lines.append(text)
             items.append({"id": entry.id, "name": entry.name, "kind": entry.kind})
 
@@ -382,10 +414,13 @@ class ContextAssembler:
             chapter_id=chapter_id,
             entry_ids=list(matched),
         )
+        relations_by_entry = await self._outgoing_relation_lines(project_id, list(matched))
         for entry in matched.values():
             text = f"## {entry.name} ({entry.kind})\n{entry.description}"
             if entry.attrs:
                 text += f"\n属性: {json.dumps(entry.attrs, ensure_ascii=False, sort_keys=True)}"
+            if relations_by_entry.get(entry.id):
+                text += "\n关系:\n" + "\n".join(relations_by_entry[entry.id])
             if state_by_entry.get(entry.id):
                 current = "；".join(
                     f"{state['state_key']}={state['value']}（第{state['chapter_index']}章）"

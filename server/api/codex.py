@@ -18,9 +18,10 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import aliased
 
 from api.auth import ProjectPermission, get_current_user, verify_project_permission
-from db.models_codex import CODEX_STATUSES, CodexAlias, CodexEntry, CodexRef
+from db.models_codex import CODEX_STATUSES, CodexAlias, CodexEntry, CodexRef, CodexRelation
 from db.models_core import Chapter, Project, User
 from db.models_embedding import CodexEmbeddingJob
 from db.models_guard import Foreshadow
@@ -178,6 +179,28 @@ class AliasRequest(BaseModel):
     alias: AliasValue
 
 
+class RelationCreateRequest(BaseModel):
+    target_id: str = Field(min_length=1, max_length=32)
+    relation_type: str = Field(min_length=1, max_length=50)
+    description: str | None = Field(default=None, max_length=2000)
+
+
+class RelationUpdateRequest(BaseModel):
+    target_id: str | None = Field(default=None, min_length=1, max_length=32)
+    relation_type: str | None = Field(default=None, min_length=1, max_length=50)
+    description: str | None = Field(default=None, max_length=2000)
+
+
+class RelationResponse(BaseModel):
+    id: str
+    target_id: str
+    target_name: str
+    target_kind: str
+    relation_type: str
+    description: str | None
+    direction: Literal["outgoing", "incoming"]
+
+
 class EntryResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -197,6 +220,7 @@ class EntryResponse(BaseModel):
     foreshadow_resolved: bool
     resolved_at: str | None
     embedding_status: EmbeddingStatus
+    relations: list[RelationResponse] = Field(default_factory=list)
 
 
 class AliasMutationResponse(BaseModel):
@@ -283,6 +307,124 @@ async def _load_entry(db: AsyncSession, project_id: str, entry_id: str) -> Codex
     if not entry:
         raise HTTPException(status_code=404, detail="Codex entry not found")
     return entry
+
+
+async def _relations_by_entry(
+    db: AsyncSession, project_id: str, entry_ids: list[str]
+) -> dict[str, list[RelationResponse]]:
+    if not entry_ids:
+        return {}
+    source = aliased(CodexEntry)
+    target = aliased(CodexEntry)
+    outgoing = (
+        await db.execute(
+            select(CodexRelation, target)
+            .join(source, source.id == CodexRelation.from_id)
+            .join(target, target.id == CodexRelation.to_id)
+            .where(
+                CodexRelation.from_id.in_(entry_ids),
+                source.project_id == project_id,
+                source.status == "confirmed",
+                target.project_id == project_id,
+                target.status == "confirmed",
+            )
+            .order_by(CodexRelation.from_id, CodexRelation.relation_type, target.name)
+        )
+    ).all()
+    source = aliased(CodexEntry)
+    target = aliased(CodexEntry)
+    incoming = (
+        await db.execute(
+            select(CodexRelation, source)
+            .join(source, source.id == CodexRelation.from_id)
+            .join(target, target.id == CodexRelation.to_id)
+            .where(
+                CodexRelation.to_id.in_(entry_ids),
+                source.project_id == project_id,
+                source.status == "confirmed",
+                target.project_id == project_id,
+                target.status == "confirmed",
+            )
+            .order_by(CodexRelation.to_id, CodexRelation.relation_type, source.name)
+        )
+    ).all()
+    rows: dict[str, list[RelationResponse]] = {entry_id: [] for entry_id in entry_ids}
+    for relation, peer in outgoing:
+        rows[relation.from_id].append(
+            RelationResponse(
+                id=relation.id,
+                target_id=peer.id,
+                target_name=peer.name,
+                target_kind=peer.kind,
+                relation_type=relation.relation_type,
+                description=relation.description,
+                direction="outgoing",
+            )
+        )
+    for relation, peer in incoming:
+        rows[relation.to_id].append(
+            RelationResponse(
+                id=relation.id,
+                target_id=peer.id,
+                target_name=peer.name,
+                target_kind=peer.kind,
+                relation_type=relation.relation_type,
+                description=relation.description,
+                direction="incoming",
+            )
+        )
+    return rows
+
+
+async def _relation_target(
+    db: AsyncSession, project_id: str, source: CodexEntry, target_id: str
+) -> CodexEntry:
+    if target_id == source.id:
+        raise HTTPException(status_code=422, detail={"code": "CODEX_RELATION_SELF_REFERENCE"})
+    target = (
+        await db.execute(
+            select(CodexEntry).where(
+                CodexEntry.id == target_id,
+                CodexEntry.project_id == project_id,
+            )
+        )
+    ).scalar_one_or_none()
+    if target is None:
+        raise HTTPException(status_code=422, detail={"code": "CODEX_RELATION_TARGET_INVALID"})
+    if source.status != "confirmed" or target.status != "confirmed":
+        raise HTTPException(status_code=422, detail={"code": "CODEX_RELATION_REQUIRES_CONFIRMED"})
+    return target
+
+
+async def _ensure_unique_relation(
+    db: AsyncSession,
+    *,
+    source_id: str,
+    target_id: str,
+    relation_type: str,
+    exclude_id: str | None = None,
+) -> None:
+    statement = select(CodexRelation.id).where(
+        CodexRelation.from_id == source_id,
+        CodexRelation.to_id == target_id,
+        CodexRelation.relation_type == relation_type,
+    )
+    if exclude_id:
+        statement = statement.where(CodexRelation.id != exclude_id)
+    if (await db.execute(statement.limit(1))).scalar_one_or_none() is not None:
+        raise HTTPException(status_code=409, detail={"code": "CODEX_RELATION_DUPLICATE"})
+
+
+def _relation_response(relation: CodexRelation, target: CodexEntry) -> RelationResponse:
+    return RelationResponse(
+        id=relation.id,
+        target_id=target.id,
+        target_name=target.name,
+        target_kind=target.kind,
+        relation_type=relation.relation_type,
+        description=relation.description,
+        direction="outgoing",
+    )
 
 
 async def _load_foreshadow(db: AsyncSession, entry_id: str) -> Foreshadow | None:
@@ -406,6 +548,7 @@ async def _entry_response(
         .all()
     )
     lifecycle = await _load_foreshadow(db, entry.id)
+    relations = await _relations_by_entry(db, entry.project_id, [entry.id])
     return EntryResponse(
         id=entry.id,
         project_id=entry.project_id,
@@ -423,6 +566,7 @@ async def _entry_response(
         foreshadow_resolved=lifecycle.resolved if lifecycle else False,
         resolved_at=lifecycle.resolved_chapter_id if lifecycle else None,
         embedding_status=embedding_status,
+        relations=relations.get(entry.id, []),
     )
 
 
@@ -468,6 +612,9 @@ async def list_codex_entries(
         ).scalars()
     )
     lifecycle_by_entry = {row.entry_id: row for row in lifecycle_rows}
+    relations_by_entry = await _relations_by_entry(
+        db, project_id, [entry.id for entry in entries]
+    )
 
     return [
         EntryResponse(
@@ -496,6 +643,7 @@ async def list_codex_entries(
                 if entry.embedding is not None and entry.embedding_text_hash is not None
                 else "deferred"
             ),
+            relations=relations_by_entry.get(entry.id, []),
         )
         for entry in entries
     ]
@@ -865,6 +1013,116 @@ async def remove_codex_alias(
     return AliasMutationResponse(
         alias=request.alias, changed=removed, embedding_status=embedding_status
     )
+
+
+@router.post(
+    "/{project_id}/entries/{entry_id}/relations",
+    response_model=RelationResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+async def create_codex_relation(
+    project_id: str,
+    entry_id: str,
+    request: RelationCreateRequest,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> RelationResponse:
+    await verify_project_permission(project_id, ProjectPermission.MANAGE_CODEX, user, db)
+    source = await _load_entry(db, project_id, entry_id)
+    target = await _relation_target(db, project_id, source, request.target_id)
+    relation_type = request.relation_type.strip()
+    if not relation_type:
+        raise HTTPException(status_code=422, detail={"code": "CODEX_RELATION_TYPE_REQUIRED"})
+    await _ensure_unique_relation(
+        db,
+        source_id=source.id,
+        target_id=target.id,
+        relation_type=relation_type,
+    )
+    relation = CodexRelation(
+        id=f"cr_{secrets.token_hex(12)}",
+        from_id=source.id,
+        to_id=target.id,
+        relation_type=relation_type,
+        description=request.description.strip() if request.description else None,
+    )
+    db.add(relation)
+    await db.commit()
+    return _relation_response(relation, target)
+
+
+@router.patch(
+    "/{project_id}/entries/{entry_id}/relations/{relation_id}",
+    response_model=RelationResponse,
+)
+async def update_codex_relation(
+    project_id: str,
+    entry_id: str,
+    relation_id: str,
+    request: RelationUpdateRequest,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> RelationResponse:
+    await verify_project_permission(project_id, ProjectPermission.MANAGE_CODEX, user, db)
+    source = await _load_entry(db, project_id, entry_id)
+    relation = (
+        await db.execute(
+            select(CodexRelation)
+            .where(CodexRelation.id == relation_id, CodexRelation.from_id == source.id)
+            .with_for_update()
+        )
+    ).scalar_one_or_none()
+    if relation is None:
+        raise HTTPException(status_code=404, detail={"code": "CODEX_RELATION_NOT_FOUND"})
+    changes = request.model_dump(exclude_unset=True)
+    if not changes:
+        raise HTTPException(status_code=422, detail={"code": "CODEX_RELATION_NO_CHANGES"})
+    target_id = changes.get("target_id", relation.to_id)
+    target = await _relation_target(db, project_id, source, target_id)
+    relation_type = changes.get("relation_type", relation.relation_type)
+    relation_type = relation_type.strip() if relation_type else ""
+    if not relation_type:
+        raise HTTPException(status_code=422, detail={"code": "CODEX_RELATION_TYPE_REQUIRED"})
+    await _ensure_unique_relation(
+        db,
+        source_id=source.id,
+        target_id=target.id,
+        relation_type=relation_type,
+        exclude_id=relation.id,
+    )
+    relation.to_id = target.id
+    relation.relation_type = relation_type
+    if "description" in changes:
+        description = changes["description"]
+        relation.description = description.strip() if description else None
+    await db.commit()
+    return _relation_response(relation, target)
+
+
+@router.delete(
+    "/{project_id}/entries/{entry_id}/relations/{relation_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+)
+async def delete_codex_relation(
+    project_id: str,
+    entry_id: str,
+    relation_id: str,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> None:
+    await verify_project_permission(project_id, ProjectPermission.MANAGE_CODEX, user, db)
+    source = await _load_entry(db, project_id, entry_id)
+    relation = (
+        await db.execute(
+            select(CodexRelation)
+            .where(CodexRelation.id == relation_id, CodexRelation.from_id == source.id)
+            .with_for_update()
+        )
+    ).scalar_one_or_none()
+    if relation is None:
+        raise HTTPException(status_code=404, detail={"code": "CODEX_RELATION_NOT_FOUND"})
+    await db.delete(relation)
+    await db.commit()
 
 
 @router.post("/{project_id}/backfill-embeddings", response_model=BackfillResponse)

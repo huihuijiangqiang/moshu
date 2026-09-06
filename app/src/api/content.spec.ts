@@ -106,6 +106,37 @@ describe('codexFromDto', () => {
     expect(entry.facts).toEqual([{ label: '货币', value: '一贯等于一千文' }])
   })
 
+  it('prefers real relation rows and maps both directions', () => {
+    const entry = codexFromDto({
+      id: 'cx-1', project_id: 'p1', kind: 'character', name: '许知微', description: '女主',
+      aliases: [], attrs: {
+        relations: [{ target_id: 'legacy', name: '旧关系', relation: '旧类型', note: '不应采用' }]
+      }, resident: true, status: 'confirmed', ref_chapters: [], conflicts: [],
+      planted_at: null, expected_by: null,
+      relations: [
+        {
+          id: 'rel-out', target_id: 'cx-2', target_name: '青河村', target_kind: 'location',
+          relation_type: '居住于', description: '村东小院', direction: 'outgoing'
+        },
+        {
+          id: 'rel-in', target_id: 'cx-3', target_name: '周何氏', target_kind: 'character',
+          relation_type: '共同持家', description: null, direction: 'incoming'
+        }
+      ]
+    })
+
+    expect(entry.relations).toEqual([
+      {
+        id: 'rel-out', targetId: 'cx-2', targetKind: 'place', direction: 'outgoing',
+        name: '青河村', relation: '居住于', note: '村东小院'
+      },
+      {
+        id: 'rel-in', targetId: 'cx-3', targetKind: 'character', direction: 'incoming',
+        name: '周何氏', relation: '共同持家', note: undefined
+      }
+    ])
+  })
+
   it('maps the complete foreshadow lifecycle', () => {
     const entry = codexFromDto({
       id: 'p1-cx-foreshadow-01', project_id: 'p1', kind: 'event', name: '旧井铜钥匙',
