@@ -16,7 +16,7 @@ import { useProjectNavigation } from '@/composables/use-project-navigation'
 import { useProjectStore } from '@/stores/project'
 import { useShellStore } from '@/stores/shell'
 import { BodyConflictError, contentApi } from '@/api/content'
-import { generationDraftApi, streamChapter, streamInline } from '@/api/generation'
+import { GenerationError, generationDraftApi, streamChapter, streamInline } from '@/api/generation'
 import { ReviewConflictError, reviewApi } from '@/api/reviews'
 import type { GenerationControls, GenerationDraftDetail, GenerationDraftSummary, InlineGenerateOptions, ReviewAnchor, ReviewComment, ReviewRound, ReviewWorkspace, TextReplacementRun } from '@/types'
 
@@ -31,6 +31,8 @@ const html = ref(store.active?.content ?? '')
 const chapterId = computed(() => store.activeId)
 const generating = ref(false)
 const generationError = ref('')
+const generationErrorCode = ref('')
+const lastGenerationOptions = ref<GenerationControls | null>(null)
 const paneTab = ref<'body' | 'outline'>('body')
 const versionOpen = ref(false)
 const replacementOpen = ref(false)
@@ -595,7 +597,9 @@ async function handleDraftAction(event: Event) {
 function generate(options: GenerationControls) {
   if (!editor.value || generating.value || mobileReadOnly.value) return
   if (!store.activeId) return
+  lastGenerationOptions.value = { ...options }
   generationError.value = ''
+  generationErrorCode.value = ''
   generating.value = true
   editor.value.chain().focus('end').insertAiDraft().run()
   abort = streamChapter(
@@ -612,7 +616,9 @@ function generate(options: GenerationControls) {
         void loadGenerationDrafts()
       },
       onError: (error) => {
-        generationError.value = error instanceof Error ? error.message : '生成失败，请重试'
+        const failure = describeGenerationError(error, '生成失败，请重试')
+        generationError.value = failure.message
+        generationErrorCode.value = failure.code
         editor.value?.commands.setDraftStatus('pending')
         generating.value = false
         abort = null
@@ -628,6 +634,26 @@ function stop() {
   generating.value = false
   editor.value?.commands.setDraftStatus('pending')
   stoppedDraftTimer = setTimeout(() => void loadGenerationDrafts(), 500)
+}
+
+function describeGenerationError(error: unknown, fallback: string) {
+  if (error instanceof GenerationError) {
+    return { code: error.code, message: error.message }
+  }
+  if (error instanceof TypeError || (error instanceof Error && /fetch|network|连接/i.test(error.message))) {
+    return { code: 'network_error', message: '网络连接失败，已保留已生成内容。检查网络后可以重试。' }
+  }
+  return { code: 'generation_error', message: error instanceof Error && error.message ? error.message : fallback }
+}
+
+function retryGeneration() {
+  if (lastGenerationOptions.value && !generating.value) generate({ ...lastGenerationOptions.value })
+}
+
+function downgradeGeneration() {
+  if (lastGenerationOptions.value && !generating.value) {
+    generate({ ...lastGenerationOptions.value, model: 'basic' })
+  }
 }
 
 function runInline(action: string) {
@@ -668,7 +694,9 @@ function runInline(action: string) {
         void loadGenerationDrafts()
       },
       onError: (error) => {
-        generationError.value = error instanceof Error ? error.message : '行内生成失败，请重试'
+        const failure = describeGenerationError(error, '行内生成失败，请重试')
+        generationError.value = failure.message
+        generationErrorCode.value = failure.code
         editor.value?.commands.setDraftStatus('pending')
         generating.value = false
         abort = null
@@ -841,6 +869,8 @@ function editChapterPlan() {
         v-if="shell.rightOpen"
         :generating="generating"
         :generation-error="generationError"
+        :generation-error-code="generationErrorCode"
+        :last-generation-options="lastGenerationOptions"
         :drafts="generationDrafts"
         :drafts-loading="draftsLoading"
         :review-workspace="reviewWorkspace"
@@ -851,6 +881,8 @@ function editChapterPlan() {
         :review-submit-disabled-reason="reviewSubmitDisabledReason"
         :mobile-read-only="mobileReadOnly"
         @generate="generate"
+        @retry-generation="retryGeneration"
+        @downgrade-generation="downgradeGeneration"
         @stop="stop"
         @insert-draft="insertGenerationDraft"
         @reject-draft="rejectGenerationDraft"

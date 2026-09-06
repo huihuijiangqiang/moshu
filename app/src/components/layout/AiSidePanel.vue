@@ -21,6 +21,8 @@ import type { GenerationDraftDetail, GenerationDraftSummary, ReviewAnchor, Revie
 const props = defineProps<{
   generating?: boolean
   generationError?: string
+  generationErrorCode?: string
+  lastGenerationOptions?: GenerationControls | null
   drafts?: GenerationDraftSummary[]
   draftsLoading?: boolean
   reviewWorkspace?: ReviewWorkspace
@@ -33,6 +35,8 @@ const props = defineProps<{
 }>()
 const emit = defineEmits<{
   generate: [options: GenerationControls]
+  retryGeneration: []
+  downgradeGeneration: []
   stop: []
   insertDraft: [draft: GenerationDraftDetail]
   rejectDraft: [id: string]
@@ -237,6 +241,32 @@ const LAYER_LABEL: Record<string, string> = {
 }
 
 const cost = computed(() => (model.value === 'advanced' ? 35 : 18))
+const canRetryGeneration = computed(() => Boolean(props.generationError && props.lastGenerationOptions))
+const canDowngradeGeneration = computed(() => Boolean(
+  canRetryGeneration.value && (
+    props.lastGenerationOptions?.model === 'advanced'
+    || props.generationErrorCode === 'INSUFFICIENT_CREDITS'
+    || props.generationErrorCode === 'insufficient_credits'
+  )
+))
+const generationErrorLabel = computed(() => {
+  switch (props.generationErrorCode) {
+    case 'AUTH_REQUIRED':
+    case 'TOKEN_EXPIRED':
+    case 'unauthorized':
+      return '登录状态已失效'
+    case 'INSUFFICIENT_CREDITS':
+    case 'insufficient_credits':
+      return '积分不足'
+    case 'GENERATION_CONFLICT':
+    case 'generation_conflict':
+      return '版本冲突'
+    case 'network_error':
+      return '网络连接失败'
+    default:
+      return '生成未完成'
+  }
+})
 const styleName = computed(() => {
   const id = project.project?.styleProfile
   return id ? styles.byId.get(id)?.name ?? '已绑定风格档' : '未设置'
@@ -477,9 +507,33 @@ function forwardReviewDecision(round: ReviewRound, decision: 'approved' | 'chang
           type="button"
           @click="openPromptPreview"
         >预览提示词</button>
-        <p v-if="props.generationError" :style="{ margin: 'var(--u2) 0 0', color: 'var(--alert-ink)', fontSize: 'var(--fs-sm)', lineHeight: 1.6 }">
-          {{ props.generationError }}
-        </p>
+        <div v-if="props.generationError" class="generation-recovery" role="alert">
+          <div class="generation-recovery-title">
+            <strong>{{ generationErrorLabel }}</strong>
+          </div>
+          <p>{{ props.generationError }}</p>
+          <div class="generation-recovery-actions">
+            <button
+              v-if="canRetryGeneration"
+              class="wk-btn wk-btn-xs"
+              type="button"
+              :disabled="props.generating"
+              @click="emit('retryGeneration')"
+            >重试</button>
+            <button
+              v-if="canDowngradeGeneration"
+              class="wk-btn wk-btn-xs"
+              type="button"
+              :disabled="props.generating"
+              data-primary="true"
+              @click="emit('downgradeGeneration')"
+            >切换基础档重试</button>
+            <button class="wk-btn wk-btn-xs" type="button" @click="tab = 'drafts'">
+              查看已保留片段
+            </button>
+          </div>
+          <small>失败内容会保留在“候选”中，确认后再放入正文。</small>
+        </div>
       </section>
 
       <!-- 生成参数 -->
@@ -834,6 +888,20 @@ function forwardReviewDecision(round: ReviewRound, decision: 'approved' | 'chang
 }
 .draft-warning { margin: 0; color: var(--alert-ink); font-size: var(--fs-sm); line-height: 1.6; }
 .draft-actions { display: flex; justify-content: flex-end; gap: var(--u2); }
+.generation-recovery {
+  display: grid;
+  gap: 7px;
+  margin-top: var(--u3);
+  padding: var(--u3);
+  color: var(--alert-ink);
+  background: var(--alert-soft);
+  border-left: 3px solid var(--alert);
+}
+.generation-recovery-title { display: flex; align-items: baseline; gap: var(--u2); }
+.generation-recovery-title strong { color: var(--alert-ink); font-size: var(--fs-sm); }
+.generation-recovery p { margin: 0; font-size: var(--fs-sm); line-height: 1.65; overflow-wrap: anywhere; }
+.generation-recovery-actions { display: flex; flex-wrap: wrap; gap: var(--u2); }
+.generation-recovery small { color: var(--ink-3); font-size: var(--fs-xs); line-height: 1.5; }
 .quick-notes { padding: var(--u3); }
 .quick-note-form { padding-bottom: var(--u4); border-bottom: var(--hair) solid var(--line-strong); }
 .quick-note-form textarea { width: 100%; min-height: 118px; padding: var(--u3); resize: vertical; line-height: 1.7; }

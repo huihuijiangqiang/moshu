@@ -121,29 +121,42 @@ async function mockStream(signal: AbortSignal, h: StreamHandlers) {
   }
 }
 
-async function responseError(res: Response): Promise<GenerationError> {
+export async function responseError(res: Response): Promise<GenerationError> {
   const text = await res.text()
+  const statusCode = res.status === 401
+    ? 'AUTH_REQUIRED'
+    : res.status === 402
+      ? 'INSUFFICIENT_CREDITS'
+      : res.status === 409
+        ? 'GENERATION_CONFLICT'
+        : undefined
   try {
     const payload = JSON.parse(text) as {
       detail?: string | { code?: string; message?: string; required?: number; remaining?: number }
     }
     const detail = payload.detail
-    if (typeof detail === 'object' && detail?.code === 'INSUFFICIENT_CREDITS') {
+    if (typeof detail === 'object' && (detail?.code === 'INSUFFICIENT_CREDITS' || statusCode === 'INSUFFICIENT_CREDITS')) {
       return new GenerationError(
-        detail.code,
+        detail.code ?? statusCode ?? 'INSUFFICIENT_CREDITS',
         `积分不足：本次最多需要 ${detail.required ?? 0}，当前剩余 ${detail.remaining ?? 0}。`,
         res.status
       )
     }
     const message = typeof detail === 'string' ? detail : detail?.message
     return new GenerationError(
-      typeof detail === 'object' && detail?.code ? detail.code : 'http_error',
+      typeof detail === 'object' && detail?.code ? detail.code : statusCode ?? 'http_error',
       message || `生成请求失败（${res.status}）`,
       res.status
     )
   } catch {
-    return new GenerationError('http_error', text || `生成请求失败（${res.status}）`, res.status)
+    return new GenerationError(statusCode ?? 'http_error', text || `生成请求失败（${res.status}）`, res.status)
   }
+}
+
+export function normalizeGenerationError(error: unknown): GenerationError | Error {
+  if (error instanceof GenerationError) return error
+  if (error instanceof TypeError) return new GenerationError('network_error', '网络连接失败，请检查网络后重试。')
+  return error instanceof Error ? error : new Error('生成失败，请重试')
 }
 
 async function sseStream(
@@ -203,6 +216,8 @@ async function sseStream(
     }
     if (!completed) throw new GenerationError('incomplete_stream', '生成连接提前结束，请重试')
   } catch (error) {
-    if (!signal.aborted) h.onError?.(error)
+    if (!signal.aborted) {
+      h.onError?.(normalizeGenerationError(error))
+    }
   }
 }

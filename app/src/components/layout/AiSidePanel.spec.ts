@@ -131,6 +131,35 @@ describe('writing reference side panel', () => {
     wrapper.unmount()
   })
 
+  it('offers retry and downgrade actions for a failed generation', async () => {
+    const { wrapper } = await mountPanel()
+    await wrapper.setProps({
+      generationError: '积分不足：本次最多需要 35，当前剩余 2。',
+      generationErrorCode: 'INSUFFICIENT_CREDITS',
+      lastGenerationOptions: {
+        targetWords: 3000,
+        model: 'advanced',
+        useStyleProfile: true,
+        dialogueDensity: 'high'
+      }
+    })
+    const aiTab = wrapper.findAll('.wk-tab').find((button) => button.text() === 'AI')
+    if (!aiTab) throw new Error('AI tab not found')
+    await aiTab.trigger('click')
+    expect(wrapper.get('.generation-recovery').text()).toContain('积分不足')
+    const actions = wrapper.findAll('.generation-recovery-actions button')
+    expect(actions.map((button) => button.text())).toEqual(['重试', '切换基础档重试', '查看已保留片段'])
+
+    await actions[0]!.trigger('click')
+    await actions[1]!.trigger('click')
+    expect(wrapper.emitted('retryGeneration')).toHaveLength(1)
+    expect(wrapper.emitted('downgradeGeneration')).toHaveLength(1)
+
+    await actions[2]!.trigger('click')
+    expect(wrapper.find('.wk-tab[aria-selected="true"]').text()).toContain('候选')
+    wrapper.unmount()
+  })
+
   it('turns the mobile panel into persistent private quick notes', async () => {
     const pinia = createPinia()
     setActivePinia(pinia)
