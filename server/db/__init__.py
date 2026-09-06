@@ -4,7 +4,7 @@
 
 from db.base import Base, TimestampMixin
 from db.models_admin import AdminAuditLog, AuthSession, SystemSetting
-from db.models_codex import CodexAlias, CodexEntry, CodexRef, CodexRelation
+from db.models_codex import CodexAlias, CodexEntry, CodexRef, CodexRelation, CodexStateChange
 from db.models_consistency import (
     ChapterOutlineRevision,
     ChapterOutlineState,
@@ -61,6 +61,7 @@ __all__ = [
     "CodexAlias",
     "CodexRef",
     "CodexRelation",
+    "CodexStateChange",
     "CodexEmbeddingJob",
     # Guard
     "GuardIssue",

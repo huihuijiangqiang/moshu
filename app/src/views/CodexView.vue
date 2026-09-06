@@ -4,7 +4,7 @@ import { useRouter } from 'vue-router'
 import { useCodexStore, codexEntrySearchText } from '@/stores/codex'
 import { useProjectStore } from '@/stores/project'
 import { useShellStore } from '@/stores/shell'
-import { CODEX_KIND_LABEL, type CharacterProfile, type CodexEntry, type CodexEntryDraft, type CodexKind } from '@/types'
+import { CODEX_KIND_LABEL, type CharacterProfile, type CodexEntry, type CodexEntryDraft, type CodexKind, type CodexStateDraft, type CodexStateHistoryItem, type CodexStateSource } from '@/types'
 import { useProjectNavigation } from '@/composables/use-project-navigation'
 import { embeddingApi, type EmbeddingJob } from '@/api/embedding'
 import { contentApi } from '@/api/content'
@@ -34,8 +34,27 @@ const actionError = ref('')
 const characterStatistics = ref<CharacterStatistics | null>(null)
 const characterStatisticsLoading = ref(false)
 const characterStatisticsError = ref('')
+const stateHistory = ref<CodexStateHistoryItem[]>([])
+const stateHistoryLoading = ref(false)
+const stateHistoryError = ref('')
+const stateFormOpen = ref(false)
+const stateEditing = ref<CodexStateHistoryItem | null>(null)
+const stateFormBusy = ref(false)
+const stateFormError = ref('')
+const stateDeleteTarget = ref<CodexStateHistoryItem | null>(null)
+const stateDeleteBusy = ref(false)
+const stateDeleteError = ref('')
+const stateForm = ref<CodexStateDraft>({ chapterId: '', stateKey: '', value: '', note: '' })
 let embeddingTimer: ReturnType<typeof setTimeout> | null = null
 let characterStatisticsRequest = 0
+let stateHistoryRequest = 0
+
+const stateSourceLabels: Record<CodexStateSource, string> = {
+  author: '作者记录',
+  extracted: '正文抽取',
+  outline: '章纲',
+  resolution: '守卫处置'
+}
 
 interface CodexFormState {
   kind: CodexKind
@@ -191,6 +210,44 @@ watch(
   { immediate: true }
 )
 
+async function loadStateHistory(projectId: string, entryId: string) {
+  const requestId = ++stateHistoryRequest
+  stateHistoryLoading.value = true
+  stateHistoryError.value = ''
+  try {
+    const result = await contentApi.listCodexStateHistory(projectId, entryId)
+    if (requestId === stateHistoryRequest) stateHistory.value = result
+  } catch {
+    if (requestId === stateHistoryRequest) stateHistoryError.value = '状态沿革加载失败，请稍后重试。'
+  } finally {
+    if (requestId === stateHistoryRequest) stateHistoryLoading.value = false
+  }
+}
+
+async function reloadStateHistory() {
+  const projectId = project.loadedProjectId
+  const entry = selected.value
+  if (!projectId || !entry || entry.status !== 'confirmed') return
+  await loadStateHistory(projectId, entry.id)
+}
+
+watch(
+  [() => selected.value?.id, () => selected.value?.status, () => project.loadedProjectId],
+  ([entryId, status, projectId]) => {
+    ++stateHistoryRequest
+    stateHistory.value = []
+    stateHistoryError.value = ''
+    stateFormOpen.value = false
+    stateDeleteTarget.value = null
+    if (!entryId || status !== 'confirmed' || !projectId) {
+      stateHistoryLoading.value = false
+      return
+    }
+    void loadStateHistory(projectId, entryId)
+  },
+  { immediate: true }
+)
+
 function pickKind(kind: CodexKind) {
   scope.value = 'kind'
   codex.kind = kind
@@ -268,6 +325,105 @@ function openChapter(index: number) {
 
 function openTrackedChapter(chapterId: string) {
   router.push({ path: toProject('write'), query: { chapter: chapterId } })
+}
+
+function openCreateState() {
+  const fallbackChapter = project.activeId ?? project.chapters.at(-1)?.id ?? project.chapters[0]?.id ?? ''
+  stateEditing.value = null
+  stateForm.value = { chapterId: fallbackChapter, stateKey: '', value: '', note: '' }
+  stateFormError.value = ''
+  stateFormOpen.value = true
+}
+
+function openEditState(item: CodexStateHistoryItem) {
+  if (!item.editable) return
+  stateEditing.value = item
+  stateForm.value = {
+    chapterId: item.chapterId,
+    stateKey: item.stateKey,
+    value: item.value,
+    note: item.note ?? ''
+  }
+  stateFormError.value = ''
+  stateFormOpen.value = true
+}
+
+async function submitState() {
+  const projectId = project.loadedProjectId
+  const entry = selected.value
+  if (!projectId || !entry || entry.status !== 'confirmed') {
+    stateFormError.value = '当前设定尚未加载完成。'
+    return
+  }
+  if (!stateForm.value.chapterId || !stateForm.value.stateKey.trim() || !stateForm.value.value.trim()) {
+    stateFormError.value = '请完整填写章节、状态项和状态值。'
+    return
+  }
+  stateFormBusy.value = true
+  stateFormError.value = ''
+  try {
+    if (stateEditing.value) {
+      await contentApi.updateCodexStateChange(
+        projectId,
+        entry.id,
+        stateEditing.value.id,
+        stateEditing.value.revision ?? 0,
+        stateForm.value
+      )
+    } else {
+      await contentApi.createCodexStateChange(projectId, entry.id, stateForm.value)
+    }
+    stateFormOpen.value = false
+    await reloadStateHistory()
+  } catch (error) {
+    if (error instanceof Error && error.message === 'codex_state_revision_conflict') {
+      await reloadStateHistory()
+      const latest = stateHistory.value.find((item) => item.id === stateEditing.value?.id && item.editable)
+      if (latest) {
+        openEditState(latest)
+        stateFormError.value = '这条记录已在别处更新，表单已换成最新值。请核对后再保存。'
+      } else {
+        stateFormOpen.value = false
+        stateHistoryError.value = '这条状态记录已在别处删除。'
+      }
+    } else if (error instanceof Error && error.message === 'invalid_codex_state') {
+      stateFormError.value = '同一章节不能重复记录相同状态项。'
+    } else {
+      stateFormError.value = '状态记录保存失败，请稍后重试。'
+    }
+  } finally {
+    stateFormBusy.value = false
+  }
+}
+
+function openDeleteState(item: CodexStateHistoryItem) {
+  stateDeleteTarget.value = item
+  stateDeleteError.value = ''
+}
+
+async function deleteState() {
+  const projectId = project.loadedProjectId
+  const entry = selected.value
+  const item = stateDeleteTarget.value
+  if (!projectId || !entry || !item || item.revision === undefined) return
+  stateDeleteBusy.value = true
+  stateDeleteError.value = ''
+  try {
+    await contentApi.deleteCodexStateChange(projectId, entry.id, item.id, item.revision)
+    stateDeleteTarget.value = null
+    await reloadStateHistory()
+  } catch (error) {
+    if (error instanceof Error && error.message === 'codex_state_revision_conflict') {
+      await reloadStateHistory()
+      stateDeleteTarget.value = stateHistory.value.find((row) => row.id === item.id && row.editable) ?? null
+      if (stateDeleteTarget.value) stateDeleteError.value = '这条记录已在别处更新。请核对最新内容后再次确认。'
+      else stateHistoryError.value = '这条状态记录已在别处删除。'
+    } else {
+      stateDeleteError.value = '状态记录删除失败，请稍后重试。'
+    }
+  } finally {
+    stateDeleteBusy.value = false
+  }
 }
 
 function openCreate() {
@@ -611,6 +767,40 @@ async function deleteSelected() {
             </dl>
           </section>
 
+          <section v-if="selected.status === 'confirmed'" class="codex-section codex-state-history" aria-labelledby="codex-state-title">
+            <div class="codex-section-heading codex-state-heading">
+              <div><h3 id="codex-state-title">状态沿革</h3><p>按章节记录会影响后续写作的变化</p></div>
+              <button class="wk-btn" type="button" :disabled="!project.chapters.length" @click="openCreateState">新增状态</button>
+            </div>
+            <p v-if="stateHistoryLoading" class="codex-tracking-state" role="status">正在整理章节状态…</p>
+            <div v-else-if="stateHistoryError" class="codex-state-load-error" role="alert">
+              <p>{{ stateHistoryError }}</p><button class="wk-btn" type="button" @click="reloadStateHistory">重试</button>
+            </div>
+            <div v-else-if="stateHistory.length" class="codex-state-timeline" aria-label="设定状态沿革">
+              <article v-for="item in stateHistory" :key="item.id" class="codex-state-row" :data-state-id="item.id" :data-source="item.source">
+                <button class="codex-state-chapter" type="button" :aria-label="`打开第 ${item.chapterIndex} 章`" @click="openTrackedChapter(item.chapterId)">
+                  <span>{{ String(item.chapterIndex).padStart(3, '0') }}</span>
+                  <small>{{ item.chapterTitle || '未命名章节' }}</small>
+                </button>
+                <div class="codex-state-copy">
+                  <div class="codex-state-meta">
+                    <strong>{{ item.stateKey }}</strong>
+                    <span :data-source="item.source">{{ stateSourceLabels[item.source] }}</span>
+                    <span v-if="item.polarity === 'negative'">否定事实</span>
+                    <span v-if="item.confidence !== undefined">置信度 {{ Math.round(item.confidence * 100) }}%</span>
+                  </div>
+                  <p>{{ item.value }}</p>
+                  <small v-if="item.note" class="codex-state-note">{{ item.note }}</small>
+                </div>
+                <div v-if="item.editable" class="codex-state-actions">
+                  <button type="button" @click="openEditState(item)">编辑</button>
+                  <button type="button" @click="openDeleteState(item)">删除</button>
+                </div>
+              </article>
+            </div>
+            <p v-else class="codex-state-empty">还没有章节状态。人物迁居、物品易主、身份变化等发生时，在对应章节补一条记录。</p>
+          </section>
+
           <section v-if="selected.relations?.length" class="codex-section" aria-labelledby="codex-relations-title">
             <div class="codex-section-heading"><h3 id="codex-relations-title">关联设定</h3><p>人物与世界如何彼此施力</p></div>
             <div class="codex-relations">
@@ -689,6 +879,35 @@ async function deleteSelected() {
 
       <p v-else class="codex-empty">从左侧选择一条设定。</p>
     </main>
+
+    <div v-if="stateFormOpen" class="codex-dialog-backdrop" @click.self="stateFormOpen = false">
+      <section class="codex-dialog codex-state-dialog" role="dialog" aria-modal="true" aria-labelledby="codex-state-form-title">
+        <header>
+          <div><span>{{ stateEditing ? 'EDIT STATE' : 'NEW STATE' }}</span><h2 id="codex-state-form-title">{{ stateEditing ? '编辑状态记录' : '新增状态记录' }}</h2></div>
+          <button type="button" aria-label="关闭" title="关闭" @click="stateFormOpen = false">×</button>
+        </header>
+        <form @submit.prevent="submitState">
+          <div class="codex-form-section codex-form-grid">
+            <label class="codex-form-wide"><span>发生章节</span><select v-model="stateForm.chapterId" class="wk-input" required><option value="" disabled>选择章节</option><option v-for="chapter in project.chapters" :key="chapter.id" :value="chapter.id">第 {{ chapter.index }} 章 · {{ chapter.title || '未命名章节' }}</option></select></label>
+            <label><span>状态项</span><input v-model="stateForm.stateKey" class="wk-input" maxlength="100" placeholder="例如：所在地点" required></label>
+            <label><span>状态值</span><input v-model="stateForm.value" class="wk-input" maxlength="2000" placeholder="例如：青石村东院" required></label>
+            <label class="codex-form-wide"><span>写作备注</span><textarea v-model="stateForm.note" class="wk-input" maxlength="2000" rows="4" placeholder="可选。记录后续正文需要遵守的边界。" /></label>
+          </div>
+          <p v-if="stateFormError" class="codex-dialog-error" role="alert">{{ stateFormError }}</p>
+          <footer><span>生成后文章节时会使用该状态，不会泄露未来章节记录。</span><div><button class="wk-btn" type="button" :disabled="stateFormBusy" @click="stateFormOpen = false">取消</button><button class="wk-btn" data-primary="true" type="submit" :disabled="stateFormBusy">{{ stateFormBusy ? '保存中…' : '保存状态' }}</button></div></footer>
+        </form>
+      </section>
+    </div>
+
+    <div v-if="stateDeleteTarget" class="codex-dialog-backdrop" @click.self="stateDeleteTarget = null">
+      <section class="codex-delete-dialog" role="alertdialog" aria-modal="true" aria-labelledby="codex-state-delete-title">
+        <span class="wk-label">REMOVE STATE</span>
+        <h2 id="codex-state-delete-title">删除“{{ stateDeleteTarget.stateKey }}”记录</h2>
+        <p>删除后，生成上下文不再使用这条作者状态。正文抽取记录不会受到影响。</p>
+        <p v-if="stateDeleteError" class="codex-dialog-error" role="alert">{{ stateDeleteError }}</p>
+        <div><button class="wk-btn" type="button" :disabled="stateDeleteBusy" @click="stateDeleteTarget = null">取消</button><button class="wk-btn codex-danger-button" type="button" :disabled="stateDeleteBusy" @click="deleteState">{{ stateDeleteBusy ? '删除中…' : '确认删除' }}</button></div>
+      </section>
+    </div>
 
     <div v-if="formOpen" class="codex-dialog-backdrop" @click.self="formOpen = false">
       <section class="codex-dialog" role="dialog" aria-modal="true" aria-labelledby="codex-form-title">
@@ -788,6 +1007,31 @@ async function deleteSelected() {
 .codex-track-sources small { padding: 2px 5px; border: var(--hair) solid var(--line-strong); color: var(--ink-3); font-size: 10px; white-space: nowrap; }
 .codex-track-sources small[data-source='pov'] { border-color: var(--primary); color: var(--primary); font-weight: 700; }
 .codex-track-words { text-align: right; white-space: nowrap; }
+.codex-state-heading { align-items: end; }
+.codex-state-heading > div { min-width: 0; }
+.codex-state-heading > div p { margin: 4px 0 0; color: var(--ink-4); font-size: var(--fs-xs); }
+.codex-state-heading > .wk-btn { flex: none; }
+.codex-state-load-error { min-height: 58px; display: flex; align-items: center; justify-content: space-between; gap: var(--u3); margin: 0; padding: var(--u3) 0; border-block: var(--hair) solid var(--line); }
+.codex-state-load-error p { margin: 0; color: var(--alert-ink); font-size: var(--fs-sm); }
+.codex-state-timeline { position: relative; border-top: var(--hair) solid var(--line-strong); }
+.codex-state-row { min-width: 0; display: grid; grid-template-columns: minmax(92px, 118px) minmax(0, 1fr) auto; gap: var(--u4); padding: 16px 0; border-bottom: var(--hair) solid var(--line); }
+.codex-state-chapter { position: relative; min-width: 0; display: grid; align-content: start; gap: 4px; padding: 1px var(--u4) 0 0; border: 0; border-right: var(--hair) solid var(--line-strong); color: var(--ink-2); background: transparent; text-align: left; cursor: pointer; }
+.codex-state-chapter::after { content: ''; position: absolute; top: 5px; right: -4px; width: 7px; height: 7px; border: 2px solid var(--paper); border-radius: 50%; background: var(--primary); box-shadow: 0 0 0 var(--hair) var(--primary); }
+.codex-state-chapter:hover span, .codex-state-chapter:hover small { color: var(--primary); }
+.codex-state-chapter span { color: var(--ink); font: 700 12px/1.2 var(--font-mono); }
+.codex-state-chapter small { overflow: hidden; color: var(--ink-4); font-size: 10px; line-height: 1.4; text-overflow: ellipsis; white-space: nowrap; }
+.codex-state-copy { min-width: 0; }
+.codex-state-meta { min-width: 0; display: flex; flex-wrap: wrap; align-items: center; gap: 5px; }
+.codex-state-meta strong { margin-right: 3px; color: var(--ink); font-size: var(--fs-sm); }
+.codex-state-meta span { padding: 1px 5px; border: var(--hair) solid var(--line); color: var(--ink-4); font-size: 9px; line-height: 1.5; }
+.codex-state-meta span[data-source='author'] { border-color: var(--primary-line); color: var(--primary); }
+.codex-state-copy > p { margin: 7px 0 0; color: var(--ink-2); font-family: var(--font-prose); font-size: 15px; line-height: 1.68; overflow-wrap: anywhere; }
+.codex-state-note { display: block; margin-top: 7px; padding-left: 9px; border-left: 2px solid var(--line-strong); color: var(--ink-4); font-size: 11px; line-height: 1.55; overflow-wrap: anywhere; }
+.codex-state-actions { display: flex; align-items: flex-start; gap: 2px; }
+.codex-state-actions button { min-height: 25px; padding: 0 6px; border: 0; color: var(--ink-4); background: transparent; font-size: 10px; cursor: pointer; }
+.codex-state-actions button:hover { color: var(--primary); background: var(--primary-soft); }
+.codex-state-empty { margin: 0; padding: var(--u4) 0; border-block: var(--hair) solid var(--line); color: var(--ink-3); font-size: var(--fs-sm); line-height: 1.7; }
+.codex-state-dialog { width: min(620px, 100%); }
 .codex-dialog-backdrop { position: fixed; inset: 0; z-index: 80; display: grid; place-items: center; padding: 18px; background: rgb(20 24 25 / 55%); }
 .codex-dialog { width: min(780px, 100%); max-height: calc(100vh - 36px); display: grid; grid-template-rows: auto minmax(0, 1fr); overflow: hidden; border: var(--hair) solid var(--line-strong); border-radius: 4px; background: var(--paper); box-shadow: 0 18px 56px rgb(0 0 0 / 24%); }
 .codex-dialog > header { min-height: 72px; display: flex; align-items: center; justify-content: space-between; padding: 14px 22px; border-bottom: 2px solid var(--ink); }
@@ -826,6 +1070,10 @@ async function deleteSelected() {
   .codex-character-track > button { grid-template-columns: 36px minmax(0, 1fr) auto; gap: var(--u2); }
   .codex-track-sources { grid-column: 2 / -1; justify-content: flex-start; }
   .codex-track-words { grid-column: 3; grid-row: 1; }
+  .codex-state-heading { display: flex; align-items: end; }
+  .codex-state-row { grid-template-columns: 72px minmax(0, 1fr); gap: var(--u3); }
+  .codex-state-chapter { padding-right: var(--u3); }
+  .codex-state-actions { grid-column: 2; justify-content: flex-start; }
   .codex-dialog-backdrop { padding: 0; place-items: stretch; }
   .codex-dialog { width: 100%; max-height: 100vh; border: 0; border-radius: 0; }
   .codex-form-basics, .codex-form-grid, .codex-form-arc { grid-template-columns: minmax(0, 1fr); }

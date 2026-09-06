@@ -1,7 +1,7 @@
 import { delay } from '../http'
 import * as seed from './seed'
 import { findShelfBook } from './shelf'
-import type { Chapter, ChapterPlanPatch, ChapterVersionDetail, ChapterVersionRestoreResult, ChapterVersionSummary, CharacterStatistics, CodexEntry, CodexEntryDraft, GuardIssue, GuardOverview, GuardResolutionAction, Project, ContextLayer, ProjectPatch, ProjectTrash, TemporalDecisionResult, TemporalReviewItem, TimelineBoard, TimelineEntry, TimelineEntryDraft, TimelineReflowResult } from '@/types'
+import type { Chapter, ChapterPlanPatch, ChapterVersionDetail, ChapterVersionRestoreResult, ChapterVersionSummary, CharacterStatistics, CodexEntry, CodexEntryDraft, CodexStateDraft, CodexStateHistoryItem, GuardIssue, GuardOverview, GuardResolutionAction, Project, ContextLayer, ProjectPatch, ProjectTrash, TemporalDecisionResult, TemporalReviewItem, TimelineBoard, TimelineEntry, TimelineEntryDraft, TimelineReflowResult } from '@/types'
 
 /** 内存态副本：mock 下的写操作要真的改变数据，否则界面行为是假的。 */
 const state = {
@@ -17,7 +17,52 @@ const trashStates = new Map<string, ProjectTrash>()
 const chapterVersionStates = new Map<string, ChapterVersionDetail[]>()
 const temporalReviewStates = new Map<string, TemporalReviewItem[]>()
 const timelineEntryStates = new Map<string, TimelineEntry[]>()
+const codexEntryStates = new Map<string, CodexEntry[]>()
+const codexStateHistoryStates = new Map<string, CodexStateHistoryItem[]>()
 let timelineEntrySequence = 1
+let codexStateSequence = 1
+
+function codexEntriesFor(projectId: string): CodexEntry[] {
+  if (projectId === state.project.id) return state.codex
+  const existing = codexEntryStates.get(projectId)
+  if (existing) return existing
+  const rows: CodexEntry[] = []
+  codexEntryStates.set(projectId, rows)
+  return rows
+}
+
+function confirmedCodexEntry(projectId: string, entryId: string): CodexEntry {
+  const entry = codexEntriesFor(projectId).find((item) => item.id === entryId && item.status === 'confirmed')
+  if (!entry) throw new Error('codex_state_not_found')
+  return entry
+}
+
+function codexStateHistoryFor(projectId: string, entryId: string): CodexStateHistoryItem[] {
+  const key = `${projectId}:${entryId}`
+  const existing = codexStateHistoryStates.get(key)
+  if (existing) return existing
+  const rows: CodexStateHistoryItem[] = projectId === 'p1' && entryId === 'c-shenyan' ? [
+    {
+      id: 'cs_mock_1', source: 'author', editable: true, stateKey: '兵器状态', value: '残锋已经折断，只剩半截',
+      polarity: 'positive', note: '后续动作描写不得把它当完整长剑使用。', chapterId: 'ch85', chapterIndex: 85,
+      chapterTitle: '雪夜叩关', revision: 1, createdAt: '2026-08-12T09:30:00Z'
+    },
+    {
+      id: 'claim:mock-1', source: 'extracted', editable: false, stateKey: '所在地点', value: '雁回关城南兵器坊',
+      polarity: 'positive', chapterId: 'ch87', chapterIndex: 87, chapterTitle: '断刃', bodyRevision: 3,
+      paragraphId: 'p-4', confidence: 0.94, createdAt: '2026-08-14T10:20:00Z'
+    }
+  ] : []
+  codexStateHistoryStates.set(key, rows)
+  return rows
+}
+
+function validateStateDraft(projectId: string, entryId: string, draft: CodexStateDraft): Chapter {
+  confirmedCodexEntry(projectId, entryId)
+  const chapter = chaptersFor(projectId).find((item) => item.id === draft.chapterId)
+  if (!chapter || !draft.stateKey.trim() || !draft.value.trim()) throw new Error('invalid_codex_state')
+  return chapter
+}
 
 function timelineEntriesFor(projectId: string): TimelineEntry[] {
   const existing = timelineEntryStates.get(projectId)
@@ -450,7 +495,7 @@ export const mockApi = {
 
   async listCodex(projectId = 'p1'): Promise<CodexEntry[]> {
     await delay()
-    return projectId === 'p1' ? structuredClone(state.codex) : []
+    return structuredClone(codexEntriesFor(projectId))
   },
 
   async createCodexEntry(projectId: string, draft: CodexEntryDraft): Promise<CodexEntry> {
@@ -472,13 +517,15 @@ export const mockApi = {
       foreshadowResolved: draft.foreshadowResolved,
       resolvedChapterId: draft.resolvedChapterId
     }
-    if (projectId === 'p1') state.codex.push(entry)
+    codexEntriesFor(projectId).push(entry)
     return structuredClone(entry)
   },
 
   async updateCodexEntry(id: string, draft: CodexEntryDraft): Promise<CodexEntry> {
     await delay(140)
-    const entry = state.codex.find((item) => item.id === id)
+    const entry = [state.codex, ...codexEntryStates.values()]
+      .flatMap((rows) => rows)
+      .find((item) => item.id === id)
     if (!entry) throw new Error('codex_entry_not_loaded')
     Object.assign(entry, {
       kind: draft.kind,
@@ -499,13 +546,93 @@ export const mockApi = {
 
   async confirmCodexEntry(id: string): Promise<void> {
     await delay(120)
-    const e = state.codex.find((x) => x.id === id)
+    const e = [state.codex, ...codexEntryStates.values()]
+      .flatMap((rows) => rows)
+      .find((item) => item.id === id)
     if (e) e.status = 'confirmed'
   },
 
   async dropCodexEntry(id: string): Promise<void> {
     await delay(120)
-    state.codex = state.codex.filter((x) => x.id !== id)
+    const primaryIndex = state.codex.findIndex((item) => item.id === id)
+    if (primaryIndex >= 0) {
+      state.codex.splice(primaryIndex, 1)
+      return
+    }
+    for (const rows of codexEntryStates.values()) {
+      const index = rows.findIndex((item) => item.id === id)
+      if (index >= 0) {
+        rows.splice(index, 1)
+        return
+      }
+    }
+  },
+
+  async listCodexStateHistory(projectId: string, entryId: string): Promise<CodexStateHistoryItem[]> {
+    await delay(100)
+    confirmedCodexEntry(projectId, entryId)
+    return structuredClone(codexStateHistoryFor(projectId, entryId))
+  },
+
+  async createCodexStateChange(projectId: string, entryId: string, draft: CodexStateDraft): Promise<CodexStateHistoryItem> {
+    await delay(120)
+    const chapter = validateStateDraft(projectId, entryId, draft)
+    const rows = codexStateHistoryFor(projectId, entryId)
+    const stateKey = draft.stateKey.trim()
+    if (rows.some((item) => item.editable && item.chapterId === chapter.id && item.stateKey === stateKey)) {
+      throw new Error('invalid_codex_state')
+    }
+    const item: CodexStateHistoryItem = {
+      id: `cs_mock_${Date.now().toString(36)}_${codexStateSequence++}`,
+      source: 'author',
+      editable: true,
+      stateKey,
+      value: draft.value.trim(),
+      polarity: 'positive',
+      note: draft.note?.trim() || undefined,
+      chapterId: chapter.id,
+      chapterIndex: chapter.index,
+      chapterTitle: chapter.title,
+      revision: 1,
+      createdAt: new Date().toISOString()
+    }
+    rows.push(item)
+    rows.sort((left, right) => left.chapterIndex - right.chapterIndex || left.stateKey.localeCompare(right.stateKey))
+    return structuredClone(item)
+  },
+
+  async updateCodexStateChange(projectId: string, entryId: string, changeId: string, expectedRevision: number, draft: CodexStateDraft): Promise<CodexStateHistoryItem> {
+    await delay(120)
+    const chapter = validateStateDraft(projectId, entryId, draft)
+    const rows = codexStateHistoryFor(projectId, entryId)
+    const item = rows.find((row) => row.id === changeId && row.editable)
+    if (!item) throw new Error('codex_state_not_found')
+    if (item.revision !== expectedRevision) throw new Error('codex_state_revision_conflict')
+    const stateKey = draft.stateKey.trim()
+    if (rows.some((row) => row.id !== changeId && row.editable && row.chapterId === chapter.id && row.stateKey === stateKey)) {
+      throw new Error('invalid_codex_state')
+    }
+    Object.assign(item, {
+      chapterId: chapter.id,
+      chapterIndex: chapter.index,
+      chapterTitle: chapter.title,
+      stateKey,
+      value: draft.value.trim(),
+      note: draft.note?.trim() || undefined,
+      revision: expectedRevision + 1
+    })
+    rows.sort((left, right) => left.chapterIndex - right.chapterIndex || left.stateKey.localeCompare(right.stateKey))
+    return structuredClone(item)
+  },
+
+  async deleteCodexStateChange(projectId: string, entryId: string, changeId: string, expectedRevision: number): Promise<void> {
+    await delay(100)
+    confirmedCodexEntry(projectId, entryId)
+    const rows = codexStateHistoryFor(projectId, entryId)
+    const index = rows.findIndex((item) => item.id === changeId && item.editable)
+    if (index < 0) throw new Error('codex_state_not_found')
+    if (rows[index]!.revision !== expectedRevision) throw new Error('codex_state_revision_conflict')
+    rows.splice(index, 1)
   },
 
   async listGuardIssues(projectId = 'p1'): Promise<GuardIssue[]> {

@@ -1,6 +1,6 @@
 import { ApiError, USE_MOCK, request } from './http'
 import { mockApi } from './mock'
-import type { Chapter, ChapterPlanPatch, ChapterVersionDetail, ChapterVersionRestoreResult, ChapterVersionSummary, CharacterStatistics, CodexEntry, CodexEntryDraft, CodexKind, ContextLayer, GuardIssue, GuardOverview, GuardResolutionAction, Project, ProjectPatch, ProjectTrash, TemporalDecisionResult, TemporalReviewItem, TimelineBoard, TimelineEntry, TimelineEntryDraft, TimelinePlacementStatus, TimelineReflowResult, Volume } from '@/types'
+import type { Chapter, ChapterPlanPatch, ChapterVersionDetail, ChapterVersionRestoreResult, ChapterVersionSummary, CharacterStatistics, CodexEntry, CodexEntryDraft, CodexKind, CodexStateDraft, CodexStateHistoryItem, CodexStateSource, ContextLayer, GuardIssue, GuardOverview, GuardResolutionAction, Project, ProjectPatch, ProjectTrash, TemporalDecisionResult, TemporalReviewItem, TimelineBoard, TimelineEntry, TimelineEntryDraft, TimelinePlacementStatus, TimelineReflowResult, Volume } from '@/types'
 
 interface ProjectDto {
   id: string
@@ -272,6 +272,24 @@ export interface CodexDto {
   expected_by: string | null
   foreshadow_resolved?: boolean
   resolved_at?: string | null
+}
+
+export interface CodexStateHistoryItemDto {
+  id: string
+  source: CodexStateSource
+  editable: boolean
+  state_key: string
+  value: string
+  polarity: 'positive' | 'negative'
+  note: string | null
+  chapter_id: string
+  chapter_index: number
+  chapter_title: string
+  body_revision: number | null
+  paragraph_id: string | null
+  confidence: number | null
+  revision: number | null
+  created_at: string
 }
 
 const CODEX_KIND_FROM_DTO: Record<CodexDto['kind'], CodexKind> = {
@@ -559,6 +577,26 @@ export function codexFromDto(dto: CodexDto): CodexEntry {
       ? expectedChapter ? `第 ${expectedChapter} 章` : dto.expected_by
       : undefined,
     rawAttrs: structuredClone(dto.attrs)
+  }
+}
+
+export function codexStateFromDto(dto: CodexStateHistoryItemDto): CodexStateHistoryItem {
+  return {
+    id: dto.id,
+    source: dto.source,
+    editable: dto.editable,
+    stateKey: dto.state_key,
+    value: dto.value,
+    polarity: dto.polarity,
+    note: dto.note ?? undefined,
+    chapterId: dto.chapter_id,
+    chapterIndex: dto.chapter_index,
+    chapterTitle: dto.chapter_title,
+    bodyRevision: dto.body_revision ?? undefined,
+    paragraphId: dto.paragraph_id ?? undefined,
+    confidence: dto.confidence ?? undefined,
+    revision: dto.revision ?? undefined,
+    createdAt: dto.created_at
   }
 }
 
@@ -1018,6 +1056,56 @@ const realApi = {
       codexProjectIds.delete(id)
     } catch (error) {
       if (error instanceof ApiError && error.status === 409) throw new Error('codex_entry_in_use')
+      throw error
+    }
+  },
+  async listCodexStateHistory(projectId: string, entryId: string): Promise<CodexStateHistoryItem[]> {
+    const rows = await request<CodexStateHistoryItemDto[]>(`/codex/${projectId}/entries/${entryId}/states`)
+    return rows.map(codexStateFromDto)
+  },
+  async createCodexStateChange(projectId: string, entryId: string, draft: CodexStateDraft): Promise<CodexStateHistoryItem> {
+    try {
+      const dto = await request<CodexStateHistoryItemDto>(`/codex/${projectId}/entries/${entryId}/states`, {
+        method: 'POST',
+        body: JSON.stringify({
+          chapter_id: draft.chapterId,
+          state_key: draft.stateKey,
+          value: draft.value,
+          note: draft.note ?? null
+        })
+      })
+      return codexStateFromDto(dto)
+    } catch (error) {
+      if (error instanceof ApiError && error.status === 422) throw new Error('invalid_codex_state')
+      throw error
+    }
+  },
+  async updateCodexStateChange(projectId: string, entryId: string, changeId: string, expectedRevision: number, draft: CodexStateDraft): Promise<CodexStateHistoryItem> {
+    try {
+      const dto = await request<CodexStateHistoryItemDto>(`/codex/${projectId}/entries/${entryId}/states/${changeId}`, {
+        method: 'PUT',
+        body: JSON.stringify({
+          chapter_id: draft.chapterId,
+          state_key: draft.stateKey,
+          value: draft.value,
+          note: draft.note ?? null,
+          expected_revision: expectedRevision
+        })
+      })
+      return codexStateFromDto(dto)
+    } catch (error) {
+      if (error instanceof ApiError && error.status === 409) throw new Error('codex_state_revision_conflict')
+      if (error instanceof ApiError && error.status === 422) throw new Error('invalid_codex_state')
+      throw error
+    }
+  },
+  async deleteCodexStateChange(projectId: string, entryId: string, changeId: string, expectedRevision: number): Promise<void> {
+    try {
+      await request(`/codex/${projectId}/entries/${entryId}/states/${changeId}`, {
+        method: 'DELETE', body: JSON.stringify({ expected_revision: expectedRevision })
+      })
+    } catch (error) {
+      if (error instanceof ApiError && error.status === 409) throw new Error('codex_state_revision_conflict')
       throw error
     }
   },

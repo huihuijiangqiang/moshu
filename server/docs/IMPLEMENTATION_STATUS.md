@@ -6,9 +6,9 @@
 所有声明基于实际代码与测试结果，不夸大、不省略已知缺口。
 
 **关键事实**：
-- ✅ 37 张表完整 Alembic baseline，增量迁移已到 `019_chapter_pov`
-- ✅ 1106 个单元/功能测试通过（SQLite in-memory，mock embedding/LLM）
-- ✅ 前端 108 个测试、TypeScript 类型检查和生产构建通过
+- ✅ 38 张表完整 Alembic baseline，增量迁移已到 `020_codex_state_changes`
+- ✅ 1120 个单元/功能测试通过（SQLite in-memory，mock embedding/LLM）
+- ✅ 前端 112 个测试、TypeScript 类型检查和生产构建通过
 - ✅ 36 个集成测试已在本机真实 PostgreSQL + pgvector 环境通过
 - ✅ 已完成真实账号认证、作品创建、作品归档、分卷与章节增删改排、回收站和章纲编辑闭环
 - ✅ Refresh session 持久化轮换、防重放、注销即时吊销，系统管理员与项目 RBAC 已接通
@@ -30,6 +30,7 @@
 - ✅ 确定性 Guard 告警已接入有依据的 LLM 二次复核；失败保留规则告警且不自动替作者判误报
 - ✅ Codex embedding 回填具有持久任务状态、失败次数、最后错误、耗尽标记与重试入口
 - ✅ 设定库页面已接通真实新建、编辑、忽略候选和安全删除；人物档案与通用关键事实分表单维护
+- ✅ 设定状态沿革已接通章节锚点、作者增改删、抽取事实合并、乐观锁、项目隔离和生成时的未来状态防泄露
 - ✅ 七类确定性规则已由真实 `RuleScanner` 跑过 280 正例、140 hard negatives、20 easy negatives，
   recall / 证据定位 / hard-negative precision 均为 100%
 - ⚠️ 上述结构化评测不覆盖正文抽取和 LLM 仲裁的真实盲评质量，不能据此宣称全链路生产就绪
@@ -54,7 +55,7 @@ PostgreSQL/pgvector 检索必须在真实部署上单独压测；该脚本只覆
 
 ## 已完成模块
 
-### 1. 数据模型（37 张表，100% Alembic 覆盖）
+### 1. 数据模型（38 张表，100% Alembic 覆盖）
 
 #### 核心骨架 (6 张)
 - `users` - 用户账号
@@ -71,11 +72,12 @@ PostgreSQL/pgvector 检索必须在真实部署上单独压测；该脚本只覆
 `019_chapter_pov.py` 为章节增加作者指定 POV 与独立乐观锁；POV 只能引用同作品已确认人物，
 人物被章节用作 POV 时不能直接删除。
 
-#### 设定库 (4 张)
+#### 设定库 (5 张)
 - `codex_entries` - 设定条目（HALFVEC(2048) embedding 列）
 - `codex_aliases` - 条目别名
 - `codex_refs` - 章节对设定的引用
 - `codex_relations` - 设定条目间关系
+- `codex_state_changes` - 作者维护的逐章状态变化、软删除状态与乐观版本
 
 #### Embedding 运维状态 (1 张)
 - `codex_embedding_jobs` - 每作品回填状态、尝试次数、剩余欠账、最后错误与 dead letter
@@ -126,14 +128,14 @@ PostgreSQL/pgvector 检索必须在真实部署上单独压测；该脚本只覆
   `halfvec_cosine_ops` 重建 HNSW 索引；upgrade/downgrade 均会要求重新回填向量
 - ✅ `alembic upgrade head --sql` 与 `alembic downgrade -1 --sql` 语法验证通过
 - ✅ 36 个集成测试已在本机真实 PostgreSQL + pgvector 运行通过；此前审核数据库已真实执行至
-  `018_timeline_entries`。`019_chapter_pov` 的 upgrade/downgrade SQL 已生成验证，但本轮 Docker daemon
-  未启动，尚未在真实 PostgreSQL 重复执行；部署后以 readiness 返回的 Alembic head 为准
+  `018_timeline_entries`。`019_chapter_pov` 与 `020_codex_state_changes` 的 upgrade/downgrade SQL 已生成验证，
+  但本轮 Docker daemon 未启动，尚未在真实 PostgreSQL 重复执行；部署后以 readiness 返回的 Alembic head 为准
 
 ---
 
 ### 2. 核心服务层
 
-#### Codex 设定库服务 (`services/codex.py`, `services/codex_embedding.py`)
+#### Codex 设定库服务 (`services/codex.py`, `services/codex_embedding.py`, `services/codex_states.py`)
 - ✅ CRUD：create_entry, update_entry, add_alias, remove_alias
 - ✅ Unicode NFC 规范化别名匹配
 - ✅ 可检索文本变更判据（无变化不重算 embedding）
@@ -145,6 +147,10 @@ PostgreSQL/pgvector 检索必须在真实部署上单独压测；该脚本只覆
 - ✅ worker 执行失败与 broker 重新投递次数独立计数；beat 自动回收发布窗口中断的过期 `queued` 作业
 - ✅ 人物出场统计按实体 ID 合并正文显式引用、已接受正文抽取事实、作者 POV 与导入 legacy 章节引用
 - ✅ 人物档案展示出场/POV 章数、POV 字数、首末出场、断档和逐章可审计来源；章节可直接跳回写作台
+- ✅ 作者状态记录绑定同作品有效章节，支持乐观锁更新、软删除和同章同状态项去重
+- ✅ 状态沿革合并作者记录与已接受的正文/章纲/处置 claim；模型抽取项只读，作者记录可维护
+- ✅ 生成目标章节只注入该章及之前每个状态项的最新作者值，resident/retrieved 两层均阻止未来状态泄露
+- ✅ 设定档案提供章节边注式状态时间轴、来源标识、章节跳转和增改删；快速切换条目有请求序列保护
 - ⚠️ 未标记为 CodexRef、未被抽取接受且未指定 POV 的纯文本姓名不会计入统计，避免同名与改名造成误报
 
 #### 章纲服务 (`services/outlines.py`)
@@ -433,9 +439,9 @@ PostgreSQL/pgvector 检索必须在真实部署上单独压测；该脚本只覆
 
 ### 5. 测试覆盖
 
-#### 单元测试（1106 passed，SQLite in-memory，mock providers）
+#### 单元测试（1120 passed，SQLite in-memory，mock providers）
 
-**全量测试结果**：1106 passed, 37 skipped（未设置集成测试 URL 时）, 0 warnings；前端 108 passed
+**全量测试结果**：1120 passed, 37 skipped（未设置集成测试 URL 时）, 0 warnings；前端 112 passed
 
 主要测试覆盖（不逐文件列举测试数量，以实际 pytest 结果为准）：
 - ✅ Codex 设定库：页面与 API 完整 CRUD、引用删除保护、原子别名替换、可检索文本判据、两段式事务、deferred 降级、httpx 错误重试
@@ -445,7 +451,7 @@ PostgreSQL/pgvector 检索必须在真实部署上单独压测；该脚本只覆
 - ✅ 一致性服务：Claim fingerprint、规则逻辑、hard negative 案例
 - ✅ RuleScanner：七类规则检测、timeline-aware 跳过、stale 标记、fingerprint 去重
 - ✅ 认证授权：JWT 解码、项目权限、Idempotency-Key 必需性
-- ✅ Alembic 迁移：37 张表、pgvector extension、部分唯一索引、downgrade 完整性
+- ✅ Alembic 迁移：38 张表、pgvector extension、部分唯一索引、downgrade 完整性
 - ✅ 时间锚点：ISO-8601、确定性相对时长、跨章事件引用、源锚点与事件标签原文校验
 - ✅ 增量影响集：新旧实体重绑定、未解析主体、谓词族闭包、全项目安全降级与扫描遥测
 - ✅ LLM 仲裁：不可变版本取证、600 字截断、20 条分批、陌生/缺失/畸形响应、失败降级、事务释放与前端映射
@@ -703,7 +709,7 @@ baseline，增量实现 Codex embedding 回填、时间锚点解析、issue 生�
 3. **竞品常见的深度规划与审稿能力**
    - ✅ 多剧情线时间板
    - ✅ 人物出场与视角统计：大纲指定 POV、人物档案汇总和逐章来源轨迹已接通
-   - 设定随章节变化的状态历史
+   - ✅ 设定随章节变化的状态历史：作者记录与已接受抽取事实合并展示，按目标章裁剪后进入生成上下文
    - 资料与正文并排、批注/审稿流程、Prompt Preview 与用户自带模型配置
    - 关系图、地图、日历、出版排版和平台发布数据属于后续增强，不阻塞核心写作闭环
 
@@ -713,7 +719,7 @@ baseline，增量实现 Codex embedding 回填、时间锚点解析、issue 生�
 
 ### 数据模型（10 个文件）
 - `server/db/models_core.py` - 核心骨架 6 张表
-- `server/db/models_codex.py` - 设定库 4 张表
+- `server/db/models_codex.py` - 设定库 5 张表
 - `server/db/models_guard.py` - 守卫 2 张表
 - `server/db/models_consistency.py` - 一致性基础 4 张表
 - `server/db/models_consistency_extended.py` - 一致性扩展 8 张表
@@ -761,8 +767,8 @@ baseline，增量实现 Codex embedding 回填、时间锚点解析、issue 生�
 - `server/tasks/consistency.py` - 一致性任务
 - `server/tasks/codex.py` - Codex 回填任务
 
-### 测试（1106 passed；另有 36 个真实 PostgreSQL 测试通过）
-- `server/tests/` - 单元/功能测试（1106 passed）
+### 测试（1120 passed；另有 36 个真实 PostgreSQL 测试通过）
+- `server/tests/` - 单元/功能测试（1120 passed）
 - `app/src/**/*.spec.ts` - 前端测试（108 passed）
 - `server/tests/integration/` - 集成测试（36 passed，需设置真实 PostgreSQL URL）
 
@@ -773,17 +779,17 @@ baseline，增量实现 Codex embedding 回填、时间锚点解析、issue 生�
 
 ## 总结
 
-墨枢一致性后端已完成核心数据模型、服务层、API 端点和异步任务定义，1106 个单元/功能
+墨枢一致性后端已完成核心数据模型、服务层、API 端点和异步任务定义，1120 个单元/功能
 测试在 SQLite in-memory + mock providers 环境下通过，另有 36 个集成测试在真实
 PostgreSQL + pgvector 环境通过。真实认证、可吊销会话、管理员、工作室 RBAC、作品创建、
-作品归档、分卷与章节生命周期、虚拟化章节导航、章纲、章节 POV、人物出场轨迹、故事/章节双序时间板、作者人工计划事件、正文版本历史与恢复、AI 多候选草稿、全书查找替换、全量导出、非覆盖备份恢复、风格指纹、AI 来源账本、作者生成用量与平台模型成本台账已经接通，前端 108 个测试与生产构建通过。
+作品归档、分卷与章节生命周期、虚拟化章节导航、章纲、章节 POV、人物出场轨迹、逐章设定状态沿革、故事/章节双序时间板、作者人工计划事件、正文版本历史与恢复、AI 多候选草稿、全书查找替换、全量导出、非覆盖备份恢复、风格指纹、AI 来源账本、作者生成用量与平台模型成本台账已经接通，前端 112 个测试与生产构建通过。
 
 **关键限制**：
 1. 七条确定性规则的 280/140 结构化评测门禁、模糊区间人工确认和多剧情线时间板已完成，但真实正文盲评仍需补充
 2. 当前 100% 指标来自真实 scanner 而非硬编码，但输入仍是合成 claim，**不代表正文抽取和 LLM 仲裁的端到端质量**
 3. 模糊时间已完成规范化区间、作者确认、项目级 reflow 与依赖复检；影响集时间区间裁剪仍未实现，仲裁只提供建议，不自动处置
 4. 真实长文本扫描吞吐受上游模型网关稳定性和并发限制影响
-5. 人物出场统计只接受实体 ID 可追溯来源，不对正文姓名做模糊全文计数；本轮 Docker daemon 未启动，`019` 尚未重复执行真实 PostgreSQL 验收
+5. 人物出场统计只接受实体 ID 可追溯来源，不对正文姓名做模糊全文计数；本轮 Docker daemon 未启动，`019`/`020` 尚未重复执行真实 PostgreSQL 验收
 
 当前是“核心一致性能力 + 首轮真实产品流程”，不是功能完整 MVP。生产部署前仍需完成上述产品闭环、
 扩充评测集并验证长文本规模下的质量和性能。

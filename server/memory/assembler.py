@@ -15,6 +15,7 @@ from sqlalchemy.orm import selectinload
 from db.models_codex import CodexEntry
 from db.models_consistency_extended import ConsistencyClaim, DocumentSummary
 from db.models_core import Chapter, ChapterBody, Volume
+from services.codex_states import latest_author_states
 from services.retrieval import ConsistencyRetrieval
 from services.timeline import author_override_offset
 
@@ -125,10 +126,10 @@ class ContextAssembler:
             装配完成的四层上下文
         """
         # Layer 1: 常驻设定（全量，按 id 排序保证字节稳定）
-        layer1 = await self._build_layer1_resident(project_id)
+        layer1 = await self._build_layer1_resident(project_id, chapter_id)
 
         # Layer 2: 检索条目（章纲实体抽取 → 精确命中 → 向量兜底）
-        layer2 = await self._build_layer2_retrieved(project_id, outline_nodes)
+        layer2 = await self._build_layer2_retrieved(project_id, chapter_id, outline_nodes)
 
         # Layer 3: 前情摘要（本卷章摘要 + 更早的卷摘要）
         layer3 = await self._build_layer3_summary(project_id, chapter_id)
@@ -186,7 +187,7 @@ class ContextAssembler:
             trimmed_layers=trimmed,
         )
 
-    async def _build_layer1_resident(self, project_id: str) -> ContextLayer:
+    async def _build_layer1_resident(self, project_id: str, chapter_id: str) -> ContextLayer:
         """
         Layer 1: 常驻设定
         - 全量加载 resident=True 的条目
@@ -215,6 +216,20 @@ class ContextAssembler:
             items.append({"id": entry.id, "name": entry.name, "kind": entry.kind})
 
         resident_tokens = self.tokenizer.count("\n".join(lines))
+        state_budget = max(0, min(2000, self.BUDGET_LAYER1 - resident_tokens))
+        author_states = self._trim_layer(
+            await self._build_author_state_facts(
+                project_id,
+                chapter_id,
+                [entry.id for entry in entries],
+            ),
+            state_budget,
+        )
+        if author_states.content:
+            lines.append(f"# 作者记录的当前状态\n{author_states.content}")
+            items.extend(author_states.items)
+
+        resident_tokens = self.tokenizer.count("\n".join(lines))
         timeline_budget = max(
             0,
             min(self.BUDGET_CONFIRMED_TIMELINE, self.BUDGET_LAYER1 - resident_tokens),
@@ -232,6 +247,36 @@ class ContextAssembler:
         tokens = self.tokenizer.count(content)
 
         return ContextLayer(key="resident", content=content, tokens=tokens, items=items)
+
+    async def _build_author_state_facts(
+        self,
+        project_id: str,
+        chapter_id: str,
+        entry_ids: list[str],
+    ) -> ContextLayer:
+        states = await latest_author_states(
+            self.db,
+            project_id=project_id,
+            chapter_id=chapter_id,
+            entry_ids=entry_ids,
+        )
+        lines: list[str] = []
+        items: list[dict] = []
+        for entry_id in sorted(states):
+            for state in states[entry_id]:
+                lines.append(
+                    f"- {entry_id} / {state['state_key']}：{state['value']}"
+                    f"（截至第{state['chapter_index']}章）"
+                )
+                items.append(
+                    {
+                        "id": f"state:{entry_id}:{state['state_key']}",
+                        "name": str(state["state_key"]),
+                        "kind": "state",
+                    }
+                )
+        content = "\n".join(lines)
+        return ContextLayer("author_states", content, self.tokenizer.count(content), items)
 
     async def _build_confirmed_temporal_facts(self, project_id: str) -> ContextLayer:
         """Expose author-confirmed fuzzy-time decisions to generation, not only rules."""
@@ -268,7 +313,12 @@ class ContextAssembler:
         content = "\n".join(lines)
         return ContextLayer("confirmed_timeline", content, self.tokenizer.count(content), items)
 
-    async def _build_layer2_retrieved(self, project_id: str, outline_nodes: list[str]) -> ContextLayer:
+    async def _build_layer2_retrieved(
+        self,
+        project_id: str,
+        chapter_id: str,
+        outline_nodes: list[str],
+    ) -> ContextLayer:
         """
         Layer 2: 章纲精确命中设定名/别名，向量检索补足语义相关条目。
         """
@@ -326,10 +376,22 @@ class ContextAssembler:
 
         lines: list[str] = []
         items: list[dict] = []
+        state_by_entry = await latest_author_states(
+            self.db,
+            project_id=project_id,
+            chapter_id=chapter_id,
+            entry_ids=list(matched),
+        )
         for entry in matched.values():
             text = f"## {entry.name} ({entry.kind})\n{entry.description}"
             if entry.attrs:
                 text += f"\n属性: {json.dumps(entry.attrs, ensure_ascii=False, sort_keys=True)}"
+            if state_by_entry.get(entry.id):
+                current = "；".join(
+                    f"{state['state_key']}={state['value']}（第{state['chapter_index']}章）"
+                    for state in state_by_entry[entry.id]
+                )
+                text += f"\n当前状态: {current}"
             lines.append(text)
             items.append({"id": entry.id, "name": entry.name, "kind": entry.kind})
         content = "\n\n".join(lines)

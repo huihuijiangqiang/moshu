@@ -1,4 +1,4 @@
-from db.models_codex import CodexAlias, CodexEntry
+from db.models_codex import CodexAlias, CodexEntry, CodexStateChange
 from db.models_consistency_extended import DocumentSummary
 from db.models_core import ChapterBody
 from memory.assembler import ContextAssembler
@@ -116,3 +116,92 @@ def test_context_trim_uses_exact_token_budget_and_can_keep_tail():
     assert trimmed.tokens <= 30
     assert "关键章末" in trimmed.content
     assert trimmed.content.startswith("[前文已截断]")
+
+
+async def test_context_uses_latest_author_state_without_leaking_future_changes(
+    async_db_session,
+    seed_project,
+):
+    await seed_project(
+        user_id="writer",
+        project_id="novel",
+        chapter_ids=("ch1", "ch2", "ch3"),
+    )
+    resident = CodexEntry(
+        id="resident",
+        project_id="novel",
+        kind="character",
+        name="沈禾",
+        description="女主",
+        attrs={},
+        resident=True,
+        status="confirmed",
+        ref_chapters=[],
+        conflicts=[],
+    )
+    retrieved = CodexEntry(
+        id="retrieved",
+        project_id="novel",
+        kind="item",
+        name="田契",
+        description="荒田权属凭证",
+        attrs={},
+        resident=False,
+        status="confirmed",
+        ref_chapters=[],
+        conflicts=[],
+    )
+    async_db_session.add_all([resident, retrieved])
+    await async_db_session.flush()
+    async_db_session.add_all(
+        [
+            CodexStateChange(
+                id="state-resident-1",
+                project_id="novel",
+                entry_id=resident.id,
+                chapter_id="ch1",
+                state_key="居所",
+                value="周家旧屋",
+                status="active",
+                rev=1,
+                created_by="writer",
+            ),
+            CodexStateChange(
+                id="state-resident-3",
+                project_id="novel",
+                entry_id=resident.id,
+                chapter_id="ch3",
+                state_key="居所",
+                value="村东新宅",
+                status="active",
+                rev=1,
+                created_by="writer",
+            ),
+            CodexStateChange(
+                id="state-retrieved-1",
+                project_id="novel",
+                entry_id=retrieved.id,
+                chapter_id="ch1",
+                state_key="持有人",
+                value="周地主",
+                status="active",
+                rev=1,
+                created_by="writer",
+            ),
+        ]
+    )
+    await async_db_session.flush()
+
+    before = await ContextAssembler(async_db_session, tokenizer).build(
+        "novel", "ch2", ["沈禾查验田契"]
+    )
+    after = await ContextAssembler(async_db_session, tokenizer).build(
+        "novel", "ch3", ["沈禾拿到田契"]
+    )
+
+    assert "周家旧屋" in before.layer1_resident.content
+    assert "村东新宅" not in before.layer1_resident.content
+    assert "田契" in before.layer2_retrieved.content
+    assert "持有人=周地主" in before.layer2_retrieved.content
+    assert "村东新宅" in after.layer1_resident.content
+    assert "周家旧屋" not in after.layer1_resident.content

@@ -88,6 +88,33 @@ export interface CodexEntryDraft {
   resolvedChapterId?: string
 }
 
+export type CodexStateSource = 'author' | 'extracted' | 'outline' | 'resolution'
+
+export interface CodexStateHistoryItem {
+  id: string
+  source: CodexStateSource
+  editable: boolean
+  stateKey: string
+  value: string
+  polarity: 'positive' | 'negative'
+  note?: string
+  chapterId: string
+  chapterIndex: number
+  chapterTitle: string
+  bodyRevision?: number
+  paragraphId?: string
+  confidence?: number
+  revision?: number
+  createdAt: string
+}
+
+export interface CodexStateDraft {
+  chapterId: string
+  stateKey: string
+  value: string
+  note?: string
+}
+
 export type ChapterStatus = 'outlined' | 'drafting' | 'done'
 
 export interface Chapter {

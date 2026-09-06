@@ -56,4 +56,28 @@ describe('mock project scoping', () => {
     expect(archived.status).toBe('archived')
     expect((await mockApi.getTimelineBoard('p3')).eventCount).toBe(0)
   })
+
+  it('keeps Codex state history project-scoped and rejects stale revisions', async () => {
+    const [chapter] = await mockApi.listChapters('p3')
+    const entry = await mockApi.createCodexEntry('p3', {
+      kind: 'character', name: '摆渡人', aliases: [], summary: '只在长夜渡舟中出现。',
+      resident: true, status: 'confirmed', character: { role: '引路人' }
+    })
+    const created = await mockApi.createCodexStateChange('p3', entry.id, {
+      chapterId: chapter!.id, stateKey: '所在地点', value: '北岸渡口'
+    })
+
+    expect(created.revision).toBe(1)
+    expect(await mockApi.listCodexStateHistory('p3', entry.id)).toHaveLength(1)
+    await expect(mockApi.listCodexStateHistory('p1', entry.id)).rejects.toThrow('codex_state_not_found')
+
+    const updated = await mockApi.updateCodexStateChange('p3', entry.id, created.id, 1, {
+      chapterId: chapter!.id, stateKey: '所在地点', value: '渡船舱内'
+    })
+    expect(updated.revision).toBe(2)
+    await expect(mockApi.deleteCodexStateChange('p3', entry.id, created.id, 1))
+      .rejects.toThrow('codex_state_revision_conflict')
+    await mockApi.deleteCodexStateChange('p3', entry.id, created.id, 2)
+    expect(await mockApi.listCodexStateHistory('p3', entry.id)).toEqual([])
+  })
 })

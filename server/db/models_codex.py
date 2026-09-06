@@ -1,5 +1,5 @@
 """
-设定库模型 - 4张表
+设定库模型 - 5张表
 """
 from typing import TYPE_CHECKING, Optional
 
@@ -140,3 +140,40 @@ class CodexRelation(Base, TimestampMixin):
 
     # 关系
     from_entry: Mapped["CodexEntry"] = relationship(back_populates="relations", foreign_keys=[from_id])
+
+
+class CodexStateChange(Base, TimestampMixin):
+    """Author-maintained state change anchored to narrative chapter order."""
+
+    __tablename__ = "codex_state_changes"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True)
+    project_id: Mapped[str] = mapped_column(
+        String(32), ForeignKey("projects.id", ondelete="CASCADE"), index=True
+    )
+    entry_id: Mapped[str] = mapped_column(
+        String(32), ForeignKey("codex_entries.id", ondelete="CASCADE"), index=True
+    )
+    chapter_id: Mapped[str] = mapped_column(
+        String(32), ForeignKey("chapters.id", ondelete="CASCADE"), index=True
+    )
+    state_key: Mapped[str] = mapped_column(String(100), nullable=False)
+    value: Mapped[str] = mapped_column(Text, nullable=False)
+    note: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    status: Mapped[str] = mapped_column(String(20), default="active", server_default="active", nullable=False)
+    rev: Mapped[int] = mapped_column(Integer, default=1, server_default="1", nullable=False)
+    created_by: Mapped[Optional[str]] = mapped_column(
+        String(32), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+
+    __table_args__ = (
+        CheckConstraint("status IN ('active', 'archived')", name="ck_codex_state_change_status"),
+        CheckConstraint("rev > 0", name="ck_codex_state_change_rev_positive"),
+        Index(
+            "ix_codex_state_change_history",
+            "project_id",
+            "entry_id",
+            "status",
+            "chapter_id",
+        ),
+    )

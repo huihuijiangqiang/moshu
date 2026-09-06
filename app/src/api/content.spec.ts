@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { reactive } from 'vue'
 import { ApiError } from './http'
-import { bodyConflictFromError, characterStatisticsFromDto, codexDraftAttrs, codexFromDto, guardIssueFromDto, guardOverviewFromDto, htmlToDocument, temporalReviewFromDto, timelineBoardFromDto, timelineReflowFromDto } from './content'
+import { bodyConflictFromError, characterStatisticsFromDto, codexDraftAttrs, codexFromDto, codexStateFromDto, guardIssueFromDto, guardOverviewFromDto, htmlToDocument, temporalReviewFromDto, timelineBoardFromDto, timelineReflowFromDto } from './content'
 
 describe('htmlToDocument', () => {
   it('uses the backend paragraph pid contract', () => {
@@ -177,6 +177,42 @@ describe('codexFromDto', () => {
       kind: 'place', name: '白鹭洲', aliases: [], summary: '', resident: false,
       status: 'confirmed', facts: [{ label: '通行', value: '枯水期可达' }]
     }, existing)).not.toThrow()
+  })
+})
+
+describe('codexStateFromDto', () => {
+  it('maps chapter anchors and optional extraction evidence', () => {
+    expect(codexStateFromDto({
+      id: 'claim:91',
+      source: 'extracted',
+      editable: false,
+      state_key: '所在地点',
+      value: '青石村东院',
+      polarity: 'positive',
+      note: null,
+      chapter_id: 'p1-ch05',
+      chapter_index: 5,
+      chapter_title: '县城初雪',
+      body_revision: 4,
+      paragraph_id: 'p-7',
+      confidence: 0.93,
+      revision: null,
+      created_at: '2026-08-14T10:20:00Z'
+    })).toEqual({
+      id: 'claim:91',
+      source: 'extracted',
+      editable: false,
+      stateKey: '所在地点',
+      value: '青石村东院',
+      polarity: 'positive',
+      chapterId: 'p1-ch05',
+      chapterIndex: 5,
+      chapterTitle: '县城初雪',
+      bodyRevision: 4,
+      paragraphId: 'p-7',
+      confidence: 0.93,
+      createdAt: '2026-08-14T10:20:00Z'
+    })
   })
 })
 

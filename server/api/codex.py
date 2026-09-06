@@ -12,7 +12,7 @@
 import logging
 import secrets
 from datetime import datetime
-from typing import Annotated, Literal, Optional, get_args
+from typing import Annotated, Literal, NoReturn, Optional, get_args
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, ConfigDict, Field
@@ -36,6 +36,15 @@ from services.codex import (
     update_entry,
 )
 from services.codex_embedding import embed_missing_codex_entries
+from services.codex_states import (
+    CodexStateConflictError,
+    CodexStateError,
+    CodexStateNotFoundError,
+    archive_state_change,
+    create_state_change,
+    list_state_history,
+    update_state_change,
+)
 from services.embedding import GatewayEmbeddingProvider
 from services.embedding_jobs import fail_job, lock_job, queue_job
 from services.provider_usage import record_platform_usage
@@ -66,6 +75,39 @@ class CharacterStatisticsResponse(BaseModel):
     last_appearance: int | None
     hiatus_chapters: int | None
     chapters: list[CharacterChapterStatisticsResponse]
+
+
+class CodexStateHistoryItemResponse(BaseModel):
+    id: str
+    source: Literal["author", "extracted", "outline", "resolution"]
+    editable: bool
+    state_key: str
+    value: str
+    polarity: Literal["positive", "negative"]
+    note: str | None
+    chapter_id: str
+    chapter_index: int
+    chapter_title: str
+    body_revision: int | None
+    paragraph_id: str | None
+    confidence: float | None
+    revision: int | None
+    created_at: str
+
+
+class CodexStateWriteRequest(BaseModel):
+    chapter_id: str = Field(min_length=1, max_length=32)
+    state_key: str = Field(min_length=1, max_length=100)
+    value: str = Field(min_length=1, max_length=2000)
+    note: str | None = Field(default=None, max_length=2000)
+
+
+class CodexStateUpdateRequest(CodexStateWriteRequest):
+    expected_revision: int = Field(ge=1)
+
+
+class CodexStateDeleteRequest(BaseModel):
+    expected_revision: int = Field(ge=1)
 
 
 logger = logging.getLogger(__name__)
@@ -479,6 +521,134 @@ async def get_character_statistics(
             detail={"code": "CHARACTER_STATISTICS_NOT_FOUND"},
         ) from error
     return CharacterStatisticsResponse.model_validate(result)
+
+
+def _raise_codex_state_error(error: Exception) -> NoReturn:
+    if isinstance(error, CodexStateConflictError):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "code": "CODEX_STATE_REVISION_CONFLICT",
+                "current_revision": error.current_revision,
+            },
+        ) from error
+    if isinstance(error, CodexStateNotFoundError):
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={"code": "CODEX_STATE_NOT_FOUND"},
+        ) from error
+    raise HTTPException(
+        status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+        detail={"code": "INVALID_CODEX_STATE", "message": str(error)},
+    ) from error
+
+
+@router.get(
+    "/{project_id}/entries/{entry_id}/states",
+    response_model=list[CodexStateHistoryItemResponse],
+)
+async def get_codex_state_history(
+    project_id: str,
+    entry_id: str,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> list[CodexStateHistoryItemResponse]:
+    await verify_project_permission(project_id, ProjectPermission.VIEW, user, db)
+    try:
+        rows = await list_state_history(db, project_id=project_id, entry_id=entry_id)
+    except CodexStateNotFoundError as error:
+        _raise_codex_state_error(error)
+    return [CodexStateHistoryItemResponse.model_validate(row) for row in rows]
+
+
+@router.post(
+    "/{project_id}/entries/{entry_id}/states",
+    response_model=CodexStateHistoryItemResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+async def create_codex_state(
+    project_id: str,
+    entry_id: str,
+    request: CodexStateWriteRequest,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> CodexStateHistoryItemResponse:
+    await verify_project_permission(project_id, ProjectPermission.MANAGE_CODEX, user, db)
+    try:
+        change = await create_state_change(
+            db,
+            project_id=project_id,
+            entry_id=entry_id,
+            actor_id=user.id,
+            **request.model_dump(),
+        )
+        change_id = change.id
+        await db.commit()
+        rows = await list_state_history(db, project_id=project_id, entry_id=entry_id)
+    except (CodexStateError, CodexStateNotFoundError) as error:
+        await db.rollback()
+        _raise_codex_state_error(error)
+    return CodexStateHistoryItemResponse.model_validate(
+        next(row for row in rows if row["id"] == change_id)
+    )
+
+
+@router.put(
+    "/{project_id}/entries/{entry_id}/states/{change_id}",
+    response_model=CodexStateHistoryItemResponse,
+)
+async def update_codex_state(
+    project_id: str,
+    entry_id: str,
+    change_id: str,
+    request: CodexStateUpdateRequest,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> CodexStateHistoryItemResponse:
+    await verify_project_permission(project_id, ProjectPermission.MANAGE_CODEX, user, db)
+    try:
+        await update_state_change(
+            db,
+            project_id=project_id,
+            entry_id=entry_id,
+            change_id=change_id,
+            **request.model_dump(),
+        )
+        await db.commit()
+        rows = await list_state_history(db, project_id=project_id, entry_id=entry_id)
+    except (CodexStateError, CodexStateNotFoundError, CodexStateConflictError) as error:
+        await db.rollback()
+        _raise_codex_state_error(error)
+    return CodexStateHistoryItemResponse.model_validate(
+        next(row for row in rows if row["id"] == change_id)
+    )
+
+
+@router.delete(
+    "/{project_id}/entries/{entry_id}/states/{change_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+)
+async def delete_codex_state(
+    project_id: str,
+    entry_id: str,
+    change_id: str,
+    request: CodexStateDeleteRequest,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> None:
+    await verify_project_permission(project_id, ProjectPermission.MANAGE_CODEX, user, db)
+    try:
+        await archive_state_change(
+            db,
+            project_id=project_id,
+            entry_id=entry_id,
+            change_id=change_id,
+            expected_revision=request.expected_revision,
+        )
+        await db.commit()
+    except (CodexStateNotFoundError, CodexStateConflictError) as error:
+        await db.rollback()
+        _raise_codex_state_error(error)
 
 
 @router.post(
