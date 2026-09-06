@@ -1,6 +1,6 @@
 import { ApiError, USE_MOCK, request } from './http'
 import { mockApi } from './mock'
-import type { Chapter, ChapterPlanPatch, ChapterVersionDetail, ChapterVersionRestoreResult, ChapterVersionSummary, CodexEntry, CodexEntryDraft, CodexKind, ContextLayer, GuardIssue, GuardOverview, GuardResolutionAction, Project, ProjectPatch, ProjectTrash, Volume } from '@/types'
+import type { Chapter, ChapterPlanPatch, ChapterVersionDetail, ChapterVersionRestoreResult, ChapterVersionSummary, CodexEntry, CodexEntryDraft, CodexKind, ContextLayer, GuardIssue, GuardOverview, GuardResolutionAction, Project, ProjectPatch, ProjectTrash, TimelineReflowResult, Volume } from '@/types'
 
 interface ProjectDto {
   id: string
@@ -137,6 +137,19 @@ interface GuardOverviewDto {
   }>
 }
 
+interface TimelineReflowDto {
+  claims_examined: number
+  claims_changed: number
+  affected_chapter_ids: string[]
+  resolved: number
+  unresolved: number
+  ambiguous: number
+  cyclic: number
+  cycles: string[][]
+  rescans_queued: number
+  rescan_run_ids: number[]
+}
+
 export interface CodexDto {
   id: string
   project_id: string
@@ -239,6 +252,21 @@ export function guardOverviewFromDto(dto: GuardOverviewDto): GuardOverview {
       errorDetail: run.error_detail ?? undefined,
       updatedAt: run.updated_at
     }))
+  }
+}
+
+export function timelineReflowFromDto(dto: TimelineReflowDto): TimelineReflowResult {
+  return {
+    claimsExamined: dto.claims_examined,
+    claimsChanged: dto.claims_changed,
+    affectedChapterIds: dto.affected_chapter_ids,
+    resolved: dto.resolved,
+    unresolved: dto.unresolved,
+    ambiguous: dto.ambiguous,
+    cyclic: dto.cyclic,
+    cycles: dto.cycles,
+    rescansQueued: dto.rescans_queued,
+    rescanRunIds: dto.rescan_run_ids
   }
 }
 
@@ -752,6 +780,10 @@ const realApi = {
   },
   async scanProject(projectId: string): Promise<{ queued: number; run_ids: number[] }> {
     return request(`/consistency/projects/${projectId}/scan`, { method: 'POST' })
+  },
+  async reflowProjectTimeline(projectId: string): Promise<TimelineReflowResult> {
+    const dto = await request<TimelineReflowDto>(`/consistency/projects/${projectId}/timeline/reflow`, { method: 'POST' })
+    return timelineReflowFromDto(dto)
   },
   async resolveGuardIssue(projectId: string, id: string, issueRev: number, action: GuardResolutionAction): Promise<void> {
     await request(`/consistency/issues/${projectId}/${id}/resolve`, {

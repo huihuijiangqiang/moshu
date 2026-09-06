@@ -328,6 +328,23 @@ def test_relative_anchor_resolves_against_one_exact_event_reference():
     assert is_order_reliable(relative) is True
 
 
+def test_next_day_expression_participates_in_exact_relative_chain():
+    base, relative = assign_story_orders(
+        [
+            anchored_claim(temporal_event_ref="启程"),
+            anchored_claim(
+                subject_text="抵达",
+                order_basis="relative_to_anchor",
+                temporal_anchor_value=None,
+                temporal_anchor_text="次日",
+                temporal_relation="after",
+                temporal_relation_ref="启程",
+            ),
+        ]
+    )
+    assert relative["story_order"] == base["story_order"] + 86400
+
+
 def test_relative_anchor_resolves_against_a_persisted_cross_chapter_event():
     [relative] = assign_story_orders(
         [

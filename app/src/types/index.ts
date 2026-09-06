@@ -286,6 +286,19 @@ export interface GuardOverview {
   runs: ConsistencyRunOverview[]
 }
 
+export interface TimelineReflowResult {
+  claimsExamined: number
+  claimsChanged: number
+  affectedChapterIds: string[]
+  resolved: number
+  unresolved: number
+  ambiguous: number
+  cyclic: number
+  cycles: string[][]
+  rescansQueued: number
+  rescanRunIds: number[]
+}
+
 export interface ContextLayer {
   key: 'resident' | 'retrieved' | 'summary' | 'adjacent'
   label: string

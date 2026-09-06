@@ -18,6 +18,7 @@ from db.models_guard import Foreshadow, GuardIssue
 from db.session import get_db
 from services.consistency import PIPELINE_VERSION, get_or_create_run
 from services.outbox import OutboxService
+from services.temporal_reflow import enqueue_temporal_rescans, reflow_project_timeline
 
 router = APIRouter(tags=["consistency"])
 
@@ -128,6 +129,19 @@ class ResolveIssueRequest(BaseModel):
 class ProjectScanResponse(BaseModel):
     queued: int
     run_ids: list[int]
+
+
+class TimelineReflowResponse(BaseModel):
+    claims_examined: int
+    claims_changed: int
+    affected_chapter_ids: list[str]
+    resolved: int
+    unresolved: int
+    ambiguous: int
+    cyclic: int
+    cycles: list[list[str]]
+    rescans_queued: int
+    rescan_run_ids: list[int]
 
 
 class RunOverview(BaseModel):
@@ -356,6 +370,37 @@ async def trigger_project_scan(
 
     await db.commit()
     return ProjectScanResponse(queued=len(run_ids), run_ids=run_ids)
+
+
+@router.post(
+    "/projects/{project_id}/timeline/reflow",
+    response_model=TimelineReflowResponse,
+)
+async def reflow_project_temporal_dependencies(
+    project_id: str,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> TimelineReflowResponse:
+    """Recompute all accepted temporal claims after an upstream anchor edit.
+
+    Exact unambiguous chains receive a new ``story_order`` immediately. Fuzzy,
+    ambiguous, and cyclic dependencies remain excluded from hard rules and are
+    returned as diagnostics for the author.
+    """
+    await verify_project_permission(project_id, ProjectPermission.RUN_GUARD, user, db)
+    result = await reflow_project_timeline(db, project_id=project_id)
+    run_ids = await enqueue_temporal_rescans(
+        db,
+        project_id=project_id,
+        chapter_ids=result.affected_chapter_ids,
+        cause_id=f"manual-reflow-{user.id}-{uuid4().hex[:8]}",
+    )
+    await db.commit()
+    return TimelineReflowResponse(
+        **result.as_dict(),
+        rescans_queued=len(run_ids),
+        rescan_run_ids=run_ids,
+    )
 
 
 @router.get("/projects/{project_id}/overview", response_model=ProjectConsistencyOverview)

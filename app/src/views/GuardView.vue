@@ -6,6 +6,7 @@ import { useProjectStore } from '@/stores/project'
 import { useShellStore } from '@/stores/shell'
 import type { GuardIssue, GuardKind } from '@/types'
 import { useProjectNavigation } from '@/composables/use-project-navigation'
+import AppIcon from '@/components/ui/AppIcon.vue'
 
 /**
  * 一致性守卫：主从布局。左列是按严重度排序的告警行，右侧是证据与处置。
@@ -53,6 +54,21 @@ const activityText = computed(() => {
   if (!guard.overview.latestActivityAt) return '暂无运行记录'
   const value = new Date(guard.overview.latestActivityAt)
   return Number.isNaN(value.getTime()) ? '已有运行记录' : value.toLocaleString('zh-CN', { hour12: false })
+})
+
+const timelineStatus = computed(() => {
+  if (guard.timelineReflowError) return guard.timelineReflowError
+  const result = guard.timelineReflowResult
+  if (!result) return null
+  if (result.claimsChanged === 0) return `时间线已是最新 · 检查 ${result.claimsExamined} 条事实`
+  const blocked = result.ambiguous + result.cyclic
+  return [
+    `已更新 ${result.claimsChanged} 条事实，涉及 ${result.affectedChapterIds.length} 章`,
+    `${result.resolved} 条依赖已确定`,
+    result.unresolved ? `${result.unresolved} 条模糊时间待确认` : '',
+    blocked ? `${blocked} 条歧义或循环待处理` : '',
+    result.rescansQueued ? `${result.rescansQueued} 章正在复检` : ''
+  ].filter(Boolean).join(' · ')
 })
 
 const arbitrationCopy = computed(() => {
@@ -104,7 +120,7 @@ function openIssueChapter(issue: GuardIssue) {
 </script>
 
 <template>
-  <div class="guard-view" :style="{ display: 'grid', gridTemplateRows: 'auto minmax(0, 1fr)', height: '100%', background: 'var(--canvas)' }">
+  <div class="guard-view" :style="{ display: 'grid', gridTemplateRows: timelineStatus ? 'auto auto minmax(0, 1fr)' : 'auto minmax(0, 1fr)', height: '100%', background: 'var(--canvas)' }">
     <!-- 顶部四个计数。数字大、标签小，扫一眼就知道要不要进来处理 -->
     <div
       class="guard-summary"
@@ -142,10 +158,38 @@ function openIssueChapter(issue: GuardIssue) {
           {{ runtimeLabel }} · {{ activityText }}<br>
           {{ guard.overview.running }} 运行 / {{ queuedCount }} 排队 / {{ guard.overview.failed + guard.overview.outboxDeadLetter }} 失败
         </span>
-        <button class="wk-btn" type="button" :disabled="guard.scanRequestPending" @click="guard.rescan()">
-          {{ guard.scanRequestPending ? '正在下发…' : guard.scanning ? '重新检查' : '扫描当前版本' }}
-        </button>
+        <div class="row" :style="{ gap: 'var(--u2)' }">
+          <button class="wk-btn" type="button" :disabled="guard.scanRequestPending" @click="guard.rescan()">
+            {{ guard.scanRequestPending ? '正在下发…' : guard.scanning ? '重新检查' : '扫描当前版本' }}
+          </button>
+          <button
+            class="wk-btn"
+            type="button"
+            :disabled="guard.timelineReflowPending"
+            title="重新计算跨章节相对时间"
+            @click="guard.reflowTimeline()"
+          >
+            <AppIcon name="history" :size="14" />
+            {{ guard.timelineReflowPending ? '重算中…' : '重算时间线' }}
+          </button>
+        </div>
       </div>
+    </div>
+
+    <div
+      v-if="timelineStatus"
+      role="status"
+      aria-live="polite"
+      :style="{
+        minHeight: '36px', display: 'flex', alignItems: 'center', gap: 'var(--u2)',
+        padding: '7px var(--u4)', borderBottom: 'var(--hair) solid var(--line)',
+        background: guard.timelineReflowError ? 'var(--alert-soft)' : 'var(--panel)',
+        color: guard.timelineReflowError ? 'var(--alert-ink)' : 'var(--ink-2)',
+        fontSize: 'var(--fs-sm)'
+      }"
+    >
+      <AppIcon name="history" :size="15" />
+      <span>{{ timelineStatus }}</span>
     </div>
 
     <div class="wk-cols guard-workspace" :style="{ gridTemplateColumns: '340px minmax(0, 1fr)' }">

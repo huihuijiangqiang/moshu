@@ -1,7 +1,7 @@
 import { defineStore } from 'pinia'
 import { computed, ref } from 'vue'
 import { contentApi } from '@/api/content'
-import type { GuardIssue, GuardKind, GuardOverview, GuardResolutionAction } from '@/types'
+import type { GuardIssue, GuardKind, GuardOverview, GuardResolutionAction, TimelineReflowResult } from '@/types'
 
 const EMPTY_OVERVIEW: GuardOverview = {
   status: 'idle', queued: 0, running: 0, completed: 0, failed: 0,
@@ -13,12 +13,16 @@ export const useGuardStore = defineStore('guard', () => {
   const tab = ref<GuardKind | 'resolved'>('conflict')
   const scanning = ref(false)
   const scanRequestPending = ref(false)
+  const timelineReflowPending = ref(false)
+  const timelineReflowResult = ref<TimelineReflowResult | null>(null)
+  const timelineReflowError = ref<string | null>(null)
   const loaded = ref(false)
   const loadedProjectId = ref<string | null>(null)
   const overview = ref<GuardOverview>({ ...EMPTY_OVERVIEW })
   let polling: Promise<void> | null = null
   let pollingProjectId: string | null = null
   let pollingGeneration = 0
+  let timelineReflowGeneration = 0
 
   const open = computed(() => issues.value.filter((i) => !i.resolved))
   const counts = computed(() => ({
@@ -91,6 +95,15 @@ export const useGuardStore = defineStore('guard', () => {
       if (hasActiveWork(overview.value)) void pollUntilSettled(projectId).catch(() => undefined)
       return
     }
+    if (loadedProjectId.value !== projectId) {
+      ++timelineReflowGeneration
+      timelineReflowPending.value = false
+      timelineReflowResult.value = null
+      timelineReflowError.value = null
+      // Mark the route target before I/O so a late request from the previous
+      // project cannot refresh its data back into this shared store.
+      loadedProjectId.value = projectId
+    }
     await refresh(projectId)
     if (hasActiveWork(overview.value)) void pollUntilSettled(projectId).catch(() => undefined)
   }
@@ -110,6 +123,29 @@ export const useGuardStore = defineStore('guard', () => {
     }
   }
 
+  async function reflowTimeline() {
+    const projectId = loadedProjectId.value
+    if (!projectId || timelineReflowPending.value) return
+    const generation = ++timelineReflowGeneration
+    timelineReflowPending.value = true
+    timelineReflowError.value = null
+    try {
+      const result = await contentApi.reflowProjectTimeline(projectId)
+      if (generation !== timelineReflowGeneration || loadedProjectId.value !== projectId) return
+      timelineReflowResult.value = result
+      await refresh(projectId)
+      if (hasActiveWork(overview.value)) {
+        void pollUntilSettled(projectId).catch(() => undefined)
+      }
+    } catch {
+      if (generation === timelineReflowGeneration && loadedProjectId.value === projectId) {
+        timelineReflowError.value = '时间线重算失败，请稍后重试。'
+      }
+    } finally {
+      if (generation === timelineReflowGeneration) timelineReflowPending.value = false
+    }
+  }
+
   async function resolve(id: string, action: GuardResolutionAction = 'defer') {
     const projectId = loadedProjectId.value
     const i = issues.value.find((item) => item.id === id)
@@ -119,7 +155,8 @@ export const useGuardStore = defineStore('guard', () => {
   }
 
   return {
-    issues, tab, scanning, scanRequestPending, overview, open, counts, visible,
-    topThree, load, rescan, resolve, loadedProjectId
+    issues, tab, scanning, scanRequestPending, timelineReflowPending,
+    timelineReflowResult, timelineReflowError, overview, open, counts, visible,
+    topThree, load, rescan, reflowTimeline, resolve, loadedProjectId
   }
 })

@@ -33,6 +33,7 @@ celery_app.conf.update(
         "consistency.extract_claims": {"queue": "consistency"},
         "consistency.generate_summary": {"queue": "consistency"},
         "consistency.scan_rules": {"queue": "consistency"},
+        "consistency.rescan_temporal_dependents": {"queue": "consistency"},
         "consistency.arbitrate_issues": {"queue": "consistency"},
         "codex.backfill_embeddings": {"queue": "consistency"},
         "codex.recover_stale_embedding_jobs": {"queue": "outbox"},

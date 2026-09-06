@@ -313,6 +313,68 @@ async def test_project_scan_and_overview_are_denied_across_tenants(
     assert overview.status_code == 403
 
 
+async def test_project_timeline_reflow_updates_downstream_claims(
+    app_client, async_db_session, seed_project, make_claim, auth_headers
+):
+    await seed_project(chapter_ids=("ch_a", "ch_b"))
+    async_db_session.add_all(
+        [
+            make_claim(
+                project_id="proj_a",
+                chapter_id="ch_a",
+                fingerprint="root-time",
+                timeline_id="main",
+                temporal_event_ref="启程",
+                temporal_anchor_text="2026-01-01",
+                temporal_anchor_value="2026-01-01",
+                order_basis="absolute_datetime",
+                order_confidence=0.95,
+            ),
+            make_claim(
+                project_id="proj_a",
+                chapter_id="ch_b",
+                fingerprint="relative-time",
+                timeline_id="main",
+                temporal_event_ref="抵达",
+                temporal_relation="after",
+                temporal_relation_ref="启程",
+                temporal_anchor_text="次日",
+                order_basis="relative_to_anchor",
+                order_confidence=0.95,
+            ),
+        ]
+    )
+    await async_db_session.commit()
+
+    response = await app_client.post(
+        "/consistency/projects/proj_a/timeline/reflow",
+        headers=auth_headers("user_a"),
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["claims_examined"] == 2
+    assert body["claims_changed"] == 2
+    assert body["affected_chapter_ids"] == ["ch_a", "ch_b"]
+    assert body["resolved"] == 1
+    assert body["cyclic"] == 0
+    assert body["rescans_queued"] == 0
+    assert body["rescan_run_ids"] == []
+
+
+async def test_project_timeline_reflow_requires_guard_permission(
+    app_client, async_db_session, seed_project, make_user, auth_headers
+):
+    await seed_project()
+    async_db_session.add(make_user("user_intruder"))
+    await async_db_session.commit()
+
+    response = await app_client.post(
+        "/consistency/projects/proj_a/timeline/reflow",
+        headers=auth_headers("user_intruder"),
+    )
+    assert response.status_code == 403
+
+
 async def test_project_scan_resets_failed_current_revision_for_retry(
     app_client, async_db_session, seed_project, make_run, auth_headers
 ):

@@ -320,6 +320,42 @@ async def test_temporal_event_ref_is_included_in_impact_set(
     }
 
 
+async def test_temporal_dependency_impact_set_follows_downstream_chain(
+    scanner, async_db_session, scan_context, add_claim
+):
+    await add_claim(
+        subject_text="启程",
+        predicate="other",
+        temporal_event_ref="启程",
+    )
+    await add_claim(
+        chapter_id="ch_b",
+        subject_text="抵达",
+        predicate="other",
+        temporal_event_ref="抵达",
+        temporal_relation_ref="启程",
+        fingerprint="fp_arrival_after_departure",
+    )
+    await add_claim(
+        chapter_id="ch_b",
+        subject_text="开市",
+        predicate="other",
+        temporal_event_ref="开市",
+        temporal_relation_ref="抵达",
+        fingerprint="fp_market_after_arrival",
+    )
+
+    claims = await scanner._load_impacted_claims(
+        async_db_session, project_id="proj_a", chapter_id="ch_a"
+    )
+
+    assert {claim.fingerprint for claim in claims} == {
+        "fp_启程_other_true",
+        "fp_arrival_after_departure",
+        "fp_market_after_arrival",
+    }
+
+
 # --- 规则 1：生死冲突 ----------------------------------------------------------
 
 

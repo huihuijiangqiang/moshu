@@ -128,6 +128,42 @@ class RuleScanner:
             + len(temporal_event_refs)
             + sum(len(values) for values in unresolved.values())
         )
+
+        # Follow temporal references transitively. If chapter A changes event X,
+        # a claim for Y relative to X and a claim for Z relative to Y must both be
+        # rescanned after reflow. Loading only rows whose temporal_event_ref is X
+        # silently misses the downstream chain.
+        temporal_dependency_ids: set[int] = set()
+        if temporal_event_refs:
+            temporal_rows = (
+                await db.execute(
+                    select(
+                        ConsistencyClaim.id,
+                        ConsistencyClaim.temporal_event_ref,
+                        ConsistencyClaim.temporal_relation_ref,
+                    ).where(
+                        ConsistencyClaim.project_id == project_id,
+                        ConsistencyClaim.status == "accepted",
+                    )
+                )
+            ).all()
+            frontier = set(temporal_event_refs)
+            visited_refs: set[str] = set()
+            while frontier:
+                current = frontier - visited_refs
+                if not current:
+                    break
+                visited_refs.update(current)
+                next_refs: set[str] = set()
+                for row in temporal_rows:
+                    event_ref = (row.temporal_event_ref or "").strip().casefold()
+                    relation_ref = (row.temporal_relation_ref or "").strip().casefold()
+                    if event_ref in current or relation_ref in current:
+                        temporal_dependency_ids.add(row.id)
+                    if relation_ref in current and event_ref and event_ref not in visited_refs:
+                        next_refs.add(event_ref)
+                frontier = next_refs
+            key_count += len(temporal_dependency_ids)
         if not source_rows or key_count == 0 or key_count > MAX_IMPACT_KEYS:
             self.last_scan_scope = "project"
             query = select(ConsistencyClaim).where(
@@ -156,6 +192,8 @@ class RuleScanner:
                         temporal_event_refs
                     )
                 )
+            if temporal_dependency_ids:
+                clauses.append(ConsistencyClaim.id.in_(temporal_dependency_ids))
             self.last_scan_scope = "impact"
             query = select(ConsistencyClaim).where(
                 ConsistencyClaim.project_id == project_id,

@@ -200,7 +200,7 @@ def normalize_relative_expression(value: Optional[str]) -> Optional[RelativeTime
     candidate = re.sub(r"\s+", "", original)
     exact = parse_relative_offset(candidate)
     if exact is not None:
-        return RelativeTimeResolution(candidate, exact, exact, "exact_duration", "exact")
+        return RelativeTimeResolution(candidate, exact, exact, candidate, "exact")
 
     if candidate in {"次日", "翌日", "隔日", "第二日"}:
         return RelativeTimeResolution(candidate, 86400, 86400, "1日后", "calendar_day")
@@ -282,7 +282,7 @@ def build_temporal_dependency_graph(
             by_ref.setdefault((timeline, ref), set()).add(float(order))
     for index, claim in enumerate(claims):
         ref = _event_ref(claim)
-        node_id = str(claim.get("fingerprint") or claim.get("id") or f"claim:{index}")
+        node_id = str(claim.get("id") or claim.get("fingerprint") or f"claim:{index}")
         nodes[node_id] = {"timeline_id": claim.get("timeline_id"), "event_ref": ref}
         relation_ref = re.sub(
             r"\s+", "", str(claim.get("temporal_relation_ref") or "")
@@ -310,11 +310,14 @@ def build_temporal_dependency_graph(
         })
 
     adjacency: dict[str, set[str]] = {}
-    ref_nodes = {(node["timeline_id"], node["event_ref"]): node_id for node_id, node in nodes.items() if node["event_ref"]}
+    ref_nodes: dict[tuple[str, str], list[str]] = {}
+    for node_id, node in nodes.items():
+        if node["timeline_id"] and node["event_ref"]:
+            ref_nodes.setdefault((node["timeline_id"], node["event_ref"]), []).append(node_id)
     for edge in edges:
-        target = ref_nodes.get((edge["timeline_id"], edge["to_ref"]))
-        if target:
-            adjacency.setdefault(edge["from"], set()).add(target)
+        targets = ref_nodes.get((edge["timeline_id"], edge["to_ref"]), [])
+        if len(targets) == 1:
+            adjacency.setdefault(edge["from"], set()).add(targets[0])
     cycles: list[list[str]] = []
     visiting: set[str] = set()
     visited: set[str] = set()
@@ -322,7 +325,8 @@ def build_temporal_dependency_graph(
     def visit(node: str, path: list[str]) -> None:
         if node in visiting:
             # ``path`` already contains the repeated node because callers append
-            # the child before visiting it; do not duplicate the terminal id.
+            # the child before visiting it. Keep that repeated terminal id so the
+            # returned path is an explicit closed loop (A -> B -> A).
             cycles.append(path[path.index(node):])
             return
         if node in visited:
@@ -335,11 +339,16 @@ def build_temporal_dependency_graph(
 
     for node in nodes:
         visit(node, [node])
+    cyclic_nodes = {node for cycle in cycles for node in cycle}
+    for edge in edges:
+        if edge["from"] in cyclic_nodes:
+            edge["status"] = "cyclic"
     return {
         "nodes": nodes,
         "edges": edges,
         "cycles": cycles,
-        "has_blocking_issue": bool(cycles) or any(e["status"] in {"ambiguous", "unresolved"} for e in edges),
+        "has_blocking_issue": bool(cycles)
+        or any(e["status"] in {"ambiguous", "unresolved", "cyclic"} for e in edges),
     }
 
 
@@ -430,7 +439,12 @@ def assign_story_orders(
             reference = re.sub(
                 r"\s+", "", str(claim.get("temporal_relation_ref") or "")
             ).casefold()
-            offset = parse_relative_offset(claim.get("temporal_anchor_text"))
+            resolution = normalize_relative_expression(claim.get("temporal_anchor_text"))
+            offset = (
+                resolution.offset_min_seconds
+                if resolution is not None and resolution.is_exact
+                else None
+            )
             relation = claim.get("temporal_relation")
             if not timeline_id or not reference or offset is None:
                 continue

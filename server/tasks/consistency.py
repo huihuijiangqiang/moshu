@@ -72,7 +72,12 @@ from services.outbox import OutboxService
 from services.provider_usage import record_platform_usage
 from services.retrieval import ConsistencyRetrieval
 from services.rule_scanner import RuleScanner
-from services.timeline import assign_story_orders, build_temporal_dependency_graph, normalize_relative_expression
+from services.temporal_reflow import (
+    enqueue_temporal_rescans,
+    lock_project_timeline,
+    reflow_project_timeline,
+)
+from services.timeline import assign_story_orders
 
 # Create async engine for tasks
 engine = create_async_engine(settings.database_url, echo=False)
@@ -512,20 +517,6 @@ async def _extract_claims_async(task_id: str, run_id: int):
                 chapter_id=run.chapter_id,
             )
 
-            # 新版本发布：同章旧版本的 claim 在同一事务里作废，避免新旧共存误报。
-            # 只标 superseded，绝不删除 —— 架构 4.3 要求「旧正文版本的 claim 不删除，
-            # 标为 superseded，确保告警可追溯」。
-            superseded_older = await db.execute(
-                update(ConsistencyClaim)
-                .where(
-                    ConsistencyClaim.chapter_id == run.chapter_id,
-                    ConsistencyClaim.source_kind == "body",
-                    ConsistencyClaim.body_rev < run.body_rev,
-                    ConsistencyClaim.status.in_(["candidate", "accepted"]),
-                )
-                .values(status="superseded", updated_at=datetime.now(timezone.utc))
-            )
-
             # 解析 subject/object 的 entry_id：规则按 entry_id 分组，
             # 不解析就等于关掉跨章节冲突检测。
             linker = build_entity_linker()
@@ -541,6 +532,25 @@ async def _extract_claims_async(task_id: str, run_id: int):
                         "object_entry_id": object_entry_id,
                     }
                 )
+
+            # Provider 与 entity linker 可能包含慢网络调用，必须在项目锁外完成。
+            # 从第一条 claim DML 起则统一先锁 Project，再按 claim id 锁行；手工 reflow
+            # 也走相同顺序，避免两个章节各持有 claim 锁后互等项目锁形成死锁。
+            await lock_project_timeline(db, project_id=project_id)
+
+            # 新版本发布：同章旧版本的 claim 在同一事务里作废，避免新旧共存误报。
+            # 只标 superseded，绝不删除 —— 架构 4.3 要求「旧正文版本的 claim 不删除，
+            # 标为 superseded，确保告警可追溯」。
+            superseded_older = await db.execute(
+                update(ConsistencyClaim)
+                .where(
+                    ConsistencyClaim.chapter_id == run.chapter_id,
+                    ConsistencyClaim.source_kind == "body",
+                    ConsistencyClaim.body_rev < run.body_rev,
+                    ConsistencyClaim.status.in_(["candidate", "accepted"]),
+                )
+                .values(status="superseded", updated_at=datetime.now(timezone.utc))
+            )
 
             # 其他章节已经落库的、带全局顺序的事件可作为相对时间参照。排除本章，
             # 避免正文重放时上一版的同名事件与本次抽取形成假歧义。
@@ -574,28 +584,6 @@ async def _extract_claims_async(task_id: str, run_id: int):
             # 没有共同锚点的 claim 保持 story_order=None，只进待确认列表。
             anchored = assign_story_orders(linked, known_anchors=known_anchors)
 
-            # Persist deterministic relative-time normalization and dependency diagnostics.
-            # This metadata is advisory: only exact, unambiguous dependencies receive a
-            # story_order; fuzzy ranges remain visible for manual confirmation/reflow.
-            dependency_graph = build_temporal_dependency_graph(
-                anchored, known_anchors=known_anchors
-            )
-            edge_by_node = {
-                edge["from"]: edge for edge in dependency_graph["edges"]
-            }
-            for claim in anchored:
-                resolution = normalize_relative_expression(claim.get("temporal_anchor_text"))
-                if resolution is None and claim.get("temporal_resolution") is None:
-                    continue
-                metadata = dict(claim.get("temporal_resolution") or {})
-                if resolution is not None:
-                    metadata.update(resolution.as_dict())
-                node_id = str(claim.get("fingerprint") or claim.get("id") or "")
-                edge = edge_by_node.get(node_id)
-                if edge is not None:
-                    metadata["dependency_status"] = edge["status"]
-                claim["temporal_resolution"] = metadata
-
             # 再对已经有全局顺序的状态型 claim 闭合有效区间
             positioned = assign_narrative_positions(anchored)
 
@@ -609,6 +597,21 @@ async def _extract_claims_async(task_id: str, run_id: int):
                 body_rev=run.body_rev,
                 extractor_version=EXTRACTOR_VERSION,
                 claims=positioned,
+            )
+
+            # An upstream anchor edit may change relative claims in any later chapter.
+            # Reflow the accepted project graph in this same transaction so no scanner
+            # can observe a half-updated timeline.
+            temporal_reflow = await reflow_project_timeline(
+                db,
+                project_id=project_id,
+            )
+            temporal_rescan_run_ids = await enqueue_temporal_rescans(
+                db,
+                project_id=project_id,
+                chapter_ids=temporal_reflow.affected_chapter_ids,
+                cause_id=f"extract-run-{run_id}",
+                exclude_chapter_id=run.chapter_id,
             )
 
             # 提交前锁住头行再确认版本，确认通过后 claim 与 supersede 一起落库
@@ -642,6 +645,8 @@ async def _extract_claims_async(task_id: str, run_id: int):
                 "kept_rejected_claims": diff.kept_rejected,
                 "superseded_claims": superseded_older.rowcount,
                 "pending_order_claims": pending_order,
+                "temporal_reflow": temporal_reflow.as_dict(),
+                "temporal_rescans_queued": len(temporal_rescan_run_ids),
                 "entity_linking": linker.stats.as_dict(),
             }
         except StaleRevisionError as exc:
@@ -871,6 +876,37 @@ async def _scan_rules_async(task_id: str, run_id: int):
             raise
 
 
+@shared_task(bind=True, name="consistency.rescan_temporal_dependents")
+def rescan_temporal_dependents(self, run_id: int):
+    """Run deterministic rules after another chapter moved a time anchor."""
+    return run_async(_rescan_temporal_dependents_async(self.request.id, run_id))
+
+
+async def _rescan_temporal_dependents_async(task_id: str, run_id: int):
+    async with AsyncSessionLocal() as db:
+        run = await load_run(db, run_id)
+        await ensure_run_is_current(db, run)
+        scanner = RuleScanner(rule_version=RULE_VERSION)
+        issue_ids = await scanner.scan_chapter(
+            db=db,
+            run_id=run.id,
+            project_id=run.project_id,
+            chapter_id=run.chapter_id,
+            body_rev=run.body_rev,
+        )
+        await ensure_run_is_current(db, run, lock=True)
+        await db.commit()
+        arbitrate_issues.delay(run_id)
+        return {
+            "status": "success",
+            "task_id": task_id,
+            "run_id": run_id,
+            "issues_found": len(issue_ids),
+            "claims_scanned": scanner.last_scan_claim_count,
+            "scan_scope": scanner.last_scan_scope,
+        }
+
+
 @shared_task(bind=True, name="consistency.arbitrate_issues")
 def arbitrate_issues(self, run_id: int):
     """Review newly created or materially changed rule issues without blocking them."""
@@ -1003,6 +1039,10 @@ async def _dispatch_outbox_async(task_id: str, batch_size: int):
                     dispatch_run_pipeline(int(event.payload["run_id"]))
                     await OutboxService.mark_sent(db, event.id, event.lease_token)
                     dispatched += 1
+                elif event.topic == "consistency.timeline_rescan":
+                    rescan_temporal_dependents.delay(int(event.payload["run_id"]))
+                    await OutboxService.mark_sent(db, event.id, event.lease_token)
+                    dispatched += 1
                 elif event.topic == "chapter.outline_updated":
                     # Outline retrieval reads the authoritative database rows
                     # directly; there is no materialized cache to refresh yet.
@@ -1039,6 +1079,7 @@ __all__ = [
     "RunNotFoundError",
     "StaleRevisionError",
     "_arbitrate_issues_async",
+    "_rescan_temporal_dependents_async",
     "advance_run_status",
     "arbitrate_issues",
     "build_entity_linker",
@@ -1051,6 +1092,7 @@ __all__ = [
     "lock_body_head",
     "phase_column",
     "process_body_saved",
+    "rescan_temporal_dependents",
     "scan_rules",
     "start_phase",
     "succeed_phase",

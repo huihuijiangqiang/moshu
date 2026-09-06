@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { reactive } from 'vue'
 import { ApiError } from './http'
-import { bodyConflictFromError, codexDraftAttrs, codexFromDto, guardIssueFromDto, guardOverviewFromDto, htmlToDocument } from './content'
+import { bodyConflictFromError, codexDraftAttrs, codexFromDto, guardIssueFromDto, guardOverviewFromDto, htmlToDocument, timelineReflowFromDto } from './content'
 
 describe('htmlToDocument', () => {
   it('uses the backend paragraph pid contract', () => {
@@ -235,5 +235,25 @@ describe('Guard DTO mapping', () => {
     expect(overview.status).toBe('running')
     expect(overview.outboxPending).toBe(1)
     expect(overview.runs[0]?.phases.summary).toBe('running')
+  })
+
+  it('maps project timeline reflow diagnostics and rescan state', () => {
+    const result = timelineReflowFromDto({
+      claims_examined: 38,
+      claims_changed: 6,
+      affected_chapter_ids: ['ch1', 'ch2'],
+      resolved: 4,
+      unresolved: 1,
+      ambiguous: 1,
+      cyclic: 0,
+      cycles: [],
+      rescans_queued: 2,
+      rescan_run_ids: [7, 8]
+    })
+
+    expect(result.claimsChanged).toBe(6)
+    expect(result.affectedChapterIds).toEqual(['ch1', 'ch2'])
+    expect(result.ambiguous).toBe(1)
+    expect(result.rescansQueued).toBe(2)
   })
 })

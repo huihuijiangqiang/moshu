@@ -1,7 +1,7 @@
 import { delay } from '../http'
 import * as seed from './seed'
 import { findShelfBook } from './shelf'
-import type { Chapter, ChapterPlanPatch, ChapterVersionDetail, ChapterVersionRestoreResult, ChapterVersionSummary, CodexEntry, CodexEntryDraft, GuardIssue, GuardOverview, GuardResolutionAction, Project, ContextLayer, ProjectPatch, ProjectTrash } from '@/types'
+import type { Chapter, ChapterPlanPatch, ChapterVersionDetail, ChapterVersionRestoreResult, ChapterVersionSummary, CodexEntry, CodexEntryDraft, GuardIssue, GuardOverview, GuardResolutionAction, Project, ContextLayer, ProjectPatch, ProjectTrash, TimelineReflowResult } from '@/types'
 
 /** 内存态副本：mock 下的写操作要真的改变数据，否则界面行为是假的。 */
 const state = {
@@ -434,6 +434,20 @@ export const mockApi = {
     return {
       status: completed ? 'completed' : 'idle', queued: 0, running: 0, completed, failed: 0,
       outboxPending: 0, outboxDeadLetter: 0, latestActivityAt: new Date().toISOString(), runs: []
+    }
+  },
+  async reflowProjectTimeline(_projectId = 'p1'): Promise<TimelineReflowResult> {
+    return {
+      claimsExamined: 38,
+      claimsChanged: 6,
+      affectedChapterIds: ['c1', 'c2'],
+      resolved: 4,
+      unresolved: 2,
+      ambiguous: 0,
+      cyclic: 0,
+      cycles: [],
+      rescansQueued: 2,
+      rescanRunIds: [1, 2]
     }
   },
 

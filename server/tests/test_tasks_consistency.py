@@ -50,6 +50,7 @@ from tasks import consistency as tasks
 def test_long_model_tasks_are_routed_away_from_outbox_dispatch():
     routes = celery_app.conf.task_routes
     assert routes["consistency.dispatch_outbox"]["queue"] == "outbox"
+    assert routes["consistency.rescan_temporal_dependents"]["queue"] == "consistency"
     assert routes["consistency.extract_claims"]["queue"] == "consistency"
     assert routes["consistency.generate_summary"]["queue"] == "consistency"
     assert routes["consistency.arbitrate_issues"]["queue"] == "consistency"
@@ -981,6 +982,54 @@ async def test_new_revision_supersedes_previous_claims(
     result = await tasks._extract_claims_async("task-2", run2.id)
 
     assert result["superseded_claims"] == 1
+    claims = await load_claims(async_db_session)
+    assert [(claim.body_rev, claim.status) for claim in claims] == [
+        (1, "superseded"),
+        (2, "accepted"),
+    ]
+
+
+async def test_extraction_locks_project_before_mutating_older_claims(
+    use_test_session,
+    async_db_session,
+    pipeline_setup,
+    fake_provider,
+    make_run,
+    monkeypatch,
+):
+    """统一锁序必须从第一条 claim DML 开始，而不是到 reflow 才加锁。"""
+    fake_provider.claims = [claim_payload("李长风", "fp_1")]
+    await tasks._extract_claims_async("task-1", pipeline_setup.id)
+
+    await add_version(async_db_session, rev=2, html="<p>第二版正文</p>")
+    run2 = make_run(project_id="proj_a", chapter_id="ch_a", body_rev=2)
+    async_db_session.add(run2)
+    await async_db_session.flush()
+
+    original_lock = tasks.lock_project_timeline
+    statuses_seen_at_lock: list[list[str]] = []
+
+    async def observing_lock(db, *, project_id):
+        statuses_seen_at_lock.append(
+            list(
+                (
+                    await db.execute(
+                        select(ConsistencyClaim.status).where(
+                            ConsistencyClaim.chapter_id == "ch_a",
+                            ConsistencyClaim.body_rev == 1,
+                        )
+                    )
+                ).scalars()
+            )
+        )
+        await original_lock(db, project_id=project_id)
+
+    monkeypatch.setattr(tasks, "lock_project_timeline", observing_lock)
+    fake_provider.claims = [claim_payload("李长风", "fp_2")]
+
+    await tasks._extract_claims_async("task-2", run2.id)
+
+    assert statuses_seen_at_lock == [["accepted"]]
     claims = await load_claims(async_db_session)
     assert [(claim.body_rev, claim.status) for claim in claims] == [
         (1, "superseded"),
@@ -2661,6 +2710,78 @@ async def test_dispatch_outbox_routes_manual_scan_to_existing_run(
     assert result["failed"] == 0
     assert dispatched == [42]
     assert sent == [(7, "lease-7")]
+
+
+async def test_temporal_dependent_rescan_runs_rules_without_resetting_pipeline(
+    use_test_session, pipeline_setup, monkeypatch
+):
+    arbitration: list[int] = []
+
+    class FakeScanner:
+        last_scan_claim_count = 4
+        last_scan_scope = "impact"
+
+        def __init__(self, rule_version):
+            self.rule_version = rule_version
+
+        async def scan_chapter(self, **kwargs):
+            assert kwargs["run_id"] == pipeline_setup.id
+            return ["issue-a"]
+
+    class FakeArbitrationTask:
+        @staticmethod
+        def delay(run_id):
+            arbitration.append(run_id)
+
+    original_status = pipeline_setup.status
+    monkeypatch.setattr(tasks, "RuleScanner", FakeScanner)
+    monkeypatch.setattr(tasks, "arbitrate_issues", FakeArbitrationTask())
+
+    result = await tasks._rescan_temporal_dependents_async(
+        "timeline-rescan-1", pipeline_setup.id
+    )
+
+    assert result["issues_found"] == 1
+    assert result["claims_scanned"] == 4
+    assert arbitration == [pipeline_setup.id]
+    await use_test_session.refresh(pipeline_setup)
+    assert pipeline_setup.status == original_status
+
+
+async def test_dispatch_outbox_routes_temporal_rescan_without_full_extraction(
+    use_test_session, monkeypatch
+):
+    event = SimpleNamespace(
+        id=9,
+        topic="consistency.timeline_rescan",
+        payload={"run_id": 73},
+        lease_token="lease-9",
+    )
+    dispatched: list[int] = []
+    sent: list[tuple[int, str]] = []
+
+    async def fake_lease_batch(db, owner_id, batch_size, lease_duration_seconds):
+        return [event]
+
+    async def fake_mark_sent(db, event_id, lease_token):
+        sent.append((event_id, lease_token))
+        return True
+
+    class FakeTask:
+        @staticmethod
+        def delay(run_id):
+            dispatched.append(run_id)
+
+    monkeypatch.setattr(tasks.OutboxService, "lease_batch", fake_lease_batch)
+    monkeypatch.setattr(tasks.OutboxService, "mark_sent", fake_mark_sent)
+    monkeypatch.setattr(tasks, "rescan_temporal_dependents", FakeTask())
+
+    result = await tasks._dispatch_outbox_async("dispatcher-temporal", 20)
+
+    assert result["dispatched"] == 1
+    assert result["failed"] == 0
+    assert dispatched == [73]
+    assert sent == [(9, "lease-9")]
 
 
 async def test_dispatch_outbox_acknowledges_outline_refresh_without_false_dead_letter(

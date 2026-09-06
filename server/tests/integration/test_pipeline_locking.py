@@ -21,6 +21,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from db.models_consistency_extended import ConsistencyClaim
 from db.models_core import Chapter, ChapterBody, Project, User
+from services.temporal_reflow import reflow_project_timeline
 from tasks import consistency as tasks
 from tests.integration.conftest import requires_postgres
 
@@ -247,6 +248,37 @@ async def test_partial_index_is_scoped_by_source_kind(seeded):
 
 
 # --- FOR UPDATE 真的互斥 -------------------------------------------------------
+
+
+async def test_project_timeline_lock_serializes_two_reflows(pg_engine, seeded):
+    """同一作品的两个 graph snapshot 不能交错读取或写入 claim。"""
+    engine, schema = pg_engine
+    maker = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+    order: list[str] = []
+
+    async def first_reflow():
+        async with maker() as session:
+            await session.execute(text(f'SET search_path TO "{schema}", public'))
+            await reflow_project_timeline(session, project_id="proj_pg")
+            order.append("first_locked")
+            await asyncio.sleep(0.3)
+            order.append("first_committing")
+            await session.commit()
+
+    async def second_reflow():
+        async with maker() as session:
+            await session.execute(text(f'SET search_path TO "{schema}", public'))
+            await asyncio.sleep(0.1)
+            order.append("second_waiting")
+            await reflow_project_timeline(session, project_id="proj_pg")
+            order.append("second_locked")
+            await session.commit()
+
+    await asyncio.gather(first_reflow(), second_reflow())
+
+    assert order.index("second_locked") > order.index("first_committing"), (
+        f"第二个 reflow 没有等待项目锁: {order}"
+    )
 
 
 async def test_for_update_serializes_two_workers_on_the_head_row(pg_engine, seeded):
