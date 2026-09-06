@@ -139,6 +139,7 @@ def test_expected_core_tables_are_present(migration_metadata):
         "guard_resolutions",
         "entity_state_intervals",
         "story_events",
+        "timeline_entries",
         "outbox_events",
         "idempotency_records",
     ):

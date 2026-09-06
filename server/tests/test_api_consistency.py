@@ -479,6 +479,93 @@ async def test_timeline_board_exposes_project_lanes_and_requires_view_access(
     assert forbidden.status_code == 403
 
 
+async def test_author_timeline_entry_crud_is_versioned_and_project_scoped(
+    app_client, async_db_session, seed_project, make_user, auth_headers
+):
+    await seed_project(chapter_ids=("ch_a", "ch_b"))
+    created = await app_client.post(
+        "/consistency/projects/proj_a/timeline/entries",
+        json={
+            "title": "冬集开市",
+            "detail": "第一次公开摆摊",
+            "timeline_id": "main",
+            "chapter_id": "ch_a",
+            "time_text": "腊月初八",
+            "time_start": "2026-01-03T08:00:00Z",
+        },
+        headers=auth_headers("user_a"),
+    )
+    assert created.status_code == 201
+    entry = created.json()
+    assert entry["rev"] == 1
+    assert entry["story_order"] == datetime(2026, 1, 3, 8, tzinfo=timezone.utc).timestamp()
+
+    board = await app_client.get(
+        "/consistency/projects/proj_a/timeline/board",
+        headers=auth_headers("user_a"),
+    )
+    planned = next(event for event in board.json()["lanes"][0]["events"] if event["source"] == "planned")
+    assert planned["entry_id"] == entry["id"]
+    assert planned["editable"] is True
+
+    updated = await app_client.put(
+        f"/consistency/projects/proj_a/timeline/entries/{entry['id']}",
+        json={
+            "expected_rev": 1,
+            "title": "冬集提前开市",
+            "timeline_id": "商路支线",
+            "chapter_id": "ch_b",
+            "time_text": "腊月初七",
+            "story_order": 17,
+        },
+        headers=auth_headers("user_a"),
+    )
+    assert updated.status_code == 200
+    assert updated.json()["rev"] == 2
+    assert updated.json()["timeline_id"] == "商路支线"
+
+    stale = await app_client.request(
+        "DELETE",
+        f"/consistency/projects/proj_a/timeline/entries/{entry['id']}",
+        json={"expected_rev": 1},
+        headers=auth_headers("user_a"),
+    )
+    assert stale.status_code == 409
+    assert stale.json()["detail"]["current_rev"] == 2
+
+    async_db_session.add(make_user("timeline_viewer"))
+    await async_db_session.commit()
+    forbidden = await app_client.put(
+        f"/consistency/projects/proj_a/timeline/entries/{entry['id']}",
+        json={
+            "expected_rev": 2,
+            "title": "越权修改",
+            "timeline_id": "main",
+        },
+        headers=auth_headers("timeline_viewer"),
+    )
+    assert forbidden.status_code == 403
+
+    archived = await app_client.request(
+        "DELETE",
+        f"/consistency/projects/proj_a/timeline/entries/{entry['id']}",
+        json={"expected_rev": 2},
+        headers=auth_headers("user_a"),
+    )
+    assert archived.status_code == 200
+    assert archived.json()["status"] == "archived"
+
+    board_after = await app_client.get(
+        "/consistency/projects/proj_a/timeline/board",
+        headers=auth_headers("user_a"),
+    )
+    assert all(
+        event["entry_id"] != entry["id"]
+        for lane in board_after.json()["lanes"]
+        for event in lane["events"]
+    )
+
+
 async def test_temporal_review_rejects_out_of_range_and_cross_project_claims(
     app_client, async_db_session, seed_project, make_claim, auth_headers
 ):

@@ -6,9 +6,9 @@
 所有声明基于实际代码与测试结果，不夸大、不省略已知缺口。
 
 **关键事实**：
-- ✅ 36 张表完整 Alembic baseline，增量迁移已到 `017_temporal_resolution`
-- ✅ 1089 个单元/功能测试通过（SQLite in-memory，mock embedding/LLM）
-- ✅ 前端 94 个测试、TypeScript 类型检查和生产构建通过
+- ✅ 37 张表完整 Alembic baseline，增量迁移已到 `018_timeline_entries`
+- ✅ 1101 个单元/功能测试通过（SQLite in-memory，mock embedding/LLM）
+- ✅ 前端 99 个测试、TypeScript 类型检查和生产构建通过
 - ✅ 36 个集成测试已在本机真实 PostgreSQL + pgvector 环境通过
 - ✅ 已完成真实账号认证、作品创建、作品归档、分卷与章节增删改排、回收站和章纲编辑闭环
 - ✅ Refresh session 持久化轮换、防重放、注销即时吊销，系统管理员与项目 RBAC 已接通
@@ -26,6 +26,7 @@
 - ✅ Guard 已接入项目扫描、运行状态、真实告警证据与乐观锁处置
 - ✅ 模糊时间作者校对已接通确认/撤销、乐观锁、审计历史、级联 reflow 与下游复检
 - ✅ 多剧情线时间板已接通真实 API，支持故事/章节顺序对照、支线泳道、待校对事件和章节跳转
+- ✅ 作者计划事件支持新建、编辑、软删除、章节绑定、公历时间与幻想历序号，并与抽取事件合并展示
 - ✅ 确定性 Guard 告警已接入有依据的 LLM 二次复核；失败保留规则告警且不自动替作者判误报
 - ✅ Codex embedding 回填具有持久任务状态、失败次数、最后错误、耗尽标记与重试入口
 - ✅ 设定库页面已接通真实新建、编辑、忽略候选和安全删除；人物档案与通用关键事实分表单维护
@@ -53,7 +54,7 @@ PostgreSQL/pgvector 检索必须在真实部署上单独压测；该脚本只覆
 
 ## 已完成模块
 
-### 1. 数据模型（36 张表，100% Alembic 覆盖）
+### 1. 数据模型（37 张表，100% Alembic 覆盖）
 
 #### 核心骨架 (6 张)
 - `users` - 用户账号
@@ -114,13 +115,16 @@ PostgreSQL/pgvector 检索必须在真实部署上单独压测；该脚本只覆
 #### 跨章编辑操作 (1 张)
 - `text_replacement_runs` - 全书查找替换的范围、版本边界、影响章节与撤销状态
 
+#### 作者人工计划 (1 张)
+- `timeline_entries` - 不污染模型抽取事实的可编辑时间事件、章节绑定与乐观版本
+
 **Alembic 与 pgvector 状态**：
 - ✅ **代码与迁移已实现**：`001_initial.py` 建立 baseline，
   `002_embedding_halfvec_2048.py` 清理旧向量并迁移到 HALFVEC(2048)，以
   `halfvec_cosine_ops` 重建 HNSW 索引；upgrade/downgrade 均会要求重新回填向量
 - ✅ `alembic upgrade head --sql` 与 `alembic downgrade -1 --sql` 语法验证通过
 - ✅ 36 个集成测试已在本机真实 PostgreSQL + pgvector 运行通过；当前审核数据库已真实执行
-  `004_auth_admin_rbac -> 005_usage_ledger -> 006_usage_reservation_expiry -> 007_style_profiles -> 008_embedding_job_visibility -> 009_embedding_dispatch_attempts -> 010_claim_temporal_evidence -> 011_guard_issue_arbitration -> 012_content_lifecycle -> 013_generation_drafts -> 014_text_replacement_runs -> 015_foreshadow_lifecycle -> 016_platform_usage_ledger -> 017_temporal_resolution`；部署后以 readiness 返回的 Alembic head 为准
+  `004_auth_admin_rbac -> 005_usage_ledger -> 006_usage_reservation_expiry -> 007_style_profiles -> 008_embedding_job_visibility -> 009_embedding_dispatch_attempts -> 010_claim_temporal_evidence -> 011_guard_issue_arbitration -> 012_content_lifecycle -> 013_generation_drafts -> 014_text_replacement_runs -> 015_foreshadow_lifecycle -> 016_platform_usage_ledger -> 017_temporal_resolution -> 018_timeline_entries`；部署后以 readiness 返回的 Alembic head 为准
 
 ---
 
@@ -422,9 +426,9 @@ PostgreSQL/pgvector 检索必须在真实部署上单独压测；该脚本只覆
 
 ### 5. 测试覆盖
 
-#### 单元测试（1089 passed，SQLite in-memory，mock providers）
+#### 单元测试（1101 passed，SQLite in-memory，mock providers）
 
-**全量测试结果**：1089 passed, 37 skipped（未设置集成测试 URL 时）, 0 warnings；前端 94 passed
+**全量测试结果**：1101 passed, 37 skipped（未设置集成测试 URL 时）, 0 warnings；前端 99 passed
 
 主要测试覆盖（不逐文件列举测试数量，以实际 pytest 结果为准）：
 - ✅ Codex 设定库：页面与 API 完整 CRUD、引用删除保护、原子别名替换、可检索文本判据、两段式事务、deferred 降级、httpx 错误重试
@@ -433,7 +437,7 @@ PostgreSQL/pgvector 检索必须在真实部署上单独压测；该脚本只覆
 - ✅ 一致性服务：Claim fingerprint、规则逻辑、hard negative 案例
 - ✅ RuleScanner：七类规则检测、timeline-aware 跳过、stale 标记、fingerprint 去重
 - ✅ 认证授权：JWT 解码、项目权限、Idempotency-Key 必需性
-- ✅ Alembic 迁移：36 张表、pgvector extension、部分唯一索引、downgrade 完整性
+- ✅ Alembic 迁移：37 张表、pgvector extension、部分唯一索引、downgrade 完整性
 - ✅ 时间锚点：ISO-8601、确定性相对时长、跨章事件引用、源锚点与事件标签原文校验
 - ✅ 增量影响集：新旧实体重绑定、未解析主体、谓词族闭包、全项目安全降级与扫描遥测
 - ✅ LLM 仲裁：不可变版本取证、600 字截断、20 条分批、陌生/缺失/畸形响应、失败降级、事务释放与前端映射
@@ -536,6 +540,9 @@ PostgreSQL/pgvector 检索必须在真实部署上单独压测；该脚本只覆
 - ✅ 歧义、循环、跨时间线、低置信度、方向冲突和模糊时长保持 `story_order=NULL`
 - ✅ 多剧情线只读投影按 `timeline_id` 分泳道，区分已定位、待确认、歧义、循环和未定位状态
 - ✅ 前端可切换故事发生顺序/章节编排顺序；待确认事件精确跳转到 Guard 作者校对项
+- ✅ 独立 `timeline_entries` 保存作者人工计划，不污染模型抽取 claim；支持无章节事件、乐观锁更新与归档
+- ✅ 公历开始时间自动换算故事坐标，幻想历可使用原文时间和自定义序号；时间板合并展示抽取与计划事件
+- ✅ 事件编辑抽屉支持新建、修改和移除；密集事件自动分配纵向轨道，移动端无页面级横向溢出
 
 **保守限制**：
 - ⚠️ `年关前后` 等需要世界历法或上下文推理的表达仍不猜测
@@ -543,7 +550,7 @@ PostgreSQL/pgvector 检索必须在真实部署上单独压测；该脚本只覆
 - ⚠️ 项目 reflow 只复检已有结构化 claim，不重新调用抽取模型
 
 **后续需要**：
-1. 可编辑日历视图（当前时间板只投影已抽取 claim，不直接改写故事时间）
+1. 公历/月历网格视图（人工计划已可编辑，但当前仍以故事时间尺展示，不是传统月历）
 2. 基于实际长篇分布的时间区间影响集裁剪
 3. 真实 PostgreSQL 双事务同时确认的持续集成测试
 
@@ -695,7 +702,7 @@ baseline，增量实现 Codex embedding 回填、时间锚点解析、issue 生�
 
 ## 文件清单
 
-### 数据模型（8 个文件）
+### 数据模型（10 个文件）
 - `server/db/models_core.py` - 核心骨架 6 张表
 - `server/db/models_codex.py` - 设定库 4 张表
 - `server/db/models_guard.py` - 守卫 2 张表
@@ -705,8 +712,9 @@ baseline，增量实现 Codex embedding 回填、时间锚点解析、issue 生�
 - `server/db/models_org.py` - 组织 3 张表
 - `server/db/models_admin.py` - 会话、运行设置与审计 3 张表
 - `server/db/models_editing.py` - 跨章节原子编辑操作 1 张表
+- `server/db/models_timeline.py` - 作者人工计划事件 1 张表
 
-### 服务层（14 个文件）
+### 服务层（16 个文件）
 - `server/services/codex.py` - 设定库 CRUD
 - `server/services/codex_embedding.py` - Embedding 生命周期
 - `server/services/outlines.py` - 章纲服务
@@ -715,6 +723,7 @@ baseline，增量实现 Codex embedding 回填、时间锚点解析、issue 生�
 - `server/services/rule_scanner.py` - 规则扫描器
 - `server/services/arbitration.py` - 有依据的 LLM 冲突仲裁与失败降级
 - `server/services/timeline.py` - 时间线服务
+- `server/services/timeline_entries.py` - 作者人工计划 CRUD、章节归属校验与乐观锁
 - `server/services/retrieval.py` - RAG 检索
 - `server/services/embedding.py` - Embedding provider
 - `server/services/outbox.py` - Outbox 服务
@@ -729,7 +738,7 @@ baseline，增量实现 Codex embedding 回填、时间锚点解析、issue 生�
 - `server/api/chapters.py` - 章节读写
 - `server/api/outlines.py` - 章纲管理
 - `server/api/codex.py` - 设定库 CRUD
-- `server/api/consistency.py` - 一致性状态查询
+- `server/api/consistency.py` - 一致性状态、时间板与人工计划管理
 - `server/api/admin.py` - 系统管理、账号与运行设置
 - `server/api/orgs.py` - 工作室成员与作品共享
 - `server/api/exports.py` - 全量导出、备份与恢复
@@ -743,9 +752,9 @@ baseline，增量实现 Codex embedding 回填、时间锚点解析、issue 生�
 - `server/tasks/consistency.py` - 一致性任务
 - `server/tasks/codex.py` - Codex 回填任务
 
-### 测试（1089 passed；另有 36 个真实 PostgreSQL 测试通过）
-- `server/tests/` - 单元/功能测试（1089 passed）
-- `app/src/**/*.spec.ts` - 前端测试（94 passed）
+### 测试（1101 passed；另有 36 个真实 PostgreSQL 测试通过）
+- `server/tests/` - 单元/功能测试（1101 passed）
+- `app/src/**/*.spec.ts` - 前端测试（99 passed）
 - `server/tests/integration/` - 集成测试（36 passed，需设置真实 PostgreSQL URL）
 
 ### 文档（1 个文件）
@@ -755,10 +764,10 @@ baseline，增量实现 Codex embedding 回填、时间锚点解析、issue 生�
 
 ## 总结
 
-墨枢一致性后端已完成核心数据模型、服务层、API 端点和异步任务定义，1089 个单元/功能
+墨枢一致性后端已完成核心数据模型、服务层、API 端点和异步任务定义，1101 个单元/功能
 测试在 SQLite in-memory + mock providers 环境下通过，另有 36 个集成测试在真实
 PostgreSQL + pgvector 环境通过。真实认证、可吊销会话、管理员、工作室 RBAC、作品创建、
-作品归档、分卷与章节生命周期、章纲、故事/章节双序时间板、正文版本历史与恢复、AI 多候选草稿、全书查找替换、全量导出、非覆盖备份恢复、风格指纹、AI 来源账本、作者生成用量与平台模型成本台账已经接通，前端 94 个测试与生产构建通过。
+作品归档、分卷与章节生命周期、章纲、故事/章节双序时间板、作者人工计划事件、正文版本历史与恢复、AI 多候选草稿、全书查找替换、全量导出、非覆盖备份恢复、风格指纹、AI 来源账本、作者生成用量与平台模型成本台账已经接通，前端 99 个测试与生产构建通过。
 
 **关键限制**：
 1. 七条确定性规则的 280/140 结构化评测门禁、模糊区间人工确认和多剧情线时间板已完成，但真实正文盲评仍需补充

@@ -302,12 +302,16 @@ export interface TimelineReflowResult {
 export type TimelinePlacementStatus = 'placed' | 'review' | 'ambiguous' | 'cyclic' | 'unplaced'
 
 export interface TimelineBoardEvent {
-  claimId: number
+  eventId: string
+  source: 'extracted' | 'planned'
+  claimId?: number
+  entryId?: string
   timelineId: string
   eventRef: string
-  chapterId: string
-  chapterIndex: number
-  chapterTitle: string
+  detail?: string
+  chapterId?: string
+  chapterIndex?: number
+  chapterTitle?: string
   timeText?: string
   storyOrder?: number
   placementStatus: TimelinePlacementStatus
@@ -317,6 +321,10 @@ export interface TimelineBoardEvent {
   sourceAnchor?: string
   confidence?: number
   resolutionSource?: string
+  timeStart?: string
+  timeEnd?: string
+  editable: boolean
+  revision?: number
 }
 
 export interface TimelineBoardLane {
@@ -336,6 +344,26 @@ export interface TimelineBoard {
   unplacedCount: number
   storyOrderMin?: number
   storyOrderMax?: number
+}
+
+export interface TimelineEntryDraft {
+  title: string
+  detail?: string
+  timelineId: string
+  chapterId?: string
+  timeText?: string
+  storyOrder?: number
+  timeStart?: string
+  timeEnd?: string
+}
+
+export interface TimelineEntry extends TimelineEntryDraft {
+  id: string
+  projectId: string
+  status: 'active' | 'archived'
+  rev: number
+  createdAt: string
+  updatedAt: string
 }
 
 export interface TemporalReviewItem {

@@ -287,16 +287,20 @@ describe('Guard DTO mapping', () => {
         timeline_id: 'main', label: '主线', event_count: 2, placed_count: 1, review_count: 1,
         events: [
           {
-            claim_id: 11, timeline_id: 'main', event_ref: '启程', chapter_id: 'ch1',
+            event_id: 'claim:11', source: 'extracted', claim_id: 11, entry_id: null,
+            timeline_id: 'main', event_ref: '启程', detail: null, chapter_id: 'ch1',
             chapter_index: 1, chapter_title: '离村', time_text: '2026-01-01', story_order: 10,
             placement_status: 'placed', dependency_status: 'resolved', relation: null,
-            relation_ref: null, source_anchor: '第一章', confidence: 0.95, resolution_source: 'parser'
+            relation_ref: null, source_anchor: '第一章', confidence: 0.95, resolution_source: 'parser',
+            time_start: null, time_end: null, editable: false, revision: null
           },
           {
-            claim_id: 12, timeline_id: 'main', event_ref: '开市', chapter_id: 'ch5',
+            event_id: 'claim:12', source: 'extracted', claim_id: 12, entry_id: null,
+            timeline_id: 'main', event_ref: '开市', detail: null, chapter_id: 'ch5',
             chapter_index: 5, chapter_title: '县城初雪', time_text: '过几日后', story_order: null,
             placement_status: 'review', dependency_status: 'unresolved', relation: 'after',
-            relation_ref: '启程', source_anchor: null, confidence: 0.72, resolution_source: null
+            relation_ref: '启程', source_anchor: null, confidence: 0.72, resolution_source: null,
+            time_start: null, time_end: null, editable: false, revision: null
           }
         ]
       }],
@@ -304,9 +308,32 @@ describe('Guard DTO mapping', () => {
       story_order_min: 10, story_order_max: 10
     })
 
-    expect(board.lanes[0]?.events[0]).toMatchObject({ eventRef: '启程', storyOrder: 10 })
+    expect(board.lanes[0]?.events[0]).toMatchObject({ eventId: 'claim:11', source: 'extracted', eventRef: '启程', storyOrder: 10 })
     expect(board.lanes[0]?.events[1]).toMatchObject({ eventRef: '开市', placementStatus: 'review' })
     expect(board.lanes[0]?.events[1]?.storyOrder).toBeUndefined()
     expect(board.storyOrderMin).toBe(10)
+  })
+
+  it('preserves author-managed timeline identity and revision metadata', () => {
+    const board = timelineBoardFromDto({
+      lanes: [{
+        timeline_id: 'harvest', label: '秋收线', event_count: 1, placed_count: 1, review_count: 0,
+        events: [{
+          event_id: 'entry:entry-7', source: 'planned', claim_id: null, entry_id: 'entry-7',
+          timeline_id: 'harvest', event_ref: '返乡取得稻种', detail: '赶在霜降前育种',
+          chapter_id: null, chapter_index: null, chapter_title: null, time_text: '景和三年八月',
+          story_order: 18, placement_status: 'placed', dependency_status: 'manual', relation: null,
+          relation_ref: null, source_anchor: null, confidence: null, resolution_source: 'author',
+          time_start: null, time_end: null, editable: true, revision: 4
+        }]
+      }],
+      event_count: 1, placed_count: 1, review_count: 0, unplaced_count: 0,
+      story_order_min: 18, story_order_max: 18
+    })
+
+    expect(board.lanes[0]?.events[0]).toMatchObject({
+      eventId: 'entry:entry-7', source: 'planned', entryId: 'entry-7', editable: true, revision: 4
+    })
+    expect(board.lanes[0]?.events[0]?.claimId).toBeUndefined()
   })
 })

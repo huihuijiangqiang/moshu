@@ -27,6 +27,14 @@ from services.temporal_decisions import (
 )
 from services.temporal_reflow import enqueue_temporal_rescans, reflow_project_timeline
 from services.timeline_board import build_timeline_board
+from services.timeline_entries import (
+    TimelineEntryConflictError,
+    TimelineEntryError,
+    TimelineEntryNotFoundError,
+    archive_timeline_entry,
+    create_timeline_entry,
+    update_timeline_entry,
+)
 
 router = APIRouter(tags=["consistency"])
 
@@ -181,12 +189,16 @@ class TemporalDecisionResponse(BaseModel):
 
 
 class TimelineBoardEventResponse(BaseModel):
-    claim_id: int
+    event_id: str
+    source: Literal["extracted", "planned"]
+    claim_id: Optional[int]
+    entry_id: Optional[str]
     timeline_id: str
     event_ref: str
-    chapter_id: str
-    chapter_index: int
-    chapter_title: str
+    detail: Optional[str]
+    chapter_id: Optional[str]
+    chapter_index: Optional[int]
+    chapter_title: Optional[str]
     time_text: Optional[str]
     story_order: Optional[float]
     placement_status: Literal["placed", "review", "ambiguous", "cyclic", "unplaced"]
@@ -196,6 +208,10 @@ class TimelineBoardEventResponse(BaseModel):
     source_anchor: Optional[str]
     confidence: Optional[float]
     resolution_source: Optional[str]
+    time_start: Optional[str]
+    time_end: Optional[str]
+    editable: bool
+    revision: Optional[int]
 
 
 class TimelineBoardLaneResponse(BaseModel):
@@ -215,6 +231,76 @@ class TimelineBoardResponse(BaseModel):
     unplaced_count: int
     story_order_min: Optional[float]
     story_order_max: Optional[float]
+
+
+class TimelineEntryWriteRequest(BaseModel):
+    title: str = Field(min_length=1, max_length=200)
+    detail: Optional[str] = Field(default=None, max_length=2000)
+    timeline_id: str = Field(default="main", min_length=1, max_length=64)
+    chapter_id: Optional[str] = Field(default=None, max_length=32)
+    time_text: Optional[str] = Field(default=None, max_length=200)
+    story_order: Optional[float] = None
+    time_start: Optional[datetime] = None
+    time_end: Optional[datetime] = None
+
+
+class TimelineEntryUpdateRequest(TimelineEntryWriteRequest):
+    expected_rev: int = Field(ge=1)
+
+
+class TimelineEntryDeleteRequest(BaseModel):
+    expected_rev: int = Field(ge=1)
+
+
+class TimelineEntryResponse(BaseModel):
+    id: str
+    project_id: str
+    chapter_id: Optional[str]
+    timeline_id: str
+    title: str
+    detail: Optional[str]
+    time_text: Optional[str]
+    story_order: Optional[float]
+    time_start: Optional[str]
+    time_end: Optional[str]
+    status: str
+    rev: int
+    created_at: str
+    updated_at: str
+
+
+def _timeline_entry_response(entry) -> TimelineEntryResponse:
+    return TimelineEntryResponse(
+        id=entry.id,
+        project_id=entry.project_id,
+        chapter_id=entry.chapter_id,
+        timeline_id=entry.timeline_id,
+        title=entry.title,
+        detail=entry.detail,
+        time_text=entry.time_text,
+        story_order=float(entry.story_order) if entry.story_order is not None else None,
+        time_start=entry.time_start.isoformat() if entry.time_start is not None else None,
+        time_end=entry.time_end.isoformat() if entry.time_end is not None else None,
+        status=entry.status,
+        rev=entry.rev,
+        created_at=entry.created_at.isoformat(),
+        updated_at=entry.updated_at.isoformat(),
+    )
+
+
+def _raise_timeline_entry_error(exc: Exception) -> None:
+    if isinstance(exc, TimelineEntryNotFoundError):
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    if isinstance(exc, TimelineEntryConflictError):
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "TIMELINE_ENTRY_CONFLICT",
+                "message": str(exc),
+                "current_rev": exc.current_rev,
+            },
+        ) from exc
+    raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
 class RunOverview(BaseModel):
@@ -502,6 +588,87 @@ async def get_project_timeline_board(
     await verify_project_permission(project_id, ProjectPermission.VIEW, user, db)
     board = await build_timeline_board(db, project_id=project_id)
     return TimelineBoardResponse(**board.as_dict())
+
+
+@router.post(
+    "/projects/{project_id}/timeline/entries",
+    response_model=TimelineEntryResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+async def create_project_timeline_entry(
+    project_id: str,
+    request: TimelineEntryWriteRequest,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> TimelineEntryResponse:
+    await verify_project_permission(project_id, ProjectPermission.MANAGE_TIMELINE, user, db)
+    try:
+        entry = await create_timeline_entry(
+            db,
+            project_id=project_id,
+            actor_id=user.id,
+            **request.model_dump(),
+        )
+    except TimelineEntryError as exc:
+        await db.rollback()
+        _raise_timeline_entry_error(exc)
+    await db.commit()
+    await db.refresh(entry)
+    return _timeline_entry_response(entry)
+
+
+@router.put(
+    "/projects/{project_id}/timeline/entries/{entry_id}",
+    response_model=TimelineEntryResponse,
+)
+async def update_project_timeline_entry(
+    project_id: str,
+    entry_id: str,
+    request: TimelineEntryUpdateRequest,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> TimelineEntryResponse:
+    await verify_project_permission(project_id, ProjectPermission.MANAGE_TIMELINE, user, db)
+    try:
+        entry = await update_timeline_entry(
+            db,
+            project_id=project_id,
+            entry_id=entry_id,
+            **request.model_dump(),
+        )
+    except (TimelineEntryError, TimelineEntryNotFoundError, TimelineEntryConflictError) as exc:
+        await db.rollback()
+        _raise_timeline_entry_error(exc)
+    await db.commit()
+    await db.refresh(entry)
+    return _timeline_entry_response(entry)
+
+
+@router.delete(
+    "/projects/{project_id}/timeline/entries/{entry_id}",
+    response_model=TimelineEntryResponse,
+)
+async def delete_project_timeline_entry(
+    project_id: str,
+    entry_id: str,
+    request: TimelineEntryDeleteRequest,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> TimelineEntryResponse:
+    await verify_project_permission(project_id, ProjectPermission.MANAGE_TIMELINE, user, db)
+    try:
+        entry = await archive_timeline_entry(
+            db,
+            project_id=project_id,
+            entry_id=entry_id,
+            expected_rev=request.expected_rev,
+        )
+    except (TimelineEntryNotFoundError, TimelineEntryConflictError) as exc:
+        await db.rollback()
+        _raise_timeline_entry_error(exc)
+    await db.commit()
+    await db.refresh(entry)
+    return _timeline_entry_response(entry)
 
 
 @router.post(

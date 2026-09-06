@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from db.models_consistency_extended import ConsistencyClaim
 from db.models_core import Chapter
+from db.models_timeline import TimelineEntry
 from services.timeline import author_override_offset, normalize_relative_expression
 
 PlacementStatus = Literal["placed", "review", "ambiguous", "cyclic", "unplaced"]
@@ -16,12 +17,16 @@ PlacementStatus = Literal["placed", "review", "ambiguous", "cyclic", "unplaced"]
 
 @dataclass(frozen=True)
 class TimelineBoardEvent:
-    claim_id: int
+    event_id: str
+    source: Literal["extracted", "planned"]
+    claim_id: int | None
+    entry_id: str | None
     timeline_id: str
     event_ref: str
-    chapter_id: str
-    chapter_index: int
-    chapter_title: str
+    detail: str | None
+    chapter_id: str | None
+    chapter_index: int | None
+    chapter_title: str | None
     time_text: str | None
     story_order: float | None
     placement_status: PlacementStatus
@@ -31,6 +36,10 @@ class TimelineBoardEvent:
     source_anchor: str | None
     confidence: float | None
     resolution_source: str | None
+    time_start: str | None
+    time_end: str | None
+    editable: bool
+    revision: int | None
 
     def as_dict(self) -> dict[str, Any]:
         return self.__dict__.copy()
@@ -128,9 +137,13 @@ async def build_timeline_board(db: AsyncSession, *, project_id: str) -> Timeline
             }
         )
         event = TimelineBoardEvent(
+            event_id=f"claim:{claim.id}",
+            source="extracted",
             claim_id=claim.id,
+            entry_id=None,
             timeline_id=timeline_id,
             event_ref=claim.temporal_event_ref or f"{claim.subject_text} · {claim.predicate}",
+            detail=None,
             chapter_id=chapter.id,
             chapter_index=chapter.idx,
             chapter_title=chapter.title,
@@ -145,17 +158,61 @@ async def build_timeline_board(db: AsyncSession, *, project_id: str) -> Timeline
             resolution_source="author" if override is not None else (
                 str(metadata["resolution_source"]) if metadata.get("resolution_source") else None
             ),
+            time_start=None,
+            time_end=None,
+            editable=False,
+            revision=None,
         )
         by_lane.setdefault(timeline_id, []).append(event)
+
+    planned_rows = (
+        await db.execute(
+            select(TimelineEntry, Chapter)
+            .outerjoin(Chapter, Chapter.id == TimelineEntry.chapter_id)
+            .where(
+                TimelineEntry.project_id == project_id,
+                TimelineEntry.status == "active",
+            )
+            .order_by(TimelineEntry.created_at, TimelineEntry.id)
+        )
+    ).all()
+    for entry, chapter in planned_rows:
+        visible_chapter = chapter if chapter is not None and chapter.deleted_at is None else None
+        event = TimelineBoardEvent(
+            event_id=f"entry:{entry.id}",
+            source="planned",
+            claim_id=None,
+            entry_id=entry.id,
+            timeline_id=entry.timeline_id,
+            event_ref=entry.title,
+            detail=entry.detail,
+            chapter_id=visible_chapter.id if visible_chapter is not None else None,
+            chapter_index=visible_chapter.idx if visible_chapter is not None else None,
+            chapter_title=visible_chapter.title if visible_chapter is not None else None,
+            time_text=entry.time_text,
+            story_order=float(entry.story_order) if entry.story_order is not None else None,
+            placement_status="placed" if entry.story_order is not None else "unplaced",
+            dependency_status="author",
+            relation=None,
+            relation_ref=None,
+            source_anchor=None,
+            confidence=1.0,
+            resolution_source="author",
+            time_start=entry.time_start.isoformat() if entry.time_start is not None else None,
+            time_end=entry.time_end.isoformat() if entry.time_end is not None else None,
+            editable=True,
+            revision=entry.rev,
+        )
+        by_lane.setdefault(entry.timeline_id, []).append(event)
 
     lanes: list[TimelineBoardLane] = []
     for timeline_id, events in sorted(by_lane.items(), key=lambda item: (item[0] != "main", item[0])):
         events.sort(
             key=lambda event: (
                 event.story_order is None,
-                event.story_order if event.story_order is not None else event.chapter_index,
-                event.chapter_index,
-                event.claim_id,
+                event.story_order if event.story_order is not None else (event.chapter_index or 10**9),
+                event.chapter_index or 10**9,
+                event.event_id,
             )
         )
         lanes.append(

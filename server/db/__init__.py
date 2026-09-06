@@ -25,6 +25,7 @@ from db.models_editing import TextReplacementRun
 from db.models_embedding import CodexEmbeddingJob
 from db.models_guard import Foreshadow, GuardIssue
 from db.models_org import ChapterAssignment, Org, OrgMember
+from db.models_timeline import TimelineEntry
 from db.models_usage import GenerationDraft, GenerationRun, RatioReport, StyleProfile, UsageLog
 
 __all__ = [
@@ -51,6 +52,7 @@ __all__ = [
     "DocumentSummary",
     "ConsistencyClaim",
     "StoryEvent",
+    "TimelineEntry",
     "EntityStateInterval",
     "GuardIssueEvidence",
     "GuardResolution",

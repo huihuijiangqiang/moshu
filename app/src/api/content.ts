@@ -1,6 +1,6 @@
 import { ApiError, USE_MOCK, request } from './http'
 import { mockApi } from './mock'
-import type { Chapter, ChapterPlanPatch, ChapterVersionDetail, ChapterVersionRestoreResult, ChapterVersionSummary, CodexEntry, CodexEntryDraft, CodexKind, ContextLayer, GuardIssue, GuardOverview, GuardResolutionAction, Project, ProjectPatch, ProjectTrash, TemporalDecisionResult, TemporalReviewItem, TimelineBoard, TimelinePlacementStatus, TimelineReflowResult, Volume } from '@/types'
+import type { Chapter, ChapterPlanPatch, ChapterVersionDetail, ChapterVersionRestoreResult, ChapterVersionSummary, CodexEntry, CodexEntryDraft, CodexKind, ContextLayer, GuardIssue, GuardOverview, GuardResolutionAction, Project, ProjectPatch, ProjectTrash, TemporalDecisionResult, TemporalReviewItem, TimelineBoard, TimelineEntry, TimelineEntryDraft, TimelinePlacementStatus, TimelineReflowResult, Volume } from '@/types'
 
 interface ProjectDto {
   id: string
@@ -151,12 +151,16 @@ interface TimelineReflowDto {
 }
 
 interface TimelineBoardEventDto {
-  claim_id: number
+  event_id: string
+  source: 'extracted' | 'planned'
+  claim_id: number | null
+  entry_id: string | null
   timeline_id: string
   event_ref: string
-  chapter_id: string
-  chapter_index: number
-  chapter_title: string
+  detail: string | null
+  chapter_id: string | null
+  chapter_index: number | null
+  chapter_title: string | null
   time_text: string | null
   story_order: number | null
   placement_status: TimelinePlacementStatus
@@ -166,6 +170,10 @@ interface TimelineBoardEventDto {
   source_anchor: string | null
   confidence: number | null
   resolution_source: string | null
+  time_start: string | null
+  time_end: string | null
+  editable: boolean
+  revision: number | null
 }
 
 interface TimelineBoardDto {
@@ -183,6 +191,23 @@ interface TimelineBoardDto {
   unplaced_count: number
   story_order_min: number | null
   story_order_max: number | null
+}
+
+interface TimelineEntryDto {
+  id: string
+  project_id: string
+  chapter_id: string | null
+  timeline_id: string
+  title: string
+  detail: string | null
+  time_text: string | null
+  story_order: number | null
+  time_start: string | null
+  time_end: string | null
+  status: 'active' | 'archived'
+  rev: number
+  created_at: string
+  updated_at: string
 }
 
 interface TemporalReviewItemDto {
@@ -336,12 +361,16 @@ export function timelineBoardFromDto(dto: TimelineBoardDto): TimelineBoard {
       placedCount: lane.placed_count,
       reviewCount: lane.review_count,
       events: lane.events.map((event) => ({
-        claimId: event.claim_id,
+        eventId: event.event_id,
+        source: event.source,
+        claimId: event.claim_id ?? undefined,
+        entryId: event.entry_id ?? undefined,
         timelineId: event.timeline_id,
         eventRef: event.event_ref,
-        chapterId: event.chapter_id,
-        chapterIndex: event.chapter_index,
-        chapterTitle: event.chapter_title,
+        detail: event.detail ?? undefined,
+        chapterId: event.chapter_id ?? undefined,
+        chapterIndex: event.chapter_index ?? undefined,
+        chapterTitle: event.chapter_title ?? undefined,
         timeText: event.time_text ?? undefined,
         storyOrder: event.story_order ?? undefined,
         placementStatus: event.placement_status,
@@ -350,7 +379,11 @@ export function timelineBoardFromDto(dto: TimelineBoardDto): TimelineBoard {
         relationRef: event.relation_ref ?? undefined,
         sourceAnchor: event.source_anchor ?? undefined,
         confidence: event.confidence ?? undefined,
-        resolutionSource: event.resolution_source ?? undefined
+        resolutionSource: event.resolution_source ?? undefined,
+        timeStart: event.time_start ?? undefined,
+        timeEnd: event.time_end ?? undefined,
+        editable: event.editable,
+        revision: event.revision ?? undefined
       }))
     })),
     eventCount: dto.event_count,
@@ -359,6 +392,38 @@ export function timelineBoardFromDto(dto: TimelineBoardDto): TimelineBoard {
     unplacedCount: dto.unplaced_count,
     storyOrderMin: dto.story_order_min ?? undefined,
     storyOrderMax: dto.story_order_max ?? undefined
+  }
+}
+
+function timelineEntryFromDto(dto: TimelineEntryDto): TimelineEntry {
+  return {
+    id: dto.id,
+    projectId: dto.project_id,
+    chapterId: dto.chapter_id ?? undefined,
+    timelineId: dto.timeline_id,
+    title: dto.title,
+    detail: dto.detail ?? undefined,
+    timeText: dto.time_text ?? undefined,
+    storyOrder: dto.story_order ?? undefined,
+    timeStart: dto.time_start ?? undefined,
+    timeEnd: dto.time_end ?? undefined,
+    status: dto.status,
+    rev: dto.rev,
+    createdAt: dto.created_at,
+    updatedAt: dto.updated_at
+  }
+}
+
+function timelineEntryPayload(draft: TimelineEntryDraft) {
+  return {
+    title: draft.title,
+    detail: draft.detail || null,
+    timeline_id: draft.timelineId,
+    chapter_id: draft.chapterId || null,
+    time_text: draft.timeText || null,
+    story_order: draft.storyOrder ?? null,
+    time_start: draft.timeStart || null,
+    time_end: draft.timeEnd || null
   }
 }
 
@@ -898,6 +963,24 @@ const realApi = {
   },
   async getTimelineBoard(projectId: string): Promise<TimelineBoard> {
     return timelineBoardFromDto(await request<TimelineBoardDto>(`/consistency/projects/${projectId}/timeline/board`))
+  },
+  async createTimelineEntry(projectId: string, draft: TimelineEntryDraft): Promise<TimelineEntry> {
+    const dto = await request<TimelineEntryDto>(`/consistency/projects/${projectId}/timeline/entries`, {
+      method: 'POST', body: JSON.stringify(timelineEntryPayload(draft))
+    })
+    return timelineEntryFromDto(dto)
+  },
+  async updateTimelineEntry(projectId: string, entryId: string, expectedRev: number, draft: TimelineEntryDraft): Promise<TimelineEntry> {
+    const dto = await request<TimelineEntryDto>(`/consistency/projects/${projectId}/timeline/entries/${entryId}`, {
+      method: 'PUT', body: JSON.stringify({ ...timelineEntryPayload(draft), expected_rev: expectedRev })
+    })
+    return timelineEntryFromDto(dto)
+  },
+  async archiveTimelineEntry(projectId: string, entryId: string, expectedRev: number): Promise<TimelineEntry> {
+    const dto = await request<TimelineEntryDto>(`/consistency/projects/${projectId}/timeline/entries/${entryId}`, {
+      method: 'DELETE', body: JSON.stringify({ expected_rev: expectedRev })
+    })
+    return timelineEntryFromDto(dto)
   },
   async listTemporalReviews(projectId: string): Promise<TemporalReviewItem[]> {
     const rows = await request<TemporalReviewItemDto[]>(`/consistency/projects/${projectId}/timeline/reviews`)

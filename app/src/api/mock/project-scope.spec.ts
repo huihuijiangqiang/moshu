@@ -28,4 +28,26 @@ describe('mock project scoping', () => {
     expect(foreignIssues[0]?.title).not.toContain('剑起山河')
     expect(primaryCodex.length).toBeGreaterThan(0)
   })
+
+  it('keeps author timeline entries versioned and scoped to their project', async () => {
+    const created = await mockApi.createTimelineEntry('p3', {
+      title: '渡口相逢', timelineId: '主线', timeText: '子夜', storyOrder: 12
+    })
+    expect(created.rev).toBe(1)
+
+    const p3Board = await mockApi.getTimelineBoard('p3')
+    const p1Board = await mockApi.getTimelineBoard('p1')
+    expect(p3Board.lanes[0]?.events[0]).toMatchObject({ entryId: created.id, source: 'planned' })
+    expect(p1Board.lanes.flatMap((lane) => lane.events).some((event) => event.entryId === created.id)).toBe(false)
+
+    const updated = await mockApi.updateTimelineEntry('p3', created.id, 1, {
+      title: '渡口重逢', timelineId: '往事线', storyOrder: 8
+    })
+    expect(updated.rev).toBe(2)
+    await expect(mockApi.archiveTimelineEntry('p3', created.id, 1)).rejects.toThrow('timeline_entry_conflict')
+
+    const archived = await mockApi.archiveTimelineEntry('p3', created.id, 2)
+    expect(archived.status).toBe('archived')
+    expect((await mockApi.getTimelineBoard('p3')).eventCount).toBe(0)
+  })
 })
