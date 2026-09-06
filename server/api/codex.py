@@ -1135,9 +1135,9 @@ async def backfill_codex_embeddings(
 ):
     """在请求内同步回填本项目所有待重算的向量（受项目权限保护）。
 
-    `remaining_count` 是本次回填成功后的待重算快照，而非持续可查询的失败状态。
-    当前无独立 GET 项目状态端点、无 dead-letter 标记，无法持续监控任务耗尽重试
-    的失败。带重试的异步版本见 tasks.codex.backfill_codex_embeddings_task。
+    `remaining_count` 是本次同步回填成功后的待重算快照；异步任务的持续状态由
+    `GET /codex/{project_id}/embedding-status` 返回，包含重试次数、最后错误和
+    dead-letter 状态。带重试的异步版本见 tasks.codex.backfill_codex_embeddings_task。
     """
     await verify_project_permission(project_id, ProjectPermission.MANAGE_CODEX, user, db)
 
