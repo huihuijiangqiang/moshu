@@ -36,6 +36,7 @@ interface ProjectListDto {
   last_chapter_title: string | null
   updated_at: string
   target_words_daily: number
+  today_words: number
 }
 
 interface ProjectCreateDto {
@@ -75,7 +76,7 @@ function shelfBookFromDto(dto: ProjectListDto, index: number): ShelfBook {
     targetWords,
     dailyGoal: dto.target_words_daily,
     progress: status === 'finished' ? 100 : Math.min(99, Math.round((dto.words / targetWords) * 100)),
-    todayWords: 0,
+    todayWords: dto.today_words,
     coverTone: coverTones[index % coverTones.length]
   }
 }

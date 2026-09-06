@@ -9,6 +9,7 @@ interface ProjectDto {
   genre: string | null
   status: 'ongoing' | 'finished' | 'archived'
   target_words_daily: number
+  today_words: number
   style_profile_id: string | null
   volumes: Array<{ id: string; title: string; idx: number; summary?: string | null }>
 }
@@ -699,7 +700,7 @@ function projectFromDto(dto: ProjectDto): Project {
     genre: dto.genre,
     status: dto.status,
     dailyGoal: dto.target_words_daily,
-    dailyWords: 0,
+    dailyWords: dto.today_words,
     styleProfile: dto.style_profile_id,
     volumes: dto.volumes.map((volume, index) => ({
       id: volume.id,

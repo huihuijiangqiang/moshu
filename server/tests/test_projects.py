@@ -6,6 +6,7 @@ from sqlalchemy import select
 
 from db.models_codex import CodexEntry
 from db.models_core import Chapter, Project, ProjectNote, Volume
+from db.models_writing import ProjectDailyWriting
 
 
 async def test_project_list_requires_authentication(app_client):
@@ -57,6 +58,64 @@ async def test_project_list_only_returns_accessible_projects_with_real_counts(
     assert project["codex_count"] == 1
     assert project["guard_open"] == 0
     assert project["last_chapter_title"] in {"第一章", "第二章"}
+
+
+async def test_daily_writing_counts_net_positive_saved_words_in_project_list_and_detail(
+    app_client,
+    async_db_session,
+    seed_project,
+    auth_headers,
+):
+    await seed_project(chapter_ids=("ch_daily",))
+
+    def document(text: str) -> dict:
+        return {
+            "type": "doc",
+            "content": [
+                {
+                    "type": "paragraph",
+                    "attrs": {"pid": "daily-p1"},
+                    "content": [{"type": "text", "text": text}],
+                }
+            ],
+        }
+
+    first = await app_client.put(
+        "/chapters/ch_daily/body",
+        headers=auth_headers("user_a", **{"Idempotency-Key": "daily-save-1"}),
+        json={"content_html": "<p>春风起</p>", "content_json": document("春风起"), "base_rev": 0},
+    )
+    assert first.status_code == 200
+
+    second = await app_client.put(
+        "/chapters/ch_daily/body",
+        headers=auth_headers("user_a", **{"Idempotency-Key": "daily-save-2"}),
+        json={"content_html": "<p>春风起，田埂暖</p>", "content_json": document("春风起，田埂暖"), "base_rev": 1},
+    )
+    assert second.status_code == 200
+
+    deletion = await app_client.put(
+        "/chapters/ch_daily/body",
+        headers=auth_headers("user_a", **{"Idempotency-Key": "daily-save-3"}),
+        json={"content_html": "<p>春风</p>", "content_json": document("春风"), "base_rev": 2},
+    )
+    assert deletion.status_code == 200
+
+    listed = await app_client.get("/projects", headers=auth_headers("user_a"))
+    assert listed.status_code == 200
+    assert listed.json()[0]["today_words"] == len("春风起，田埂暖")
+
+    detail = await app_client.get("/projects/proj_a", headers=auth_headers("user_a"))
+    assert detail.status_code == 200
+    assert detail.json()["today_words"] == len("春风起，田埂暖")
+
+    activity = await async_db_session.get(
+        ProjectDailyWriting,
+        {"project_id": "proj_a", "chapter_id": "ch_daily", "day": datetime.now(UTC).date()},
+    )
+    assert activity is not None
+    assert activity.words_added == len("春风起，田埂暖")
+    assert activity.saves == 2
 
 
 async def test_project_detail_and_chapter_list_require_project_access(

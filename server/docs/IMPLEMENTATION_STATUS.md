@@ -6,7 +6,7 @@
 所有声明基于实际代码与测试结果，不夸大、不省略已知缺口。
 
 **关键事实**：
-- ✅ 42 张表完整 Alembic baseline，增量迁移已到 `023_project_notes`
+- ✅ 43 张表完整 Alembic baseline，增量迁移已到 `024_project_daily_writing`
 - ✅ 1193 个单元/功能测试通过（SQLite in-memory，mock embedding/LLM）
 - ✅ 前端 147 个测试、TypeScript 类型检查和生产构建通过
 - ✅ 36 个集成测试已在本机真实 PostgreSQL + pgvector 环境通过
@@ -64,7 +64,7 @@ PostgreSQL/pgvector 检索必须在真实部署上单独压测；该脚本只覆
 
 ## 已完成模块
 
-### 1. 数据模型（42 张表，100% Alembic 覆盖）
+### 1. 数据模型（43 张表，100% Alembic 覆盖）
 
 #### 核心骨架 (7 张)
 - `users` - 用户账号
@@ -147,13 +147,16 @@ PostgreSQL/pgvector 检索必须在真实部署上单独压测；该脚本只覆
 #### 作者人工计划 (1 张)
 - `timeline_entries` - 不污染模型抽取事实的可编辑时间事件、章节绑定与乐观版本
 
+#### 写作进度 (1 张)
+- `project_daily_writing` - 按章节与日期累计净新增字数，用于作品库与写作台日更统计
+
 **Alembic 与 pgvector 状态**：
 - ✅ **代码与迁移已实现**：`001_initial.py` 建立 baseline，
   `002_embedding_halfvec_2048.py` 清理旧向量并迁移到 HALFVEC(2048)，以
   `halfvec_cosine_ops` 重建 HNSW 索引；upgrade/downgrade 均会要求重新回填向量
 - ✅ `alembic upgrade head --sql` 与 `alembic downgrade head:-1 --sql` 语法验证通过
 - ✅ 36 个集成测试已在本机真实 PostgreSQL + pgvector 运行通过；此前审核数据库已真实执行至
-  `018_timeline_entries`。`019_chapter_pov` 至 `023_project_notes` 的 upgrade/downgrade SQL 已生成验证，
+  `018_timeline_entries`。`019_chapter_pov` 至 `024_project_daily_writing` 的 upgrade/downgrade SQL 已生成验证，
   但本轮 Docker daemon 未启动，尚未在真实 PostgreSQL 重复执行；部署后以 readiness 返回的 Alembic head 为准
 
 ---
@@ -516,7 +519,7 @@ PostgreSQL/pgvector 检索必须在真实部署上单独压测；该脚本只覆
 - ✅ 一致性服务：Claim fingerprint、规则逻辑、hard negative 案例
 - ✅ RuleScanner：七类规则检测、timeline-aware 跳过、stale 标记、fingerprint 去重
 - ✅ 认证授权：JWT 解码、项目权限、Idempotency-Key 必需性
-- ✅ Alembic 迁移：42 张表、pgvector extension、部分唯一索引、downgrade 完整性
+- ✅ Alembic 迁移：43 张表、pgvector extension、部分唯一索引、downgrade 完整性
 - ✅ 移动端与速记：390px 正文只读、危险写操作隐藏、用户/作品隔离、章节锚点校验、本人速记备份与恢复重映射
 - ✅ 时间锚点：ISO-8601、确定性相对时长、跨章事件引用、源锚点与事件标签原文校验
 - ✅ 增量影响集：新旧实体重绑定、未解析主体、谓词族闭包、全项目安全降级与扫描遥测

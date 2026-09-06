@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from db.models_codex import CodexEntry, CodexRef
 from db.models_core import Chapter, ChapterBody, ChapterVersion
+from db.models_writing import ProjectDailyWriting
 from services.idempotency import IdempotencyService
 from services.outbox import OutboxService
 from services.provenance import sync_accepted_words
@@ -293,9 +294,36 @@ async def save_chapter_body(
         body.rev = new_rev
         body.updated_at = now
 
-    # 9. 更新 words
+    # 9. 更新 words and record net-positive daily progress. The chapter row is
+    # already locked above, so the per-chapter/day aggregate is race-safe.
+    previous_words = chapter.words
     words = count_words(content_json)
     chapter.words = words
+    words_added = max(0, words - previous_words)
+    if words_added:
+        writing_day = now.date()
+        activity = await db.scalar(
+            select(ProjectDailyWriting)
+            .where(
+                ProjectDailyWriting.project_id == chapter.project_id,
+                ProjectDailyWriting.chapter_id == chapter.id,
+                ProjectDailyWriting.day == writing_day,
+            )
+            .with_for_update()
+        )
+        if activity is None:
+            db.add(
+                ProjectDailyWriting(
+                    project_id=chapter.project_id,
+                    chapter_id=chapter.id,
+                    day=writing_day,
+                    words_added=words_added,
+                    saves=1,
+                )
+            )
+        else:
+            activity.words_added += words_added
+            activity.saves += 1
 
     # 10. 创建版本快照
     version = ChapterVersion(

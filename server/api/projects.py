@@ -23,6 +23,7 @@ from db.models_consistency import ChapterOutlineState
 from db.models_core import User
 from db.models_guard import GuardIssue
 from db.models_org import OrgMember
+from db.models_writing import ProjectDailyWriting
 from db.session import get_db
 from services.codex import create_entry
 from services.provider_usage import record_account_platform_usage
@@ -54,6 +55,7 @@ class ProjectOut(BaseModel):
     genre: str | None
     status: str
     target_words_daily: int
+    today_words: int
     style_profile_id: str | None
     inspiration: str | None
     synopsis: str | None
@@ -93,6 +95,7 @@ class ProjectListItem(BaseModel):
     last_chapter_title: str | None
     updated_at: str
     target_words_daily: int
+    today_words: int
 
 
 class VolumeCreate(BaseModel):
@@ -292,6 +295,12 @@ async def _project_out(db: AsyncSession, project: Project) -> ProjectOut:
         .where(Volume.project_id == project.id, Volume.deleted_at.is_(None))
         .order_by(Volume.idx)
     )
+    today_words = await db.scalar(
+        select(func.coalesce(func.sum(ProjectDailyWriting.words_added), 0)).where(
+            ProjectDailyWriting.project_id == project.id,
+            ProjectDailyWriting.day == datetime.now(UTC).date(),
+        )
+    )
     return ProjectOut(
         id=project.id,
         org_id=project.org_id,
@@ -299,6 +308,7 @@ async def _project_out(db: AsyncSession, project: Project) -> ProjectOut:
         genre=project.genre,
         status=project.status,
         target_words_daily=project.target_words_daily,
+        today_words=int(today_words or 0),
         style_profile_id=project.style_profile_id,
         inspiration=project.inspiration,
         synopsis=project.synopsis,
@@ -356,6 +366,15 @@ async def list_projects(
         .correlate(Project)
         .scalar_subquery()
     )
+    today_words = (
+        select(func.coalesce(func.sum(ProjectDailyWriting.words_added), 0))
+        .where(
+            ProjectDailyWriting.project_id == Project.id,
+            ProjectDailyWriting.day == datetime.now(UTC).date(),
+        )
+        .correlate(Project)
+        .scalar_subquery()
+    )
 
     rows = (
         await db.execute(
@@ -367,6 +386,7 @@ async def list_projects(
                 guard_open.label("guard_open"),
                 latest_chapter_title.label("last_chapter_title"),
                 latest_chapter_updated.label("last_chapter_updated"),
+                today_words.label("today_words"),
             )
             .where(
                 or_(
@@ -393,6 +413,7 @@ async def list_projects(
                 project.updated_at, chapter_updated or project.updated_at
             ).isoformat(),
             target_words_daily=project.target_words_daily,
+            today_words=int(written_today),
         )
         for (
             project,
@@ -402,6 +423,7 @@ async def list_projects(
             issue_count,
             last_title,
             chapter_updated,
+            written_today,
         ) in rows
     ]
 

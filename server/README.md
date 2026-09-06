@@ -20,7 +20,7 @@ server/
 │   ├── projects.py   # 项目管理
 │   ├── chapters.py   # 章节读写（含乐观锁）
 │   └── ...
-├── db/               # 数据模型（42张表）
+├── db/               # 数据模型（43张表）
 │   ├── models_core.py    # 骨架 7张
 │   ├── models_codex.py   # 设定库 5张
 │   ├── models_guard.py   # 守卫 2张
@@ -117,7 +117,7 @@ PostgreSQL、Redis 与 Alembic head，全部通过时返回 200，否则返回 5
 
 ## 已实现
 
-### 数据模型（42张表）
+### 数据模型（43张表）
 - ✅ 核心 7张：users, projects, volumes, chapters, chapter_bodies, chapter_versions, project_notes
 - ✅ 设定库 5张：codex_entries, codex_aliases, codex_refs, codex_relations, codex_state_changes
 - ✅ Embedding 运维 1张：codex_embedding_jobs
@@ -127,6 +127,7 @@ PostgreSQL、Redis 与 Alembic head，全部通过时返回 200，否则返回 5
 - ✅ 认证与管理 3张：auth_sessions, system_settings, admin_audit_logs
 - ✅ 风格/生成/用量 6张：style_profiles, generation_runs, generation_drafts, usage_logs, ratio_reports, user_model_configs
 - ✅ 跨章编辑与人工计划 2张：text_replacement_runs, timeline_entries
+- ✅ 写作进度 1张：project_daily_writing
 
 ### 核心模块
 - ✅ **四层上下文装配器** (`memory/assembler.py`)
