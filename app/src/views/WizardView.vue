@@ -3,6 +3,7 @@ import { computed, onMounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { projectPath } from '@/router/project-route'
 import { shelfApi } from '@/api/shelf'
+import { planWizard, type WizardPlan } from '@/api/wizard'
 
 type Audience = 'male' | 'female' | 'general'
 
@@ -30,6 +31,11 @@ interface VolumeDraft {
   summary: string
 }
 
+interface ChapterDraft {
+  title: string
+  outline: string
+}
+
 const DRAFT_KEY = 'moshu:new-project-draft'
 const router = useRouter()
 const step = ref(1)
@@ -50,6 +56,9 @@ const expandedOutline = ref(false)
 const variant = ref(0)
 const creating = ref(false)
 const createError = ref('')
+const planning = ref(false)
+const planningError = ref('')
+const chapters = ref<ChapterDraft[]>([])
 
 const inspirations = [
   '一个守关将军能听见兵器记忆，却发现佩剑一直在替师父撒谎。',
@@ -170,7 +179,7 @@ const audienceLabel = computed(() => audience.value === 'male' ? '男频' : audi
 const inspirationValid = computed(() => inspiration.value.trim().length >= 8)
 const choicesValid = computed(() => !!selectedGenre.value && !!templateId.value)
 const skeletonValid = computed(() =>
-  !!bookTitle.value.trim() && !!protagonist.value.trim() && !!coreHook.value.trim() && !!synopsis.value.trim()
+  !!bookTitle.value.trim() && !!protagonist.value.trim() && !!coreHook.value.trim() && !!synopsis.value.trim() && chapters.value.length === 3
 )
 
 const steps = computed(() => [
@@ -209,8 +218,37 @@ function chooseGenreGroup(groupId: string) {
   genreId.value = ''
 }
 
-function buildSkeleton(force = false) {
+async function buildSkeleton(force = false) {
   if (!force && skeletonValid.value) return
+  if (planning.value || !selectedGenre.value || !selectedTemplate.value) return
+  planning.value = true
+  planningError.value = ''
+  try {
+    const plan = await planWizard({
+      inspiration: inspiration.value.trim(),
+      audience: audienceLabel.value,
+      genre: selectedGenre.value.label,
+      tags: selectedTags.value.map((tag) => tag.label),
+      template: selectedTemplate.value.label
+    })
+    applyPlan(plan)
+  } catch {
+    planningError.value = '故事骨架生成失败，选择“重试生成”再试一次。'
+  } finally {
+    planning.value = false
+  }
+}
+
+function applyPlan(plan: WizardPlan) {
+  bookTitle.value = plan.title
+  protagonist.value = plan.protagonist
+  coreHook.value = plan.coreHook
+  synopsis.value = plan.synopsis
+  volumes.value = plan.volumes.map((volume) => ({ ...volume }))
+  chapters.value = plan.chapters.map((chapter) => ({ title: chapter.title, outline: chapter.outline.join('\n') }))
+}
+
+function buildLocalSkeleton() {
   const lead = leadVariants[variant.value % leadVariants.length]
   const hook = hookVariants[variant.value % hookVariants.length]
   const genre = selectedGenre.value?.label ?? '幻想'
@@ -227,11 +265,16 @@ function buildSkeleton(force = false) {
     { title: '第三卷 · 旧盟', summary: '阶段真相揭开，主角发现自己一直相信的因果并不完整，被迫作出违背旧原则的选择。' },
     { title: '第四卷 · 同断', summary: '人物缺陷与核心冲突正面碰撞，付清能力代价，完成这一阶段的关系与谜团回收。' }
   ]
+  chapters.value = [
+    { title: '第 1 章 · 入局', outline: '建立主角处境\n日常被事件打破\n主角做出第一次选择' },
+    { title: '第 2 章 · 试探', outline: '追查第一条线索\n遭遇具体阻力\n留下新的疑问' },
+    { title: '第 3 章 · 旧痕', outline: '发现关键证据\n关系发生变化\n以未解钩子收束' }
+  ]
 }
 
 function regenerateAll() {
   variant.value += 1
-  buildSkeleton(true)
+  void buildSkeleton(true)
 }
 
 function regenerateLead() {
@@ -246,10 +289,13 @@ function regenerateHook() {
   coreHook.value = `${hook?.[0]}\n${hook?.[1]}`
 }
 
-function next() {
+async function next() {
   if (step.value === 1 && !inspirationValid.value) return
   if (step.value === 2 && !choicesValid.value) return
-  if (step.value === 2) buildSkeleton()
+  if (step.value === 2) {
+    await buildSkeleton()
+    if (planningError.value || !skeletonValid.value) return
+  }
   if (step.value === 3 && !skeletonValid.value) return
   step.value = Math.min(4, step.value + 1)
   highestStep.value = Math.max(highestStep.value, step.value)
@@ -278,6 +324,7 @@ function resetDraft() {
   coreHook.value = ''
   synopsis.value = ''
   volumes.value = []
+  chapters.value = []
   expandedOutline.value = false
   variant.value = 0
   localStorage.removeItem(DRAFT_KEY)
@@ -298,7 +345,11 @@ async function createProject() {
       audience: audienceLabel.value,
       template: selectedTemplate.value?.label ?? '',
       tags: selectedTags.value.map((tag) => tag.label),
-      volumes: volumes.value
+      volumes: volumes.value,
+      chapters: chapters.value.map((chapter) => ({
+        title: chapter.title,
+        outline: chapter.outline.split(/\n+/).map((beat) => beat.trim()).filter(Boolean)
+      }))
     })
     localStorage.removeItem(DRAFT_KEY)
     await router.push(projectPath(book.id, 'outline'))
@@ -339,6 +390,14 @@ onMounted(() => {
     coreHook.value = typeof draft.coreHook === 'string' ? draft.coreHook : ''
     synopsis.value = typeof draft.synopsis === 'string' ? draft.synopsis : ''
     volumes.value = Array.isArray(draft.volumes) ? draft.volumes : []
+    chapters.value = Array.isArray(draft.chapters)
+      ? draft.chapters.filter((item: unknown): item is ChapterDraft => {
+        if (!item || typeof item !== 'object') return false
+        const value = item as { title?: unknown; outline?: unknown }
+        return typeof value.title === 'string' && Array.isArray(value.outline)
+          && value.outline.every((beat: unknown) => typeof beat === 'string')
+      }).slice(0, 3).map((item: { title: string; outline: string[] }) => ({ title: item.title, outline: item.outline.join('\n') }))
+      : []
     variant.value = Number(draft.variant) || 0
   } catch {
     localStorage.removeItem(DRAFT_KEY)
@@ -361,6 +420,7 @@ watch(
     coreHook: coreHook.value,
     synopsis: synopsis.value,
     volumes: volumes.value,
+    chapters: chapters.value,
     variant: variant.value
   }),
   (draft) => localStorage.setItem(DRAFT_KEY, JSON.stringify(draft)),
@@ -496,11 +556,26 @@ watch(
             <p>这些内容会进入设定库和大纲，现在都可以直接修改。</p>
           </header>
 
+          <div v-if="planning" class="wizard-plan-status" role="status">正在根据你的选择生成故事骨架…</div>
+          <div v-else-if="planningError" class="wizard-plan-status" data-error role="alert">
+            {{ planningError }}
+            <button type="button" @click="void buildSkeleton(true)">重试生成</button>
+          </div>
+
           <label class="wizard-field wizard-field-short"><span>暂定书名</span><input v-model="bookTitle" type="text"></label>
 
           <div class="wizard-edit-section">
             <div class="wizard-edit-head"><span>主角</span><button type="button" @click="regenerateLead">换一个</button></div>
             <textarea v-model="protagonist" rows="4" aria-label="主角设定" />
+          </div>
+
+          <div class="wizard-edit-section wizard-chapter-plans">
+            <div class="wizard-edit-head"><span>前三章章纲</span><small>创建后可在大纲页持续修改</small></div>
+            <label v-for="(chapter, index) in chapters" :key="index" class="wizard-chapter-plan">
+              <span>{{ String(index + 1).padStart(2, '0') }}</span>
+              <input v-model="chapter.title" :aria-label="`第 ${index + 1} 章标题`">
+              <textarea v-model="chapter.outline" rows="3" :aria-label="`第 ${index + 1} 章章纲`" />
+            </label>
           </div>
 
           <div class="wizard-edit-section">
@@ -561,7 +636,7 @@ watch(
             v-if="step < 4"
             class="btn btn-primary"
             type="button"
-            :disabled="step === 1 ? !inspirationValid : step === 2 ? !choicesValid : !skeletonValid"
+            :disabled="planning || (step === 1 ? !inspirationValid : step === 2 ? !choicesValid : !skeletonValid)"
             @click="next"
           >{{ step === 3 ? '确认故事骨架' : '继续' }}</button>
         </footer>
@@ -665,6 +740,16 @@ watch(
 .wizard-template-list small { color: var(--primary); font-size: 10px; }
 .wizard-template-list p { margin: 0; color: var(--ink-3); font-size: var(--fs-sm); line-height: 1.55; }
 .wizard-edit-section { margin-top: var(--u4); border-top: var(--hair) solid var(--line-strong); }
+.wizard-plan-status { margin: -10px 0 var(--u4); padding: 10px 12px; border-left: 3px solid var(--primary); color: var(--primary); background: var(--primary-soft); font-size: var(--fs-sm); }
+.wizard-plan-status[data-error] { display: flex; align-items: center; justify-content: space-between; gap: var(--u3); color: var(--alert-ink); border-left-color: var(--alert); background: var(--alert-soft); }
+.wizard-plan-status button { flex: none; padding: 0; color: inherit; border: 0; background: transparent; font-weight: 700; cursor: pointer; }
+.wizard-chapter-plans { margin-top: var(--u5); }
+.wizard-chapter-plans .wizard-edit-head small { color: var(--ink-4); font-size: var(--fs-xs); font-weight: 400; }
+.wizard-chapter-plan { display: grid; grid-template-columns: 34px minmax(0, 1fr); gap: var(--u2); padding: var(--u3) 0; border-bottom: var(--hair) solid var(--line); }
+.wizard-chapter-plan > span { padding-top: 8px; color: var(--ink-4); font-family: var(--font-mono); font-size: var(--fs-sm); }
+.wizard-chapter-plan input, .wizard-chapter-plan textarea { grid-column: 2; width: 100%; box-sizing: border-box; border: var(--hair) solid var(--line-strong); border-radius: 4px; background: var(--paper); color: var(--ink); font: inherit; }
+.wizard-chapter-plan input { height: 34px; padding: 0 var(--u2); font-weight: 700; }
+.wizard-chapter-plan textarea { min-height: 72px; padding: var(--u2); line-height: 1.65; resize: vertical; }
 .wizard-edit-head { min-height: 42px; display: flex; align-items: center; justify-content: space-between; }
 .wizard-edit-head button { border: 0; background: none; color: var(--primary); font-size: var(--fs-sm); font-weight: 700; cursor: pointer; }
 .wizard-edit-section > textarea { padding: var(--u3); }

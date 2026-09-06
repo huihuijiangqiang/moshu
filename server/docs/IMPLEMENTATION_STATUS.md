@@ -166,6 +166,13 @@ PostgreSQL/pgvector 检索必须在真实部署上单独压测；该脚本只覆
 - ✅ 修改章纲不写正文（不变量测试覆盖）
 - ✅ Transactional outbox 事件生成
 
+#### 开书向导 (`api/projects.py`, `services/wizard_planning.py`, `app/src/views/WizardView.vue`)
+- ✅ `POST /projects/wizard/plan` 使用平台模型生成严格校验的书名、主角、核心机制、故事总述、卷纲与恰好前三章章纲
+- ✅ 规划请求需要登录，模型失败返回可重试的 502；完整 usage 进入平台运营台账，不扣作者积分
+- ✅ 创建作品可携带已编辑的前三章章纲，一次性持久化为真实章节；旧客户端无章纲时保留兼容默认章
+- ✅ 前端第 3 步展示真实生成状态、失败重试和前三章章纲编辑；本地草稿包含模型结果，创建前仍可继续修改
+- ⚠️ 向导只生成前三章章纲，不自动生成正文；正文必须在写作台进入候选草稿流程后由作者审核采纳
+
 #### 正文服务 (`services/body.py`)
 - ✅ 计算 content_hash（SHA-256 标准化 JSON）
 - ✅ 提取 paragraph IDs（稳定 ProseMirror `pid`）

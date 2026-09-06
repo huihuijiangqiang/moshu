@@ -14,6 +14,7 @@ export interface CreateBookInput {
   template: string
   tags: string[]
   volumes: Array<{ title: string; summary: string }>
+  chapters?: Array<{ title: string; outline: string[] }>
 }
 
 export interface UpdateBookInput {
@@ -98,7 +99,8 @@ const realShelfApi = {
         audience: input.audience,
         template: input.template,
         tags: input.tags,
-        volumes: input.volumes
+        volumes: input.volumes,
+        chapters: input.chapters ?? []
       })
     })
     return {

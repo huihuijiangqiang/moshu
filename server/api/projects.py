@@ -25,6 +25,13 @@ from db.models_guard import GuardIssue
 from db.models_org import OrgMember
 from db.session import get_db
 from services.codex import create_entry
+from services.provider_usage import record_account_platform_usage
+from services.wizard_planning import (
+    WizardChapterPlan,
+    WizardPlanner,
+    WizardPlanningError,
+    WizardStoryPlan,
+)
 
 router = APIRouter()
 
@@ -104,6 +111,15 @@ class ProjectCreate(BaseModel):
     template: str = Field(default="", max_length=100)
     tags: list[str] = Field(default_factory=list, max_length=20)
     volumes: list[VolumeCreate] = Field(default_factory=list, max_length=20)
+    chapters: list[WizardChapterPlan] = Field(default_factory=list, max_length=10)
+
+
+class WizardPlanRequest(BaseModel):
+    inspiration: str = Field(min_length=8, max_length=2_000)
+    audience: str = Field(min_length=1, max_length=50)
+    genre: str = Field(min_length=1, max_length=100)
+    tags: list[str] = Field(default_factory=list, max_length=3)
+    template: str = Field(min_length=1, max_length=100)
 
 
 class ChapterCreate(BaseModel):
@@ -162,6 +178,10 @@ def _clean_required(value: str, code: str) -> str:
     if not cleaned:
         raise HTTPException(status_code=422, detail={"code": code})
     return cleaned
+
+
+def get_wizard_planner() -> WizardPlanner:
+    return WizardPlanner()
 
 
 async def _active_volumes(db: AsyncSession, project_id: str, *, lock: bool = False) -> list[Volume]:
@@ -369,6 +389,36 @@ async def list_projects(
     ]
 
 
+@router.post("/wizard/plan", response_model=WizardStoryPlan)
+async def plan_project(
+    request: WizardPlanRequest,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+    planner: WizardPlanner = Depends(get_wizard_planner),
+) -> WizardStoryPlan:
+    try:
+        plan = await planner.plan(
+            inspiration=request.inspiration.strip(),
+            audience=request.audience.strip(),
+            genre=request.genre.strip(),
+            tags=[tag.strip() for tag in request.tags if tag.strip()],
+            template=request.template.strip(),
+        )
+    except WizardPlanningError as exc:
+        raise HTTPException(
+            status_code=502,
+            detail={"code": "WIZARD_PLANNING_FAILED", "message": "故事骨架生成失败，请重试。"},
+        ) from exc
+    await record_account_platform_usage(
+        db,
+        user_id=user.id,
+        feature="wizard_plan",
+        events=planner.usage_events,
+    )
+    await db.commit()
+    return plan
+
+
 @router.post("", response_model=ProjectOut, status_code=201)
 async def create_project(
     request: ProjectCreate,
@@ -410,17 +460,28 @@ async def create_project(
         volumes.append(volume)
     await db.flush()
 
-    outline = [value for value in (request.inspiration.strip(), request.synopsis.strip()) if value]
-    chapter = Chapter(
-        id=f"ch_{secrets.token_hex(12)}",
-        project_id=project.id,
-        volume_id=volumes[0].id,
-        title="第 1 章 · 开篇",
-        idx=1,
-        words=0,
-        outline=outline,
-    )
-    db.add(chapter)
+    default_outline = [
+        value for value in (request.inspiration.strip(), request.synopsis.strip()) if value
+    ]
+    if len(default_outline) < 2:
+        default_outline.extend(
+            ["建立主角当前处境", "发生打破日常的事件"][len(default_outline):]
+        )
+    chapter_plans = request.chapters or [
+        WizardChapterPlan(title="第 1 章 · 开篇", outline=default_outline)
+    ]
+    for index, chapter_plan in enumerate(chapter_plans, start=1):
+        db.add(
+            Chapter(
+                id=f"ch_{secrets.token_hex(12)}",
+                project_id=project.id,
+                volume_id=volumes[0].id,
+                title=chapter_plan.title.strip(),
+                idx=index,
+                words=0,
+                outline=[beat.strip() for beat in chapter_plan.outline if beat.strip()],
+            )
+        )
 
     protagonist = request.protagonist.strip()
     if protagonist:

@@ -143,4 +143,62 @@ async def record_platform_usage(
     return inserted
 
 
-__all__ = ["chat_prompt_text", "provider_usage_event", "record_platform_usage"]
+async def record_account_platform_usage(
+    db: AsyncSession,
+    *,
+    user_id: str,
+    feature: str,
+    events: Iterable[dict[str, Any]],
+) -> int:
+    """Record a platform-funded call made before a project exists."""
+    normalized = [event for event in events if isinstance(event, dict) and event.get("event_id")]
+    if not normalized:
+        return 0
+    event_ids = [str(event["event_id"]) for event in normalized]
+    existing = set(
+        (
+            await db.execute(
+                select(UsageLog.platform_event_id).where(UsageLog.platform_event_id.in_(event_ids))
+            )
+        ).scalars()
+    )
+    now = datetime.now(UTC)
+    inserted = 0
+    for event in normalized:
+        event_id = str(event["event_id"])
+        if event_id in existing:
+            continue
+        prompt_tokens = max(0, int(event.get("prompt_tokens") or 0))
+        cached_tokens = min(prompt_tokens, max(0, int(event.get("cached_tokens") or 0)))
+        event_detail = event.get("detail") if isinstance(event.get("detail"), dict) else {}
+        db.add(
+            UsageLog(
+                user_id=user_id,
+                project_id=None,
+                platform_event_id=event_id,
+                provider_requests=max(1, int(event.get("request_count") or 1)),
+                usage_estimated=bool(event.get("estimated", False)),
+                feature=feature,
+                model=str(event.get("model") or "unknown")[:100],
+                prompt_tokens=prompt_tokens,
+                cached_tokens=cached_tokens,
+                completion_tokens=max(0, int(event.get("completion_tokens") or 0)),
+                reserved_credits=0,
+                credits=0,
+                status="completed",
+                detail={**event_detail, "billing_scope": "platform"},
+                timestamp=now,
+                finalized_at=now,
+            )
+        )
+        inserted += 1
+    await db.flush()
+    return inserted
+
+
+__all__ = [
+    "chat_prompt_text",
+    "provider_usage_event",
+    "record_account_platform_usage",
+    "record_platform_usage",
+]
