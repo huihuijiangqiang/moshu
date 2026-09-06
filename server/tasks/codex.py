@@ -1,5 +1,6 @@
 """Codex embedding backfill with bounded retries and persistent dead letters."""
 import asyncio
+import logging
 from datetime import UTC, datetime, timedelta
 
 import httpx
@@ -18,9 +19,11 @@ from services.embedding_jobs import (
     fail_job,
     record_dispatch_failure,
 )
+from services.provider_usage import record_platform_usage
 
 engine = create_async_engine(settings.database_url, echo=False)
 AsyncSessionLocal = async_sessionmaker(engine, expire_on_commit=False)
+logger = logging.getLogger(__name__)
 
 #: 视为「网关暂时不可用、值得重试」的异常。httpx.HTTPError 覆盖连接与状态码错误。
 RETRYABLE_ERRORS = (EmbeddingProviderError, OSError, httpx.HTTPError)
@@ -45,10 +48,11 @@ async def _backfill_async(
     async with AsyncSessionLocal() as db:
         await begin_attempt(db, project_id, attempt=attempt, task_id=task_id)
         await db.commit()
+        provider = GatewayEmbeddingProvider()
         try:
             embedded = await embed_missing_codex_entries(
                 db,
-                GatewayEmbeddingProvider(),
+                provider,
                 project_id=project_id,
                 batch_size=batch_size,
                 commit_each_batch=True,
@@ -61,6 +65,7 @@ async def _backfill_async(
                 remaining_count=remaining,
             )
             await db.commit()
+            await _persist_embedding_usage(project_id, provider, task_id)
         except Exception as error:
             await db.rollback()
             remaining = await count_stale_entries(db, project_id)
@@ -74,6 +79,7 @@ async def _backfill_async(
                 exhausted=exhausted or not retryable,
             )
             await db.commit()
+            await _persist_embedding_usage(project_id, provider, task_id)
             raise
         return {
             "status": "success",
@@ -81,6 +87,32 @@ async def _backfill_async(
             "embedded_count": embedded,
             "remaining_count": remaining,
         }
+
+
+async def _persist_embedding_usage(
+    project_id: str,
+    provider: GatewayEmbeddingProvider,
+    task_id: str | None,
+) -> None:
+    events = getattr(provider, "usage_events", None)
+    if not isinstance(events, list) or not events:
+        return
+    try:
+        async with AsyncSessionLocal() as usage_db:
+            await record_platform_usage(
+                usage_db,
+                project_id=project_id,
+                feature="embedding",
+                events=events,
+                task_id=task_id,
+            )
+            await usage_db.commit()
+    except Exception:
+        # Embedding lifecycle state is authoritative; telemetry must not change it.
+        logger.exception(
+            "failed to persist embedding usage for project %s task %s", project_id, task_id
+        )
+        return
 
 
 @shared_task(

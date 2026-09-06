@@ -98,6 +98,29 @@ async def test_long_chapter_is_split_into_multiple_gateway_calls():
     assert len(gateway.requests) > 1
 
 
+async def test_consistency_provider_captures_actual_usage_for_every_call():
+    response = httpx.Response(
+        200,
+        json={
+            "choices": [{"message": {"content": json.dumps({"claims": []})}}],
+            "usage": {
+                "prompt_tokens": 120,
+                "completion_tokens": 9,
+                "prompt_tokens_details": {"cached_tokens": 20},
+            },
+        },
+    )
+    provider = ConsistencyProvider(client=RecordingGateway([response]).client())
+
+    await provider.extract_claims("<p>正文</p>", "proj_a", "ch_a")
+
+    assert len(provider.usage_events) == 1
+    assert provider.usage_events[0]["prompt_tokens"] == 120
+    assert provider.usage_events[0]["cached_tokens"] == 20
+    assert provider.usage_events[0]["completion_tokens"] == 9
+    assert provider.usage_events[0]["estimated"] is False
+
+
 async def test_tail_of_long_chapter_reaches_the_model():
     """回归 [:8000] 截断：末段内容必须出现在某次请求的 prompt 里。"""
     gateway = RecordingGateway([claims_response()])

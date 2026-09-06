@@ -29,6 +29,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_valida
 from config import settings
 from services.chunking import TextChunk, chunk_html
 from services.claim_identity import claim_fingerprint
+from services.provider_usage import chat_prompt_text, provider_usage_event
 from services.timeline import GLOBAL_ORDER_BASES, parse_absolute_anchor
 
 if TYPE_CHECKING:
@@ -327,6 +328,7 @@ class ConsistencyProvider:
         self._client = client
         self._gateway_tier = gateway_tier
         self.extractor_version = "1.0.0"
+        self.usage_events: list[dict[str, Any]] = []
 
     async def _get_client(self) -> httpx.AsyncClient:
         """Get or create httpx client"""
@@ -395,8 +397,20 @@ class ConsistencyProvider:
             try:
                 result = await self._stream_completion(client, payload, context=context)
                 if isinstance(result, str):
-                    return (result, None)
-                return result
+                    content, usage = result, None
+                else:
+                    content, usage = result
+                self.usage_events.append(
+                    provider_usage_event(
+                        model=str(payload.get("model") or "unknown"),
+                        usage=usage,
+                        prompt_text=chat_prompt_text(payload),
+                        completion_text=content,
+                        request_count=attempt + 1,
+                        detail={"provider": "chat_completions", "context": context},
+                    )
+                )
+                return content, usage
             except (httpx.TimeoutException, httpx.TransportError) as exc:
                 last_error = exc
                 if attempt >= max_retries:

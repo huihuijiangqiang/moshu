@@ -1,9 +1,12 @@
 """Administrator access, configuration, and audit behavior."""
 
+from datetime import UTC, datetime
+
 from sqlalchemy import func, select
 
 from db.models_admin import AdminAuditLog
 from db.models_core import User
+from db.models_usage import UsageLog
 
 
 async def test_regular_user_cannot_open_admin_api(
@@ -157,3 +160,50 @@ async def test_super_admin_can_update_credit_rates(
     )
     assert audit is not None
     assert audit.detail["advanced_output_credits"] == 12
+
+
+async def test_admin_can_audit_platform_model_usage(
+    app_client, async_db_session, make_user, make_project, auth_headers
+):
+    async_db_session.add_all([
+        make_user("cost_admin", system_role="admin"),
+        make_user("cost_owner"),
+    ])
+    await async_db_session.flush()
+    async_db_session.add(make_project("cost_project", owner_id="cost_owner"))
+    await async_db_session.flush()
+    async_db_session.add(
+        UsageLog(
+            user_id="cost_owner",
+            project_id="cost_project",
+            platform_event_id="cost-event",
+            provider_requests=2,
+            feature="consistency_extract",
+            model="model-a",
+            prompt_tokens=100,
+            cached_tokens=25,
+            completion_tokens=30,
+            credits=0,
+            status="completed",
+            detail={"billing_scope": "platform"},
+            timestamp=datetime.now(UTC),
+        )
+    )
+    await async_db_session.commit()
+
+    response = await app_client.get(
+        "/admin/platform-usage?days=7", headers=auth_headers("cost_admin")
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["totals"] == {
+        "events": 1,
+        "requests": 2,
+        "prompt_tokens": 100,
+        "cached_tokens": 25,
+        "completion_tokens": 30,
+        "estimated_events": 0,
+    }
+    assert payload["items"][0]["label"] == "事实抽取"
+    assert payload["recent"][0]["project_id"] == "cost_project"

@@ -163,12 +163,12 @@ PostgreSQL、Redis 与 Alembic head，全部通过时返回 200，否则返回 5
 核心 MVP 已完成并由 `docs/IMPLEMENTATION_STATUS.md` 记录证据：认证与 refresh
 session、管理员设置与审计、项目/工作室 RBAC、设定库 CRUD 与 embedding 回填、
 持续章纲、版本化正文保存、四层上下文、SSE 生成、导出备份、用量结算、Guard
-扫描与 LLM 仲裁均已接通。后端单元/功能测试为 982 passed，另有 36 个真实
-PostgreSQL/pgvector 集成测试；前端测试为 61 passed。
+扫描与 LLM 仲裁、平台后台模型用量台账均已接通。后端单元/功能测试为 1053 passed，
+另有 36 个真实 PostgreSQL/pgvector 集成测试；前端测试为 85 passed。
 
 仍需在生产数据上继续验证的事项：
 
-- 正文到结构化 claim 的 LLM 抽取质量，以及时间、能力、地理、伏笔四类 P1 规则；
+- 正文到结构化 claim 与 LLM 仲裁的真实盲评质量（七类确定性规则已实现并通过结构化门禁）；
 - 10/30/100 万字规模下的真实 PostgreSQL 检索、模型网络延迟和成本曲线；
 - 模糊时间表达的语义规范化与跨章节锚点变更后的级联重算；
 - Kubernetes manifests、集中式错误上报与日志平台（Compose 部署已可用）。

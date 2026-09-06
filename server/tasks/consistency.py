@@ -69,6 +69,7 @@ from services.consistency import (
 from services.embedding import GatewayEmbeddingProvider
 from services.entity_linking import EntityLinker
 from services.outbox import OutboxService
+from services.provider_usage import record_platform_usage
 from services.retrieval import ConsistencyRetrieval
 from services.rule_scanner import RuleScanner
 from services.timeline import assign_story_orders
@@ -408,6 +409,32 @@ def build_entity_linker() -> EntityLinker:
     return EntityLinker(ConsistencyRetrieval(GatewayEmbeddingProvider()))
 
 
+async def persist_task_usage(
+    *,
+    project_id: str,
+    feature: str,
+    events: list[dict],
+    task_id: str,
+    consistency_run_id: int | None = None,
+) -> None:
+    """Persist telemetry independently so it cannot break the writing pipeline."""
+    if not events:
+        return
+    try:
+        async with AsyncSessionLocal() as usage_db:
+            await record_platform_usage(
+                usage_db,
+                project_id=project_id,
+                feature=feature,
+                events=events,
+                task_id=task_id,
+                consistency_run_id=consistency_run_id,
+            )
+            await usage_db.commit()
+    except Exception:
+        logger.exception("failed to persist %s provider usage for task %s", feature, task_id)
+
+
 @shared_task(bind=True, name="consistency.process_body_saved")
 def process_body_saved(self, payload: dict):
     """
@@ -473,13 +500,15 @@ def extract_claims(self, run_id: int):
 async def _extract_claims_async(task_id: str, run_id: int):
     async with AsyncSessionLocal() as db:
         run, snapshot = await _prepare_step(db, run_id, phase="extract")
+        project_id = run.project_id
         await start_phase(db, run_id, "extract")
 
         provider = ConsistencyProvider()
+        linker: EntityLinker | None = None
         try:
             claims_data = await provider.extract_claims(
                 content_html=snapshot.content_html,
-                project_id=run.project_id,
+                project_id=project_id,
                 chapter_id=run.chapter_id,
             )
 
@@ -553,7 +582,7 @@ async def _extract_claims_async(task_id: str, run_id: int):
             # 见 services.claim_set —— 那里解释了为什么删除和跳过都不成立。
             diff = await replace_body_claim_set(
                 db,
-                project_id=run.project_id,
+                project_id=project_id,
                 chapter_id=run.chapter_id,
                 body_rev=run.body_rev,
                 extractor_version=EXTRACTOR_VERSION,
@@ -566,6 +595,13 @@ async def _extract_claims_async(task_id: str, run_id: int):
             # 阶段状态与产出同一事务提交：产出落库而状态没落库，run 会永远等这一步
             completed = await succeed_phase(db, run_id, "extract")
             await db.commit()
+            await persist_task_usage(
+                project_id=project_id,
+                feature="consistency_extract",
+                events=[*(getattr(provider, "usage_events", []) or []), *linker.usage_events],
+                task_id=task_id,
+                consistency_run_id=run_id,
+            )
 
             # 顺序不可靠的 claim 照常落库，但不进硬规则 —— 计数单独报出来，
             # 便于观察抽取器的顺序判定质量。
@@ -590,13 +626,43 @@ async def _extract_claims_async(task_id: str, run_id: int):
             await fail_run(
                 db, run_id, phase="extract", error_code="stale_revision", error_detail=str(exc)
             )
+            await persist_task_usage(
+                project_id=project_id,
+                feature="consistency_extract",
+                events=[
+                    *(getattr(provider, "usage_events", []) or []),
+                    *(linker.usage_events if linker is not None else []),
+                ],
+                task_id=task_id,
+                consistency_run_id=run_id,
+            )
             raise
         except RunFailedError:
             await db.rollback()
+            await persist_task_usage(
+                project_id=project_id,
+                feature="consistency_extract",
+                events=[
+                    *(getattr(provider, "usage_events", []) or []),
+                    *(linker.usage_events if linker is not None else []),
+                ],
+                task_id=task_id,
+                consistency_run_id=run_id,
+            )
             raise
         except Exception as exc:
             await fail_run(
                 db, run_id, phase="extract", error_code="extraction_error", error_detail=str(exc)
+            )
+            await persist_task_usage(
+                project_id=project_id,
+                feature="consistency_extract",
+                events=[
+                    *(getattr(provider, "usage_events", []) or []),
+                    *(linker.usage_events if linker is not None else []),
+                ],
+                task_id=task_id,
+                consistency_run_id=run_id,
             )
             raise
 
@@ -617,6 +683,7 @@ def generate_summary(self, run_id: int):
 async def _generate_summary_async(task_id: str, run_id: int):
     async with AsyncSessionLocal() as db:
         run, snapshot = await _prepare_step(db, run_id, phase="summary")
+        project_id = run.project_id
         await start_phase(db, run_id, "summary")
 
         provider = ConsistencyProvider()
@@ -671,6 +738,13 @@ async def _generate_summary_async(task_id: str, run_id: int):
             await ensure_run_not_failed(db, run_id)
             completed = await succeed_phase(db, run_id, "summary")
             await db.commit()
+            await persist_task_usage(
+                project_id=project_id,
+                feature="consistency_summary",
+                events=getattr(provider, "usage_events", []) or [],
+                task_id=task_id,
+                consistency_run_id=run_id,
+            )
 
             return {
                 "status": "success",
@@ -683,13 +757,34 @@ async def _generate_summary_async(task_id: str, run_id: int):
             await fail_run(
                 db, run_id, phase="summary", error_code="stale_revision", error_detail=str(exc)
             )
+            await persist_task_usage(
+                project_id=project_id,
+                feature="consistency_summary",
+                events=getattr(provider, "usage_events", []) or [],
+                task_id=task_id,
+                consistency_run_id=run_id,
+            )
             raise
         except RunFailedError:
             await db.rollback()
+            await persist_task_usage(
+                project_id=project_id,
+                feature="consistency_summary",
+                events=getattr(provider, "usage_events", []) or [],
+                task_id=task_id,
+                consistency_run_id=run_id,
+            )
             raise
         except Exception as exc:
             await fail_run(
                 db, run_id, phase="summary", error_code="summary_error", error_detail=str(exc)
+            )
+            await persist_task_usage(
+                project_id=project_id,
+                feature="consistency_summary",
+                events=getattr(provider, "usage_events", []) or [],
+                task_id=task_id,
+                consistency_run_id=run_id,
             )
             raise
 
@@ -762,7 +857,8 @@ def arbitrate_issues(self, run_id: int):
 
 async def _arbitrate_issues_async(task_id: str, run_id: int):
     async with AsyncSessionLocal() as db:
-        await load_run(db, run_id)
+        run = await load_run(db, run_id)
+        project_id = run.project_id
         issues, cases = await load_pending_arbitration_cases(db, run_id=run_id)
         if not cases:
             await db.rollback()
@@ -801,6 +897,13 @@ async def _arbitrate_issues_async(task_id: str, run_id: int):
             )
             apply_arbitration_failure(current, exc)
             await db.commit()
+            await persist_task_usage(
+                project_id=project_id,
+                feature="consistency_arbitration",
+                events=getattr(provider, "usage_events", []) or [],
+                task_id=task_id,
+                consistency_run_id=run_id,
+            )
             return {
                 "status": "degraded",
                 "task_id": task_id,
@@ -831,6 +934,13 @@ async def _arbitrate_issues_async(task_id: str, run_id: int):
             model=settings.resolved_arbitration_model,
         )
         await db.commit()
+        await persist_task_usage(
+            project_id=project_id,
+            feature="consistency_arbitration",
+            events=getattr(provider, "usage_events", []) or [],
+            task_id=task_id,
+            consistency_run_id=run_id,
+        )
         failed = sum(issue.arbitration_status == "failed" for issue in current)
         return {
             "status": "degraded" if failed else "success",

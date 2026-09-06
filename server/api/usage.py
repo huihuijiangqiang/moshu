@@ -38,6 +38,7 @@ async def usage_summary(
             select(UsageLog)
             .where(
                 UsageLog.user_id == user.id,
+                UsageLog.platform_event_id.is_(None),
                 UsageLog.status == "completed",
                 UsageLog.timestamp >= period_start,
             )

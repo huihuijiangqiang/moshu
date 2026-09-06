@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
-import { adminApi, type AdminOverview, type AdminSettings, type AdminUser } from '@/api/admin'
+import { adminApi, type AdminOverview, type AdminSettings, type AdminUser, type PlatformUsage } from '@/api/admin'
 import { getSessionUser } from '@/api/session'
 import { useShellStore } from '@/stores/shell'
 
@@ -8,19 +8,32 @@ const shell = useShellStore()
 const overview = ref<AdminOverview | null>(null)
 const users = ref<AdminUser[]>([])
 const settings = ref<AdminSettings | null>(null)
-const tab = ref<'users' | 'settings'>('users')
+const costs = ref<PlatformUsage | null>(null)
+const tab = ref<'users' | 'costs' | 'settings'>('users')
 const search = ref('')
 const loading = ref(true)
 const message = ref('')
 const currentUser = getSessionUser()
 const canPromote = computed(() => currentUser?.system_role === 'super_admin')
+const number = new Intl.NumberFormat('zh-CN')
+const tokenSegments = computed(() => {
+  const totals = costs.value?.totals
+  if (!totals) return []
+  const values = [
+    { key: 'input', label: '未缓存输入', value: Math.max(0, totals.prompt_tokens - totals.cached_tokens) },
+    { key: 'cached', label: '缓存输入', value: totals.cached_tokens },
+    { key: 'output', label: '模型输出', value: totals.completion_tokens }
+  ]
+  const total = values.reduce((sum, item) => sum + item.value, 0)
+  return values.map(item => ({ ...item, width: total ? Math.max(2, item.value / total * 100) : 0 }))
+})
 
 async function load() {
   loading.value = true
   message.value = ''
   try {
-    ;[overview.value, users.value, settings.value] = await Promise.all([
-      adminApi.overview(), adminApi.users(search.value), adminApi.settings()
+    ;[overview.value, users.value, settings.value, costs.value] = await Promise.all([
+      adminApi.overview(), adminApi.users(search.value), adminApi.settings(), adminApi.platformUsage()
     ])
   } catch (error) {
     message.value = error instanceof Error ? error.message : '管理数据加载失败'
@@ -89,6 +102,7 @@ onMounted(() => {
 
     <div class="admin-tabs" role="tablist" aria-label="管理视图">
       <button type="button" :aria-selected="tab === 'users'" @click="tab = 'users'">用户与权限</button>
+      <button type="button" :aria-selected="tab === 'costs'" @click="tab = 'costs'">模型成本</button>
       <button type="button" :aria-selected="tab === 'settings'" @click="tab = 'settings'">运行配置</button>
       <span v-if="message" class="admin-message">{{ message }}</span>
     </div>
@@ -120,7 +134,73 @@ onMounted(() => {
       </div>
     </main>
 
-    <main v-else-if="!loading && settings" class="admin-content admin-settings">
+    <main v-else-if="!loading && tab === 'costs' && costs" class="admin-content admin-costs">
+      <section class="cost-flow" aria-label="近 30 天 token 构成">
+        <div class="cost-period">
+          <span>近 30 天平台调用</span>
+          <strong>{{ number.format(costs.totals.requests) }}</strong>
+          <small>请求</small>
+        </div>
+        <div class="token-ruler" aria-hidden="true">
+          <span
+            v-for="segment in tokenSegments"
+            :key="segment.key"
+            :class="`token-${segment.key}`"
+            :style="{ width: `${segment.width}%` }"
+          />
+        </div>
+        <dl v-if="tokenSegments.some(segment => segment.value > 0)" class="token-legend">
+          <div v-for="segment in tokenSegments" :key="segment.key">
+            <dt><i :class="`token-${segment.key}`" />{{ segment.label }}</dt>
+            <dd>{{ number.format(segment.value) }}</dd>
+          </div>
+          <div title="网关未返回 usage 时，按本地 tokenizer 估算 token"><dt>估算记录</dt><dd>{{ number.format(costs.totals.estimated_events) }}</dd></div>
+        </dl>
+        <p v-else class="cost-empty">当前周期暂无 token 调用</p>
+      </section>
+
+      <section class="cost-section">
+        <h2>按能力汇总</h2>
+        <div class="admin-table-wrap">
+          <table class="admin-table cost-table">
+            <thead><tr><th>能力</th><th>调用事件</th><th>网关请求</th><th>输入 token</th><th>缓存 token</th><th>输出 token</th></tr></thead>
+            <tbody>
+              <tr v-for="item in costs.items" :key="item.feature">
+                <td><strong>{{ item.label }}</strong><small>{{ item.feature }}</small></td>
+                <td>{{ number.format(item.events) }}</td>
+                <td>{{ number.format(item.requests) }}</td>
+                <td>{{ number.format(item.prompt_tokens) }}</td>
+                <td>{{ number.format(item.cached_tokens) }}</td>
+                <td>{{ number.format(item.completion_tokens) }}</td>
+              </tr>
+              <tr v-if="!costs.items.length"><td colspan="6" class="admin-empty">当前周期暂无后台模型调用</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="cost-section">
+        <h2>最近调用</h2>
+        <div class="admin-table-wrap">
+          <table class="admin-table cost-table cost-recent">
+            <thead><tr><th>时间</th><th>能力</th><th>模型</th><th>作品</th><th>输入 / 缓存 / 输出</th><th>计量</th></tr></thead>
+            <tbody>
+              <tr v-for="item in costs.recent" :key="item.id">
+                <td>{{ new Date(item.timestamp).toLocaleString('zh-CN', { hour12: false }) }}</td>
+                <td>{{ item.label }}</td>
+                <td><code>{{ item.model ?? 'unknown' }}</code></td>
+                <td><code>{{ item.project_id ?? '—' }}</code></td>
+                <td>{{ number.format(item.prompt_tokens) }} / {{ number.format(item.cached_tokens) }} / {{ number.format(item.completion_tokens) }}</td>
+                <td>{{ item.estimated ? '估算' : '网关' }}</td>
+              </tr>
+              <tr v-if="!costs.recent.length"><td colspan="6" class="admin-empty">暂无调用明细</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+    </main>
+
+    <main v-else-if="!loading && tab === 'settings' && settings" class="admin-content admin-settings">
       <section>
         <h2>账号默认值</h2>
         <label class="admin-field"><span>开放注册</span><input v-model="settings.registration_enabled" type="checkbox"></label>
@@ -158,7 +238,7 @@ onMounted(() => {
 .admin-metric span { margin-top: 8px; color: var(--ink-3); font-size: var(--fs-sm); }
 .admin-tabs { min-height: 48px; padding: 0 28px; display: flex; align-items: stretch; gap: 4px; border-bottom: var(--hair) solid var(--line); }
 .admin-tabs button { padding: 0 14px; border: 0; border-bottom: 2px solid transparent; background: transparent; color: var(--ink-3); cursor: pointer; }
-.admin-tabs button[aria-selected="true"] { border-bottom-color: var(--accent); color: var(--ink); font-weight: 700; }
+.admin-tabs button[aria-selected="true"] { border-bottom-color: var(--primary); color: var(--ink); font-weight: 700; }
 .admin-message { margin-left: auto; align-self: center; color: var(--ink-2); font-size: var(--fs-sm); }
 .admin-content { padding: 26px 28px 48px; }
 .admin-search { width: min(460px, 100%); display: grid; grid-template-columns: 1fr auto; gap: 8px; margin-bottom: 18px; }
@@ -179,5 +259,27 @@ onMounted(() => {
 .admin-definition div { min-height: 44px; display: grid; grid-template-columns: 130px 1fr; align-items: center; border-bottom: var(--hair) solid var(--line); }
 .admin-definition dt { color: var(--ink-3); }.admin-definition dd { margin: 0; font-family: var(--font-mono); }
 .admin-settings p { color: var(--ink-3); line-height: 1.7; }.admin-loading { padding: 40px 28px; color: var(--ink-3); }
+.admin-costs { display: grid; gap: 34px; }
+.cost-flow { display: grid; grid-template-columns: 180px minmax(260px, 1fr); column-gap: 30px; align-items: center; padding-bottom: 28px; border-bottom: var(--hair) solid var(--line-strong); }
+.cost-period { grid-row: span 2; display: grid; grid-template-columns: auto 1fr; align-items: baseline; }
+.cost-period span { grid-column: 1 / -1; color: var(--ink-3); font-size: var(--fs-sm); }
+.cost-period strong { margin-top: 8px; font: 700 34px/1 var(--font-mono); }
+.cost-period small { margin-left: 7px; color: var(--ink-3); }
+.token-ruler { height: 12px; display: flex; overflow: hidden; background: var(--line); }
+.token-ruler span { min-width: 0; transition: width 180ms ease; }
+.token-input { background: var(--ink-2); }.token-cached { background: var(--primary); }.token-output { background: var(--alert); }
+.token-legend { display: flex; flex-wrap: wrap; gap: 14px 28px; margin: 12px 0 0; }
+.token-legend div { min-width: 110px; }
+.token-legend dt { color: var(--ink-3); font-size: 12px; }
+.token-legend dt i { width: 7px; height: 7px; display: inline-block; margin-right: 6px; }
+.token-legend dd { margin: 4px 0 0; font: 600 14px/1.2 var(--font-mono); }
+.cost-section h2 { margin: 0 0 12px; font-size: 15px; }
+.cost-table { min-width: 780px; font-variant-numeric: tabular-nums; }
+.cost-table td:not(:first-child) { font-family: var(--font-mono); }
+.cost-recent { min-width: 980px; }.cost-recent code { color: var(--ink-2); background: transparent; }
+.admin-empty { height: 80px; text-align: center; color: var(--ink-3); font-family: inherit !important; }
+.cost-empty { grid-column: 2; margin: 12px 0 0; color: var(--ink-3); font-size: var(--fs-sm); }
 @media (max-width: 900px) { .admin-summary { grid-template-columns: repeat(2, 1fr); }.admin-settings { grid-template-columns: 1fr; gap: 36px; } }
+@media (max-width: 680px) { .cost-flow { grid-template-columns: 1fr; row-gap: 18px; }.cost-period { grid-row: auto; }.admin-tabs { overflow-x: auto; }.admin-tabs button { flex: 0 0 auto; } }
+@media (prefers-reduced-motion: reduce) { .token-ruler span { transition: none; } }
 </style>

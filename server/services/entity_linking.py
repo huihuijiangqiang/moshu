@@ -84,6 +84,13 @@ class EntityLinker:
         self._cache: dict[tuple[str, str, Optional[str]], Optional[str]] = {}
         self.stats = LinkStats()
 
+    @property
+    def usage_events(self) -> list[dict]:
+        """Expose vector-fallback calls for the platform cost ledger."""
+        provider = self._retrieval.embedding_provider
+        events = getattr(provider, "usage_events", None)
+        return list(events) if isinstance(events, list) else []
+
     @staticmethod
     def _cache_key(project_id: str, text: str, kinds: Optional[list[str]]) -> tuple:
         normalized = unicodedata.normalize("NFC", text.strip()).lower()

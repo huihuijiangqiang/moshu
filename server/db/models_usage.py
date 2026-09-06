@@ -4,7 +4,19 @@
 from datetime import datetime
 from typing import TYPE_CHECKING, Optional
 
-from sqlalchemy import BigInteger, CheckConstraint, DateTime, ForeignKey, Index, Integer, String, Text, func, text
+from sqlalchemy import (
+    BigInteger,
+    Boolean,
+    CheckConstraint,
+    DateTime,
+    ForeignKey,
+    Index,
+    Integer,
+    String,
+    Text,
+    func,
+    text,
+)
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -117,6 +129,9 @@ class UsageLog(Base):
         unique=True,
         index=True,
     )
+    platform_event_id: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    provider_requests: Mapped[int] = mapped_column(Integer, server_default=text("1"))
+    usage_estimated: Mapped[bool] = mapped_column(Boolean, server_default=text("false"))
     feature: Mapped[str] = mapped_column(String(50))  # generate_chapter, inline, guard, export等
     model: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
     prompt_tokens: Mapped[int] = mapped_column(Integer, default=0)
@@ -131,6 +146,13 @@ class UsageLog(Base):
         DateTime(timezone=True), nullable=True, index=True
     )
     finalized_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    __table_args__ = (
+        # Platform events and author billing reservations use separate nullable
+        # identifiers; a platform event is always keyed, author rows stay NULL.
+        Index("uq_usage_logs_platform_event_id", "platform_event_id", unique=True),
+        CheckConstraint("provider_requests > 0", name="ck_usage_logs_provider_requests_positive"),
+    )
 
     # 关系
     user: Mapped["User"] = relationship()

@@ -75,6 +75,26 @@ async def test_embed_text_returns_vector_from_gateway():
     assert gateway.bodies[0]["input"] == ["角色A"]
 
 
+async def test_embedding_provider_captures_gateway_usage_for_platform_ledger():
+    response = httpx.Response(
+        200,
+        json={
+            "data": [{"index": 0, "embedding": [0.1, 0.2, 0.3, 0.4]}],
+            "usage": {"prompt_tokens": 17, "total_tokens": 17},
+        },
+    )
+    provider = GatewayEmbeddingProvider(client=RecordingEmbeddingGateway([response]).client())
+
+    await provider.embed_text("角色A")
+
+    assert len(provider.usage_events) == 1
+    event = provider.usage_events[0]
+    assert event["prompt_tokens"] == 17
+    assert event["completion_tokens"] == 0
+    assert event["estimated"] is False
+    assert event["detail"]["input_items"] == 1
+
+
 async def test_embed_uses_configured_model(monkeypatch):
     monkeypatch.setattr(settings, "embedding_model", "custom-embed-model")
     gateway = RecordingEmbeddingGateway([embeddings_response([0.0, 0.0, 0.0, 1.0])])

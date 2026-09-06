@@ -6,8 +6,8 @@
 所有声明基于实际代码与测试结果，不夸大、不省略已知缺口。
 
 **关键事实**：
-- ✅ 36 张表完整 Alembic baseline，增量迁移已到 `015_foreshadow_lifecycle`
-- ✅ 1049 个单元/功能测试通过（SQLite in-memory，mock embedding/LLM）
+- ✅ 36 张表完整 Alembic baseline，增量迁移已到 `016_platform_usage_ledger`
+- ✅ 1053 个单元/功能测试通过（SQLite in-memory，mock embedding/LLM）
 - ✅ 前端 85 个测试、TypeScript 类型检查和生产构建通过
 - ✅ 36 个集成测试已在本机真实 PostgreSQL + pgvector 环境通过
 - ✅ 已完成真实账号认证、作品创建、作品归档、分卷与章节增删改排、回收站和章纲编辑闭环
@@ -15,6 +15,7 @@
 - ✅ 工作室成员管理、角色调整和作品共享已有真实 API 与 UI
 - ✅ TXT/Markdown/DOCX/EPUB、分章 ZIP、完整 JSON 备份与非覆盖恢复已接通真实数据库
 - ✅ 作者生成已接通真实用量台账、原子额度预留、按实际 token 结算、失败退款和过期预留回收
+- ✅ 自动事实抽取、摘要、冲突复核和 embedding 已进入统一平台成本台账，不扣作者积分
 - ✅ 风格档已接通用户隔离 CRUD、真实六维抽取、作品绑定、生成提示与用量结算
 - ✅ AI 来源账本已接通真实生成 run、段落指纹校验、编辑分类与采纳字数回写
 - ✅ AI 生成候选独立持久化，成功、中断和失败输出均可在刷新后恢复、预览、采纳或舍弃
@@ -116,7 +117,7 @@ PostgreSQL/pgvector 检索必须在真实部署上单独压测；该脚本只覆
   `halfvec_cosine_ops` 重建 HNSW 索引；upgrade/downgrade 均会要求重新回填向量
 - ✅ `alembic upgrade head --sql` 与 `alembic downgrade -1 --sql` 语法验证通过
 - ✅ 36 个集成测试已在本机真实 PostgreSQL + pgvector 运行通过；当前审核数据库已真实执行
-  `004_auth_admin_rbac -> 005_usage_ledger -> 006_usage_reservation_expiry -> 007_style_profiles -> 008_embedding_job_visibility -> 009_embedding_dispatch_attempts -> 010_claim_temporal_evidence -> 011_guard_issue_arbitration -> 012_content_lifecycle -> 013_generation_drafts -> 014_text_replacement_runs -> 015_foreshadow_lifecycle`；部署后以 readiness 返回的 Alembic head 为准
+  `004_auth_admin_rbac -> 005_usage_ledger -> 006_usage_reservation_expiry -> 007_style_profiles -> 008_embedding_job_visibility -> 009_embedding_dispatch_attempts -> 010_claim_temporal_evidence -> 011_guard_issue_arbitration -> 012_content_lifecycle -> 013_generation_drafts -> 014_text_replacement_runs -> 015_foreshadow_lifecycle -> 016_platform_usage_ledger`；部署后以 readiness 返回的 Alembic head 为准
 
 ---
 
@@ -259,7 +260,10 @@ PostgreSQL/pgvector 检索必须在真实部署上单独压测；该脚本只覆
 - ✅ 每月额度按 `quota_resets_at` 惰性重置，不依赖单点定时任务
 - ✅ 基础/高级输入输出费率及缓存折算比例可由管理员配置，历史记录保留计价快照
 - ✅ 风格抽取按真实 prompt/cached/completion token 结算；失败释放预留额度
-- ⚠️ 自动一致性抽取、摘要和 embedding 是平台后台任务，目前不扣作者积分，也尚未进入统一成本台账
+- ✅ 自动事实抽取、章节摘要、冲突复核、设定写入和后台回填的 embedding 调用写入统一 `usage_logs`
+- ✅ 平台事件有唯一 ID，任务重放不会重复入账；多次模型调用与网关重试次数可审计
+- ✅ 网关返回 usage 时保存真实 prompt/cached/completion token；缺失时明确标记为估算
+- ✅ 平台调用始终为 0 作者积分，作者 `/usage/summary` 主动排除，管理员可查看 1-90 天汇总和明细
 
 #### 风格指纹 (`services/style_profiles.py`)
 - ✅ 样文按用户隔离存储，上限 50 万字符，任何 API 响应均不返回样文原文
@@ -292,6 +296,7 @@ PostgreSQL/pgvector 检索必须在真实部署上单独压测；该脚本只覆
 
 #### 管理员与协作 (`api/admin.py`, `api/orgs.py`)
 - ✅ `GET /admin/overview`、`GET/PATCH /admin/users`、`GET/PATCH /admin/settings`
+- ✅ `GET /admin/platform-usage` - 平台模型调用按能力汇总、token 构成和最近明细
 - ✅ `admin` / `super_admin` 系统角色边界；只有超级管理员可调整系统角色
 - ✅ 管理端不返回 API key，只返回模型名称与“是否配置”状态
 - ✅ 工作室创建、成员列表/添加/改角色/移除；禁止移除或降级最后一个 owner
@@ -410,9 +415,9 @@ PostgreSQL/pgvector 检索必须在真实部署上单独压测；该脚本只覆
 
 ### 5. 测试覆盖
 
-#### 单元测试（1049 passed，SQLite in-memory，mock providers）
+#### 单元测试（1053 passed，SQLite in-memory，mock providers）
 
-**全量测试结果**：1049 passed, 36 skipped（未设置集成测试 URL 时）, 0 warnings；前端 85 passed
+**全量测试结果**：1053 passed, 36 skipped（未设置集成测试 URL 时）, 0 warnings；前端 85 passed
 
 主要测试覆盖（不逐文件列举测试数量，以实际 pytest 结果为准）：
 - ✅ Codex 设定库：页面与 API 完整 CRUD、引用删除保护、原子别名替换、可检索文本判据、两段式事务、deferred 降级、httpx 错误重试
@@ -475,8 +480,8 @@ PostgreSQL/pgvector 检索必须在真实部署上单独压测；该脚本只覆
 **状态**：首轮闭环已完成
 
 真实认证、作品创建、分卷章纲、章节插入、正文保存保护、Guard、设定库、导出、备份恢复、
-风格档、AI 来源占比和作者生成用量均已接通真实 API。生产就绪仍受后述评测规模、LLM 仲裁、
-长文本压测和后台模型成本台账限制，不能仅凭页面可用宣称全功能完工。
+风格档、AI 来源占比、作者生成用量和平台后台模型台账均已接通真实 API。生产就绪仍受后述
+评测规模、LLM 仲裁质量和真实长文本压测限制，不能仅凭页面可用宣称全功能完工。
 
 设定库当前允许作者直接新建和编辑人物/势力/地点/物品/力量体系/伏笔，人物字段按内核、
 约束和人物弧维护，其他类型按“标签：内容”的关键事实维护。编辑时保留关系等未开放字段；
@@ -546,8 +551,7 @@ PostgreSQL/pgvector 检索必须在真实部署上单独压测；该脚本只覆
 **保守限制**：
 1. 模型建议不参与 issue fingerprint、`issue_rev` 或自动处置
 2. `unsupported` 不会自动标记误报，最终决定仍由作者提交
-3. 仲裁、自动摘要/抽取和 embedding 尚未进入统一后台成本台账
-4. 真实大规模误报改善程度仍需扩充评测集验证
+3. 真实大规模误报改善程度仍需扩充评测集验证
 
 ---
 
@@ -646,7 +650,7 @@ baseline，增量实现 Codex embedding 回填、时间锚点解析、issue 生�
 2. **验证 LLM 结构化仲裁质量**
    - ✅ 规则后置二次复核、结构化结果、失败降级和前端提示已经完成
    - 用扩充评测集统计各 verdict 的准确率、覆盖率与失败率
-   - 将自动一致性、摘要和 embedding 纳入后台成本台账
+   - ✅ 自动一致性、摘要、仲裁和 embedding 已纳入后台成本台账
 
 3. **补齐创作工作流 P0 缺口**
    - ✅ 正文版本历史浏览、段落级对比与指定版本恢复已完成
@@ -719,8 +723,8 @@ baseline，增量实现 Codex embedding 回填、时间锚点解析、issue 生�
 - `server/tasks/consistency.py` - 一致性任务
 - `server/tasks/codex.py` - Codex 回填任务
 
-### 测试（1049 passed；另有 36 个真实 PostgreSQL 测试通过）
-- `server/tests/` - 单元/功能测试（1049 passed）
+### 测试（1053 passed；另有 36 个真实 PostgreSQL 测试通过）
+- `server/tests/` - 单元/功能测试（1053 passed）
 - `app/src/**/*.spec.ts` - 前端测试（85 passed）
 - `server/tests/integration/` - 集成测试（36 passed，需设置真实 PostgreSQL URL）
 
@@ -731,17 +735,16 @@ baseline，增量实现 Codex embedding 回填、时间锚点解析、issue 生�
 
 ## 总结
 
-墨枢一致性后端已完成核心数据模型、服务层、API 端点和异步任务定义，1049 个单元/功能
+墨枢一致性后端已完成核心数据模型、服务层、API 端点和异步任务定义，1053 个单元/功能
 测试在 SQLite in-memory + mock providers 环境下通过，另有 36 个集成测试在真实
 PostgreSQL + pgvector 环境通过。真实认证、可吊销会话、管理员、工作室 RBAC、作品创建、
-作品归档、分卷与章节生命周期、章纲、正文版本历史与恢复、AI 多候选草稿、全书查找替换、全量导出、非覆盖备份恢复、风格指纹、AI 来源账本与作者生成用量台账已经接通，前端 85 个测试与生产构建通过。
+作品归档、分卷与章节生命周期、章纲、正文版本历史与恢复、AI 多候选草稿、全书查找替换、全量导出、非覆盖备份恢复、风格指纹、AI 来源账本、作者生成用量与平台模型成本台账已经接通，前端 85 个测试与生产构建通过。
 
 **关键限制**：
-1. 自动一致性与 embedding 后台模型成本尚未进入统一台账
-2. 七条确定性规则的 280/140 结构化评测门禁已完成，但真实正文盲评、模糊时间区间与锚点依赖级联尚未完成
-3. 当前 100% 指标来自真实 scanner 而非硬编码，但输入仍是合成 claim，**不代表正文抽取和 LLM 仲裁的端到端质量**
-4. 模糊时间语义理解与影响集时间区间裁剪未实现；仲裁只提供建议，不自动处置
-5. 真实长文本扫描吞吐受上游模型网关稳定性和并发限制影响
+1. 七条确定性规则的 280/140 结构化评测门禁已完成，但真实正文盲评、模糊时间区间与锚点依赖级联尚未完成
+2. 当前 100% 指标来自真实 scanner 而非硬编码，但输入仍是合成 claim，**不代表正文抽取和 LLM 仲裁的端到端质量**
+3. 模糊时间语义理解与影响集时间区间裁剪未实现；仲裁只提供建议，不自动处置
+4. 真实长文本扫描吞吐受上游模型网关稳定性和并发限制影响
 
 当前是“核心一致性能力 + 首轮真实产品流程”，不是功能完整 MVP。生产部署前仍需完成上述产品闭环、
 扩充评测集并验证长文本规模下的质量和性能。

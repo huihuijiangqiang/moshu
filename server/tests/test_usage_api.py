@@ -1,6 +1,9 @@
 from datetime import UTC, datetime, timedelta
 
+from sqlalchemy import select
+
 from db.models_usage import UsageLog
+from services.provider_usage import provider_usage_event, record_platform_usage
 from services.usage import (
     InsufficientCreditsError,
     UsageReservation,
@@ -211,6 +214,18 @@ async def test_usage_summary_returns_only_current_completed_events(
                 detail={},
                 timestamp=datetime.now(UTC) - timedelta(days=40),
             ),
+            UsageLog(
+                user_id=user.id,
+                platform_event_id="platform-event",
+                feature="consistency_summary",
+                model="model-platform",
+                prompt_tokens=800,
+                completion_tokens=100,
+                credits=0,
+                status="completed",
+                detail={"billing_scope": "platform"},
+                timestamp=datetime.now(UTC),
+            ),
         ]
     )
     await async_db_session.commit()
@@ -233,3 +248,53 @@ async def test_usage_summary_returns_only_current_completed_events(
     ]
     assert len(payload["daily"]) == 14
     assert len(payload["recent"]) == 1
+
+
+async def test_platform_usage_events_are_idempotent_and_never_charge_author(
+    async_db_session, seed_project
+):
+    await seed_project(user_id="platform_owner", project_id="platform_project")
+    event = provider_usage_event(
+        model="model-a",
+        usage={
+            "prompt_tokens": 100,
+            "completion_tokens": 20,
+            "prompt_tokens_details": {"cached_tokens": 30},
+        },
+        prompt_text="prompt",
+        completion_text="completion",
+        request_count=2,
+        detail={"provider": "chat_completions"},
+    )
+
+    first = await record_platform_usage(
+        async_db_session,
+        project_id="platform_project",
+        feature="consistency_extract",
+        events=[event],
+        task_id="task-a",
+        consistency_run_id=12,
+    )
+    second = await record_platform_usage(
+        async_db_session,
+        project_id="platform_project",
+        feature="consistency_extract",
+        events=[event],
+        task_id="task-a",
+        consistency_run_id=12,
+    )
+    await async_db_session.commit()
+
+    rows = (
+        await async_db_session.execute(
+            select(UsageLog).where(UsageLog.platform_event_id == event["event_id"])
+        )
+    ).scalars().all()
+    assert first == 1
+    assert second == 0
+    assert len(rows) == 1
+    assert rows[0].credits == 0
+    assert rows[0].cached_tokens == 30
+    assert rows[0].detail["billing_scope"] == "platform"
+    assert rows[0].provider_requests == 2
+    assert rows[0].usage_estimated is False

@@ -50,9 +50,45 @@ export interface AdminSettingsPatch {
   cached_input_percent: number
 }
 
+export interface PlatformUsage {
+  period_start: string
+  period_end: string
+  totals: {
+    events: number
+    requests: number
+    prompt_tokens: number
+    cached_tokens: number
+    completion_tokens: number
+    estimated_events: number
+  }
+  items: Array<{
+    feature: string
+    label: string
+    events: number
+    requests: number
+    prompt_tokens: number
+    cached_tokens: number
+    completion_tokens: number
+  }>
+  recent: Array<{
+    id: number
+    feature: string
+    label: string
+    project_id: string | null
+    model: string | null
+    prompt_tokens: number
+    cached_tokens: number
+    completion_tokens: number
+    requests: number
+    estimated: boolean
+    timestamp: string
+  }>
+}
+
 export const adminApi = {
   overview: () => request<AdminOverview>('/admin/overview'),
   users: (search = '') => request<AdminUser[]>(`/admin/users?search=${encodeURIComponent(search)}`),
+  platformUsage: (days = 30) => request<PlatformUsage>(`/admin/platform-usage?days=${days}`),
   updateUser: (id: string, patch: Partial<Pick<AdminUser, 'plan' | 'system_role' | 'is_active' | 'quota_remaining' | 'quota_total'>>) =>
     request<AdminUser>(`/admin/users/${id}`, { method: 'PATCH', body: JSON.stringify(patch) }),
   settings: () => request<AdminSettings>('/admin/settings'),

@@ -10,11 +10,12 @@
   常量，把任意条目都判成「相似」；
 * 批量接口保证返回顺序与输入顺序一致（按响应里的 index 重排）。
 """
-from typing import Optional
+from typing import Any, Optional
 
 import httpx
 
 from config import settings
+from services.provider_usage import provider_usage_event
 from services.providers import EmbeddingProvider
 
 
@@ -41,6 +42,7 @@ class GatewayEmbeddingProvider(EmbeddingProvider):
         self._client = client
         self._gateway_tier = gateway_tier
         self._endpoint = endpoint
+        self.usage_events: list[dict[str, Any]] = []
 
     @property
     def endpoint(self) -> str:
@@ -116,7 +118,29 @@ class GatewayEmbeddingProvider(EmbeddingProvider):
                 json={"model": resolved_model, "input": texts},
             )
             response.raise_for_status()
-            return self._parse_vectors(response, expected_count=len(texts))
+            vectors = self._parse_vectors(response, expected_count=len(texts))
+            payload: dict[str, Any]
+            try:
+                parsed = response.json()
+                payload = parsed if isinstance(parsed, dict) else {}
+            except ValueError:
+                payload = {}
+            raw_usage = payload.get("usage") if isinstance(payload.get("usage"), dict) else {}
+            raw_usage = {**raw_usage, "completion_tokens": raw_usage.get("completion_tokens", 0)}
+            self.usage_events.append(
+                provider_usage_event(
+                    model=resolved_model,
+                    usage=raw_usage,
+                    prompt_text="\n".join(texts),
+                    request_count=1,
+                    detail={
+                        "provider": "embeddings",
+                        "input_items": len(texts),
+                        "input_characters": sum(len(text) for text in texts),
+                    },
+                )
+            )
+            return vectors
         finally:
             if not self._client:
                 await client.aclose()

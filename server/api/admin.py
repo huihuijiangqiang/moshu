@@ -1,11 +1,11 @@
 """Administrator APIs. Secrets are intentionally never returned by this module."""
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
-from sqlalchemy import func, or_, select
+from sqlalchemy import Integer, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from api.auth import require_admin
@@ -14,10 +14,18 @@ from db.models_admin import AdminAuditLog, AuthSession, SystemSetting
 from db.models_consistency_extended import ConsistencyRun
 from db.models_core import Project, User
 from db.models_guard import GuardIssue
+from db.models_usage import UsageLog
 from db.session import get_db
 from services.usage import DEFAULT_CREDIT_RATES, get_credit_rates
 
 router = APIRouter()
+
+PLATFORM_FEATURE_LABELS = {
+    "consistency_extract": "事实抽取",
+    "consistency_summary": "章节摘要",
+    "consistency_arbitration": "冲突复核",
+    "embedding": "向量检索",
+}
 
 
 class AdminUserOut(BaseModel):
@@ -138,6 +146,103 @@ async def list_users(
         query = query.where(or_(User.name.ilike(term), User.email.ilike(term)))
     rows = (await db.execute(query)).scalars().all()
     return [_user_out(user) for user in rows]
+
+
+@router.get("/platform-usage")
+async def platform_usage(
+    days: int = Query(default=30, ge=1, le=90),
+    limit: int = Query(default=50, ge=1, le=200),
+    _admin: User = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """Return platform-paid model calls without exposing gateway credentials."""
+    now = datetime.now(UTC)
+    period_start = now - timedelta(days=days)
+    grouped = (
+        await db.execute(
+            select(
+                UsageLog.feature,
+                func.count(UsageLog.id),
+                func.sum(UsageLog.provider_requests),
+                func.sum(UsageLog.prompt_tokens),
+                func.sum(UsageLog.cached_tokens),
+                func.sum(UsageLog.completion_tokens),
+                func.sum(func.cast(UsageLog.usage_estimated, Integer)),
+            )
+            .where(
+                UsageLog.platform_event_id.is_not(None),
+                UsageLog.timestamp >= period_start,
+            )
+            .group_by(UsageLog.feature)
+        )
+    ).all()
+    recent = list(
+        (
+            await db.execute(
+                select(UsageLog)
+                .where(
+                    UsageLog.platform_event_id.is_not(None),
+                    UsageLog.timestamp >= period_start,
+                )
+                .order_by(UsageLog.timestamp.desc(), UsageLog.id.desc())
+                .limit(limit)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    by_feature: dict[str, dict[str, int]] = {}
+    totals = {
+        "events": 0,
+        "requests": 0,
+        "prompt_tokens": 0,
+        "cached_tokens": 0,
+        "completion_tokens": 0,
+        "estimated_events": 0,
+    }
+    for feature, events, requests, prompt, cached, completion, estimated in grouped:
+        item = {
+            "events": int(events or 0),
+            "requests": int(requests or 0),
+            "prompt_tokens": int(prompt or 0),
+            "cached_tokens": int(cached or 0),
+            "completion_tokens": int(completion or 0),
+        }
+        by_feature[feature] = item
+        for key in ("events", "requests", "prompt_tokens", "cached_tokens", "completion_tokens"):
+            totals[key] += item[key]
+        totals["estimated_events"] += int(estimated or 0)
+    return {
+        "period_start": period_start.isoformat(),
+        "period_end": now.isoformat(),
+        "totals": totals,
+        "items": [
+            {"feature": feature, "label": PLATFORM_FEATURE_LABELS.get(feature, feature), **values}
+            for feature, values in sorted(
+                by_feature.items(),
+                key=lambda pair: (
+                    -(pair[1]["prompt_tokens"] + pair[1]["completion_tokens"]),
+                    pair[0],
+                ),
+            )
+        ],
+        "recent": [
+            {
+                "id": row.id,
+                "feature": row.feature,
+                "label": PLATFORM_FEATURE_LABELS.get(row.feature, row.feature),
+                "project_id": row.project_id,
+                "model": row.model,
+                "prompt_tokens": row.prompt_tokens,
+                "cached_tokens": row.cached_tokens,
+                "completion_tokens": row.completion_tokens,
+                "requests": row.provider_requests,
+                "estimated": row.usage_estimated,
+                "timestamp": row.timestamp.isoformat(),
+            }
+            for row in recent
+        ],
+    }
 
 
 @router.patch("/users/{user_id}", response_model=AdminUserOut)

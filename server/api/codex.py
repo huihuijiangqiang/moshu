@@ -9,6 +9,7 @@
 鉴权：所有端点都过 verify_project_access（owner 或 org 成员），回填端点同样如此
 —— 全项目回填会打满 embedding 网关配额，不能任人触发。
 """
+import logging
 import secrets
 from datetime import datetime
 from typing import Annotated, Literal, Optional, get_args
@@ -36,9 +37,11 @@ from services.codex import (
 from services.codex_embedding import embed_missing_codex_entries
 from services.embedding import GatewayEmbeddingProvider
 from services.embedding_jobs import fail_job, lock_job, queue_job
+from services.provider_usage import record_platform_usage
 from services.providers import EmbeddingProvider
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
 #: CodexEntry.kind / status 的合法取值。用 Literal 让 FastAPI 直接以 422 拒绝
 #: 非法值（与 api.consistency 的 ResolutionAction 同一套写法），数据库的
@@ -305,6 +308,17 @@ async def _settle_embedding(
     """
     embedding_status = await refresh_embedding_if_stale(db, provider, entry)
     await db.commit()
+    try:
+        await record_platform_usage(
+            db,
+            project_id=entry.project_id,
+            feature="embedding",
+            events=getattr(provider, "usage_events", []) or [],
+        )
+        await db.commit()
+    except Exception:
+        await db.rollback()
+        logger.exception("failed to persist embedding usage for entry %s", entry.id)
     return embedding_status
 
 
