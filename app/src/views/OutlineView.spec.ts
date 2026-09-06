@@ -127,4 +127,41 @@ describe('continuous outline editing', () => {
     expect(wrapper.get('[data-chapter-id="ch89"]').text()).toContain('视角 · 沈砚')
     wrapper.unmount()
   })
+
+  it('reorders volumes and moves chapters with native drag and drop', async () => {
+    const { wrapper, store } = await mountOutline()
+    const volumeSlots = wrapper.findAll('.outline-volume-slot')
+    expect(volumeSlots.length).toBeGreaterThanOrEqual(2)
+    const sourceVolumeId = store.project?.volumes[0]?.id
+    const targetVolumeId = store.project?.volumes[1]?.id
+    expect(sourceVolumeId).toBeTruthy()
+    expect(targetVolumeId).toBeTruthy()
+
+    await wrapper.get(`[data-volume-id="${sourceVolumeId}"]`).trigger('dragstart')
+    expect(wrapper.get(`[data-volume-id="${sourceVolumeId}"]`).attributes('data-dragging')).toBe('true')
+    await wrapper.get(`[data-volume-id="${targetVolumeId}"]`).trigger('dragover')
+    expect(wrapper.get(`[data-volume-id="${targetVolumeId}"]`).attributes('data-drop-target')).toBe('true')
+    await wrapper.get(`[data-volume-id="${targetVolumeId}"]`).trigger('drop')
+    await new Promise((resolve) => setTimeout(resolve, 420))
+    await flushPromises()
+    const volumeOrder = store.project?.volumes.map((volume) => volume.id) ?? []
+    expect(volumeOrder.indexOf(targetVolumeId!)).toBeLessThan(volumeOrder.indexOf(sourceVolumeId!))
+
+    await wrapper.get('[data-volume-id="v2"] > button').trigger('click')
+    await wrapper.get('[data-chapter-id="ch85"]').trigger('click')
+    const target = wrapper.get('[data-chapter-id="ch86"]')
+    await wrapper.get('[data-chapter-id="ch85"]').trigger('dragstart')
+    expect(wrapper.get('[data-chapter-id="ch85"]').attributes('data-dragging')).toBe('true')
+    await target.trigger('dragover')
+    expect(target.attributes('data-drop-target')).toBe('true')
+    await target.trigger('drop', { dataTransfer: { getData: () => 'chapter:ch85' } })
+    await new Promise((resolve) => setTimeout(resolve, 420))
+    await flushPromises()
+
+    const moved = store.chapters.find((chapter) => chapter.id === 'ch85')
+    expect(moved?.volumeId).toBe('v2')
+    const v2Chapters = store.byVolume.find((group) => group.volume.id === 'v2')?.chapters.map((chapter) => chapter.id) ?? []
+    expect(v2Chapters.indexOf('ch85')).toBe(v2Chapters.indexOf('ch86') + 1)
+    wrapper.unmount()
+  })
 })

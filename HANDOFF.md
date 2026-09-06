@@ -49,19 +49,16 @@ npm test
 - 样式：颜色、字号、间距一律用 `var(--*)` 取自 `app/src/styles/modernist.css`，不要硬编码十六进制
 - 状态色只有两种：红（accent）= 需要处理或正在进行，灰阶 = 正常。不引入黄绿蓝
 
-## 尚未实现
+## 后续范围
 
-- 行内 AI 动作只插占位文本，等 `/api/generate/inline`
-- 大纲网格的拖拽换序（结构已就位，缺 dnd）
-- 登录只做前端校验，无真实鉴权
 - 工作室多人产线（P1，设计稿也未做）
 - 协作编辑：**MVP 阶段不要引入 Yjs**，它会改写整个持久化模型
 
-## 后端待办
+## 已落地的后端约定
 
-1. 按 `app/src/api/mock/index.ts` 的方法签名实现接口，前端上层不用动
-2. `/api/generate/chapter` 走 SSE，推 `data: {"text":"…"}` / `data: {"node":2}` / `data: [DONE]`
-3. 上下文装配（四层）在服务端完成，前端只展示预算与上限
+1. 真实 API 已按 `app/src/api/mock/index.ts` 的方法签名接通，前端上层无需分叉
+2. `/api/generate/chapter` 和 `/api/generate/inline` 走 SSE，候选草稿与正文隔离
+3. 上下文装配（四层）在服务端完成，前端展示预算与上限
 4. 摘要生成、一致性检查、风格抽取全部异步化，绝不阻塞写作
 
 ## 四条待决议（需要你拍）

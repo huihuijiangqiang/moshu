@@ -39,6 +39,10 @@ const trash = ref<ProjectTrash>({ volumes: [], chapters: [] })
 const volumeEditor = ref<{ mode: 'create' | 'edit'; id?: string; title: string; summary: string } | null>(null)
 const deleteVolumeId = ref<string | null>(null)
 const targetVolumeId = ref('')
+const draggingVolumeId = ref<string | null>(null)
+const dragOverVolumeId = ref<string | null>(null)
+const draggingChapterId = ref<string | null>(null)
+const dragOverChapterId = ref<string | null>(null)
 
 onMounted(() => shell.setCrumb('大纲'))
 
@@ -273,6 +277,132 @@ async function moveCurrentVolume(offset: number) {
   }
 }
 
+function setDragData(event: DragEvent, kind: 'volume' | 'chapter', id: string) {
+  event.dataTransfer?.setData('text/plain', `${kind}:${id}`)
+  if (event.dataTransfer) event.dataTransfer.effectAllowed = 'move'
+}
+
+function clearDragState() {
+  draggingVolumeId.value = null
+  dragOverVolumeId.value = null
+  draggingChapterId.value = null
+  dragOverChapterId.value = null
+}
+
+function onVolumeDragStart(event: DragEvent, volumeId: string) {
+  if (structureBusy.value) return
+  draggingVolumeId.value = volumeId
+  setDragData(event, 'volume', volumeId)
+}
+
+function onVolumeDragOver(event: DragEvent, volumeId: string) {
+  if (!draggingVolumeId.value && !draggingChapterId.value) return
+  if (draggingVolumeId.value === volumeId) return
+  event.preventDefault()
+  if (event.dataTransfer) event.dataTransfer.dropEffect = 'move'
+  dragOverVolumeId.value = volumeId
+}
+
+async function onVolumeDrop(event: DragEvent, targetVolumeId: string) {
+  event.preventDefault()
+  const payload = event.dataTransfer?.getData('text/plain') ?? ''
+  const sourceVolumeId = draggingVolumeId.value ?? (payload.startsWith('volume:') ? payload.slice('volume:'.length) : null)
+  const sourceChapterId = draggingChapterId.value ?? (payload.startsWith('chapter:') ? payload.slice('chapter:'.length) : null)
+  clearDragState()
+  if (structureBusy.value) return
+
+  if (sourceVolumeId && sourceVolumeId !== targetVolumeId) {
+    const volumes = store.project?.volumes ?? []
+    const from = volumes.findIndex((volume) => volume.id === sourceVolumeId)
+    const to = volumes.findIndex((volume) => volume.id === targetVolumeId)
+    if (from < 0 || to < 0) return
+    const ids = volumes.map((volume) => volume.id)
+    const [moved] = ids.splice(from, 1)
+    if (moved) ids.splice(to, 0, moved)
+    structureBusy.value = true
+    structureError.value = ''
+    try {
+      await store.reorderVolumes(ids)
+    } catch {
+      structureError.value = '分卷顺序没有更新，请重试。'
+    } finally {
+      structureBusy.value = false
+    }
+    return
+  }
+
+  if (sourceChapterId) {
+    const chapter = store.chapters.find((item) => item.id === sourceChapterId)
+    if (!chapter || chapter.volumeId === targetVolumeId) return
+    structureBusy.value = true
+    structureError.value = ''
+    try {
+      await store.moveChapter(sourceChapterId, targetVolumeId, 'last')
+      selectedVolumeId.value = targetVolumeId
+      selectedId.value = sourceChapterId
+    } catch {
+      structureError.value = '章节没有移动，请重试。'
+    } finally {
+      structureBusy.value = false
+    }
+  }
+}
+
+function onChapterDragStart(event: DragEvent, chapterId: string) {
+  if (structureBusy.value) return
+  draggingChapterId.value = chapterId
+  setDragData(event, 'chapter', chapterId)
+}
+
+function onChapterDragOver(event: DragEvent, chapterId: string) {
+  if (!draggingChapterId.value || draggingChapterId.value === chapterId) return
+  event.preventDefault()
+  if (event.dataTransfer) event.dataTransfer.dropEffect = 'move'
+  dragOverChapterId.value = chapterId
+}
+
+async function onChapterDrop(event: DragEvent, targetChapter: Chapter) {
+  event.preventDefault()
+  const payload = event.dataTransfer?.getData('text/plain') ?? ''
+  const sourceChapterId = draggingChapterId.value ?? (payload.startsWith('chapter:') ? payload.slice('chapter:'.length) : null)
+  clearDragState()
+  if (!sourceChapterId || sourceChapterId === targetChapter.id || structureBusy.value) return
+  structureBusy.value = true
+  structureError.value = ''
+  try {
+    await store.moveChapter(sourceChapterId, targetChapter.volumeId, 'after', targetChapter.id)
+    selectedVolumeId.value = targetChapter.volumeId
+    selectedId.value = sourceChapterId
+  } catch {
+    structureError.value = '章节顺序没有更新，请重试。'
+  } finally {
+    structureBusy.value = false
+  }
+}
+
+async function onChapterListDrop(event: DragEvent, volumeId: string) {
+  event.preventDefault()
+  const payload = event.dataTransfer?.getData('text/plain') ?? ''
+  const sourceChapterId = draggingChapterId.value ?? (payload.startsWith('chapter:') ? payload.slice('chapter:'.length) : null)
+  clearDragState()
+  if (!sourceChapterId || structureBusy.value) return
+  const chapter = store.chapters.find((item) => item.id === sourceChapterId)
+  if (!chapter) return
+  const siblings = store.byVolume.find((item) => item.volume.id === volumeId)?.chapters ?? []
+  if (chapter.volumeId === volumeId && siblings.at(-1)?.id === sourceChapterId) return
+  structureBusy.value = true
+  structureError.value = ''
+  try {
+    await store.moveChapter(sourceChapterId, volumeId, 'last')
+    selectedVolumeId.value = volumeId
+    selectedId.value = sourceChapterId
+  } catch {
+    structureError.value = '章节顺序没有更新，请重试。'
+  } finally {
+    structureBusy.value = false
+  }
+}
+
 function requestTrashVolume() {
   const volume = currentVolume.value?.volume
   const alternatives = (store.project?.volumes ?? []).filter((item) => item.id !== volume?.id)
@@ -411,7 +541,15 @@ async function removeTrashItem(kind: 'volumes' | 'chapters', id: string, title: 
           v-for="item in store.byVolume"
           :key="item.volume.id"
           class="outline-volume-slot"
+          :data-volume-id="item.volume.id"
           :data-active="item.volume.id === currentVolume?.volume.id"
+          :data-dragging="draggingVolumeId === item.volume.id"
+          :data-drop-target="dragOverVolumeId === item.volume.id"
+          draggable="true"
+          @dragstart="onVolumeDragStart($event, item.volume.id)"
+          @dragover="onVolumeDragOver($event, item.volume.id)"
+          @drop="onVolumeDrop($event, item.volume.id)"
+          @dragend="clearDragState"
         >
           <button type="button" :aria-pressed="item.volume.id === currentVolume?.volume.id" @click="selectVolume(item.volume.id)">
             <strong>第 {{ item.volume.index }} 卷</strong>
@@ -443,8 +581,15 @@ async function removeTrashItem(kind: 'volumes' | 'chapters', id: string, title: 
             type="button"
             class="outline-chapter-cell"
             :data-chapter-id="c.id"
+            :data-dragging="draggingChapterId === c.id"
+            :data-drop-target="dragOverChapterId === c.id"
+            draggable="true"
             :style="{ ...cellStyle(c), border: 0, textAlign: 'left', fontSize: '13px' }"
             @click="selectChapter(c.id)"
+            @dragstart="onChapterDragStart($event, c.id)"
+            @dragover="onChapterDragOver($event, c.id)"
+            @drop="onChapterDrop($event, c)"
+            @dragend="clearDragState"
           >
             <div :style="{ fontWeight: 700, color: c.status === 'drafting' ? 'var(--color-accent)' : 'inherit' }">
               {{ String(c.index).padStart(3, '0') }}
@@ -461,7 +606,7 @@ async function removeTrashItem(kind: 'volumes' | 'chapters', id: string, title: 
             <div v-if="c.bodyNeedsRevision" class="outline-revision-flag">正文待调整</div>
             <div v-if="povName(c.povEntryId)" class="outline-pov-flag">视角 · {{ povName(c.povEntryId) }}</div>
           </button>
-          <button class="outline-insert" type="button" :disabled="inserting" @click="insertChapter">
+          <button class="outline-insert" type="button" :disabled="inserting" @click="insertChapter" @dragover="onChapterDragOver($event, '')" @drop="onChapterListDrop($event, currentVolume?.volume.id ?? '')">
             <AppIcon name="plus" />
             <span>{{ inserting ? '插入中…' : '在当前章后插入' }}</span>
           </button>
@@ -474,8 +619,15 @@ async function removeTrashItem(kind: 'volumes' | 'chapters', id: string, title: 
             type="button"
             class="row-between"
             :data-chapter-id="c.id"
+            :data-dragging="draggingChapterId === c.id"
+            :data-drop-target="dragOverChapterId === c.id"
+            draggable="true"
             :style="{ border: 0, padding: '14px 16px', fontSize: '13px', cursor: 'pointer', textAlign: 'left' }"
             @click="selectChapter(c.id)"
+            @dragstart="onChapterDragStart($event, c.id)"
+            @dragover="onChapterDragOver($event, c.id)"
+            @drop="onChapterDrop($event, c)"
+            @dragend="clearDragState"
           >
             <span><strong>{{ String(c.index).padStart(3, '0') }}</strong>　{{ c.title || '未命名' }}</span>
             <span class="outline-list-meta">
@@ -485,7 +637,7 @@ async function removeTrashItem(kind: 'volumes' | 'chapters', id: string, title: 
               </span>
             </span>
           </button>
-          <button class="outline-list-insert" type="button" :disabled="inserting" @click="insertChapter">
+          <button class="outline-list-insert" type="button" :disabled="inserting" @click="insertChapter" @dragover="onChapterDragOver($event, '')" @drop="onChapterListDrop($event, currentVolume?.volume.id ?? '')">
             <AppIcon name="plus" />{{ inserting ? '插入中…' : '在当前章后插入新章' }}
           </button>
         </div>
@@ -625,6 +777,10 @@ async function removeTrashItem(kind: 'volumes' | 'chapters', id: string, title: 
 .outline-structure { flex: none; padding: 22px 24px; }
 .outline-volume-track { display: grid; overflow-x: auto; border: var(--hair) solid var(--line-strong); }
 .outline-volume-slot { position: relative; min-width: 190px; border-right: var(--hair) solid var(--line-strong); background: var(--paper); }
+.outline-volume-slot[draggable="true"] { cursor: grab; }
+.outline-volume-slot[data-dragging="true"] { opacity: .52; }
+.outline-volume-slot[data-drop-target="true"] { box-shadow: inset 0 0 0 2px var(--primary); }
+.outline-volume-slot:active { cursor: grabbing; }
 .outline-volume-slot:last-child { border-right: 0; }
 .outline-volume-slot > button { width: 100%; min-height: 88px; display: grid; align-content: center; gap: 3px; padding: 10px 42px 10px 12px; border: 0; background: transparent; color: var(--ink); text-align: left; font: inherit; cursor: pointer; }
 .outline-volume-slot[data-active="true"] { background: var(--primary-soft); box-shadow: inset 0 -3px 0 var(--primary); }
@@ -660,6 +816,8 @@ async function removeTrashItem(kind: 'volumes' | 'chapters', id: string, title: 
 .outline-chapter-tools .is-up { transform: rotate(-90deg); }
 .outline-chapter-tools .is-down { transform: rotate(90deg); }
 .outline-chapter-tools label { min-width: 0; display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: center; gap: 7px; padding-inline: 7px; border-inline: var(--hair) solid var(--line); color: var(--ink-4); font-size: var(--fs-xs); }
+.outline-chapter-cell[data-dragging="true"], .grid-rule > .row-between[data-dragging="true"] { opacity: .52; }
+.outline-chapter-cell[data-drop-target="true"], .grid-rule > .row-between[data-drop-target="true"] { box-shadow: inset 0 0 0 2px var(--primary); }
 .outline-chapter-tools select { min-width: 0; height: 30px; border: 0; background: transparent; color: var(--ink-2); font: inherit; }
 .outline-field { display: grid; gap: 7px; margin-bottom: var(--u4); }
 .outline-field > span, .outline-node-editor header > span { color: var(--ink-3); font-size: var(--fs-xs); font-weight: 700; }

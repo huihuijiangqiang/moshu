@@ -432,7 +432,9 @@ export const mockApi = {
     }
     chapter.volumeId = volumeId
     rows.splice(insertion, 0, chapter)
-    renumberChapters(rows)
+    // The array position is authoritative after a move. Sorting by the old
+    // chapter index here would immediately undo a same-volume reorder.
+    rows.forEach((item, index) => { item.index = index + 1 })
   },
 
   async trashChapter(projectId: string, chapterId: string): Promise<void> {
