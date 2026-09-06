@@ -29,6 +29,7 @@ from api import (
     outlines,
     projects,
     provenance,
+    reviews,
     styles,
     text_replacement,
     usage,
@@ -151,3 +152,4 @@ app.include_router(usage.router, prefix="/usage", tags=["用量"])
 app.include_router(styles.router, tags=["风格档"])
 app.include_router(provenance.router, tags=["AI 来源"])
 app.include_router(text_replacement.router, prefix="/projects", tags=["全书校订"])
+app.include_router(reviews.router, prefix="/reviews", tags=["章节审稿"])
