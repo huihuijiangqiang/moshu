@@ -7,7 +7,7 @@
 
 **关键事实**：
 - ✅ 41 张表完整 Alembic baseline，增量迁移已到 `022_user_model_configs`
-- ✅ 1157 个单元/功能测试通过（SQLite in-memory，mock embedding/LLM）
+- ✅ 1161 个单元/功能测试通过（SQLite in-memory，mock embedding/LLM）
 - ✅ 前端 122 个测试、TypeScript 类型检查和生产构建通过
 - ✅ 36 个集成测试已在本机真实 PostgreSQL + pgvector 环境通过
 - ✅ 已完成真实账号认证、作品创建、作品归档、分卷与章节增删改排、回收站和章纲编辑闭环
