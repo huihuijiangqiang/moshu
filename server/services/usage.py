@@ -229,6 +229,42 @@ async def release_reservation(db: AsyncSession, reservation: UsageReservation, *
     log.detail = {**(log.detail or {}), "release_reason": reason[:100]}
 
 
+async def record_user_key_generation(
+    db: AsyncSession,
+    *,
+    user_id: str,
+    project_id: str,
+    feature: str,
+    model: str,
+    run_id: str,
+    config_id: str,
+    prompt_tokens: int,
+    cached_tokens: int,
+    completion_tokens: int,
+) -> UsageLog:
+    """Record externally billed token use without touching the platform quota."""
+    now = datetime.now(UTC)
+    log = UsageLog(
+        user_id=user_id,
+        project_id=project_id,
+        run_id=run_id,
+        feature=feature,
+        model=model,
+        prompt_tokens=max(0, prompt_tokens),
+        cached_tokens=min(max(0, prompt_tokens), max(0, cached_tokens)),
+        completion_tokens=max(0, completion_tokens),
+        reserved_credits=0,
+        credits=0,
+        status="completed",
+        detail={"billing_mode": "user_key", "model_config_id": config_id},
+        timestamp=now,
+        finalized_at=now,
+    )
+    db.add(log)
+    await db.flush()
+    return log
+
+
 async def ensure_current_quota(db: AsyncSession, user_id: str) -> User:
     user = await db.scalar(select(User).where(User.id == user_id).with_for_update())
     if user is None:

@@ -17,6 +17,7 @@ export const router = createRouter({
     { path: '/projects/:projectId/export', name: 'export', component: () => import('@/views/ExportView.vue'), meta: { scope: 'project', section: 'export' } },
     { path: '/projects/:projectId/access', name: 'access', component: () => import('@/views/AccessView.vue'), meta: { scope: 'project', section: 'access' } },
     { path: '/usage', name: 'usage', component: () => import('@/views/UsageView.vue') },
+    { path: '/model-settings', name: 'model-settings', component: () => import('@/views/ModelSettingsView.vue') },
     { path: '/admin', name: 'admin', component: () => import('@/views/AdminView.vue'), meta: { admin: true } },
     { path: '/projects/new', name: 'wizard', component: () => import('@/views/WizardView.vue'), meta: { bare: true } },
     { path: '/write', redirect: '/projects/p1/write' },

@@ -241,6 +241,7 @@ async def test_usage_summary_returns_only_current_completed_events(
             "feature": "generate_chapter",
             "label": "一键成章",
             "count": 1,
+            "user_key_count": 0,
             "credits": 2,
             "prompt_tokens": 100,
             "completion_tokens": 200,
@@ -248,6 +249,7 @@ async def test_usage_summary_returns_only_current_completed_events(
     ]
     assert len(payload["daily"]) == 14
     assert len(payload["recent"]) == 1
+    assert payload["recent"][0]["billing_mode"] == "platform"
 
 
 async def test_platform_usage_events_are_idempotent_and_never_charge_author(

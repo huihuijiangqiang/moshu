@@ -39,6 +39,12 @@ class PartiallyFailingGenerationGateway:
         raise GenerationProviderError("upstream disconnected")
 
 
+class EchoingCredentialGateway:
+    async def stream(self, package):
+        raise GenerationProviderError(f"provider reflected credential {package.route.api_key}")
+        yield
+
+
 def parse_sse(text: str) -> list[object]:
     events = []
     for frame in text.split("\n\n"):
@@ -166,6 +172,117 @@ async def test_prompt_preview_requires_generation_permission(
     )
 
     assert response.status_code == 403
+
+
+async def test_user_model_config_routes_preview_and_generation_without_platform_credits(
+    app_client, async_db_session, seed_project, auth_headers
+):
+    await seed_project(user_id="byok_writer", project_id="byok_novel", chapter_ids=("byok_ch",))
+    user = await async_db_session.get(User, "byok_writer")
+    user.quota_remaining = 0
+    user.quota_total = 0
+    await async_db_session.commit()
+    configured = await app_client.put(
+        "/account/model-config",
+        headers=auth_headers("byok_writer"),
+        json={
+            "providerName": "作者中转站",
+            "baseUrl": "https://gateway.example.com/v1",
+            "model": "author-novel-model",
+            "apiKey": "sk-author-owned-secret",
+            "enabled": True,
+            "revision": 0,
+        },
+    )
+    assert configured.status_code == 200
+
+    preview = await app_client.post(
+        "/generate/preview",
+        headers=auth_headers("byok_writer"),
+        json={"chapterId": "byok_ch", "targetWords": 800, "model": "advanced"},
+    )
+    assert preview.status_code == 200
+    assert preview.json()["model"] == {"id": "author-novel-model", "tier": "custom"}
+    assert preview.json()["provider"]["source"] == "user"
+    assert "sk-author-owned-secret" not in preview.text
+
+    fake = FakeGenerationGateway()
+    app.dependency_overrides[get_generation_gateway] = lambda: fake
+    try:
+        generated = await app_client.post(
+            "/generate/chapter",
+            headers=auth_headers("byok_writer"),
+            json={"chapterId": "byok_ch", "targetWords": 800, "model": "advanced"},
+        )
+    finally:
+        app.dependency_overrides.pop(get_generation_gateway, None)
+    assert generated.status_code == 200
+    done = parse_sse(generated.text)[-2]
+    assert done["usage"]["credits"] == 0
+    assert fake.packages[0].route.endpoint == "https://gateway.example.com/v1/chat/completions"
+    assert fake.packages[0].route.api_key == "sk-author-owned-secret"
+    run = (await async_db_session.execute(select(GenerationRun))).scalar_one()
+    assert run.model_tier == "custom"
+    usage = (await async_db_session.execute(select(UsageLog))).scalar_one()
+    assert usage.status == "completed"
+    assert usage.credits == 0
+    assert usage.detail["billing_mode"] == "user_key"
+    await async_db_session.refresh(user)
+    assert user.quota_remaining == 0
+
+    disabled = await app_client.put(
+        "/account/model-config",
+        headers=auth_headers("byok_writer"),
+        json={
+            "providerName": "作者中转站",
+            "baseUrl": "https://gateway.example.com/v1",
+            "model": "author-novel-model",
+            "enabled": False,
+            "revision": configured.json()["revision"],
+        },
+    )
+    assert disabled.status_code == 200
+    platform_preview = await app_client.post(
+        "/generate/preview",
+        headers=auth_headers("byok_writer"),
+        json={"chapterId": "byok_ch", "targetWords": 800},
+    )
+    assert platform_preview.json()["provider"]["source"] == "platform"
+    insufficient = await app_client.post(
+        "/generate/chapter",
+        headers=auth_headers("byok_writer"),
+        json={"chapterId": "byok_ch", "targetWords": 800},
+    )
+    assert insufficient.status_code == 402
+
+
+async def test_user_model_provider_error_cannot_reflect_api_key(
+    app_client, async_db_session, seed_project, auth_headers
+):
+    await seed_project(user_id="secret_writer", project_id="secret_novel", chapter_ids=("secret_ch",))
+    await app_client.put(
+        "/account/model-config",
+        headers=auth_headers("secret_writer"),
+        json={
+            "providerName": "provider",
+            "baseUrl": "https://gateway.example.com/v1",
+            "model": "model",
+            "apiKey": "sk-never-reflect-this",
+            "revision": 0,
+        },
+    )
+    app.dependency_overrides[get_generation_gateway] = lambda: EchoingCredentialGateway()
+    try:
+        response = await app_client.post(
+            "/generate/chapter",
+            headers=auth_headers("secret_writer"),
+            json={"chapterId": "secret_ch", "targetWords": 800},
+        )
+    finally:
+        app.dependency_overrides.pop(get_generation_gateway, None)
+    assert response.status_code == 200
+    assert "sk-never-reflect-this" not in response.text
+    assert "[redacted]" in response.text
 
 
 async def test_inline_generation_passes_selected_text_and_checks_access(

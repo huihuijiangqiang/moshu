@@ -12,6 +12,7 @@ export interface UsageBreakdown {
   feature: string
   label: string
   count: number
+  user_key_count: number
   credits: number
   prompt_tokens: number
   completion_tokens: number
@@ -26,6 +27,7 @@ export interface UsageEvent {
   prompt_tokens: number
   cached_tokens: number
   completion_tokens: number
+  billing_mode: 'platform' | 'user_key'
   timestamp: string
 }
 

@@ -6,9 +6,9 @@
 所有声明基于实际代码与测试结果，不夸大、不省略已知缺口。
 
 **关键事实**：
-- ✅ 40 张表完整 Alembic baseline，增量迁移已到 `021_chapter_reviews`
-- ✅ 1141 个单元/功能测试通过（SQLite in-memory，mock embedding/LLM）
-- ✅ 前端 121 个测试、TypeScript 类型检查和生产构建通过
+- ✅ 41 张表完整 Alembic baseline，增量迁移已到 `022_user_model_configs`
+- ✅ 1157 个单元/功能测试通过（SQLite in-memory，mock embedding/LLM）
+- ✅ 前端 122 个测试、TypeScript 类型检查和生产构建通过
 - ✅ 36 个集成测试已在本机真实 PostgreSQL + pgvector 环境通过
 - ✅ 已完成真实账号认证、作品创建、作品归档、分卷与章节增删改排、回收站和章纲编辑闭环
 - ✅ Refresh session 持久化轮换、防重放、注销即时吊销，系统管理员与项目 RBAC 已接通
@@ -55,7 +55,7 @@ PostgreSQL/pgvector 检索必须在真实部署上单独压测；该脚本只覆
 
 ## 已完成模块
 
-### 1. 数据模型（40 张表，100% Alembic 覆盖）
+### 1. 数据模型（41 张表，100% Alembic 覆盖）
 
 #### 核心骨架 (6 张)
 - `users` - 用户账号
@@ -112,6 +112,9 @@ PostgreSQL/pgvector 检索必须在真实部署上单独压测；该脚本只覆
 - `system_settings` - 注册开关和新账号默认套餐/额度
 - `admin_audit_logs` - 管理员修改审计记录
 
+#### 用户模型配置 (1 张)
+- `user_model_configs` - 用户级 OpenAI 兼容生成服务、加密 API Key、连接状态与乐观版本
+
 #### 风格/生成/用量/占比 (6 张)
 - `style_profiles` - 风格档案
 - `generation_runs` - 生成任务记录
@@ -132,7 +135,7 @@ PostgreSQL/pgvector 检索必须在真实部署上单独压测；该脚本只覆
   `halfvec_cosine_ops` 重建 HNSW 索引；upgrade/downgrade 均会要求重新回填向量
 - ✅ `alembic upgrade head --sql` 与 `alembic downgrade -1 --sql` 语法验证通过
 - ✅ 36 个集成测试已在本机真实 PostgreSQL + pgvector 运行通过；此前审核数据库已真实执行至
-  `018_timeline_entries`。`019_chapter_pov`、`020_codex_state_changes` 与 `021_chapter_reviews` 的 upgrade/downgrade SQL 已生成验证，
+  `018_timeline_entries`。`019_chapter_pov` 至 `022_user_model_configs` 的 upgrade/downgrade SQL 已生成验证，
   但本轮 Docker daemon 未启动，尚未在真实 PostgreSQL 重复执行；部署后以 readiness 返回的 Alembic head 为准
 
 ---
@@ -192,6 +195,9 @@ PostgreSQL/pgvector 检索必须在真实部署上单独压测；该脚本只覆
 - ✅ `streaming -> ready/failed -> accepted/rejected` 状态机，采纳与舍弃加行锁且重复请求幂等
 - ✅ 写作台“候选”页支持刷新恢复、逐条预览、放回正文检查和舍弃；服务端不直接改正文，继续沿用正文乐观锁与自动保存
 - ✅ 未采纳候选不会进入正文版本、Codex、摘要、RAG、Guard、来源占比或导出
+- ✅ 用户可配置自己的 OpenAI 兼容正文生成服务；Prompt Preview 与真实生成复用同一路由，停用/删除后立即回退平台模型
+- ✅ 自带 API Key 使用 AES-GCM 加密并绑定用户/配置 ID，API、提示词预览、错误和对象 repr 均不返回明文；密钥轮换使用乐观锁
+- ✅ 自定义地址只接受无凭据/查询参数的公网 HTTPS，并在调用前复查 DNS 解析结果；生产部署仍需以网络出口策略防御 DNS rebinding
 
 #### 章节审稿与段落批注 (`api/reviews.py`, `services/reviews.py`, `app/src/components/editor/ReviewPanel.vue`)
 - ✅ 作者可提交当前已保存正文版本；同一章节同时只保留一个待审轮次
@@ -303,6 +309,7 @@ PostgreSQL/pgvector 检索必须在真实部署上单独压测；该脚本只覆
 - ✅ 平台事件有唯一 ID，任务重放不会重复入账；多次模型调用与网关重试次数可审计
 - ✅ 网关返回 usage 时保存真实 prompt/cached/completion token；缺失时明确标记为估算
 - ✅ 平台调用始终为 0 作者积分，作者 `/usage/summary` 主动排除，管理员可查看 1-90 天汇总和明细
+- ✅ 用户自带模型不预留或扣除平台积分，但生成 run 与 token 用量仍进入个人台账并明确标记 `user_key`
 
 #### 风格指纹 (`services/style_profiles.py`)
 - ✅ 样文按用户隔离存储，上限 50 万字符，任何 API 响应均不返回样文原文
@@ -332,6 +339,11 @@ PostgreSQL/pgvector 检索必须在真实部署上单独压测；该脚本只覆
 - ✅ `GET /auth/me` - 查询当前账号
 - ✅ PBKDF2-SHA256 密码存储，access/refresh token 类型隔离
 - ✅ 禁用账号即时拒绝既有 access token、登录和 refresh
+
+#### 用户模型服务 (`api/model_configs.py`)
+- ✅ `GET/PUT/DELETE /account/model-config` - 用户隔离读取、保存/轮换、停用与删除
+- ✅ `POST /account/model-config/test` - 只返回分类连接状态，不回显上游响应或密钥
+- ✅ 前端 `/model-settings` 提供连接信息、密钥掩码、测试、停用和双击确认删除；写作台预览显示实际模型来源
 
 #### 管理员与协作 (`api/admin.py`, `api/orgs.py`)
 - ✅ `GET /admin/overview`、`GET/PATCH /admin/users`、`GET/PATCH /admin/settings`
@@ -466,7 +478,7 @@ PostgreSQL/pgvector 检索必须在真实部署上单独压测；该脚本只覆
 - ✅ 一致性服务：Claim fingerprint、规则逻辑、hard negative 案例
 - ✅ RuleScanner：七类规则检测、timeline-aware 跳过、stale 标记、fingerprint 去重
 - ✅ 认证授权：JWT 解码、项目权限、Idempotency-Key 必需性
-- ✅ Alembic 迁移：40 张表、pgvector extension、部分唯一索引、downgrade 完整性
+- ✅ Alembic 迁移：41 张表、pgvector extension、部分唯一索引、downgrade 完整性
 - ✅ 时间锚点：ISO-8601、确定性相对时长、跨章事件引用、源锚点与事件标签原文校验
 - ✅ 增量影响集：新旧实体重绑定、未解析主体、谓词族闭包、全项目安全降级与扫描遥测
 - ✅ LLM 仲裁：不可变版本取证、600 字截断、20 条分批、陌生/缺失/畸形响应、失败降级、事务释放与前端映射
@@ -728,14 +740,14 @@ baseline，增量实现 Codex embedding 回填、时间锚点解析、issue 生�
    - ✅ 资料与正文并排：右栏支持本章/全库搜索、原地档案、写作约束和当前章有效状态
    - ✅ 批注/审稿流程（章节版本绑定、段落锚点、打回/批准与协作权限）
    - ✅ Prompt Preview（已接入 `/generate/preview` 与写作台预览抽屉）
-   - 用户自带模型配置
+   - ✅ 用户自带模型配置（加密存储、连接测试、生成路由、零平台积分台账与前端设置页）
    - 关系图、地图、日历、出版排版和平台发布数据属于后续增强，不阻塞核心写作闭环
 
 ---
 
 ## 文件清单
 
-### 数据模型（11 个文件）
+### 数据模型（12 个文件）
 - `server/db/models_core.py` - 核心骨架 6 张表
 - `server/db/models_codex.py` - 设定库 5 张表
 - `server/db/models_guard.py` - 守卫 2 张表
@@ -747,8 +759,9 @@ baseline，增量实现 Codex embedding 回填、时间锚点解析、issue 生�
 - `server/db/models_editing.py` - 跨章节原子编辑操作 1 张表
 - `server/db/models_timeline.py` - 作者人工计划事件 1 张表
 - `server/db/models_review.py` - 审稿轮次与段落批注 2 张表
+- `server/db/models_model_config.py` - 用户自带模型配置 1 张表
 
-### 服务层（17 个文件）
+### 服务层（18 个文件）
 - `server/services/codex.py` - 设定库 CRUD
 - `server/services/codex_embedding.py` - Embedding 生命周期
 - `server/services/outlines.py` - 章纲服务
@@ -766,8 +779,9 @@ baseline，增量实现 Codex embedding 回填、时间锚点解析、issue 生�
 - `server/services/style_profiles.py` - 风格样文采样、网关抽取与六维结果校验
 - `server/services/text_replacement.py` - 保持正文结构的逐处查找替换
 - `server/services/reviews.py` - 章节审稿轮次、段落批注与乐观锁决定
+- `server/services/model_configs.py` - 用户模型凭据加密、地址验证、DNS 检查与连接探测
 
-### API 端点（14 个文件）
+### API 端点（15 个文件）
 - `server/api/auth.py` - 认证与授权
 - `server/api/projects.py` - 项目管理
 - `server/api/chapters.py` - 章节读写
@@ -781,6 +795,7 @@ baseline，增量实现 Codex embedding 回填、时间锚点解析、issue 生�
 - `server/api/styles.py` - 风格档 CRUD、抽取与作品绑定
 - `server/api/text_replacement.py` - 全书校订预览、执行与整批撤销
 - `server/api/reviews.py` - 章节审稿、段落批注、处理和决定
+- `server/api/model_configs.py` - 用户级模型配置、测试、停用和删除
 - `server/main.py` - FastAPI 入口
 
 ### 异步任务（3 个文件）

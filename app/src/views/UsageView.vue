@@ -69,7 +69,7 @@ function resetDate(value: string | null) {
             <div class="table-head"><span>功能</span><span>调用</span><span>输入 / 输出</span><span>积分</span></div>
             <div v-for="item in data.items" :key="item.feature" class="table-row">
               <strong>{{ item.label }}</strong>
-              <span>{{ item.count }} 次</span>
+              <span>{{ item.count }} 次<small v-if="item.user_key_count"> · 自带 {{ item.user_key_count }}</small></span>
               <span class="mono">{{ item.prompt_tokens.toLocaleString() }} / {{ item.completion_tokens.toLocaleString() }}</span>
               <b>{{ item.credits.toLocaleString() }}</b>
             </div>
@@ -80,9 +80,9 @@ function resetDate(value: string | null) {
           <div v-if="data.recent.length" class="recent-list">
             <div v-for="item in data.recent" :key="item.id" class="recent-row">
               <time>{{ fullTime(item.timestamp) }}</time>
-              <div><strong>{{ item.label }}</strong><small>{{ item.model ?? '未记录模型' }}</small></div>
+              <div><strong>{{ item.label }}</strong><small>{{ item.model ?? '未记录模型' }}{{ item.billing_mode === 'user_key' ? ' · 自带模型' : '' }}</small></div>
               <span class="mono">{{ item.prompt_tokens.toLocaleString() }} + {{ item.completion_tokens.toLocaleString() }} tok</span>
-              <b>-{{ item.credits }}</b>
+              <b>{{ item.billing_mode === 'user_key' ? '自付' : `-${item.credits}` }}</b>
             </div>
           </div>
           <div v-else class="empty-ledger">生成正文后，实际 token 和积分会逐笔出现在这里。</div>

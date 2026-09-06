@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, AsyncIterator, Optional
 
 import httpx
@@ -18,6 +18,7 @@ from db.models_usage import StyleProfile
 from memory.assembler import AssembledContext, ContextAssembler
 from memory.tokenizer import tokenizer
 from services.embedding import GatewayEmbeddingProvider
+from services.model_configs import InvalidModelEndpointError, assert_public_endpoint_resolution
 from services.retrieval import ConsistencyRetrieval
 from services.writing_skills import SkillSelection, select_writing_skills
 
@@ -27,16 +28,37 @@ class GenerationProviderError(RuntimeError):
 
 
 @dataclass(frozen=True)
+class GenerationRoute:
+    source: str
+    endpoint: str
+    model_id: str
+    model_tier: str
+    api_key: str = field(repr=False)
+    config_id: str | None = None
+
+
+@dataclass(frozen=True)
 class PromptPackage:
     chapter: Chapter
     project: Project
     context: AssembledContext
     skills: SkillSelection
     messages: list[dict[str, str]]
-    model_tier: str
-    model_id: str
+    route: GenerationRoute
     target_words: int
     task: str
+
+    @property
+    def model_tier(self) -> str:
+        return self.route.model_tier
+
+    @property
+    def model_id(self) -> str:
+        return self.route.model_id
+
+    @property
+    def billing_mode(self) -> str:
+        return "user_key" if self.route.source == "user" else "platform"
 
     @property
     def prompt_tokens(self) -> int:
@@ -120,6 +142,7 @@ class GenerationService:
         selected_text: str = "",
         nearby_text: str = "",
         instruction: str = "",
+        route: GenerationRoute | None = None,
     ) -> PromptPackage:
         task = TASK_MAP.get(action or "", "chapter")
         skills = select_writing_skills(
@@ -176,6 +199,13 @@ class GenerationService:
             f"{context_text}\n\n# 本章章纲\n{outline_text}\n\n# 当前指令\n{current_instruction}"
         )
         tier = "premium" if model == "advanced" else settings.generation_gateway_tier
+        resolved_route = route or GenerationRoute(
+            source="platform",
+            endpoint=settings.gateway_url(tier),
+            api_key=settings.gateway_key(tier),
+            model_id=settings.resolved_generation_model,
+            model_tier=tier,
+        )
         return PromptPackage(
             chapter=chapter,
             project=project,
@@ -185,8 +215,7 @@ class GenerationService:
                 {"role": "system", "content": "\n\n".join(system_parts)},
                 {"role": "user", "content": user_prompt},
             ],
-            model_tier=tier,
-            model_id=settings.resolved_generation_model,
+            route=resolved_route,
             target_words=target_words,
             task=task,
         )
@@ -218,6 +247,11 @@ class GenerationGateway:
         self._client = client
 
     async def stream(self, package: PromptPackage) -> AsyncIterator[StreamEvent]:
+        if package.route.source == "user":
+            try:
+                await assert_public_endpoint_resolution(package.route.endpoint)
+            except InvalidModelEndpointError as exc:
+                raise GenerationProviderError("自定义模型地址不是可访问的公网服务") from exc
         client = self._client or httpx.AsyncClient(
             timeout=httpx.Timeout(settings.generation_request_timeout, connect=15.0)
         )
@@ -235,9 +269,9 @@ class GenerationGateway:
         try:
             async with client.stream(
                 "POST",
-                settings.gateway_url(package.model_tier),
+                package.route.endpoint,
                 headers={
-                    "Authorization": f"Bearer {settings.gateway_key(package.model_tier)}",
+                    "Authorization": f"Bearer {package.route.api_key}",
                     "Content-Type": "application/json",
                 },
                 json=payload,

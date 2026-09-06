@@ -527,6 +527,7 @@ export interface GenerationMeta {
   layers: Record<string, unknown>
   promptTokens: number
   model: string
+  provider?: 'platform' | 'user'
 }
 
 export type GenerationDraftStatus = 'streaming' | 'ready' | 'failed' | 'accepted' | 'rejected'

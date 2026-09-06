@@ -76,6 +76,10 @@ class Settings(BaseSettings):
     generation_reasoning_effort: str = "low"
     generation_request_timeout: float = 600.0
 
+    # User-provided model keys are encrypted at rest. Deployments should set a
+    # dedicated value; the JWT key is a backward-compatible derivation source.
+    credential_encryption_key: Optional[str] = None
+
     @field_validator("embedding_dimensions")
     @classmethod
     def validate_embedding_dimensions(cls, value: int) -> int:

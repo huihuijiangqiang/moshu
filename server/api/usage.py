@@ -46,12 +46,20 @@ async def usage_summary(
         )
     ).scalars().all()
     by_feature: dict[str, dict[str, int]] = defaultdict(
-        lambda: {"count": 0, "credits": 0, "prompt_tokens": 0, "completion_tokens": 0}
+        lambda: {
+            "count": 0,
+            "user_key_count": 0,
+            "credits": 0,
+            "prompt_tokens": 0,
+            "completion_tokens": 0,
+        }
     )
     daily: dict[str, int] = defaultdict(int)
     for row in rows:
         item = by_feature[row.feature]
         item["count"] += 1
+        if (row.detail or {}).get("billing_mode") == "user_key":
+            item["user_key_count"] += 1
         item["credits"] += row.credits
         item["prompt_tokens"] += row.prompt_tokens
         item["completion_tokens"] += row.completion_tokens
@@ -85,6 +93,7 @@ async def usage_summary(
                 "prompt_tokens": row.prompt_tokens,
                 "cached_tokens": row.cached_tokens,
                 "completion_tokens": row.completion_tokens,
+                "billing_mode": (row.detail or {}).get("billing_mode", "platform"),
                 "timestamp": row.timestamp.isoformat(),
             }
             for row in rows[:20]

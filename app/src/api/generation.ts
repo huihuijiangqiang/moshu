@@ -10,6 +10,7 @@ export interface GenerationPreview {
   task: string
   targetWords: number
   model: { id: string; tier: string }
+  provider: { source: 'platform' | 'user'; configId: string | null }
   tokenBudget: {
     total: number
     prompt: number
@@ -54,6 +55,7 @@ export async function previewGeneration(opts: GenerateOptions | InlineGenerateOp
       task: 'chapter',
       targetWords: opts.targetWords,
       model: { id: 'mock', tier: opts.model },
+      provider: { source: 'platform', configId: null },
       tokenBudget: { total: 25000, prompt: 0, context: 0, trimmedLayers: [] },
       skills: [],
       scene: 'general',

@@ -24,6 +24,7 @@ export type IconName =
   | 'restore'
   | 'check'
   | 'history'
+  | 'key'
 
 /**
  * 自己画而不引图标库：只用 12 个图标，装一个几千图标的包不值得，
@@ -53,5 +54,6 @@ export const ICON_PATHS: Record<IconName, string> = {
   trash: 'M3.5 5.5h13M7 5.5V3.5h6v2M5.5 5.5l.7 11h7.6l.7-11M8.5 8.5v5M11.5 8.5v5',
   restore: 'M5.5 6H2.8V3.3M3.2 5.8A7 7 0 1110 17M3.2 5.8A7 7 0 0115.8 8',
   check: 'M3.5 10.5l4 4 9-9',
-  history: 'M4 5.5h8.5M4 9.5h8.5M4 13.5h5.5M14.5 11.5v5M12 14h5'
+  history: 'M4 5.5h8.5M4 9.5h8.5M4 13.5h5.5M14.5 11.5v5M12 14h5',
+  key: 'M12 7a4 4 0 11-1.2-2.8L17 4v3h-2v2h-2l-1.2 1.2A4 4 0 0112 7z'
 }

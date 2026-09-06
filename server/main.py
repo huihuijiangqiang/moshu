@@ -25,6 +25,7 @@ from api import (
     consistency,
     exports,
     generate,
+    model_configs,
     orgs,
     outlines,
     projects,
@@ -146,6 +147,7 @@ app.include_router(outlines.router, prefix="/chapters", tags=["章纲"])
 app.include_router(consistency.router, prefix="/consistency", tags=["一致性"])
 app.include_router(codex.router, prefix="/codex", tags=["设定库"])
 app.include_router(generate.router, prefix="/generate", tags=["生成"])
+app.include_router(model_configs.router, prefix="/account", tags=["模型配置"])
 app.include_router(admin.router, prefix="/admin", tags=["管理"])
 app.include_router(orgs.router, prefix="/orgs", tags=["组织"])
 app.include_router(usage.router, prefix="/usage", tags=["用量"])

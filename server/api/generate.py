@@ -22,15 +22,18 @@ from memory.tokenizer import tokenizer
 from services.generation import (
     GenerationGateway,
     GenerationProviderError,
+    GenerationRoute,
     GenerationService,
     PromptPackage,
     count_generated_words,
     retryable_stream,
 )
+from services.model_configs import active_user_generation_route
 from services.provenance import PROVENANCE_ALGORITHM, generated_paragraph_hashes
 from services.usage import (
     InsufficientCreditsError,
     UsageReservation,
+    record_user_key_generation,
     release_reservation,
     reserve_generation,
     settle_generation,
@@ -81,6 +84,13 @@ def _sse(payload: object) -> str:
     return f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
 
 
+def _safe_generation_error(package: PromptPackage, error: Exception) -> str:
+    message = str(error)
+    if package.route.api_key:
+        message = message.replace(package.route.api_key, "[redacted]")
+    return message[:800]
+
+
 async def _load_scope(
     chapter_id: str,
     user: User,
@@ -107,6 +117,7 @@ async def _prepare(
 ) -> PromptPackage:
     chapter, project = await _load_scope(request.chapter_id, user, db, ProjectPermission.GENERATE)
     service = GenerationService(db)
+    user_route = await active_user_generation_route(db, user_id=user.id)
     kwargs = request.model_dump(by_alias=False)
     kwargs.pop("chapter_id")
     if isinstance(request, InlineGenerationRequest):
@@ -115,7 +126,17 @@ async def _prepare(
             selected_text=request.selected_text,
             nearby_text=request.nearby_text,
         )
-    return await service.prepare(chapter=chapter, project=project, **kwargs)
+    route = None
+    if user_route is not None:
+        route = GenerationRoute(
+            source="user",
+            endpoint=user_route.endpoint,
+            api_key=user_route.api_key,
+            model_id=user_route.model,
+            model_tier="custom",
+            config_id=user_route.config_id,
+        )
+    return await service.prepare(chapter=chapter, project=project, route=route, **kwargs)
 
 
 async def _prepare_preview(
@@ -148,6 +169,7 @@ def _preview_payload(package: PromptPackage) -> dict:
         "task": package.task,
         "targetWords": package.target_words,
         "model": {"id": package.model_id, "tier": package.model_tier},
+        "provider": {"source": package.route.source, "configId": package.route.config_id},
         "tokenBudget": {
             "total": ContextAssembler.BUDGET_TOTAL,
             "prompt": package.prompt_tokens,
@@ -182,7 +204,7 @@ def _generation_response(
     user: User,
     db: AsyncSession,
     gateway: GenerationGateway,
-    reservation: UsageReservation,
+    reservation: UsageReservation | None,
     request_summary: dict,
 ) -> StreamingResponse:
     draft_id = uuid.uuid4().hex
@@ -209,7 +231,8 @@ def _generation_response(
             await db.commit()
         except Exception:
             await db.rollback()
-            await release_reservation(db, reservation, reason="draft_persistence_error")
+            if reservation is not None:
+                await release_reservation(db, reservation, reason="draft_persistence_error")
             await db.commit()
             finalized = True
             yield _sse(
@@ -266,6 +289,7 @@ def _generation_response(
                 "layers": package.layer_report,
                 "promptTokens": package.prompt_tokens,
                 "model": package.model_id,
+                "provider": package.route.source,
             }
         )
         try:
@@ -313,14 +337,29 @@ def _generation_response(
             draft.status = "ready"
             draft.content_text = prose
             draft.generated_words = run.generated_words
-            charged = await settle_generation(
-                db,
-                reservation,
-                run_id=run.id,
-                prompt_tokens=prompt_tokens,
-                cached_tokens=run.cached_tokens,
-                completion_tokens=completion_tokens,
-            )
+            if reservation is not None:
+                charged = await settle_generation(
+                    db,
+                    reservation,
+                    run_id=run.id,
+                    prompt_tokens=prompt_tokens,
+                    cached_tokens=run.cached_tokens,
+                    completion_tokens=completion_tokens,
+                )
+            else:
+                await record_user_key_generation(
+                    db,
+                    user_id=user.id,
+                    project_id=package.project.id,
+                    feature="generate_chapter" if package.task == "chapter" else "generate_inline",
+                    model=package.model_id,
+                    run_id=run.id,
+                    config_id=package.route.config_id or "unknown",
+                    prompt_tokens=prompt_tokens,
+                    cached_tokens=run.cached_tokens,
+                    completion_tokens=completion_tokens,
+                )
+                charged = 0
             await db.commit()
             finalized = True
             yield _sse(
@@ -340,13 +379,21 @@ def _generation_response(
             yield "data: [DONE]\n\n"
         except GenerationProviderError as exc:
             await persist_failed_draft("generation_provider_error")
-            await release_reservation(db, reservation, reason="provider_error")
+            if reservation is not None:
+                await release_reservation(db, reservation, reason="provider_error")
             await db.commit()
             finalized = True
-            yield _sse({"type": "error", "code": "generation_provider_error", "message": str(exc)})
+            yield _sse(
+                {
+                    "type": "error",
+                    "code": "generation_provider_error",
+                    "message": _safe_generation_error(package, exc),
+                }
+            )
         except Exception:
             await persist_failed_draft("generation_internal_error")
-            await release_reservation(db, reservation, reason="internal_error")
+            if reservation is not None:
+                await release_reservation(db, reservation, reason="internal_error")
             await db.commit()
             finalized = True
             yield _sse(
@@ -359,7 +406,8 @@ def _generation_response(
         finally:
             if not finalized:
                 await persist_failed_draft("stream_interrupted")
-                await release_reservation(db, reservation, reason="stream_interrupted")
+                if reservation is not None:
+                    await release_reservation(db, reservation, reason="stream_interrupted")
                 await db.commit()
 
     return StreamingResponse(
@@ -563,7 +611,9 @@ async def _reserve(
     request: ChapterGenerationRequest,
     user: User,
     db: AsyncSession,
-) -> UsageReservation:
+) -> UsageReservation | None:
+    if package.billing_mode == "user_key":
+        return None
     try:
         return await reserve_generation(
             db,

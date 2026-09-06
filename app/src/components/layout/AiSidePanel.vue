@@ -327,6 +327,7 @@ function forwardReviewDecision(round: ReviewRound, decision: 'approved' | 'chang
         <div class="prompt-preview-summary">
           <span>{{ preview.chapterTitle }}</span>
           <span>{{ preview.model.id }} · {{ preview.targetWords }} 字</span>
+          <span>{{ preview.provider.source === 'user' ? '自带模型' : '平台模型' }}</span>
           <span>{{ preview.tokenBudget.prompt.toLocaleString() }} tokens</span>
         </div>
 

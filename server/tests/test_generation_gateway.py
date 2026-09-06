@@ -8,12 +8,20 @@ import pytest
 from services.generation import (
     GenerationGateway,
     GenerationProviderError,
+    GenerationRoute,
     retryable_stream,
 )
 
 
 def package():
     return SimpleNamespace(
+        route=GenerationRoute(
+            source="platform",
+            endpoint="https://gateway.invalid/v1/chat/completions",
+            model_id="test-model",
+            model_tier="main",
+            api_key="test-key",
+        ),
         model_id="test-model",
         model_tier="main",
         messages=[{"role": "user", "content": "continue"}],
@@ -72,6 +80,8 @@ async def test_successful_sse_stream_still_yields_text_and_usage():
     body += "data: [DONE]\n\n"
 
     def handler(request: httpx.Request) -> httpx.Response:
+        assert str(request.url) == "https://gateway.invalid/v1/chat/completions"
+        assert request.headers["authorization"] == "Bearer test-key"
         return httpx.Response(200, request=request, text=body)
 
     client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
