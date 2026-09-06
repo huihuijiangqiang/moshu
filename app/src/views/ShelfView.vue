@@ -1,7 +1,9 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
+import { contentApi } from '@/api/content'
 import { shelfApi, type ShelfBook } from '@/api/shelf'
+import type { WritingProgressDay } from '@/types'
 import AppIcon from '@/components/ui/AppIcon.vue'
 import { useShellStore } from '@/stores/shell'
 import { projectPath } from '@/router/project-route'
@@ -22,6 +24,8 @@ const settingsBook = ref<ShelfBook | null>(null)
 const settingsForm = ref({ title: '', genre: '', status: 'ongoing' as 'ongoing' | 'finished' | 'archived', dailyGoal: 3000 })
 const settingsBusy = ref(false)
 const settingsError = ref('')
+const writingProgress = ref<WritingProgressDay[]>([])
+const progressBusy = ref(false)
 
 onMounted(async () => {
   shell.setCrumb('作品库')
@@ -60,6 +64,25 @@ const todayLabel = new Intl.DateTimeFormat('zh-CN', { year: 'numeric', month: 'l
 const primaryBookId = computed(() => currentBook.value?.id ?? books.value[0]?.id ?? null)
 const guardTotal = computed(() => books.value.reduce((sum, book) => sum + book.guardOpen, 0))
 const codexTotal = computed(() => books.value.reduce((sum, book) => sum + book.codexCount, 0))
+const recentProgress = computed(() => writingProgress.value.slice(-7))
+const progressPeak = computed(() => Math.max(currentBook.value?.dailyGoal ?? 0, ...recentProgress.value.map((day) => day.wordsAdded), 1))
+
+watch(primaryBookId, async (bookId) => {
+  writingProgress.value = []
+  if (!bookId) return
+  progressBusy.value = true
+  try {
+    writingProgress.value = await contentApi.getWritingProgress(bookId, 7)
+  } catch {
+    writingProgress.value = []
+  } finally {
+    progressBusy.value = false
+  }
+}, { immediate: true })
+
+function progressLabel(day: WritingProgressDay) {
+  return new Intl.DateTimeFormat('zh-CN', { month: 'numeric', day: 'numeric' }).format(new Date(`${day.date}T00:00:00`))
+}
 
 const statusLabel: Record<ShelfBook['status'], string> = {
   ongoing: '正在写',
@@ -187,6 +210,18 @@ function formatWords(words: number) {
           <div><span>今日写作</span><strong>+{{ currentBook.todayWords.toLocaleString() }}</strong></div>
           <span class="featured-progress"><span :style="{ height: currentBook.progress + '%' }" /></span>
         </div>
+
+        <section class="writing-trend" aria-label="最近七日日更">
+          <header><span>近 7 日日更</span><small v-if="progressBusy">读取中…</small><small v-else>净新增字数</small></header>
+          <div v-if="recentProgress.length" class="writing-trend-bars">
+            <div v-for="day in recentProgress" :key="day.date" class="writing-trend-day" :title="`${progressLabel(day)} · ${day.wordsAdded.toLocaleString()} 字`">
+              <span class="writing-trend-bar"><i :style="{ height: `${Math.max(day.wordsAdded ? 8 : 2, Math.round((day.wordsAdded / progressPeak) * 100))}%` }" :data-met="day.targetMet" /></span>
+              <strong>{{ day.wordsAdded ? day.wordsAdded.toLocaleString() : '—' }}</strong>
+              <small>{{ progressLabel(day) }}</small>
+            </div>
+          </div>
+          <p v-else>暂无日更记录</p>
+        </section>
       </section>
 
       <section v-if="filtered.length" class="manuscripts-section">
@@ -256,6 +291,17 @@ function formatWords(words: number) {
 .shelf-settings-body fieldset button:last-child { border-right: 0; }
 .shelf-settings-body fieldset button[aria-pressed="true"] { background: var(--primary-soft); color: var(--primary); font-weight: 700; }
 .shelf-settings-body > p { margin: 0; color: var(--alert-ink); font-size: var(--fs-sm); }
+.writing-trend { grid-column: 1 / -1; margin-top: 8px; padding-top: 14px; border-top: var(--hair) solid var(--line); }
+.writing-trend header { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; color: var(--ink-2); font-size: var(--fs-xs); font-weight: 700; }
+.writing-trend header small { color: var(--ink-4); font-size: 10px; font-weight: 400; }
+.writing-trend-bars { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 8px; align-items: end; min-height: 94px; margin-top: 10px; }
+.writing-trend-day { display: grid; grid-template-rows: 16px 48px 14px; gap: 3px; min-width: 0; text-align: center; }
+.writing-trend-day > strong { overflow: hidden; color: var(--ink-3); font: 10px/1 var(--font-mono); text-overflow: ellipsis; white-space: nowrap; }
+.writing-trend-day > small { color: var(--ink-4); font-size: 9px; }
+.writing-trend-bar { display: flex; align-items: end; justify-content: center; height: 48px; border-bottom: 1px solid var(--line-strong); }
+.writing-trend-bar i { display: block; width: min(22px, 70%); min-height: 2px; border-radius: 2px 2px 0 0; background: var(--ink-4); }
+.writing-trend-bar i[data-met="true"] { background: var(--primary); }
+.writing-trend > p { margin: 10px 0 0; color: var(--ink-4); font-size: var(--fs-xs); }
 .shelf-settings footer { min-height: 60px; display: flex; align-items: center; justify-content: space-between; gap: 14px; padding: 10px 20px; border-top: var(--hair) solid var(--line); color: var(--ink-4); font-size: var(--fs-xs); }
 .shelf-settings footer > div { display: flex; gap: 7px; }
 @media (max-width: 620px) {
