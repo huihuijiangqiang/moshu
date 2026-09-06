@@ -20,9 +20,9 @@ server/
 │   ├── projects.py   # 项目管理
 │   ├── chapters.py   # 章节读写（含乐观锁）
 │   └── ...
-├── db/               # 数据模型（34张表）
-│   ├── models_core.py    # 骨架 6张
-│   ├── models_codex.py   # 设定库 4张
+├── db/               # 数据模型（42张表）
+│   ├── models_core.py    # 骨架 7张
+│   ├── models_codex.py   # 设定库 5张
 │   ├── models_guard.py   # 守卫 2张
 │   ├── models_usage.py   # 风格/用量/占比 4张
 │   └── models_org.py     # 组织 3张
@@ -92,6 +92,10 @@ docker compose up -d --build
 Nginx。前端监听 `5180`，API 监听 `8000`；本地密钥只从被 Git 忽略的 `server/.env`
 注入容器。
 
+Windows 上如果 Docker Desktop 尚未运行，先启动 Docker Desktop，再执行上述命令。
+若 `docker version` 只能显示 Client 或报 `dockerDesktopLinuxEngine` 不存在，说明
+daemon 尚未就绪；这不是应用迁移失败，不能用 SQLite 结果替代容器验收。
+
 ### 4. 运行迁移
 
 ```bash
@@ -113,13 +117,16 @@ PostgreSQL、Redis 与 Alembic head，全部通过时返回 200，否则返回 5
 
 ## 已实现
 
-### 数据模型（34张表）
-- ✅ 骨架 6张：users, projects, volumes, chapters, chapter_bodies, chapter_versions
-- ✅ 设定库 4张：codex_entries, codex_aliases, codex_refs, codex_relations
-- ✅ 守卫 2张：guard_issues, foreshadows
-- ✅ 风格/用量/占比 4张：style_profiles, generation_runs, usage_logs, ratio_reports
-- ✅ 组织权限 3张：orgs, org_members, chapter_assignments（MVP 建表不开功能）
-- ✅ 一致性基础 4张：chapter_outline_states, chapter_outline_revisions, outbox_events, idempotency_records
+### 数据模型（42张表）
+- ✅ 核心 7张：users, projects, volumes, chapters, chapter_bodies, chapter_versions, project_notes
+- ✅ 设定库 5张：codex_entries, codex_aliases, codex_refs, codex_relations, codex_state_changes
+- ✅ Embedding 运维 1张：codex_embedding_jobs
+- ✅ 守卫与一致性 13张：guard_issues, foreshadows 及 runs、claims、摘要、时间线、证据、处置表
+- ✅ 组织权限 3张：orgs, org_members, chapter_assignments
+- ✅ 审稿协作 2张：chapter_review_rounds, review_comments
+- ✅ 认证与管理 3张：auth_sessions, system_settings, admin_audit_logs
+- ✅ 风格/生成/用量 6张：style_profiles, generation_runs, generation_drafts, usage_logs, ratio_reports, user_model_configs
+- ✅ 跨章编辑与人工计划 2张：text_replacement_runs, timeline_entries
 
 ### 核心模块
 - ✅ **四层上下文装配器** (`memory/assembler.py`)
@@ -145,6 +152,10 @@ PostgreSQL、Redis 与 Alembic head，全部通过时返回 200，否则返回 5
   - 已有正文时强制选择 `plan_only` / `mark_body_for_revision`
   - 修改章纲和处置标记都不写正文
   - transactional outbox 与两阶段 API 幂等基础设施
+- ✅ **移动端只读与灵感速记** (`api/projects.py`)
+  - 小屏正文强制只读，隐藏生成、恢复和全书替换等写操作
+  - 速记按用户隔离，可选绑定当前章节并持久化
+  - 备份只包含发起备份者自己的速记，恢复时重映射章节 ID
 
 ### API 端点
 - ✅ `GET /projects/:id` - 获取项目详情
@@ -157,21 +168,22 @@ PostgreSQL、Redis 与 Alembic head，全部通过时返回 200，否则返回 5
 - ✅ `GET /generate/context/:chapterId` - 预览四层上下文与自动选择的 Skill
 - ✅ `POST /generate/chapter` - 按章纲流式生成候选整章
 - ✅ `POST /generate/inline` - 续写/扩写/润色/语气/作者风格行内生成
+- ✅ `GET/POST /projects/:id/notes`、`DELETE /projects/:id/notes/:noteId` - 私有灵感速记
 
 ## 当前边界
 
 核心 MVP 已完成并由 `docs/IMPLEMENTATION_STATUS.md` 记录证据：认证与 refresh
 session、管理员设置与审计、项目/工作室 RBAC、设定库 CRUD 与 embedding 回填、
 持续章纲、版本化正文保存、四层上下文、SSE 生成、导出备份、用量结算、Guard
-扫描与 LLM 仲裁、平台后台模型用量台账均已接通。后端单元/功能测试为 1053 passed，
-另有 36 个真实 PostgreSQL/pgvector 集成测试；前端测试为 85 passed。
+扫描与 LLM 仲裁、平台后台模型用量台账、移动端只读与私有速记均已接通。后端单元/功能
+测试为 1193 passed，另有 36 个真实 PostgreSQL/pgvector 集成测试；前端测试为 141 passed。
 
 仍需在生产数据上继续验证的事项：
 
 - 正文到结构化 claim 与 LLM 仲裁的真实盲评质量（七类确定性规则已实现并通过结构化门禁）；
 - 10/30/100 万字规模下的真实 PostgreSQL 检索、模型网络延迟和成本曲线；
 - 模糊时间表达的语义规范化与跨章节锚点变更后的级联重算；
-- Kubernetes manifests、集中式错误上报与日志平台（Compose 部署已可用）。
+- Kubernetes manifests、集中式错误上报与日志平台属于工作室阶段，不是当前 MVP 部署门。
 
 可重复的确定性规则/上下文 CPU 基准见 `scripts/benchmark_consistency.py`。
 
@@ -213,7 +225,8 @@ docker-compose up -d
 ```
 
 ### 工作室阶段（K8s）
-TODO：补充 K8s manifests
+当前不在 MVP 范围内。工作室阶段再补充 manifests、密钥管理、集中式日志和多副本
+部署策略；MVP 使用根目录 `docker-compose.yml`，并以 `/health/ready` 作为就绪门禁。
 
 ## 参考文档
 
