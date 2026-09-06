@@ -52,6 +52,10 @@ cd server
 PostgreSQL/pgvector 检索必须在真实部署上单独压测；该脚本只覆盖 RuleScanner 的
 确定性规则和 ContextAssembler 的纯 CPU 热点。
 
+最近一次本机基准（2026-09-07，3 次重复，中位数）记录为：10k 字约 39ms / 0.19MB，
+30k 字约 326ms / 0.56MB，100k 字约 3.49s / 1.84MB（RuleScanner 合成 600/1800/6000 claims）。
+这组数字只用于回归趋势，不代表真实 PostgreSQL、模型网关或向量检索吞吐。
+
 ---
 
 ## 已完成模块
