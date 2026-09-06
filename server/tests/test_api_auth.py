@@ -7,8 +7,14 @@
 import pytest
 from fastapi import HTTPException
 
-from api.auth import ProjectPermission, get_current_user, verify_project_access, verify_project_permission
-from db.models_org import Org, OrgMember
+from api.auth import (
+    ProjectPermission,
+    get_current_user,
+    verify_chapter_assignment,
+    verify_project_access,
+    verify_project_permission,
+)
+from db.models_org import ChapterAssignment, Org, OrgMember
 
 
 async def test_owner_is_granted_access(async_db_session, make_user, make_project):
@@ -274,3 +280,83 @@ async def test_body_save_requires_idempotency_key_header(
     )
 
     assert response.status_code == 422
+
+
+async def test_active_assignment_is_exclusive_to_its_writer_but_not_editors(
+    async_db_session, make_user, make_project, make_chapter
+):
+    owner = make_user("assignment_owner")
+    assigned = make_user("assignment_writer")
+    other_writer = make_user("assignment_other")
+    editor = make_user("assignment_editor")
+    async_db_session.add_all([owner, assigned, other_writer, editor])
+    await async_db_session.flush()
+    async_db_session.add(Org(id="assignment_org", name="Assignment Org", seats=5, seats_used=4))
+    await async_db_session.flush()
+    async_db_session.add_all([
+        OrgMember(org_id="assignment_org", user_id=owner.id, role="owner"),
+        OrgMember(org_id="assignment_org", user_id=assigned.id, role="writer"),
+        OrgMember(org_id="assignment_org", user_id=other_writer.id, role="writer"),
+        OrgMember(org_id="assignment_org", user_id=editor.id, role="editor"),
+    ])
+    async_db_session.add(make_project("assignment_project", owner_id=owner.id, org_id="assignment_org"))
+    await async_db_session.flush()
+    chapter = make_chapter("assignment_chapter", project_id="assignment_project")
+    async_db_session.add(chapter)
+    await async_db_session.flush()
+    async_db_session.add(ChapterAssignment(
+        chapter_id=chapter.id,
+        assigned_to=assigned.id,
+        assigned_by=owner.id,
+        status="claimed",
+    ))
+    await async_db_session.commit()
+
+    await verify_chapter_assignment(chapter, assigned, async_db_session)
+    await verify_chapter_assignment(chapter, editor, async_db_session)
+    with pytest.raises(HTTPException) as exc_info:
+        await verify_chapter_assignment(chapter, other_writer, async_db_session)
+    assert exc_info.value.status_code == 403
+    assert exc_info.value.detail["code"] == "CHAPTER_ASSIGNED_TO_ANOTHER_WRITER"
+
+
+async def test_body_save_rejects_writer_when_chapter_is_assigned_to_someone_else(
+    app_client, async_db_session, make_user, make_project, make_chapter, auth_headers
+):
+    owner = make_user("save_owner")
+    assigned = make_user("save_assigned")
+    other_writer = make_user("save_other")
+    async_db_session.add_all([owner, assigned, other_writer])
+    await async_db_session.flush()
+    async_db_session.add(Org(id="save_org", name="Save Org", seats=3, seats_used=3))
+    await async_db_session.flush()
+    async_db_session.add_all([
+        OrgMember(org_id="save_org", user_id=owner.id, role="owner"),
+        OrgMember(org_id="save_org", user_id=assigned.id, role="writer"),
+        OrgMember(org_id="save_org", user_id=other_writer.id, role="writer"),
+    ])
+    async_db_session.add(make_project("save_project", owner_id=owner.id, org_id="save_org"))
+    await async_db_session.flush()
+    chapter = make_chapter("save_chapter", project_id="save_project")
+    async_db_session.add(chapter)
+    await async_db_session.flush()
+    async_db_session.add(ChapterAssignment(
+        chapter_id=chapter.id,
+        assigned_to=assigned.id,
+        assigned_by=owner.id,
+        status="assigned",
+    ))
+    await async_db_session.commit()
+
+    response = await app_client.put(
+        "/chapters/save_chapter/body",
+        json={
+            "content_html": "<p>不能覆盖</p>",
+            "content_json": {"type": "doc", "content": []},
+            "base_rev": 0,
+        },
+        headers={**auth_headers(other_writer.id), "Idempotency-Key": "assignment-denied"},
+    )
+
+    assert response.status_code == 403
+    assert response.json()["detail"]["code"] == "CHAPTER_ASSIGNED_TO_ANOTHER_WRITER"

@@ -7,7 +7,12 @@ from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from api.auth import ProjectPermission, get_current_user, verify_project_permission
+from api.auth import (
+    ProjectPermission,
+    get_current_user,
+    verify_chapter_assignment,
+    verify_project_permission,
+)
 from db.models_core import Chapter, User
 from db.session import get_db
 from domain.outlines import (
@@ -92,6 +97,8 @@ async def _verify_chapter_access(
     if chapter is None:
         raise HTTPException(status_code=404, detail={"code": "CHAPTER_NOT_FOUND"})
     await verify_project_permission(chapter.project_id, permission, user, db)
+    if permission == ProjectPermission.MANAGE_OUTLINE:
+        await verify_chapter_assignment(chapter, user, db)
     return chapter
 
 

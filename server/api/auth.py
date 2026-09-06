@@ -16,8 +16,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from config import settings
 from db.models_admin import AuthSession, SystemSetting
-from db.models_core import Project, User
-from db.models_org import OrgMember
+from db.models_core import Chapter, Project, User
+from db.models_org import ChapterAssignment, OrgMember
 from db.session import get_db
 from services.usage import next_month_start
 
@@ -439,6 +439,44 @@ async def get_project_permissions(
         if membership:
             return project, _ORG_ROLE_PERMISSIONS.get(membership.role, frozenset())
     return project, frozenset()
+
+
+async def verify_chapter_assignment(
+    chapter: Chapter,
+    user: User,
+    db: AsyncSession,
+) -> None:
+    """Keep an active studio assignment exclusive to its writer.
+
+    Unassigned chapters remain editable for backward compatibility. Owners, leads,
+    and editors may still intervene; only a writer assigned to a different active
+    chapter task is rejected.
+    """
+    project = await db.get(Project, chapter.project_id)
+    if project is None or project.owner_id == user.id or not project.org_id:
+        return
+    membership = await db.scalar(
+        select(OrgMember).where(
+            OrgMember.org_id == project.org_id,
+            OrgMember.user_id == user.id,
+        )
+    )
+    if membership is None or membership.role != "writer":
+        return
+    assignment = await db.scalar(
+        select(ChapterAssignment)
+        .where(
+            ChapterAssignment.chapter_id == chapter.id,
+            ChapterAssignment.status.in_(["assigned", "claimed"]),
+        )
+        .order_by(ChapterAssignment.id.desc())
+        .limit(1)
+    )
+    if assignment is not None and assignment.assigned_to != user.id:
+        raise HTTPException(
+            status_code=403,
+            detail={"code": "CHAPTER_ASSIGNED_TO_ANOTHER_WRITER"},
+        )
 
 
 class ProjectAccessChecker:

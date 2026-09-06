@@ -7,7 +7,12 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from api.auth import ProjectPermission, get_current_user, get_project_permissions
+from api.auth import (
+    ProjectPermission,
+    get_current_user,
+    get_project_permissions,
+    verify_chapter_assignment,
+)
 from db.models_core import Chapter, ChapterBody, User
 from db.models_review import ChapterReviewRound, ReviewComment
 from db.session import get_db
@@ -269,6 +274,16 @@ async def submit_chapter_review(
     db: AsyncSession = Depends(get_db),
 ) -> ReviewWorkspaceOut:
     permissions = await _require(project_id, ProjectPermission.EDIT_BODY, user, db)
+    chapter = await db.scalar(
+        select(Chapter).where(
+            Chapter.id == chapter_id,
+            Chapter.project_id == project_id,
+            Chapter.deleted_at.is_(None),
+        )
+    )
+    if chapter is None:
+        raise HTTPException(status_code=404, detail={"code": "CHAPTER_NOT_FOUND"})
+    await verify_chapter_assignment(chapter, user, db)
     try:
         await submit_chapter(
             db,

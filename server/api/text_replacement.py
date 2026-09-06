@@ -13,7 +13,12 @@ from pydantic import BaseModel, Field, model_validator
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from api.auth import ProjectPermission, get_current_user, verify_project_permission
+from api.auth import (
+    ProjectPermission,
+    get_current_user,
+    verify_chapter_assignment,
+    verify_project_permission,
+)
 from db.models_codex import CodexAlias, CodexEntry
 from db.models_core import Chapter, ChapterBody, ChapterVersion, User, Volume
 from db.models_editing import TextReplacementRun
@@ -262,6 +267,7 @@ async def execute_replacement(
             selected_ordinals = selected_by_chapter.get(chapter.id)
             if not selected_ordinals:
                 continue
+            await verify_chapter_assignment(chapter, user, db)
             updated_json = replace_document(
                 body.content_json,
                 request.query,
@@ -372,6 +378,10 @@ async def undo_replacement(
         raise HTTPException(status_code=409, detail={"code": "UNDO_CONFLICT", "chapter_ids": conflicts})
 
     for item in affected:
+        chapter = await db.get(Chapter, item["chapter_id"])
+        if chapter is None or chapter.deleted_at is not None:
+            raise HTTPException(status_code=409, detail={"code": "UNDO_CHAPTER_MISSING"})
+        await verify_chapter_assignment(chapter, user, db)
         version = await db.scalar(
             select(ChapterVersion).where(
                 ChapterVersion.chapter_id == item["chapter_id"],

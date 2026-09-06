@@ -6,7 +6,12 @@ from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from api.auth import ProjectPermission, get_current_user, verify_project_permission
+from api.auth import (
+    ProjectPermission,
+    get_current_user,
+    verify_chapter_assignment,
+    verify_project_permission,
+)
 from db import Chapter, ChapterBody, ChapterVersion
 from db.models_core import User
 from db.session import get_db
@@ -231,6 +236,7 @@ async def set_chapter_pov(
 ) -> ChapterPovResponse:
     chapter = await _active_chapter(chapter_id, db)
     await verify_project_permission(chapter.project_id, ProjectPermission.MANAGE_OUTLINE, user, db)
+    await verify_chapter_assignment(chapter, user, db)
     try:
         chapter = await update_chapter_pov(
             db,
@@ -335,6 +341,7 @@ async def restore_chapter_version(
     """Restore a snapshot as a new head revision; never rewrite immutable history."""
     chapter = await _active_chapter(chapter_id, db)
     await verify_project_permission(chapter.project_id, ProjectPermission.EDIT_BODY, user, db)
+    await verify_chapter_assignment(chapter, user, db)
     version = await db.scalar(
         select(ChapterVersion)
         .where(ChapterVersion.chapter_id == chapter_id, ChapterVersion.rev == revision)
@@ -439,6 +446,7 @@ async def save_chapter_body_endpoint(
 
     # Verify project access
     await verify_project_permission(chapter.project_id, ProjectPermission.EDIT_BODY, user, db)
+    await verify_chapter_assignment(chapter, user, db)
 
     body_stmt = select(ChapterBody).where(ChapterBody.chapter_id == chapter_id)
     body_result = await db.execute(body_stmt)

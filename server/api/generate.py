@@ -13,7 +13,12 @@ from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from api.auth import ProjectPermission, get_current_user, verify_project_permission
+from api.auth import (
+    ProjectPermission,
+    get_current_user,
+    verify_chapter_assignment,
+    verify_project_permission,
+)
 from db.models_core import Chapter, Project, User
 from db.models_usage import GenerationDraft, GenerationRun
 from db.session import get_db
@@ -107,6 +112,8 @@ async def _load_scope(
         raise HTTPException(status_code=404, detail="Chapter not found")
     chapter, project = row
     await verify_project_permission(project.id, permission, user, db)
+    if permission in {ProjectPermission.GENERATE, ProjectPermission.EDIT_BODY}:
+        await verify_chapter_assignment(chapter, user, db)
     return chapter, project
 
 
@@ -536,6 +543,10 @@ async def _load_draft(draft_id: str, user: User, db: AsyncSession, *, lock: bool
     if draft is None:
         raise HTTPException(status_code=404, detail="Draft not found")
     await verify_project_permission(draft.project_id, ProjectPermission.EDIT_BODY, user, db)
+    chapter = await db.get(Chapter, draft.chapter_id)
+    if chapter is None or chapter.deleted_at is not None:
+        raise HTTPException(status_code=404, detail="Chapter not found")
+    await verify_chapter_assignment(chapter, user, db)
     return draft
 
 

@@ -3,8 +3,9 @@
 from sqlalchemy import func, select
 
 from db.models_codex import CodexAlias, CodexEntry
-from db.models_core import ChapterBody, ChapterVersion, Volume
+from db.models_core import ChapterBody, ChapterVersion, Project, Volume
 from db.models_editing import TextReplacementRun
+from db.models_org import ChapterAssignment, Org, OrgMember
 from services.text_replacement import find_matches, replace_document, replace_html
 
 
@@ -197,6 +198,65 @@ async def test_execute_selected_matches_is_atomic_idempotent_and_undoable(
             select(func.count()).select_from(ChapterVersion).where(ChapterVersion.trigger == "bulk_replace_undo")
         )
     ) == 2
+
+
+async def test_writer_cannot_bulk_replace_a_chapter_assigned_to_another_writer(
+    app_client,
+    async_db_session,
+    seed_project,
+    make_user,
+    auth_headers,
+):
+    await seed_manuscript(async_db_session, seed_project)
+    assigned = make_user("replace_assigned")
+    other = make_user("replace_other")
+    async_db_session.add_all([assigned, other, Org(id="replace_org", name="Replace Org", seats=3, seats_used=3)])
+    await async_db_session.flush()
+    async_db_session.add_all([
+        OrgMember(org_id="replace_org", user_id="user_a", role="owner"),
+        OrgMember(org_id="replace_org", user_id=assigned.id, role="writer"),
+        OrgMember(org_id="replace_org", user_id=other.id, role="writer"),
+    ])
+    project = await async_db_session.get(Project, "proj_a")
+    project.org_id = "replace_org"
+    async_db_session.add(ChapterAssignment(
+        chapter_id="ch_1",
+        assigned_to=assigned.id,
+        assigned_by="user_a",
+        status="claimed",
+    ))
+    await async_db_session.commit()
+
+    spec = {
+        "query": "春山",
+        "replacement": "秋岭",
+        "scope": "chapter",
+        "chapter_id": "ch_1",
+        "case_sensitive": True,
+    }
+    preview = (
+        await app_client.post(
+            "/projects/proj_a/text-replacements/preview",
+            json=spec,
+            headers=auth_headers(other.id),
+        )
+    ).json()
+    response = await app_client.post(
+        "/projects/proj_a/text-replacements",
+        json={
+            **spec,
+            "preview_token": preview["preview_token"],
+            "selected_match_ids": [item["id"] for item in preview["matches"]],
+        },
+        headers=auth_headers(other.id, **{"Idempotency-Key": "assigned-replacement-denied"}),
+    )
+
+    assert response.status_code == 403
+    assert response.json()["detail"]["code"] == "CHAPTER_ASSIGNED_TO_ANOTHER_WRITER"
+    body = await async_db_session.get(ChapterBody, "ch_1")
+    await async_db_session.refresh(body)
+    assert "春山" in body.content_html
+    assert body.rev == 1
 
 
 async def test_execute_rejects_stale_preview_without_partial_writes(
