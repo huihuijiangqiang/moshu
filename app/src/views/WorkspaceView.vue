@@ -33,6 +33,7 @@ const generating = ref(false)
 const generationError = ref('')
 const generationErrorCode = ref('')
 const lastGenerationOptions = ref<GenerationControls | null>(null)
+const chapterActionError = ref('')
 const paneTab = ref<'body' | 'outline'>('body')
 const versionOpen = ref(false)
 const replacementOpen = ref(false)
@@ -207,6 +208,36 @@ function openPanel(side: 'left' | 'right') {
 
 function handleChapterPick() {
   if (window.innerWidth <= 840) shell.leftOpen = false
+}
+
+async function createChapter() {
+  if (mobileReadOnly.value || !store.project || !store.project.volumes.length) return
+  chapterActionError.value = ''
+  const currentId = store.activeId
+  if (currentId) {
+    try {
+      await flush(currentId)
+    } catch {
+      chapterActionError.value = '当前章节保存失败，未创建新章。请先处理保存问题。'
+      return
+    }
+    if (saveState.value === 'offline' || saveState.value === 'error' || saveState.value === 'conflict' || saveState.value === 'saving') {
+      chapterActionError.value = '当前章节尚未安全保存，未创建新章。'
+      return
+    }
+  }
+  const current = store.active
+  const volume = store.project.volumes.find((item) => item.id === current?.volumeId) ?? store.project.volumes.at(-1)
+  if (!volume) return
+  const afterIndex = current?.volumeId === volume.id
+    ? current.index
+    : (store.chapters.filter((chapter) => chapter.volumeId === volume.id).at(-1)?.index ?? 0)
+  try {
+    const created = await store.insertChapterAfter(volume.id, afterIndex)
+    store.activeId = created.id
+  } catch (error) {
+    chapterActionError.value = error instanceof Error && error.message ? error.message : '新建章节失败，请稍后重试。'
+  }
 }
 
 function handleWorkspaceShortcut(event: KeyboardEvent) {
@@ -719,7 +750,7 @@ function editChapterPlan() {
       <button class="panel-mobile-close" type="button" title="关闭章节" aria-label="关闭章节" @click="shell.leftOpen = false">
         <AppIcon name="close" />
       </button>
-      <ChapterPanel v-if="shell.leftOpen" @pick="handleChapterPick" />
+      <ChapterPanel v-if="shell.leftOpen" :create-chapter-action="createChapter" @pick="handleChapterPick" />
       <button v-else class="wk-stub" type="button" title="展开章节栏 ⌘B" @click="shell.leftOpen = true">
         章节 {{ store.chapters.length }}
       </button>
@@ -773,6 +804,11 @@ function editChapterPlan() {
       <div v-if="mobileReadOnly" class="mobile-readonly-banner">
         <span><strong>手机只读</strong> 正文不会在小屏上被误改</span>
         <button type="button" @click="openPanel('right')">记一条灵感</button>
+      </div>
+
+      <div v-if="chapterActionError" class="workspace-action-error" role="alert" aria-live="polite">
+        {{ chapterActionError }}
+        <button type="button" @click="chapterActionError = ''">知道了</button>
       </div>
 
       <div v-if="!online" :style="{ padding: '5px var(--u4)', fontSize: 'var(--fs-sm)', fontWeight: 700, background: 'var(--alert)', color: 'var(--on-alert)' }">
@@ -945,6 +981,8 @@ function editChapterPlan() {
 .mobile-readonly-banner strong { margin-right: 5px; color: var(--primary); }
 .mobile-readonly-banner button { flex: none; min-height: 26px; padding: 0 8px; border: var(--hair) solid var(--primary); border-radius: 3px; color: var(--primary); background: transparent; font-size: var(--fs-xs); cursor: pointer; }
 .mobile-readonly-banner button:hover { color: var(--paper); background: var(--primary); }
+.workspace-action-error { display: flex; align-items: center; justify-content: space-between; gap: var(--u3); padding: 7px var(--u4); color: var(--alert-ink); background: var(--alert-soft); border-bottom: var(--hair) solid var(--alert-line); font-size: var(--fs-sm); line-height: 1.5; }
+.workspace-action-error button { flex: none; padding: 2px 6px; color: var(--alert-ink); background: transparent; border: var(--hair) solid var(--alert); border-radius: 3px; font-size: var(--fs-xs); cursor: pointer; }
 :deep(.review-located-paragraph) {
   background: var(--alert-soft);
   box-shadow: -4px 0 0 var(--alert);

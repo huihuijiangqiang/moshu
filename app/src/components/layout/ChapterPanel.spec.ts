@@ -108,4 +108,12 @@ describe('ChapterPanel', () => {
     expect(wrapper.get('[data-chapter-id="chapter-17"]').text()).toContain('第 17 章的标题')
     wrapper.unmount()
   })
+
+  it('exposes the new chapter action from the writing sidebar', async () => {
+    const { wrapper } = mountPanel(12, 3)
+    await flushPromises()
+    await wrapper.get('button[aria-label="新建章节"]').trigger('click')
+    expect(wrapper.emitted('create-chapter')).toHaveLength(1)
+    wrapper.unmount()
+  })
 })

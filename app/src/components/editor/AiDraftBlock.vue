@@ -42,8 +42,8 @@ function toggleLock() {
 <template>
   <NodeViewWrapper class="ai-draft" :data-status="status">
     <div class="ai-draft-bar" contenteditable="false">
-      <span class="ai-draft-label">{{ labelText }}</span>
-      <span v-if="status === 'streaming'" class="muted">生成中，可随时停止</span>
+      <span class="ai-draft-label" aria-live="polite">{{ labelText }}</span>
+      <span v-if="status === 'streaming'" class="muted" aria-live="polite">生成中，可随时停止</span>
       <span v-else class="row" style="gap: 8px">
         <button class="chip chip-strong" type="button" @click="accept">采纳</button>
         <button class="chip" type="button" @click="reject">丢弃</button>

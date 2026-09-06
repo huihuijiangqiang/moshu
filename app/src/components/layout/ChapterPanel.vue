@@ -14,12 +14,13 @@ type LayoutItem =
 
 /** 章节栏只负责作品结构导航；长篇按固定行高只挂载视口附近的节点。 */
 const project = useProjectStore()
+const props = defineProps<{ createChapterAction?: () => void }>()
 const filter = ref('')
 const viewport = ref<HTMLElement | null>(null)
 const scrollTop = ref(0)
 const viewportHeight = ref(DEFAULT_VIEWPORT_HEIGHT)
 const focusIndex = ref(-1)
-const emit = defineEmits<{ pick: [] }>()
+const emit = defineEmits<{ pick: []; 'create-chapter': [] }>()
 let resizeObserver: ResizeObserver | null = null
 
 const groups = computed(() => {
@@ -200,7 +201,7 @@ onBeforeUnmount(() => {
     <div class="wk-head">
       <span>章节</span>
       <span class="wk-head-push">{{ filter ? `${hits} / ` : '' }}{{ project.chapters.length }}</span>
-      <button class="wk-btn wk-btn-xs" type="button" title="新建章节">＋</button>
+      <button class="wk-btn wk-btn-xs" type="button" title="新建章节" aria-label="新建章节" @click="props.createChapterAction?.(); emit('create-chapter')">＋</button>
     </div>
 
     <div class="chapter-filter">
