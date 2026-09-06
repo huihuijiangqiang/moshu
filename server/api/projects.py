@@ -7,7 +7,7 @@ from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, ConfigDict, Field
-from sqlalchemy import func, or_, select
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from api.auth import (
@@ -17,7 +17,7 @@ from api.auth import (
     verify_project_access,
     verify_project_permission,
 )
-from db import Chapter, Project, Volume
+from db import Chapter, Project, ProjectNote, Volume
 from db.models_codex import CodexEntry
 from db.models_consistency import ChapterOutlineState
 from db.models_core import User
@@ -172,6 +172,21 @@ class TrashChapterOut(BaseModel):
 class ProjectTrashOut(BaseModel):
     volumes: list[TrashVolumeOut]
     chapters: list[TrashChapterOut]
+
+
+class ProjectNoteCreate(BaseModel):
+    content: str = Field(min_length=1, max_length=2_000)
+    chapter_id: str | None = Field(default=None, max_length=32)
+
+
+class ProjectNoteOut(BaseModel):
+    id: str
+    project_id: str
+    chapter_id: str | None
+    chapter_index: int | None
+    chapter_title: str | None
+    content: str
+    created_at: datetime
 
 
 def _clean_required(value: str, code: str) -> str:
@@ -526,6 +541,112 @@ async def get_project(
     对应前端 mock: getProject
     """
     return await _project_out(db, project)
+
+
+@router.get("/{project_id}/notes", response_model=list[ProjectNoteOut])
+async def list_project_notes(
+    project_id: str,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """List only the current user's private notes for one accessible project."""
+    await verify_project_permission(project_id, ProjectPermission.VIEW, user, db)
+    rows = (
+        await db.execute(
+            select(ProjectNote, Chapter)
+            .outerjoin(
+                Chapter,
+                and_(
+                    Chapter.id == ProjectNote.chapter_id,
+                    Chapter.project_id == ProjectNote.project_id,
+                ),
+            )
+            .where(ProjectNote.project_id == project_id, ProjectNote.user_id == user.id)
+            .order_by(ProjectNote.created_at.desc(), ProjectNote.id.desc())
+            .limit(200)
+        )
+    ).all()
+    return [
+        ProjectNoteOut(
+            id=note.id,
+            project_id=note.project_id,
+            chapter_id=note.chapter_id,
+            chapter_index=chapter.idx if chapter and chapter.deleted_at is None else None,
+            chapter_title=chapter.title if chapter and chapter.deleted_at is None else None,
+            content=note.content,
+            created_at=note.created_at,
+        )
+        for note, chapter in rows
+    ]
+
+
+@router.post("/{project_id}/notes", response_model=ProjectNoteOut, status_code=201)
+async def create_project_note(
+    project_id: str,
+    request: ProjectNoteCreate,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Capture a private idea without granting body-edit permission on mobile."""
+    await verify_project_permission(project_id, ProjectPermission.VIEW, user, db)
+    content = request.content.strip()
+    if not content:
+        raise HTTPException(status_code=422, detail={"code": "PROJECT_NOTE_EMPTY"})
+    chapter = None
+    if request.chapter_id:
+        chapter = (
+            await db.execute(
+                select(Chapter).where(
+                    Chapter.id == request.chapter_id,
+                    Chapter.project_id == project_id,
+                    Chapter.deleted_at.is_(None),
+                )
+            )
+        ).scalar_one_or_none()
+        if chapter is None:
+            raise HTTPException(status_code=422, detail={"code": "PROJECT_NOTE_CHAPTER_INVALID"})
+    note = ProjectNote(
+        id=f"pn_{secrets.token_hex(12)}",
+        project_id=project_id,
+        user_id=user.id,
+        chapter_id=chapter.id if chapter else None,
+        content=content,
+    )
+    db.add(note)
+    await db.commit()
+    await db.refresh(note)
+    return ProjectNoteOut(
+        id=note.id,
+        project_id=note.project_id,
+        chapter_id=note.chapter_id,
+        chapter_index=chapter.idx if chapter else None,
+        chapter_title=chapter.title if chapter else None,
+        content=note.content,
+        created_at=note.created_at,
+    )
+
+
+@router.delete("/{project_id}/notes/{note_id}", status_code=204)
+async def delete_project_note(
+    project_id: str,
+    note_id: str,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> None:
+    await verify_project_permission(project_id, ProjectPermission.VIEW, user, db)
+    note = (
+        await db.execute(
+            select(ProjectNote).where(
+                ProjectNote.id == note_id,
+                ProjectNote.project_id == project_id,
+                ProjectNote.user_id == user.id,
+            )
+        )
+    ).scalar_one_or_none()
+    if note is None:
+        raise HTTPException(status_code=404, detail={"code": "PROJECT_NOTE_NOT_FOUND"})
+    await db.delete(note)
+    await db.commit()
 
 
 @router.patch("/{project_id}", response_model=ProjectOut)

@@ -6,7 +6,7 @@ import AiSidePanel from './AiSidePanel.vue'
 import { contentApi } from '@/api/content'
 import { useCodexStore } from '@/stores/codex'
 import { useProjectStore } from '@/stores/project'
-import type { CodexStateHistoryItem } from '@/types'
+import type { CodexStateHistoryItem, ProjectNote } from '@/types'
 
 function authorState(id: string, chapterIndex: number, value: string): CodexStateHistoryItem {
   return {
@@ -128,6 +128,85 @@ describe('writing reference side panel', () => {
     expect(wrapper.get('[role="region"]').text()).toContain('本次提示词')
     expect(wrapper.get('[role="region"]').text()).toContain('模拟模式不会调用模型')
     expect(wrapper.emitted('generate')).toBeUndefined()
+    wrapper.unmount()
+  })
+
+  it('turns the mobile panel into persistent private quick notes', async () => {
+    const pinia = createPinia()
+    setActivePinia(pinia)
+    const router = createRouter({
+      history: createMemoryHistory(),
+      routes: [{ path: '/projects/:projectId/write', component: { template: '<div />' } }]
+    })
+    await router.push('/projects/p1/write')
+    await router.isReady()
+    await Promise.all([useProjectStore().load('p1'), useCodexStore().load('p1')])
+    const existing: ProjectNote = {
+      id: 'pn-1', projectId: 'p1', chapterId: 'ch87', chapterIndex: 87,
+      chapterTitle: '断刃', content: '让老周头先认出剑穗。', createdAt: '2026-09-07T10:00:00Z'
+    }
+    vi.spyOn(contentApi, 'getContextLayers').mockResolvedValue([])
+    vi.spyOn(contentApi, 'listProjectNotes').mockResolvedValue([existing])
+    const create = vi.spyOn(contentApi, 'createProjectNote').mockResolvedValue({
+      ...existing, id: 'pn-2', content: '雨停后再揭示玄铁令。'
+    })
+    const remove = vi.spyOn(contentApi, 'deleteProjectNote').mockResolvedValue()
+    const wrapper = mount(AiSidePanel, {
+      attachTo: document.body,
+      props: { drafts: [], draftsLoading: false, mobileReadOnly: true },
+      global: { plugins: [pinia, router] }
+    })
+    await flushPromises()
+
+    expect(wrapper.findAll('.wk-tab').map((button) => button.text())).toEqual(['笔记'])
+    expect(wrapper.get('.quick-note-list').text()).toContain('让老周头先认出剑穗。')
+    await wrapper.get('.quick-note-form textarea').setValue('雨停后再揭示玄铁令。')
+    await wrapper.get('.quick-note-form').trigger('submit')
+    await flushPromises()
+    expect(create).toHaveBeenCalledWith('p1', '雨停后再揭示玄铁令。', useProjectStore().activeId)
+    expect(wrapper.get('.quick-note-list').text()).toContain('雨停后再揭示玄铁令。')
+
+    await wrapper.findAll('.quick-note-row footer button')[1]!.trigger('click')
+    await flushPromises()
+    expect(remove).toHaveBeenCalledWith('p1', 'pn-1')
+    wrapper.unmount()
+  })
+
+  it('does not let notes from a previous project replace the active project list', async () => {
+    const pinia = createPinia()
+    setActivePinia(pinia)
+    const router = createRouter({
+      history: createMemoryHistory(),
+      routes: [{ path: '/projects/:projectId/write', component: { template: '<div />' } }]
+    })
+    await router.push('/projects/p1/write')
+    await router.isReady()
+    const project = useProjectStore()
+    await Promise.all([project.load('p1'), useCodexStore().load('p1')])
+    let resolveP1!: (value: ProjectNote[]) => void
+    let resolveP2!: (value: ProjectNote[]) => void
+    vi.spyOn(contentApi, 'getContextLayers').mockResolvedValue([])
+    vi.spyOn(contentApi, 'listProjectNotes').mockImplementation((projectId) => new Promise((resolve) => {
+      if (projectId === 'p1') resolveP1 = resolve
+      else resolveP2 = resolve
+    }))
+    const wrapper = mount(AiSidePanel, {
+      attachTo: document.body,
+      props: { drafts: [], draftsLoading: false, mobileReadOnly: true },
+      global: { plugins: [pinia, router] }
+    })
+    await Promise.resolve()
+
+    await project.load('p2')
+    await Promise.resolve()
+    resolveP2([{ id: 'pn-p2', projectId: 'p2', content: '新作品的速记', createdAt: '2026-09-07T10:00:00Z' }])
+    await flushPromises()
+    expect(wrapper.get('.quick-note-list').text()).toContain('新作品的速记')
+
+    resolveP1([{ id: 'pn-p1', projectId: 'p1', content: '不应覆盖当前作品', createdAt: '2026-09-07T09:00:00Z' }])
+    await flushPromises()
+    expect(wrapper.get('.quick-note-list').text()).toContain('新作品的速记')
+    expect(wrapper.get('.quick-note-list').text()).not.toContain('不应覆盖当前作品')
     wrapper.unmount()
   })
 })

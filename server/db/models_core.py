@@ -1,5 +1,5 @@
 """
-核心数据模型 - 骨架（6张表）
+核心数据模型 - 骨架（7张表）
 """
 from datetime import datetime
 from typing import TYPE_CHECKING, Optional
@@ -62,6 +62,24 @@ class Project(Base, TimestampMixin):
     volumes: Mapped[list["Volume"]] = relationship(back_populates="project", cascade="all, delete-orphan")
     chapters: Mapped[list["Chapter"]] = relationship(back_populates="project", cascade="all, delete-orphan")
     codex_entries: Mapped[list["CodexEntry"]] = relationship(back_populates="project", cascade="all, delete-orphan")
+
+
+class ProjectNote(Base, TimestampMixin):
+    """用户在作品内保存的私有灵感速记，不进入正文或模型上下文。"""
+
+    __tablename__ = "project_notes"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True)
+    project_id: Mapped[str] = mapped_column(
+        String(32), ForeignKey("projects.id", ondelete="CASCADE"), index=True
+    )
+    user_id: Mapped[str] = mapped_column(
+        String(32), ForeignKey("users.id", ondelete="CASCADE"), index=True
+    )
+    chapter_id: Mapped[Optional[str]] = mapped_column(
+        String(32), ForeignKey("chapters.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    content: Mapped[str] = mapped_column(Text)
 
 
 class Volume(Base, TimestampMixin):

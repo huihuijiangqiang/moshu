@@ -80,4 +80,15 @@ describe('mock project scoping', () => {
     await mockApi.deleteCodexStateChange('p3', entry.id, created.id, 2)
     expect(await mockApi.listCodexStateHistory('p3', entry.id)).toEqual([])
   })
+
+  it('keeps quick notes scoped to one project and validates chapter anchors', async () => {
+    const [chapter] = await mockApi.listChapters('p3')
+    const note = await mockApi.createProjectNote('p3', '让摆渡人在这里认出旧灯。', chapter!.id)
+
+    expect(await mockApi.listProjectNotes('p3')).toEqual([note])
+    expect((await mockApi.listProjectNotes('p1')).some((item) => item.id === note.id)).toBe(false)
+    await expect(mockApi.createProjectNote('p3', '越界章节', 'ch87')).rejects.toThrow('invalid_project_note')
+    await mockApi.deleteProjectNote('p3', note.id)
+    expect(await mockApi.listProjectNotes('p3')).toEqual([])
+  })
 })

@@ -5,7 +5,7 @@ from datetime import UTC, datetime
 from sqlalchemy import select
 
 from db.models_codex import CodexEntry
-from db.models_core import Chapter, Project, Volume
+from db.models_core import Chapter, Project, ProjectNote, Volume
 
 
 async def test_project_list_requires_authentication(app_client):
@@ -76,6 +76,102 @@ async def test_project_detail_and_chapter_list_require_project_access(
     assert (await app_client.get("/projects/proj_a/chapters", headers=auth_headers("user_b"))).status_code == 403
     assert (await app_client.get("/projects/proj_a", headers=auth_headers("user_a"))).status_code == 200
     assert (await app_client.get("/projects/proj_a/chapters", headers=auth_headers("user_a"))).status_code == 200
+
+
+async def test_private_project_notes_support_mobile_capture_and_chapter_anchors(
+    app_client,
+    async_db_session,
+    seed_project,
+    make_project,
+    make_chapter,
+    make_user,
+    auth_headers,
+):
+    await seed_project(chapter_ids=("ch_a",))
+    async_db_session.add(make_user("user_b"))
+    async_db_session.add(make_project("proj_other", owner_id="user_a"))
+    await async_db_session.flush()
+    async_db_session.add(make_chapter("ch_other", project_id="proj_other"))
+    async_db_session.add_all(
+        [
+            ProjectNote(
+            id="pn_private_other_user",
+            project_id="proj_a",
+            user_id="user_b",
+            chapter_id="ch_a",
+            content="另一位用户的私有速记",
+            ),
+            ProjectNote(
+                id="pn_dirty_cross_project",
+                project_id="proj_a",
+                user_id="user_a",
+                chapter_id="ch_other",
+                content="历史脏记录不得泄露其他作品章节标题",
+            ),
+        ]
+    )
+    await async_db_session.commit()
+
+    created = await app_client.post(
+        "/projects/proj_a/notes",
+        json={"content": "  下一章让旧井在雨后塌陷。  ", "chapter_id": "ch_a"},
+        headers=auth_headers("user_a"),
+    )
+    assert created.status_code == 201
+    note_id = created.json()["id"]
+    assert created.json()["content"] == "下一章让旧井在雨后塌陷。"
+    assert created.json()["chapter_id"] == "ch_a"
+    assert created.json()["chapter_index"] == 1024
+
+    listed = await app_client.get(
+        "/projects/proj_a/notes", headers=auth_headers("user_a")
+    )
+    listed_by_id = {item["id"]: item for item in listed.json()}
+    assert set(listed_by_id) == {note_id, "pn_dirty_cross_project"}
+    assert listed_by_id["pn_dirty_cross_project"]["chapter_index"] is None
+    assert listed_by_id["pn_dirty_cross_project"]["chapter_title"] is None
+
+    invalid_chapter = await app_client.post(
+        "/projects/proj_a/notes",
+        json={"content": "不能跨作品绑定", "chapter_id": "ch_other"},
+        headers=auth_headers("user_a"),
+    )
+    assert invalid_chapter.status_code == 422
+    assert invalid_chapter.json()["detail"]["code"] == "PROJECT_NOTE_CHAPTER_INVALID"
+
+    cannot_delete_other_user = await app_client.delete(
+        "/projects/proj_a/notes/pn_private_other_user",
+        headers=auth_headers("user_a"),
+    )
+    assert cannot_delete_other_user.status_code == 404
+    deleted = await app_client.delete(
+        f"/projects/proj_a/notes/{note_id}", headers=auth_headers("user_a")
+    )
+    assert deleted.status_code == 204
+    deleted_dirty = await app_client.delete(
+        "/projects/proj_a/notes/pn_dirty_cross_project",
+        headers=auth_headers("user_a"),
+    )
+    assert deleted_dirty.status_code == 204
+    assert (
+        await app_client.get("/projects/proj_a/notes", headers=auth_headers("user_a"))
+    ).json() == []
+
+
+async def test_project_notes_require_authentication_and_project_access(
+    app_client, async_db_session, seed_project, make_user, auth_headers
+):
+    await seed_project()
+    async_db_session.add(make_user("user_b"))
+    await async_db_session.commit()
+
+    assert (await app_client.get("/projects/proj_a/notes")).status_code == 401
+    denied = await app_client.post(
+        "/projects/proj_a/notes",
+        json={"content": "不应写入"},
+        headers=auth_headers("user_b"),
+    )
+    assert denied.status_code == 403
 
 
 async def test_create_project_persists_plan_first_chapter_and_initial_codex(

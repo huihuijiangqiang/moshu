@@ -6,7 +6,7 @@ import { useProjectStore } from '@/stores/project'
 import { codexEntrySearchText, useCodexStore } from '@/stores/codex'
 import { useGuardStore } from '@/stores/guard'
 import { useStylesStore } from '@/stores/styles'
-import { CODEX_KIND_LABEL, type CodexEntry, type CodexStateHistoryItem, type ContextLayer, type GenerationControls } from '@/types'
+import { CODEX_KIND_LABEL, type CodexEntry, type CodexStateHistoryItem, type ContextLayer, type GenerationControls, type ProjectNote } from '@/types'
 import { useProjectNavigation } from '@/composables/use-project-navigation'
 import { generationDraftApi, previewGeneration, type GenerationPreview } from '@/api/generation'
 import AppIcon from '@/components/ui/AppIcon.vue'
@@ -29,6 +29,7 @@ const props = defineProps<{
   reviewBusy?: boolean
   reviewError?: string
   reviewSubmitDisabledReason?: string
+  mobileReadOnly?: boolean
 }>()
 const emit = defineEmits<{
   generate: [options: GenerationControls]
@@ -71,10 +72,88 @@ const previewOpen = ref(false)
 const previewLoading = ref(false)
 const previewError = ref('')
 const preview = ref<GenerationPreview | null>(null)
+const notes = ref<ProjectNote[]>([])
+const noteDraft = ref('')
+const notesLoading = ref(false)
+const noteBusy = ref(false)
+const noteError = ref('')
 let referenceStateRequest = 0
 let previewRequest = 0
+let notesRequest = 0
 
 const BUDGET = 25000
+const availableTabs = computed(() => props.mobileReadOnly
+  ? (['notes'] as const)
+  : (['ai', 'drafts', 'refs', 'review', 'notes'] as const))
+
+watch(() => props.mobileReadOnly, (value) => {
+  if (value) tab.value = 'notes'
+}, { immediate: true })
+
+async function loadNotes() {
+  const projectId = project.project?.id
+  const requestId = ++notesRequest
+  if (!projectId) {
+    notes.value = []
+    notesLoading.value = false
+    noteError.value = ''
+    return
+  }
+  notesLoading.value = true
+  noteError.value = ''
+  try {
+    const result = await contentApi.listProjectNotes(projectId)
+    if (requestId === notesRequest) notes.value = result
+  } catch {
+    if (requestId === notesRequest) noteError.value = '灵感速记加载失败，请稍后重试。'
+  } finally {
+    if (requestId === notesRequest) notesLoading.value = false
+  }
+}
+
+watch(() => project.project?.id, () => void loadNotes(), { immediate: true })
+
+async function createNote() {
+  const projectId = project.project?.id
+  const content = noteDraft.value.trim()
+  if (!projectId || !content || noteBusy.value) return
+  noteBusy.value = true
+  noteError.value = ''
+  try {
+    const note = await contentApi.createProjectNote(projectId, content, project.activeId ?? undefined)
+    if (project.project?.id === projectId) {
+      notes.value.unshift(note)
+      noteDraft.value = ''
+    }
+  } catch {
+    if (project.project?.id === projectId) noteError.value = '灵感速记保存失败，请稍后重试。'
+  } finally {
+    noteBusy.value = false
+  }
+}
+
+async function deleteNote(note: ProjectNote) {
+  const projectId = project.project?.id
+  if (!projectId || noteBusy.value) return
+  noteBusy.value = true
+  noteError.value = ''
+  try {
+    await contentApi.deleteProjectNote(projectId, note.id)
+    if (project.project?.id === projectId) {
+      notes.value = notes.value.filter((item) => item.id !== note.id)
+    }
+  } catch {
+    if (project.project?.id === projectId) noteError.value = '灵感速记删除失败，请稍后重试。'
+  } finally {
+    noteBusy.value = false
+  }
+}
+
+function noteTime(value: string) {
+  return new Date(value).toLocaleString('zh-CN', {
+    month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit'
+  })
+}
 
 watch(
   () => [project.project?.id, project.activeId] as const,
@@ -300,7 +379,7 @@ function forwardReviewDecision(round: ReviewRound, decision: 'approved' | 'chang
   <div>
     <div class="wk-tabs">
       <button
-        v-for="t in (['ai', 'drafts', 'refs', 'review', 'notes'] as const)"
+        v-for="t in availableTabs"
         :key="t"
         class="wk-tab"
         type="button"
@@ -635,13 +714,21 @@ function forwardReviewDecision(round: ReviewRound, decision: 'approved' | 'chang
     />
 
     <template v-else>
-      <div class="wk-head"><span>笔记</span></div>
-      <div :style="{ padding: 'var(--u3)' }">
-        <textarea
-          class="wk-input"
-          :style="{ height: '160px', padding: 'var(--u2)', lineHeight: 1.7, resize: 'vertical' }"
-          placeholder="只属于你的备忘，不进入 AI 上下文。"
-        />
+      <div class="wk-head"><span>灵感速记</span><span class="wk-head-push">仅自己可见</span></div>
+      <div class="quick-notes">
+        <form class="quick-note-form" @submit.prevent="createNote">
+          <textarea v-model="noteDraft" class="wk-input" maxlength="2000" rows="5" placeholder="记下突然想到的情节、对白或待核对事项。" />
+          <div><small>{{ project.active ? `保存到第 ${project.active.index} 章` : '保存到当前作品' }}</small><button class="wk-btn wk-btn-xs" data-primary="true" type="submit" :disabled="!noteDraft.trim() || noteBusy">{{ noteBusy ? '保存中…' : '保存速记' }}</button></div>
+        </form>
+        <p v-if="noteError" class="quick-note-state is-error" role="alert">{{ noteError }}</p>
+        <p v-else-if="notesLoading" class="quick-note-state" role="status">正在读取速记…</p>
+        <div v-else-if="notes.length" class="quick-note-list">
+          <article v-for="note in notes" :key="note.id" class="quick-note-row">
+            <p>{{ note.content }}</p>
+            <footer><span>{{ note.chapterIndex ? `第 ${note.chapterIndex} 章${note.chapterTitle ? ` · ${note.chapterTitle}` : ''}` : '全书' }} · {{ noteTime(note.createdAt) }}</span><button type="button" title="删除速记" aria-label="删除速记" :disabled="noteBusy" @click="deleteNote(note)"><AppIcon name="trash" :size="13" /></button></footer>
+          </article>
+        </div>
+        <p v-else class="quick-note-state">还没有速记。这里的内容不会进入 AI 上下文。</p>
       </div>
     </template>
   </div>
@@ -747,6 +834,20 @@ function forwardReviewDecision(round: ReviewRound, decision: 'approved' | 'chang
 }
 .draft-warning { margin: 0; color: var(--alert-ink); font-size: var(--fs-sm); line-height: 1.6; }
 .draft-actions { display: flex; justify-content: flex-end; gap: var(--u2); }
+.quick-notes { padding: var(--u3); }
+.quick-note-form { padding-bottom: var(--u4); border-bottom: var(--hair) solid var(--line-strong); }
+.quick-note-form textarea { width: 100%; min-height: 118px; padding: var(--u3); resize: vertical; line-height: 1.7; }
+.quick-note-form > div { display: flex; align-items: center; justify-content: space-between; gap: var(--u3); margin-top: var(--u2); }
+.quick-note-form small { color: var(--ink-4); font-size: var(--fs-xs); }
+.quick-note-state { margin: 0; padding: var(--u5) 0; color: var(--ink-3); font-size: var(--fs-sm); line-height: 1.7; }
+.quick-note-state.is-error { color: var(--alert-ink); }
+.quick-note-list { border-top: var(--hair) solid var(--line); }
+.quick-note-row { padding: var(--u3) 0; border-bottom: var(--hair) solid var(--line); }
+.quick-note-row > p { margin: 0; color: var(--ink-2); font-family: var(--font-prose); font-size: 14px; line-height: 1.72; white-space: pre-wrap; overflow-wrap: anywhere; }
+.quick-note-row footer { display: flex; align-items: center; justify-content: space-between; gap: var(--u2); margin-top: var(--u2); color: var(--ink-4); font: 10px/1.4 var(--font-mono); }
+.quick-note-row footer span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.quick-note-row footer button { width: 26px; height: 26px; flex: none; display: grid; place-items: center; padding: 0; border: 0; color: var(--ink-4); background: transparent; cursor: pointer; }
+.quick-note-row footer button:hover { color: var(--alert-ink); background: var(--alert-soft); }
 .reference-tools { display: grid; gap: var(--u2); padding: var(--u3); border-bottom: var(--hair) solid var(--line); }
 .reference-tools .wk-input { width: 100%; }
 .reference-scope { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); height: 27px; border: var(--hair) solid var(--line-strong); border-radius: 3px; overflow: hidden; }

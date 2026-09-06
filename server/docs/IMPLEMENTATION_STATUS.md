@@ -6,9 +6,9 @@
 所有声明基于实际代码与测试结果，不夸大、不省略已知缺口。
 
 **关键事实**：
-- ✅ 41 张表完整 Alembic baseline，增量迁移已到 `022_user_model_configs`
-- ✅ 1183 个单元/功能测试通过（SQLite in-memory，mock embedding/LLM）
-- ✅ 前端 137 个测试、TypeScript 类型检查和生产构建通过
+- ✅ 42 张表完整 Alembic baseline，增量迁移已到 `023_project_notes`
+- ✅ 1193 个单元/功能测试通过（SQLite in-memory，mock embedding/LLM）
+- ✅ 前端 141 个测试、TypeScript 类型检查和生产构建通过
 - ✅ 36 个集成测试已在本机真实 PostgreSQL + pgvector 环境通过
 - ✅ 已完成真实账号认证、作品创建、作品归档、分卷与章节增删改排、回收站和章纲编辑闭环
 - ✅ 大纲页支持卷排序、同卷章节排序与跨卷拖放；键盘/按钮排序保留为无障碍回退
@@ -35,6 +35,7 @@
 - ✅ 设定库页面已接通真实新建、编辑、忽略候选和安全删除；人物档案与通用关键事实分表单维护
 - ✅ 设定状态沿革已接通章节锚点、作者增改删、抽取事实合并、乐观锁、项目隔离和生成时的未来状态防泄露
 - ✅ 设定关系已接通作者增改删、出向/入向投影、项目与确认状态校验；常驻和检索设定的出向关系进入生成上下文
+- ✅ 移动端写作台收敛为正文只读与私有灵感速记；速记可绑定当前章节、持久保存和删除，桌面编辑流程不受影响
 - ✅ 七类确定性规则已由真实 `RuleScanner` 跑过 280 正例、140 hard negatives、20 easy negatives，
   recall / 证据定位 / hard-negative precision 均为 100%
 - ⚠️ 上述结构化评测不覆盖正文抽取和 LLM 仲裁的真实盲评质量，不能据此宣称全链路生产就绪
@@ -63,15 +64,16 @@ PostgreSQL/pgvector 检索必须在真实部署上单独压测；该脚本只覆
 
 ## 已完成模块
 
-### 1. 数据模型（41 张表，100% Alembic 覆盖）
+### 1. 数据模型（42 张表，100% Alembic 覆盖）
 
-#### 核心骨架 (6 张)
+#### 核心骨架 (7 张)
 - `users` - 用户账号
 - `projects` - 项目
 - `volumes` - 卷
 - `chapters` - 章节元信息
 - `chapter_bodies` - 章节正文（独立存储）
 - `chapter_versions` - 章节版本历史
+- `project_notes` - 用户私有的作品灵感速记，可选绑定章节
 
 `003_product_workflows.py` 在 baseline 之上补充账号密码字段、作品灵感/简介/故事骨架、
 卷纲，以及章节章纲备注与修改时间，支持当前真实产品流程。
@@ -149,9 +151,9 @@ PostgreSQL/pgvector 检索必须在真实部署上单独压测；该脚本只覆
 - ✅ **代码与迁移已实现**：`001_initial.py` 建立 baseline，
   `002_embedding_halfvec_2048.py` 清理旧向量并迁移到 HALFVEC(2048)，以
   `halfvec_cosine_ops` 重建 HNSW 索引；upgrade/downgrade 均会要求重新回填向量
-- ✅ `alembic upgrade head --sql` 与 `alembic downgrade -1 --sql` 语法验证通过
+- ✅ `alembic upgrade head --sql` 与 `alembic downgrade head:-1 --sql` 语法验证通过
 - ✅ 36 个集成测试已在本机真实 PostgreSQL + pgvector 运行通过；此前审核数据库已真实执行至
-  `018_timeline_entries`。`019_chapter_pov` 至 `022_user_model_configs` 的 upgrade/downgrade SQL 已生成验证，
+  `018_timeline_entries`。`019_chapter_pov` 至 `023_project_notes` 的 upgrade/downgrade SQL 已生成验证，
   但本轮 Docker daemon 未启动，尚未在真实 PostgreSQL 重复执行；部署后以 readiness 返回的 Alembic head 为准
 
 ---
@@ -318,7 +320,8 @@ PostgreSQL/pgvector 检索必须在真实部署上单独压测；该脚本只覆
 #### 导出与备份 (`services/exporting.py`)
 - ✅ 服务端全量读取章节正文，不依赖前端是否打开过章节
 - ✅ TXT / Markdown 单文件与分章 ZIP；DOCX / EPUB 标准容器
-- ✅ 完整 JSON 备份包含卷、正文 rev、正文版本、章纲历史、设定别名与关系
+- ✅ 完整 JSON 备份包含卷、正文 rev、正文版本、章纲历史、设定别名与关系，以及发起备份者自己的私有速记
+- ✅ 共享作品中其他用户的速记不会进入备份；恢复时速记归恢复操作人所有，并按新章节 ID 重映射
 - ✅ 备份主动排除 embedding；恢复时重建 ID 并创建新作品，不覆盖原稿
 - ✅ 服务端与浏览器均限制 100 MB 备份，并区分文件、格式、权限与服务错误
 - ✅ 真实 `p1` 验收：32 章、34,638 字、24 条设定，TXT/DOCX/EPUB/1.45 MB 备份均生成成功
@@ -415,6 +418,9 @@ PostgreSQL/pgvector 检索必须在真实部署上单独压测；该脚本只覆
 - ✅ 章节卷内排序、跨卷移动与软删除；禁止删除作品最后一个有效卷或章节
 - ✅ `GET /projects/{id}/trash` 及卷/章恢复、永久删除端点；永久删除非空卷会被拒绝
 - ✅ 回收站章节不会被读取、保存、生成、扫描、用于 RAG/长文本上下文或导出
+- ✅ `GET/POST /projects/{id}/notes` - 按当前用户隔离读取和新增私有灵感速记，可绑定同作品有效章节
+- ✅ `DELETE /projects/{id}/notes/{note_id}` - 仅速记所有者可删除；速记不进入生成上下文
+- ✅ 移动端写作台正文强制只读，隐藏生成、恢复、全书替换等写操作，只保留阅读和持久化速记
 
 #### 章节 (`api/chapters.py`)
 - ✅ `GET /chapters/{id}` - 章节详情（含正文 + rev）
@@ -495,9 +501,9 @@ PostgreSQL/pgvector 检索必须在真实部署上单独压测；该脚本只覆
 
 ### 5. 测试覆盖
 
-#### 单元测试（1183 passed，SQLite in-memory，mock providers）
+#### 单元测试（1193 passed，SQLite in-memory，mock providers）
 
-**全量测试结果**：1183 passed, 37 skipped（未设置集成测试 URL 时）, 0 warnings；前端 137 passed
+**全量测试结果**：1193 passed, 37 skipped（未设置集成测试 URL 时）, 0 warnings；前端 141 passed
 
 主要测试覆盖（不逐文件列举测试数量，以实际 pytest 结果为准）：
 - ✅ Codex 设定库：页面与 API 完整 CRUD、关系增改删与双向投影、引用删除保护、原子别名替换、可检索文本判据、两段式事务、deferred 降级、httpx 错误重试
@@ -507,7 +513,8 @@ PostgreSQL/pgvector 检索必须在真实部署上单独压测；该脚本只覆
 - ✅ 一致性服务：Claim fingerprint、规则逻辑、hard negative 案例
 - ✅ RuleScanner：七类规则检测、timeline-aware 跳过、stale 标记、fingerprint 去重
 - ✅ 认证授权：JWT 解码、项目权限、Idempotency-Key 必需性
-- ✅ Alembic 迁移：41 张表、pgvector extension、部分唯一索引、downgrade 完整性
+- ✅ Alembic 迁移：42 张表、pgvector extension、部分唯一索引、downgrade 完整性
+- ✅ 移动端与速记：390px 正文只读、危险写操作隐藏、用户/作品隔离、章节锚点校验、本人速记备份与恢复重映射
 - ✅ 时间锚点：ISO-8601、确定性相对时长、跨章事件引用、源锚点与事件标签原文校验
 - ✅ 增量影响集：新旧实体重绑定、未解析主体、谓词族闭包、全项目安全降级与扫描遥测
 - ✅ LLM 仲裁：不可变版本取证、600 字截断、20 条分批、陌生/缺失/畸形响应、失败降级、事务释放与前端映射
@@ -804,7 +811,7 @@ cd server
 ## 文件清单
 
 ### 数据模型（12 个文件）
-- `server/db/models_core.py` - 核心骨架 6 张表
+- `server/db/models_core.py` - 核心骨架 7 张表
 - `server/db/models_codex.py` - 设定库 5 张表
 - `server/db/models_guard.py` - 守卫 2 张表
 - `server/db/models_consistency.py` - 一致性基础 4 张表
@@ -859,9 +866,9 @@ cd server
 - `server/tasks/consistency.py` - 一致性任务
 - `server/tasks/codex.py` - Codex 回填任务
 
-### 测试（1183 passed；另有 36 个真实 PostgreSQL 测试通过）
-- `server/tests/` - 单元/功能测试（1183 passed）
-- `app/src/**/*.spec.ts` - 前端测试（137 passed）
+### 测试（1193 passed；另有 36 个真实 PostgreSQL 测试通过）
+- `server/tests/` - 单元/功能测试（1193 passed）
+- `app/src/**/*.spec.ts` - 前端测试（141 passed）
 - `server/tests/integration/` - 集成测试（36 passed，需设置真实 PostgreSQL URL）
 
 ### 文档（1 个文件）
@@ -871,17 +878,17 @@ cd server
 
 ## 总结
 
-墨枢一致性后端已完成核心数据模型、服务层、API 端点和异步任务定义，1183 个单元/功能
+墨枢一致性后端已完成核心数据模型、服务层、API 端点和异步任务定义，1193 个单元/功能
 测试在 SQLite in-memory + mock providers 环境下通过，另有 36 个集成测试在真实
 PostgreSQL + pgvector 环境通过。真实认证、可吊销会话、管理员、工作室 RBAC、作品创建、
-作品归档、分卷与章节生命周期、虚拟化章节导航、章纲、章节 POV、人物出场轨迹、逐章设定状态沿革、可编辑设定关系、资料与正文并排、故事/章节双序时间板、作者人工计划事件、正文版本历史与恢复、AI 多候选草稿、全书查找替换、章节审稿与段落批注、工作室章节任务与产量看板、全量导出、非覆盖备份恢复、风格指纹、AI 来源账本、可定位句式校样、拆书分析、作者生成用量与平台模型成本台账已经接通，前端 137 个测试与生产构建通过。
+作品归档、分卷与章节生命周期、虚拟化章节导航、章纲、章节 POV、人物出场轨迹、逐章设定状态沿革、可编辑设定关系、资料与正文并排、故事/章节双序时间板、作者人工计划事件、正文版本历史与恢复、AI 多候选草稿、移动端只读与私有速记、全书查找替换、章节审稿与段落批注、工作室章节任务与产量看板、全量导出、非覆盖备份恢复、风格指纹、AI 来源账本、可定位句式校样、拆书分析、作者生成用量与平台模型成本台账已经接通，前端 141 个测试与生产构建通过。
 
 **关键限制**：
 1. 七条确定性规则的 280/140 结构化评测门禁、模糊区间人工确认和多剧情线时间板已完成，但真实正文盲评仍需补充
 2. 当前 100% 指标来自真实 scanner 而非硬编码，但输入仍是合成 claim，**不代表正文抽取和 LLM 仲裁的端到端质量**
 3. 模糊时间已完成规范化区间、作者确认、项目级 reflow 与依赖复检；影响集时间区间裁剪仍未实现，仲裁只提供建议，不自动处置
 4. 真实长文本扫描吞吐受上游模型网关稳定性和并发限制影响
-5. 人物出场统计只接受实体 ID 可追溯来源，不对正文姓名做模糊全文计数；本轮 Docker daemon 未启动，`019`/`020` 尚未重复执行真实 PostgreSQL 验收
+5. 人物出场统计只接受实体 ID 可追溯来源，不对正文姓名做模糊全文计数；本轮 Docker daemon 未启动，`019` 至 `023` 尚未重复执行真实 PostgreSQL 验收
 
 当前是“核心一致性能力 + 首轮真实产品流程”，不是功能完整 MVP。生产部署前仍需完成上述产品闭环、
 扩充评测集并验证长文本规模下的质量和性能。

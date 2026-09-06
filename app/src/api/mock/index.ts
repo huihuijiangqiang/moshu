@@ -1,7 +1,7 @@
 import { delay } from '../http'
 import * as seed from './seed'
 import { findShelfBook } from './shelf'
-import type { Chapter, ChapterPlanPatch, ChapterVersionDetail, ChapterVersionRestoreResult, ChapterVersionSummary, CharacterStatistics, CodexEntry, CodexEntryDraft, CodexRelation, CodexRelationDraft, CodexStateDraft, CodexStateHistoryItem, GuardIssue, GuardOverview, GuardResolutionAction, Project, ContextLayer, ProjectPatch, ProjectTrash, TemporalDecisionResult, TemporalReviewItem, TimelineBoard, TimelineEntry, TimelineEntryDraft, TimelineReflowResult } from '@/types'
+import type { Chapter, ChapterPlanPatch, ChapterVersionDetail, ChapterVersionRestoreResult, ChapterVersionSummary, CharacterStatistics, CodexEntry, CodexEntryDraft, CodexRelation, CodexRelationDraft, CodexStateDraft, CodexStateHistoryItem, GuardIssue, GuardOverview, GuardResolutionAction, Project, ProjectNote, ContextLayer, ProjectPatch, ProjectTrash, TemporalDecisionResult, TemporalReviewItem, TimelineBoard, TimelineEntry, TimelineEntryDraft, TimelineReflowResult } from '@/types'
 
 /** 内存态副本：mock 下的写操作要真的改变数据，否则界面行为是假的。 */
 const state = {
@@ -19,9 +19,11 @@ const temporalReviewStates = new Map<string, TemporalReviewItem[]>()
 const timelineEntryStates = new Map<string, TimelineEntry[]>()
 const codexEntryStates = new Map<string, CodexEntry[]>()
 const codexStateHistoryStates = new Map<string, CodexStateHistoryItem[]>()
+const projectNoteStates = new Map<string, ProjectNote[]>()
 let timelineEntrySequence = 1
 let codexStateSequence = 1
 let codexRelationSequence = 1
+let projectNoteSequence = 1
 
 function codexEntriesFor(projectId: string): CodexEntry[] {
   if (projectId === state.project.id) return state.codex
@@ -255,6 +257,41 @@ export const mockApi = {
   async getProject(projectId = 'p1'): Promise<Project> {
     await delay()
     return structuredClone(projectFor(projectId))
+  },
+
+  async listProjectNotes(projectId: string): Promise<ProjectNote[]> {
+    await delay(80)
+    projectFor(projectId)
+    return structuredClone(projectNoteStates.get(projectId) ?? [])
+  },
+
+  async createProjectNote(projectId: string, content: string, chapterId?: string): Promise<ProjectNote> {
+    await delay(100)
+    projectFor(projectId)
+    const clean = content.trim()
+    const chapter = chapterId ? chaptersFor(projectId).find((item) => item.id === chapterId) : undefined
+    if (!clean || (chapterId && !chapter)) throw new Error('invalid_project_note')
+    const note: ProjectNote = {
+      id: `pn_mock_${projectNoteSequence++}`,
+      projectId,
+      chapterId: chapter?.id,
+      chapterIndex: chapter?.index,
+      chapterTitle: chapter?.title,
+      content: clean,
+      createdAt: new Date().toISOString()
+    }
+    const rows = projectNoteStates.get(projectId) ?? []
+    rows.unshift(note)
+    projectNoteStates.set(projectId, rows)
+    return structuredClone(note)
+  },
+
+  async deleteProjectNote(projectId: string, noteId: string): Promise<void> {
+    await delay(80)
+    const rows = projectNoteStates.get(projectId) ?? []
+    const index = rows.findIndex((item) => item.id === noteId)
+    if (index < 0) throw new Error('project_note_not_found')
+    rows.splice(index, 1)
   },
 
   /** 列表不带正文——80 万字作品靠这个保证首屏 < 2s */

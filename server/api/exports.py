@@ -65,7 +65,7 @@ async def backup_project(
     db: AsyncSession = Depends(get_db),
 ) -> Response:
     project = await verify_project_permission(project_id, ProjectPermission.EXPORT, user, db)
-    archive = await collect_project_archive(db, project)
+    archive = await collect_project_archive(db, project, note_owner_id=user.id)
     return _download(backup_json(archive), "application/json; charset=utf-8", f"{project.title}-墨枢备份.json")
 
 

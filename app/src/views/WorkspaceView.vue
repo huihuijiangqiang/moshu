@@ -43,6 +43,7 @@ const reviewAnchor = ref<ReviewAnchor>()
 const reviewLoading = ref(false)
 const reviewBusy = ref(false)
 const reviewError = ref('')
+const mobileReadOnly = ref(false)
 let abort: (() => void) | null = null
 let disposed = false
 let draftLoadSequence = 0
@@ -182,6 +183,8 @@ watch(crumb, (v) => shell.setCrumb(v), { immediate: true })
 
 function syncViewport() {
   const compact = window.innerWidth <= 840
+  mobileReadOnly.value = window.innerWidth <= 700
+  editor.value?.setEditable(!mobileReadOnly.value)
   if (compact) {
     shell.leftOpen = false
     shell.rightOpen = false
@@ -205,7 +208,7 @@ function handleChapterPick() {
 }
 
 function handleWorkspaceShortcut(event: KeyboardEvent) {
-  if ((event.ctrlKey || event.metaKey) && event.shiftKey && event.key.toLowerCase() === 'f') {
+  if (!mobileReadOnly.value && (event.ctrlKey || event.metaKey) && event.shiftKey && event.key.toLowerCase() === 'f') {
     event.preventDefault()
     void openTextReplacement()
   }
@@ -590,7 +593,7 @@ async function handleDraftAction(event: Event) {
 }
 
 function generate(options: GenerationControls) {
-  if (!editor.value || generating.value) return
+  if (!editor.value || generating.value || mobileReadOnly.value) return
   if (!store.activeId) return
   generationError.value = ''
   generating.value = true
@@ -628,7 +631,7 @@ function stop() {
 }
 
 function runInline(action: string) {
-  if (!editor.value || !store.activeId || generating.value) return
+  if (!editor.value || !store.activeId || generating.value || mobileReadOnly.value) return
   const { from, to } = editor.value.state.selection
   const selectedText = editor.value.state.doc.textBetween(from, to, '\n')
   const contextFrom = Math.max(0, from - 6000)
@@ -725,22 +728,27 @@ function editChapterPlan() {
             fontWeight: saveState === 'offline' || saveState === 'error' ? 700 : 400
           }"
         >{{ saveLabel }}</span>
-        <button class="paper-history-button" type="button" title="正文版本历史" aria-label="正文版本历史" @click="openVersionHistory">
+        <button v-if="!mobileReadOnly" class="paper-history-button" type="button" title="正文版本历史" aria-label="正文版本历史" @click="openVersionHistory">
           <AppIcon name="history" :size="16" />
         </button>
-        <button class="paper-history-button" type="button" title="全书查找与替换" aria-label="全书查找与替换" @click="openTextReplacement">
+        <button v-if="!mobileReadOnly" class="paper-history-button" type="button" title="全书查找与替换" aria-label="全书查找与替换" @click="openTextReplacement">
           <AppIcon name="search" :size="15" />
         </button>
         <button class="wk-btn wk-btn-xs" type="button" :title="shell.zen ? '退出纯净模式 ⌘\\' : '纯净模式 ⌘\\'" @click="shell.toggleZen()">
           {{ shell.zen ? '退出纯净' : '纯净模式' }}
         </button>
-        <button class="paper-panel-toggle paper-panel-toggle-right" type="button" title="打开 AI 面板" @click="openPanel('right')">
-          AI
+        <button class="paper-panel-toggle paper-panel-toggle-right" type="button" :title="mobileReadOnly ? '打开灵感速记' : '打开 AI 面板'" @click="openPanel('right')">
+          {{ mobileReadOnly ? '速记' : 'AI' }}
         </button>
       </div>
 
+      <div v-if="mobileReadOnly" class="mobile-readonly-banner">
+        <span><strong>手机只读</strong> 正文不会在小屏上被误改</span>
+        <button type="button" @click="openPanel('right')">记一条灵感</button>
+      </div>
+
       <div v-if="!online" :style="{ padding: '5px var(--u4)', fontSize: 'var(--fs-sm)', fontWeight: 700, background: 'var(--alert)', color: 'var(--on-alert)' }">
-        离线中 · 你可以继续写，内容已存在本地，联网后自动同步
+        {{ mobileReadOnly ? '离线中 · 当前正文保持只读' : '离线中 · 你可以继续写，内容已存在本地，联网后自动同步' }}
       </div>
 
       <div
@@ -758,9 +766,7 @@ function editChapterPlan() {
         <span :style="{ color: 'var(--ink-3)', fontSize: 'var(--fs-sm)' }">
           {{ new Date(activeRecovery.at).toLocaleString('zh-CN', { hour12: false }) }}
         </span>
-        <span :style="{ marginLeft: 'auto' }" />
-        <button class="wk-btn wk-btn-xs" type="button" @click="discardDraft">使用云端版本</button>
-        <button class="wk-btn wk-btn-xs" type="button" data-primary="true" @click="recoverDraft">恢复本地草稿</button>
+        <template v-if="!mobileReadOnly"><span :style="{ marginLeft: 'auto' }" /><button class="wk-btn wk-btn-xs" type="button" @click="discardDraft">使用云端版本</button><button class="wk-btn wk-btn-xs" type="button" data-primary="true" @click="recoverDraft">恢复本地草稿</button></template>
       </div>
 
       <div
@@ -776,7 +782,7 @@ function editChapterPlan() {
           <div class="wk-label" :style="{ color: 'var(--alert-ink)' }">本地草稿</div>
           <p :style="{ margin: '4px 0 0', color: 'var(--ink-2)', lineHeight: 1.55 }">{{ localConflictExcerpt }}</p>
         </div>
-        <div :style="{ display: 'flex', gap: 'var(--u2)', alignItems: 'center', flexWrap: 'wrap' }">
+        <div v-if="!mobileReadOnly" :style="{ display: 'flex', gap: 'var(--u2)', alignItems: 'center', flexWrap: 'wrap' }">
           <button class="wk-btn wk-btn-xs" type="button" @click="useServerVersion">采用云端</button>
           <button class="wk-btn wk-btn-xs" type="button" data-primary="true" @click="keepLocalVersion">保留本地并保存</button>
         </div>
@@ -795,19 +801,19 @@ function editChapterPlan() {
         :style="{ padding: '7px var(--u4)', display: 'flex', alignItems: 'center', gap: 'var(--u3)', background: 'var(--alert-soft)', borderBottom: 'var(--hair) solid var(--alert-line)', color: 'var(--alert-ink)' }"
       >
         <strong>云端保存失败，本地草稿仍在</strong>
-        <button class="wk-btn wk-btn-xs" type="button" @click="retrySave">重试保存</button>
+        <button v-if="!mobileReadOnly" class="wk-btn wk-btn-xs" type="button" @click="retrySave">重试保存</button>
       </div>
 
       <!-- v-show 而非 v-if：编辑器不能因为切标签被卸载 -->
       <div v-show="paneTab === 'body'" class="prose">
         <EditorContent :editor="editor" />
-        <AiFloatingBar @run="runInline" />
+        <AiFloatingBar v-if="!mobileReadOnly" @run="runInline" />
       </div>
 
       <div v-if="paneTab === 'outline'" class="prose" :style="{ paddingTop: 'var(--u6)' }">
         <div class="row" :style="{ justifyContent: 'space-between', marginBottom: 'var(--u3)', paddingBottom: 'var(--u3)', borderBottom: 'var(--hair) solid var(--line)' }">
           <div class="wk-label">章纲节点</div>
-          <button class="wk-btn wk-btn-xs" type="button" @click="editChapterPlan">修改章纲</button>
+          <button v-if="!mobileReadOnly" class="wk-btn wk-btn-xs" type="button" @click="editChapterPlan">修改章纲</button>
         </div>
         <p
           v-if="store.active?.bodyNeedsRevision"
@@ -827,7 +833,7 @@ function editChapterPlan() {
     </main>
 
     <!-- 右：AI -->
-    <aside class="wk-pane wk-pane-right" :data-collapsed="!shell.rightOpen" aria-label="AI 面板">
+    <aside class="wk-pane wk-pane-right" :data-collapsed="!shell.rightOpen" :aria-label="mobileReadOnly ? '灵感速记' : 'AI 面板'">
       <button class="panel-mobile-close" type="button" title="关闭 AI 面板" aria-label="关闭 AI 面板" @click="shell.rightOpen = false">
         <AppIcon name="close" />
       </button>
@@ -843,6 +849,7 @@ function editChapterPlan() {
         :review-busy="reviewBusy"
         :review-error="reviewError"
         :review-submit-disabled-reason="reviewSubmitDisabledReason"
+        :mobile-read-only="mobileReadOnly"
         @generate="generate"
         @stop="stop"
         @insert-draft="insertGenerationDraft"
@@ -856,14 +863,14 @@ function editChapterPlan() {
         @decide-review="decideReview"
         @locate-review-comment="locateReviewComment"
       />
-      <button v-else class="wk-stub" type="button" title="展开 AI 面板 ⌘J" @click="shell.rightOpen = true">
-        AI 面板
+      <button v-else class="wk-stub" type="button" :title="mobileReadOnly ? '打开灵感速记' : '展开 AI 面板 ⌘J'" @click="shell.rightOpen = true">
+        {{ mobileReadOnly ? '灵感速记' : 'AI 面板' }}
       </button>
     </aside>
 
     <CodexSuggestList />
     <ChapterVersionDrawer
-      v-if="versionOpen && store.activeId"
+      v-if="!mobileReadOnly && versionOpen && store.activeId"
       :chapter-id="store.activeId"
       :chapter-title="store.active?.title || '未命名章节'"
       :current-content="html"
@@ -874,7 +881,7 @@ function editChapterPlan() {
       @restore="restoreVersion"
     />
     <TextReplacementDrawer
-      v-if="replacementOpen && store.project"
+      v-if="!mobileReadOnly && replacementOpen && store.project"
       :project-id="store.project.id"
       :active-chapter-id="store.activeId ?? undefined"
       :active-volume-id="store.active?.volumeId || undefined"
@@ -902,6 +909,10 @@ function editChapterPlan() {
 }
 .paper-history-button:hover { color: var(--ink); background: var(--panel-sunken); border-color: var(--line); }
 .paper-history-button:focus-visible { outline: 2px solid var(--primary); outline-offset: 1px; }
+.mobile-readonly-banner { min-height: 38px; display: flex; align-items: center; justify-content: space-between; gap: var(--u3); padding: 6px var(--u3); border-bottom: var(--hair) solid var(--primary-line); color: var(--ink-3); background: var(--primary-soft); font-size: var(--fs-xs); }
+.mobile-readonly-banner strong { margin-right: 5px; color: var(--primary); }
+.mobile-readonly-banner button { flex: none; min-height: 26px; padding: 0 8px; border: var(--hair) solid var(--primary); border-radius: 3px; color: var(--primary); background: transparent; font-size: var(--fs-xs); cursor: pointer; }
+.mobile-readonly-banner button:hover { color: var(--paper); background: var(--primary); }
 :deep(.review-located-paragraph) {
   background: var(--alert-soft);
   box-shadow: -4px 0 0 var(--alert);

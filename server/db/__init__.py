@@ -20,7 +20,7 @@ from db.models_consistency_extended import (
     GuardResolution,
     StoryEvent,
 )
-from db.models_core import Chapter, ChapterBody, ChapterVersion, Project, User, Volume
+from db.models_core import Chapter, ChapterBody, ChapterVersion, Project, ProjectNote, User, Volume
 from db.models_editing import TextReplacementRun
 from db.models_embedding import CodexEmbeddingJob
 from db.models_guard import Foreshadow, GuardIssue
@@ -39,6 +39,7 @@ __all__ = [
     # Core
     "User",
     "Project",
+    "ProjectNote",
     "Volume",
     "Chapter",
     "ChapterBody",

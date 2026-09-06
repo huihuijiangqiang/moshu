@@ -7,7 +7,7 @@ import zipfile
 from sqlalchemy import func, select
 
 from db.models_codex import CodexAlias, CodexEntry
-from db.models_core import Chapter, ChapterBody, Project, Volume
+from db.models_core import Chapter, ChapterBody, Project, ProjectNote, Volume
 
 
 async def _seed_export_project(db, make_user, make_project, make_chapter):
@@ -30,6 +30,24 @@ async def _seed_export_project(db, make_user, make_project, make_chapter):
     db.add(entry)
     await db.flush()
     db.add(CodexAlias(entry_id=entry.id, alias="青禾"))
+    db.add_all(
+        [
+            ProjectNote(
+                id="export_owner_note",
+                project_id="export_project",
+                user_id="export_owner",
+                chapter_id=first.id,
+                content="让青禾在雨夜想起旧宅。",
+            ),
+            ProjectNote(
+                id="export_outsider_note",
+                project_id="export_project",
+                user_id="export_outsider",
+                chapter_id=second.id,
+                content="不应进入所有者备份。",
+            ),
+        ]
+    )
     await db.commit()
 
 
@@ -93,6 +111,9 @@ async def test_backup_restores_a_new_owned_project_with_revisions_and_codex(
     assert payload["schema_version"] == 1
     assert payload["chapters"][0]["body"]["rev"] == 3
     assert "embedding" not in payload["codex_entries"][0]
+    assert payload["project_notes"] == [
+        {"chapter_id": "export_ch1", "content": "让青禾在雨夜想起旧宅。"}
+    ]
 
     restored = await app_client.post(
         "/projects/restore-backup", json=payload, headers=headers
@@ -114,6 +135,13 @@ async def test_backup_restores_a_new_owned_project_with_revisions_and_codex(
     assert await async_db_session.scalar(
         select(func.count(CodexEntry.id)).where(CodexEntry.project_id == restored_id)
     ) == 1
+    restored_note = await async_db_session.scalar(
+        select(ProjectNote).where(ProjectNote.project_id == restored_id)
+    )
+    assert restored_note is not None
+    assert restored_note.user_id == "export_owner"
+    assert restored_note.chapter_id == restored_chapter.id
+    assert restored_note.content == "让青禾在雨夜想起旧宅。"
     assert (await async_db_session.get(Project, "export_project")).title == "山河账本"
 
 

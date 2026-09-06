@@ -17,7 +17,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from db.models_codex import CodexAlias, CodexEntry, CodexRelation
 from db.models_consistency import ChapterOutlineRevision, ChapterOutlineState
-from db.models_core import Chapter, ChapterBody, ChapterVersion, Project, Volume
+from db.models_core import Chapter, ChapterBody, ChapterVersion, Project, ProjectNote, Volume
 
 BACKUP_SCHEMA_VERSION = 1
 
@@ -51,7 +51,9 @@ def html_to_text(value: str) -> str:
     return parser.text()
 
 
-async def collect_project_archive(db: AsyncSession, project: Project) -> dict[str, Any]:
+async def collect_project_archive(
+    db: AsyncSession, project: Project, *, note_owner_id: str | None = None
+) -> dict[str, Any]:
     volumes = (
         await db.execute(
             select(Volume)
@@ -114,6 +116,16 @@ async def collect_project_archive(db: AsyncSession, project: Project) -> dict[st
             aliases.setdefault(alias.entry_id, []).append(alias.alias)
         relations = (
             await db.execute(select(CodexRelation).where(CodexRelation.from_id.in_(entry_ids)).order_by(CodexRelation.id))
+        ).scalars().all()
+
+    notes: list[ProjectNote] = []
+    if note_owner_id:
+        notes = (
+            await db.execute(
+                select(ProjectNote)
+                .where(ProjectNote.project_id == project.id, ProjectNote.user_id == note_owner_id)
+                .order_by(ProjectNote.created_at, ProjectNote.id)
+            )
         ).scalars().all()
 
     return {
@@ -211,6 +223,13 @@ async def collect_project_archive(db: AsyncSession, project: Project) -> dict[st
                 "description": row.description,
             }
             for row in relations
+        ],
+        "project_notes": [
+            {
+                "chapter_id": note.chapter_id,
+                "content": note.content,
+            }
+            for note in notes
         ],
     }
 
@@ -348,6 +367,9 @@ def validate_backup(payload: dict[str, Any]) -> None:
         raise ValueError("invalid_collections")
     if len(chapters) > 2000 or len(volumes) > 100 or len(entries) > 10000:
         raise ValueError("backup_too_large")
+    notes = payload.get("project_notes", [])
+    if not isinstance(notes, list) or len(notes) > 10000:
+        raise ValueError("invalid_project_notes")
     total_html = sum(len(str((chapter.get("body") or {}).get("content_html", ""))) for chapter in chapters if isinstance(chapter, dict))
     if total_html > 100_000_000:
         raise ValueError("backup_too_large")
@@ -415,5 +437,24 @@ async def restore_project_backup(db: AsyncSession, payload: dict[str, Any], owne
         to_id = entry_ids.get(str(source.get("to_id")))
         if from_id and to_id:
             db.add(CodexRelation(id=f"cr_{secrets.token_hex(12)}", from_id=from_id, to_id=to_id, relation_type=str(source.get("relation_type") or "related")[:50], description=source.get("description")))
+    for source in payload.get("project_notes") or []:
+        if not isinstance(source, dict):
+            raise ValueError("invalid_project_note")
+        content = str(source.get("content") or "").strip()
+        if not content or len(content) > 2000:
+            raise ValueError("invalid_project_note")
+        source_chapter_id = source.get("chapter_id")
+        chapter_id = chapter_ids.get(str(source_chapter_id)) if source_chapter_id else None
+        if source_chapter_id and not chapter_id:
+            raise ValueError("invalid_project_note_chapter")
+        db.add(
+            ProjectNote(
+                id=f"pn_{secrets.token_hex(12)}",
+                project_id=project.id,
+                user_id=owner_id,
+                chapter_id=chapter_id,
+                content=content,
+            )
+        )
     await db.commit()
     return project

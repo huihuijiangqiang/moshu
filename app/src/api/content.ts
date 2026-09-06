@@ -1,6 +1,6 @@
 import { ApiError, USE_MOCK, request } from './http'
 import { mockApi } from './mock'
-import type { Chapter, ChapterPlanPatch, ChapterVersionDetail, ChapterVersionRestoreResult, ChapterVersionSummary, CharacterStatistics, CodexEntry, CodexEntryDraft, CodexKind, CodexRelation, CodexRelationDraft, CodexStateDraft, CodexStateHistoryItem, CodexStateSource, ContextLayer, GuardIssue, GuardOverview, GuardResolutionAction, Project, ProjectPatch, ProjectTrash, TemporalDecisionResult, TemporalReviewItem, TimelineBoard, TimelineEntry, TimelineEntryDraft, TimelinePlacementStatus, TimelineReflowResult, Volume } from '@/types'
+import type { Chapter, ChapterPlanPatch, ChapterVersionDetail, ChapterVersionRestoreResult, ChapterVersionSummary, CharacterStatistics, CodexEntry, CodexEntryDraft, CodexKind, CodexRelation, CodexRelationDraft, CodexStateDraft, CodexStateHistoryItem, CodexStateSource, ContextLayer, GuardIssue, GuardOverview, GuardResolutionAction, Project, ProjectNote, ProjectPatch, ProjectTrash, TemporalDecisionResult, TemporalReviewItem, TimelineBoard, TimelineEntry, TimelineEntryDraft, TimelinePlacementStatus, TimelineReflowResult, Volume } from '@/types'
 
 interface ProjectDto {
   id: string
@@ -11,6 +11,16 @@ interface ProjectDto {
   target_words_daily: number
   style_profile_id: string | null
   volumes: Array<{ id: string; title: string; idx: number; summary?: string | null }>
+}
+
+interface ProjectNoteDto {
+  id: string
+  project_id: string
+  chapter_id: string | null
+  chapter_index: number | null
+  chapter_title: string | null
+  content: string
+  created_at: string
 }
 
 interface TrashDto {
@@ -700,6 +710,18 @@ function projectFromDto(dto: ProjectDto): Project {
   }
 }
 
+function projectNoteFromDto(dto: ProjectNoteDto): ProjectNote {
+  return {
+    id: dto.id,
+    projectId: dto.project_id,
+    chapterId: dto.chapter_id ?? undefined,
+    chapterIndex: dto.chapter_index ?? undefined,
+    chapterTitle: dto.chapter_title ?? undefined,
+    content: dto.content,
+    createdAt: dto.created_at
+  }
+}
+
 function chapterFromDto(dto: ChapterListDto, status: Chapter['status']): Chapter {
   return {
     id: dto.id,
@@ -790,6 +812,23 @@ export function bodyConflictFromError(chapterId: string, error: ApiError): BodyC
 const realApi = {
   async getProject(projectId = 'p1'): Promise<Project> {
     return projectFromDto(await request<ProjectDto>(`/projects/${projectId}`))
+  },
+
+  async listProjectNotes(projectId: string): Promise<ProjectNote[]> {
+    const rows = await request<ProjectNoteDto[]>(`/projects/${projectId}/notes`)
+    return rows.map(projectNoteFromDto)
+  },
+
+  async createProjectNote(projectId: string, content: string, chapterId?: string): Promise<ProjectNote> {
+    const dto = await request<ProjectNoteDto>(`/projects/${projectId}/notes`, {
+      method: 'POST',
+      body: JSON.stringify({ content, chapter_id: chapterId ?? null })
+    })
+    return projectNoteFromDto(dto)
+  },
+
+  async deleteProjectNote(projectId: string, noteId: string): Promise<void> {
+    await request(`/projects/${projectId}/notes/${noteId}`, { method: 'DELETE' })
   },
 
   async listChapters(projectId = 'p1'): Promise<Chapter[]> {

@@ -359,6 +359,16 @@ export interface Project {
   styleProfile: string | null
 }
 
+export interface ProjectNote {
+  id: string
+  projectId: string
+  chapterId?: string
+  chapterIndex?: number
+  chapterTitle?: string
+  content: string
+  createdAt: string
+}
+
 export type GuardKind = 'conflict' | 'foreshadow' | 'pending-entry'
 export type GuardResolutionAction = 'accept_old_fact' | 'accept_new_fact' | 'intentional_exception' | 'false_positive' | 'fixed_in_body' | 'defer'
 export type GuardArbitrationStatus = 'not_requested' | 'pending' | 'supported' | 'unsupported' | 'uncertain' | 'failed'
