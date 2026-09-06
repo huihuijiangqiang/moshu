@@ -7,8 +7,8 @@
 
 **关键事实**：
 - ✅ 41 张表完整 Alembic baseline，增量迁移已到 `022_user_model_configs`
-- ✅ 1178 个单元/功能测试通过（SQLite in-memory，mock embedding/LLM）
-- ✅ 前端 128 个测试、TypeScript 类型检查和生产构建通过
+- ✅ 1179 个单元/功能测试通过（SQLite in-memory，mock embedding/LLM）
+- ✅ 前端 133 个测试、TypeScript 类型检查和生产构建通过
 - ✅ 36 个集成测试已在本机真实 PostgreSQL + pgvector 环境通过
 - ✅ 已完成真实账号认证、作品创建、作品归档、分卷与章节增删改排、回收站和章纲编辑闭环
 - ✅ 大纲页支持卷排序、同卷章节排序与跨卷拖放；键盘/按钮排序保留为无障碍回退
@@ -19,7 +19,7 @@
 - ✅ 作者生成已接通真实用量台账、原子额度预留、按实际 token 结算、失败退款和过期预留回收
 - ✅ 自动事实抽取、摘要、冲突复核和 embedding 已进入统一平台成本台账，不扣作者积分
 - ✅ 风格档已接通用户隔离 CRUD、真实六维抽取、作品绑定、生成提示与用量结算
-- ✅ AI 来源账本已接通真实生成 run、段落指纹校验、编辑分类与采纳字数回写
+- ✅ AI 来源账本已接通真实生成 run、段落指纹校验、编辑分类、采纳字数回写和可定位的疑似模板句式校样
 - ✅ AI 生成候选独立持久化，成功、中断和失败输出均可在刷新后恢复、预览、采纳或舍弃
 - ✅ 全书查找替换支持本章/本卷/全书范围、逐处预览确认、设定名风险提示、原子提交和整批撤销
 - ✅ Docker Compose 已接通 migration、API、前端、PostgreSQL、Redis、Celery worker/dispatcher/beat 与 transactional outbox
@@ -348,6 +348,9 @@ PostgreSQL/pgvector 检索必须在真实部署上单独压测；该脚本只覆
 - ✅ 同一生成段落指纹不可超出原始出现次数重复认领；跨章与伪造 run 均按手写处理
 - ✅ 全书范围只返回聚合，避免把整本正文通过报告端点一次性下发
 - ✅ 全书统计一次预取生成记录，无按章节查询 run 的 N+1
+- ✅ 本章报告用版本化、可解释的文本规则标记模板衔接、密集长句、修饰词堆叠和成套并列句式
+- ✅ 每条校样结果带稳定段落 ID 和字符范围，可跳回写作台选中原句或进入现有候选草稿重写流程
+- ⚠️ 句式校样只提示表达风险，不是 AIGC 检测器，也不作为任何平台鉴定结论
 
 ---
 
@@ -391,7 +394,8 @@ PostgreSQL/pgvector 检索必须在真实部署上单独压测；该脚本只覆
 #### AI 来源 (`api/provenance.py`)
 - ✅ `GET /projects/{id}/provenance?scope=chapter&chapter_id=...` - 本章段落级来源账本
 - ✅ `GET /projects/{id}/provenance?scope=book` - 全书来源聚合，不返回正文段落
-- ✅ 只依据系统实际生成记录，不提供不可解释的“疑似 AI 句式检测”
+- ✅ 来源分类只依据系统实际生成记录；另行返回带规则版本、原因和免责声明的句式校样结果
+- ✅ 前端支持逐句定位和一键重写；重写结果仍是待作者审核的 AI 候选，不直接覆盖正文
 
 #### 风格档 (`api/styles.py`)
 - ✅ `GET/POST /styles`、`GET/PATCH/DELETE /styles/{id}` - 用户隔离 CRUD
@@ -488,9 +492,9 @@ PostgreSQL/pgvector 检索必须在真实部署上单独压测；该脚本只覆
 
 ### 5. 测试覆盖
 
-#### 单元测试（1178 passed，SQLite in-memory，mock providers）
+#### 单元测试（1179 passed，SQLite in-memory，mock providers）
 
-**全量测试结果**：1178 passed, 37 skipped（未设置集成测试 URL 时）, 0 warnings；前端 128 passed
+**全量测试结果**：1179 passed, 37 skipped（未设置集成测试 URL 时）, 0 warnings；前端 133 passed
 
 主要测试覆盖（不逐文件列举测试数量，以实际 pytest 结果为准）：
 - ✅ Codex 设定库：页面与 API 完整 CRUD、引用删除保护、原子别名替换、可检索文本判据、两段式事务、deferred 降级、httpx 错误重试
@@ -508,6 +512,7 @@ PostgreSQL/pgvector 检索必须在真实部署上单独压测；该脚本只覆
 - ✅ Foreshadow 可选埋设/预计/实际回收章、逾期守卫联动、用量统计、风格档案
 - ✅ 风格档跨租户隔离、默认唯一、抽取成功/失败、失败退款、owner 绑定、删除自动解绑与提示隐私
 - ✅ AI 来源：真实 run/段落指纹校验、编辑后分类、重复与跨章节伪造防护、采纳字数回落
+- ✅ 句式校样：规则原因、段落/字符定位、Unicode 偏移换算、定位与候选重写路由
 - ✅ **持久失败契约测试**：`test_documentation_reflects_persistent_dead_letter_visibility`
   守住 embedding 重试耗尽后仍可查询、可重试的任务契约
 
@@ -851,9 +856,9 @@ cd server
 - `server/tasks/consistency.py` - 一致性任务
 - `server/tasks/codex.py` - Codex 回填任务
 
-### 测试（1178 passed；另有 36 个真实 PostgreSQL 测试通过）
-- `server/tests/` - 单元/功能测试（1178 passed）
-- `app/src/**/*.spec.ts` - 前端测试（128 passed）
+### 测试（1179 passed；另有 36 个真实 PostgreSQL 测试通过）
+- `server/tests/` - 单元/功能测试（1179 passed）
+- `app/src/**/*.spec.ts` - 前端测试（133 passed）
 - `server/tests/integration/` - 集成测试（36 passed，需设置真实 PostgreSQL URL）
 
 ### 文档（1 个文件）
@@ -863,10 +868,10 @@ cd server
 
 ## 总结
 
-墨枢一致性后端已完成核心数据模型、服务层、API 端点和异步任务定义，1178 个单元/功能
+墨枢一致性后端已完成核心数据模型、服务层、API 端点和异步任务定义，1179 个单元/功能
 测试在 SQLite in-memory + mock providers 环境下通过，另有 36 个集成测试在真实
 PostgreSQL + pgvector 环境通过。真实认证、可吊销会话、管理员、工作室 RBAC、作品创建、
-作品归档、分卷与章节生命周期、虚拟化章节导航、章纲、章节 POV、人物出场轨迹、逐章设定状态沿革、资料与正文并排、故事/章节双序时间板、作者人工计划事件、正文版本历史与恢复、AI 多候选草稿、全书查找替换、章节审稿与段落批注、工作室章节任务与产量看板、全量导出、非覆盖备份恢复、风格指纹、AI 来源账本、拆书分析、作者生成用量与平台模型成本台账已经接通，前端 128 个测试与生产构建通过。
+作品归档、分卷与章节生命周期、虚拟化章节导航、章纲、章节 POV、人物出场轨迹、逐章设定状态沿革、资料与正文并排、故事/章节双序时间板、作者人工计划事件、正文版本历史与恢复、AI 多候选草稿、全书查找替换、章节审稿与段落批注、工作室章节任务与产量看板、全量导出、非覆盖备份恢复、风格指纹、AI 来源账本、可定位句式校样、拆书分析、作者生成用量与平台模型成本台账已经接通，前端 133 个测试与生产构建通过。
 
 **关键限制**：
 1. 七条确定性规则的 280/140 结构化评测门禁、模糊区间人工确认和多剧情线时间板已完成，但真实正文盲评仍需补充

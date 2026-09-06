@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from collections import Counter
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -12,6 +13,21 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from db.models_usage import GenerationRun
 
 PROVENANCE_ALGORITHM = "djb2-32-v1"
+SENTENCE_RISK_VERSION = "zh-fiction-risk-v1"
+
+_SENTENCE_RE = re.compile(r"[^。！？!?；;\n]+[。！？!?；;]?")
+_TEMPLATE_TRANSITIONS = (
+    "值得注意的是",
+    "不可否认",
+    "毋庸置疑",
+    "总而言之",
+    "综上所述",
+    "在这个过程中",
+    "从某种意义上",
+)
+_SOFTENERS = ("似乎", "仿佛", "某种", "一种", "难以言喻", "莫名", "隐隐")
+_ACTION_ADVERBS = ("缓缓", "微微", "轻轻", "不禁", "下意识", "忍不住", "悄然")
+_PARALLEL_RE = re.compile(r"(?:不仅.{0,36}(?:而且|更)|既.{0,36}又|一方面.{0,48}另一方面)")
 
 
 def provenance_hash(text: str) -> str:
@@ -45,6 +61,66 @@ class ProvenanceParagraph:
     words: int
     source: str
     run_id: str | None = None
+
+
+@dataclass(frozen=True)
+class SuspectedSentence:
+    id: str
+    paragraph_id: str
+    text: str
+    start: int
+    end: int
+    source: str
+    score: int
+    reasons: tuple[str, ...]
+
+
+def detect_suspected_sentences(paragraphs: list[ProvenanceParagraph]) -> list[SuspectedSentence]:
+    """Flag explainable style risks without pretending to be an AIGC detector."""
+    findings: list[SuspectedSentence] = []
+    for paragraph in paragraphs:
+        for match in _SENTENCE_RE.finditer(paragraph.text):
+            raw = match.group(0)
+            sentence = raw.strip()
+            if len(sentence) < 12:
+                continue
+            start = match.start() + len(raw) - len(raw.lstrip())
+            reasons: list[str] = []
+            score = 0
+            transitions = [phrase for phrase in _TEMPLATE_TRANSITIONS if phrase in sentence]
+            if transitions:
+                reasons.append(f"模板化衔接：{'、'.join(transitions[:2])}")
+                score += 3
+            if len(sentence) >= 80 and sum(sentence.count(mark) for mark in "，、,") >= 4:
+                reasons.append("单句过长且逗号层级密集")
+                score += 2
+            softener_count = sum(sentence.count(word) for word in _SOFTENERS)
+            if softener_count >= 3:
+                reasons.append("模糊修饰词重复")
+                score += 2
+            adverb_count = sum(sentence.count(word) for word in _ACTION_ADVERBS)
+            if adverb_count >= 3:
+                reasons.append("动作副词堆叠")
+                score += 2
+            if _PARALLEL_RE.search(sentence):
+                reasons.append("成套并列句式")
+                score += 2
+            if score < 2:
+                continue
+            end = start + len(sentence)
+            findings.append(
+                SuspectedSentence(
+                    id=f"{paragraph.paragraph_id}:{start}:{end}",
+                    paragraph_id=paragraph.paragraph_id,
+                    text=sentence,
+                    start=start,
+                    end=end,
+                    source=paragraph.source,
+                    score=min(100, 35 + score * 12),
+                    reasons=tuple(reasons),
+                )
+            )
+    return findings
 
 
 def _allowed_hashes(run: GenerationRun) -> Counter[str]:

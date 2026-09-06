@@ -1,5 +1,10 @@
 from db.models_usage import GenerationRun
-from services.provenance import generated_paragraph_hashes, provenance_hash
+from services.provenance import (
+    ProvenanceParagraph,
+    detect_suspected_sentences,
+    generated_paragraph_hashes,
+    provenance_hash,
+)
 
 
 def _run(run_id: str, project_id: str, chapter_id: str, hashes: list[str]) -> GenerationRun:
@@ -42,6 +47,27 @@ def test_generated_paragraph_hashes_match_editor_contract():
         provenance_hash("第一段"),
         provenance_hash("第二段"),
     ]
+
+
+def test_suspected_sentence_rules_are_explainable_and_locatable():
+    paragraphs = [
+        ProvenanceParagraph(
+            "p-risk",
+            "她推开门。值得注意的是，这不仅是一场普通的雨，而且更像命运给出的回答。",
+            35,
+            "ai-raw",
+            "run-risk",
+        ),
+        ProvenanceParagraph("p-clean", "她推门进屋，先把湿伞搁在墙边。", 16, "human"),
+    ]
+
+    findings = detect_suspected_sentences(paragraphs)
+
+    assert len(findings) == 1
+    assert findings[0].paragraph_id == "p-risk"
+    assert findings[0].text.startswith("值得注意的是")
+    assert findings[0].start == len("她推开门。")
+    assert findings[0].reasons == ("模板化衔接：值得注意的是", "成套并列句式")
 
 
 async def test_save_syncs_accepted_words_and_report_rejects_forged_markers(
@@ -97,6 +123,9 @@ async def test_save_syncs_accepted_words_and_report_rejects_forged_markers(
     assert payload["ai_raw_words"] == len("AI 原段")
     assert payload["ai_edited_words"] == len("AI 已由作者修改")
     assert payload["total_words"] == sum(paragraph["words"] for paragraph in payload["paragraphs"])
+    assert payload["sentence_risk_version"] == "zh-fiction-risk-v1"
+    assert isinstance(payload["suspected_sentences"], list)
+    assert "不代表平台检测结论" in payload["sentence_risk_disclaimer"]
 
     second = {
         "type": "doc",

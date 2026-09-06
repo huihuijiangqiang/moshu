@@ -10,7 +10,12 @@ from api.auth import get_current_user, verify_project_access
 from db.models_core import Chapter, ChapterBody, User
 from db.models_usage import GenerationRun
 from db.session import get_db
-from services.provenance import ProvenanceParagraph, classify_document
+from services.provenance import (
+    SENTENCE_RISK_VERSION,
+    ProvenanceParagraph,
+    classify_document,
+    detect_suspected_sentences,
+)
 
 router = APIRouter()
 
@@ -81,4 +86,22 @@ async def provenance_report(
         }
         for paragraph in all_paragraphs
     ] if scope == "chapter" else []
+    suspected = detect_suspected_sentences(all_paragraphs) if scope == "chapter" else []
+    result["suspected_sentences"] = [
+        {
+            "id": item.id,
+            "paragraph_id": item.paragraph_id,
+            "text": item.text,
+            "start": item.start,
+            "end": item.end,
+            "source": item.source,
+            "score": item.score,
+            "reasons": list(item.reasons),
+        }
+        for item in suspected
+    ]
+    result["sentence_risk_version"] = SENTENCE_RISK_VERSION
+    result["sentence_risk_disclaimer"] = (
+        "疑似句式来自可解释的文本规则，只提示需要人工复核的表达风险，不代表平台检测结论或 AI 鉴定。"
+    )
     return result

@@ -10,6 +10,7 @@ import TextReplacementDrawer from '@/components/editor/TextReplacementDrawer.vue
 import CodexSuggestList from '@/components/editor/CodexSuggestList.vue'
 import AppIcon from '@/components/ui/AppIcon.vue'
 import { useNovelEditor } from '@/editor/use-novel-editor'
+import { findParagraphTextSelection } from '@/editor/paragraph-selection'
 import { useAutosave } from '@/composables/use-autosave'
 import { useProjectNavigation } from '@/composables/use-project-navigation'
 import { useProjectStore } from '@/stores/project'
@@ -48,7 +49,9 @@ let draftLoadSequence = 0
 let reviewLoadSequence = 0
 let stoppedDraftTimer: ReturnType<typeof setTimeout> | null = null
 let reviewHighlightTimer: ReturnType<typeof setTimeout> | null = null
+let sentenceHighlightTimer: ReturnType<typeof setTimeout> | null = null
 let locateParagraphId: string | null = null
+let suppressRouteCleanupWatch = false
 
 const editor = useNovelEditor(html.value, (next, chars) => {
   html.value = next
@@ -80,14 +83,39 @@ const {
 const requestedChapterId = computed(() => typeof route.query.chapter === 'string' ? route.query.chapter : null)
 const projectId = computed(() => store.project?.id)
 
+function sentenceRouteTarget() {
+  const paragraphId = typeof route.query.paragraph === 'string' ? route.query.paragraph : ''
+  const start = typeof route.query.start === 'string' ? Number(route.query.start) : Number.NaN
+  const end = typeof route.query.end === 'string' ? Number(route.query.end) : Number.NaN
+  if (!paragraphId || !Number.isInteger(start) || !Number.isInteger(end)) return null
+  return { paragraphId, start, end, rewrite: route.query.rewrite === '1' }
+}
+
+function highlightSentenceParagraph(paragraphId: string) {
+  const target = document.querySelector(`[data-paragraph-id="${CSS.escape(paragraphId)}"]`)
+  if (!(target instanceof HTMLElement)) return
+  if (sentenceHighlightTimer) clearTimeout(sentenceHighlightTimer)
+  document.querySelectorAll('.sentence-risk-located').forEach((element) => {
+    element.classList.remove('sentence-risk-located')
+  })
+  target.classList.add('sentence-risk-located')
+  target.scrollIntoView({ block: 'center', behavior: 'smooth' })
+  sentenceHighlightTimer = setTimeout(() => {
+    target.classList.remove('sentence-risk-located')
+    sentenceHighlightTimer = null
+  }, 2400)
+}
+
 // 切章或跨页打开指定章节：正文返回后再写入同一个编辑器实例。
 watch(
   [() => store.activeId, () => store.chapters.length, requestedChapterId],
   async ([activeId, , requestedId]) => {
+    if (suppressRouteCleanupWatch && !requestedId) return
     const id = requestedId && store.chapters.some((chapter) => chapter.id === requestedId)
       ? requestedId
       : activeId
     if (!id) return
+    const sentenceTarget = requestedId === id ? sentenceRouteTarget() : null
     await store.openChapter(id)
     if (disposed || store.activeId !== id) return
 
@@ -106,11 +134,38 @@ watch(
       locateParagraphId = null
     }
 
+    let rewriteSelection = false
+    if (sentenceTarget) {
+      const selection = findParagraphTextSelection(
+        currentEditor.state.doc,
+        sentenceTarget.paragraphId,
+        sentenceTarget.start,
+        sentenceTarget.end
+      )
+      highlightSentenceParagraph(sentenceTarget.paragraphId)
+      if (selection) {
+        currentEditor.commands.setTextSelection(selection)
+        currentEditor.commands.focus()
+        rewriteSelection = sentenceTarget.rewrite
+      }
+    }
+
     // 查询参数只负责一次跨页定位，消费后移除，避免用户在章节栏切换时被拉回旧章节。
     if (requestedId === id) {
       const query = { ...route.query }
       delete query.chapter
-      await router.replace({ query })
+      delete query.paragraph
+      delete query.start
+      delete query.end
+      delete query.rewrite
+      suppressRouteCleanupWatch = true
+      try {
+        await router.replace({ query })
+        await nextTick()
+      } finally {
+        suppressRouteCleanupWatch = false
+      }
+      if (rewriteSelection) runInline('改写语气')
     }
   },
   { immediate: true }
@@ -171,6 +226,7 @@ onBeforeUnmount(() => {
   abort = null
   if (stoppedDraftTimer) clearTimeout(stoppedDraftTimer)
   if (reviewHighlightTimer) clearTimeout(reviewHighlightTimer)
+  if (sentenceHighlightTimer) clearTimeout(sentenceHighlightTimer)
   editor.value?.off('selectionUpdate', syncReviewAnchor)
   window.removeEventListener('resize', syncViewport)
   window.removeEventListener('moshu:draft-action', handleDraftAction as EventListener)
@@ -850,5 +906,10 @@ function editChapterPlan() {
   background: var(--alert-soft);
   box-shadow: -4px 0 0 var(--alert);
   transition: background 160ms ease, box-shadow 160ms ease;
+}
+:deep(.sentence-risk-located) {
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+  box-shadow: -4px 0 0 var(--accent);
+  transition: background 180ms ease, box-shadow 180ms ease;
 }
 </style>

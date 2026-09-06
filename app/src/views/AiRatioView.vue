@@ -1,11 +1,19 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
-import { useRoute } from 'vue-router'
-import { provenanceApi, type ProvenanceReport, type ProvenanceSource } from '@/api/provenance'
+import { useRoute, useRouter } from 'vue-router'
+import {
+  provenanceApi,
+  type ProvenanceReport,
+  type ProvenanceSource,
+  type SuspectedSentence
+} from '@/api/provenance'
+import AppIcon from '@/components/ui/AppIcon.vue'
+import { projectPath } from '@/router/project-route'
 import { useProjectStore } from '@/stores/project'
 import { useShellStore } from '@/stores/shell'
 
 const route = useRoute()
+const router = useRouter()
 const store = useProjectStore()
 const shell = useShellStore()
 const report = ref<ProvenanceReport | null>(null)
@@ -62,6 +70,20 @@ function exportReport() {
 function selectChapter(event: Event) {
   store.activeId = (event.target as HTMLSelectElement).value
 }
+
+function openSentence(item: SuspectedSentence, rewrite = false) {
+  if (!projectId.value || !store.activeId) return
+  void router.push({
+    path: projectPath(projectId.value, 'write'),
+    query: {
+      chapter: store.activeId,
+      paragraph: item.paragraphId,
+      start: String(item.start),
+      end: String(item.end),
+      ...(rewrite ? { rewrite: '1' } : {})
+    }
+  })
+}
 </script>
 
 <template>
@@ -71,7 +93,7 @@ function selectChapter(event: Event) {
         <button type="button" :aria-pressed="scope === 'chapter'" @click="scope = 'chapter'">本章</button>
         <button type="button" :aria-pressed="scope === 'book'" @click="scope = 'book'">全书</button>
       </div>
-      <button class="topbar-btn" type="button" :disabled="!report" @click="exportReport">导出</button>
+      <button class="topbar-btn" type="button" :disabled="!report" @click="exportReport"><AppIcon name="export" :size="14" />导出</button>
     </Teleport>
 
     <header class="report-head">
@@ -115,6 +137,28 @@ function selectChapter(event: Event) {
         <span class="bar-human" :style="{ width: `${percent(report.humanWords)}%` }" />
       </div>
 
+      <section v-if="scope === 'chapter'" class="risk-proof" aria-labelledby="risk-proof-title">
+        <div class="proof-heading">
+          <div><span class="wk-label">STYLE PROOF</span><h2 id="risk-proof-title">疑似模板句式</h2></div>
+          <strong>{{ report.suspectedSentences.length }}</strong>
+        </div>
+        <p class="proof-disclaimer">{{ report.sentenceRiskDisclaimer }}</p>
+        <div v-if="report.suspectedSentences.length" class="proof-list">
+          <article v-for="item in report.suspectedSentences" :key="item.id">
+            <div class="proof-index"><strong>{{ item.score }}</strong><span>风险分</span></div>
+            <div class="proof-copy">
+              <div class="proof-meta"><span>{{ sourceLabel[item.source] }}</span><span>{{ item.reasons.join(' · ') }}</span></div>
+              <p>{{ item.text }}</p>
+            </div>
+            <div class="proof-actions">
+              <button class="wk-btn wk-btn-xs" type="button" @click="openSentence(item)"><AppIcon name="write" :size="13" />定位</button>
+              <button class="wk-btn wk-btn-xs" data-primary="true" type="button" @click="openSentence(item, true)"><AppIcon name="edit" :size="13" />重写</button>
+            </div>
+          </article>
+        </div>
+        <div v-else class="proof-empty">本章没有命中当前规则。仍建议按平台要求和作者判断人工复核。</div>
+      </section>
+
       <section v-if="scope === 'chapter'" class="paragraph-ledger">
         <div class="ledger-heading">
           <select aria-label="选择章节" :value="store.activeId ?? ''" @change="selectChapter">
@@ -145,7 +189,7 @@ function selectChapter(event: Event) {
 </template>
 
 <style scoped>
-.provenance-page { height: 100%; overflow: auto; background: var(--color-bg); }
+.provenance-page { height: 100%; overflow: auto; background: var(--color-bg); color: var(--ink); }
 .report-head { min-height: 126px; padding: 28px 34px 24px; border-bottom: 1px solid var(--line); display: flex; align-items: end; justify-content: space-between; gap: 24px; }
 .report-head h1 { margin: 6px 0 0; font-family: var(--font-prose); font-size: 28px; font-weight: 700; letter-spacing: 0; }
 .report-total { text-align: right; display: grid; gap: 2px; }
@@ -157,18 +201,32 @@ function selectChapter(event: Event) {
 .source-summary strong { display: block; margin: 8px 0 5px; font-family: var(--font-mono); font-size: 32px; font-weight: 500; }
 .source-summary div { font-size: 13px; font-weight: 700; margin-bottom: 4px; }
 .source-dot { display: block; width: 18px; height: 3px; }
-.source-ai, .bar-ai { background: #b34b34; }
-.source-edited, .bar-edited { background: #ae8d4d; }
-.source-human, .bar-human { background: #62756a; }
+.source-ai, .bar-ai { background: var(--accent); }
+.source-edited, .bar-edited { background: var(--ink-3); }
+.source-human, .bar-human { background: var(--line-strong); }
 .source-bar { display: flex; height: 5px; background: var(--color-neutral-200); }
 .source-bar span { min-width: 0; }
-.paragraph-ledger { padding: 30px 34px 56px; max-width: 1040px; }
+.risk-proof { padding: 32px 34px 8px; max-width: 1120px; }
+.proof-heading { display: flex; align-items: end; justify-content: space-between; gap: 20px; padding-bottom: 13px; border-bottom: 2px solid var(--ink); }
+.proof-heading h2 { margin: 6px 0 0; font: 700 20px/1.2 var(--font-prose); letter-spacing: 0; }
+.proof-heading > strong { font: 500 30px/1 var(--font-mono); }
+.proof-disclaimer { max-width: 760px; margin: 12px 0 0; color: var(--ink-3); font-size: var(--fs-sm); line-height: 1.65; }
+.proof-list { margin-top: 18px; }
+.proof-list article { display: grid; grid-template-columns: 62px minmax(0, 1fr) auto; gap: 18px; align-items: start; padding: 17px 0; border-bottom: 1px solid var(--line); }
+.proof-index { display: grid; gap: 3px; }
+.proof-index strong { color: var(--accent); font: 700 20px/1 var(--font-mono); }
+.proof-index span, .proof-meta { color: var(--ink-3); font-size: 11px; }
+.proof-meta { display: flex; flex-wrap: wrap; gap: 7px 14px; margin-bottom: 7px; }
+.proof-meta span:first-child { color: var(--ink-2); font-weight: 700; }
+.proof-copy p { margin: 0; font: 15px/1.8 var(--font-prose); }
+.proof-actions { display: flex; gap: 6px; }
+.proof-empty { padding: 26px 0; border-bottom: 1px solid var(--line); color: var(--ink-3); }
+.paragraph-ledger { padding: 38px 34px 56px; max-width: 1040px; }
 .ledger-heading { display: flex; align-items: baseline; justify-content: space-between; gap: 18px; padding-bottom: 16px; border-bottom: 1px solid var(--line-strong); }
 .ledger-heading select { min-width: 260px; max-width: 60%; height: 32px; border: 1px solid var(--line-strong); background: var(--paper); color: var(--ink); padding: 0 30px 0 10px; font-family: var(--font-prose); font-size: 14px; }
-.paragraph-list article { display: grid; grid-template-columns: 116px minmax(0, 1fr); gap: 18px; padding: 18px 0; border-bottom: 1px solid var(--line); }
-.paragraph-list article[data-source='ai-raw'] { border-left: 3px solid #b34b34; padding-left: 15px; }
-.paragraph-list article[data-source='ai-edited'] { border-left: 3px solid #ae8d4d; padding-left: 15px; }
-.paragraph-list article[data-source='human'] { border-left: 3px solid #62756a; padding-left: 15px; }
+.paragraph-list article { display: grid; grid-template-columns: 116px minmax(0, 1fr); gap: 18px; padding: 18px 0 18px 15px; border-bottom: 1px solid var(--line); border-left: 3px solid var(--line-strong); }
+.paragraph-list article[data-source='ai-raw'] { border-left-color: var(--accent); }
+.paragraph-list article[data-source='ai-edited'] { border-left-color: var(--ink-3); }
 .paragraph-meta { display: flex; flex-direction: column; gap: 5px; font-size: 12px; font-weight: 700; }
 .paragraph-meta small { color: var(--ink-3); font-weight: 400; }
 .paragraph-list p { margin: 0; font-family: var(--font-prose); font-size: 15px; line-height: 1.9; white-space: pre-wrap; }
@@ -176,11 +234,12 @@ function selectChapter(event: Event) {
 .book-summary strong { font-family: var(--font-mono); font-size: 42px; font-weight: 500; }
 .book-summary span { color: var(--ink-3); line-height: 1.7; }
 .state-line, .empty-state { padding: 40px 34px; color: var(--ink-3); }
-.state-error { color: var(--color-danger, #9c2f2f); }
+.state-error { color: var(--alert-ink); }
 .scope-switch { display: flex; border: 1px solid var(--line-strong); }
 .scope-switch button { min-width: 52px; height: 30px; border: 0; border-right: 1px solid var(--line-strong); background: var(--paper); color: var(--ink-3); font-size: 12px; cursor: pointer; }
 .scope-switch button:last-child { border-right: 0; }
 .scope-switch button[aria-pressed='true'] { background: var(--ink); color: var(--paper); }
+button:focus-visible, select:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 @media (max-width: 720px) {
   .report-head { min-height: 104px; padding: 20px; }
   .report-head h1 { font-size: 23px; }
@@ -188,7 +247,9 @@ function selectChapter(event: Event) {
   .source-summary article { padding: 18px 20px; border-right: 0; border-bottom: 1px solid var(--line); }
   .source-summary article:last-child { border-bottom: 0; }
   .source-summary strong { font-size: 27px; }
-  .paragraph-ledger { padding: 24px 20px 48px; }
+  .risk-proof, .paragraph-ledger { padding-inline: 20px; }
+  .proof-list article { grid-template-columns: 48px minmax(0, 1fr); }
+  .proof-actions { grid-column: 2; }
   .ledger-heading { align-items: flex-start; flex-direction: column; gap: 5px; }
   .ledger-heading select { min-width: 0; max-width: none; width: 100%; }
   .paragraph-list article { grid-template-columns: 1fr; gap: 9px; }
