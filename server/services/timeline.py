@@ -182,7 +182,7 @@ _DAYPART_HOURS = {
     "下午": (12, 18),
     "傍晚": (17, 20),
     "夜里": (19, 24),
-    "深夜": (22, 30),
+    "深夜": (22, 24),
 }
 
 
@@ -321,7 +321,9 @@ def build_temporal_dependency_graph(
 
     def visit(node: str, path: list[str]) -> None:
         if node in visiting:
-            cycles.append(path[path.index(node):] + [node])
+            # ``path`` already contains the repeated node because callers append
+            # the child before visiting it; do not duplicate the terminal id.
+            cycles.append(path[path.index(node):])
             return
         if node in visited:
             return

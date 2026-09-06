@@ -146,6 +146,12 @@ def test_daypart_suffix_widens_relative_range_without_fabricating_a_point():
     assert result.is_exact is False
 
 
+def test_deep_night_range_stays_within_a_day():
+    result = normalize_relative_expression("三日后的深夜")
+    assert result is not None
+    assert result.offset_max_seconds == 3 * 86400 + 24 * 3600
+
+
 def test_dependency_graph_reports_ambiguous_anchor():
     graph = build_temporal_dependency_graph(
         [
@@ -189,6 +195,8 @@ def test_dependency_graph_detects_cycle():
     ]
     graph = build_temporal_dependency_graph(claims)
     assert graph["cycles"]
+    assert graph["cycles"][0][0] == graph["cycles"][0][-1]
+    assert len(graph["cycles"][0]) == len(set(graph["cycles"][0])) + 1
 
 
 # --- 全局锚点判定 -------------------------------------------------------------
