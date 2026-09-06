@@ -104,6 +104,70 @@ async def test_chapter_generation_streams_meta_text_done_and_records_run(
     assert usage.credits == 1
 
 
+async def test_prompt_preview_returns_exact_package_without_charging(
+    app_client, async_db_session, seed_project, auth_headers
+):
+    chapters = await seed_project(
+        user_id="preview_writer",
+        project_id="preview_novel",
+        chapter_ids=("preview_ch",),
+        genre="女频 · 穿越种田",
+    )
+    chapters[0].outline = ["沈禾去粮铺谈青谷的收购价"]
+    await async_db_session.flush()
+
+    response = await app_client.post(
+        "/generate/preview",
+        headers=auth_headers("preview_writer"),
+        json={
+            "chapterId": "preview_ch",
+            "targetWords": 1200,
+            "model": "basic",
+            "useStyleProfile": False,
+            "dialogueDensity": "high",
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["chapterId"] == "preview_ch"
+    assert payload["targetWords"] == 1200
+    assert payload["tokenBudget"]["prompt"] > 0
+    assert {skill["id"] for skill in payload["skills"]} >= {
+        "base.novel.zh",
+        "genre.farming",
+        "task.chapter",
+    }
+    assert payload["messages"][0]["role"] == "system"
+    assert "青谷" in payload["messages"][1]["content"]
+    assert (await async_db_session.execute(select(UsageLog))).scalars().all() == []
+    assert "sk-" not in response.text
+
+
+async def test_prompt_preview_requires_generation_permission(
+    app_client, async_db_session, seed_project, auth_headers
+):
+    await seed_project(user_id="preview_owner", project_id="preview_private", chapter_ids=("preview_private_ch",))
+    async_db_session.add(
+        User(
+            id="preview_viewer",
+            name="preview_viewer",
+            email="preview_viewer@example.test",
+            quota_remaining=100,
+            quota_total=100,
+        )
+    )
+    await async_db_session.flush()
+
+    response = await app_client.post(
+        "/generate/preview",
+        headers=auth_headers("preview_viewer"),
+        json={"chapterId": "preview_private_ch", "targetWords": 800},
+    )
+
+    assert response.status_code == 403
+
+
 async def test_inline_generation_passes_selected_text_and_checks_access(
     app_client,
     async_db_session,

@@ -7,8 +7,8 @@
 
 **关键事实**：
 - ✅ 40 张表完整 Alembic baseline，增量迁移已到 `021_chapter_reviews`
-- ✅ 1139 个单元/功能测试通过（SQLite in-memory，mock embedding/LLM）
-- ✅ 前端 120 个测试、TypeScript 类型检查和生产构建通过
+- ✅ 1141 个单元/功能测试通过（SQLite in-memory，mock embedding/LLM）
+- ✅ 前端 121 个测试、TypeScript 类型检查和生产构建通过
 - ✅ 36 个集成测试已在本机真实 PostgreSQL + pgvector 环境通过
 - ✅ 已完成真实账号认证、作品创建、作品归档、分卷与章节增删改排、回收站和章纲编辑闭环
 - ✅ Refresh session 持久化轮换、防重放、注销即时吊销，系统管理员与项目 RBAC 已接通
@@ -185,6 +185,7 @@ PostgreSQL/pgvector 检索必须在真实部署上单独压测；该脚本只覆
 - ✅ 写作台右栏可在正文不卸载的前提下查阅本章/全库资料，支持搜索、原地展开、写作约束、当前章有效状态与完整档案跳转
 
 #### AI 生成候选 (`api/generate.py`, `app/src/components/layout/AiSidePanel.vue`)
+- ✅ 生成前 Prompt Preview：复用实际生成装配链路，展示模型/档位、技能版本、四层上下文、token 预算与最终 system/user 消息；只读且不调用模型、不预留或扣除额度，响应不包含网关凭据
 - ✅ 每次生成在独立 `generation_drafts` 行中保存候选，流式输出每 1000 字符 checkpoint
 - ✅ 生成成功、上游失败和浏览器中断均保留已完成文本；失败/中断仍登记真实 run 与来源指纹，但失败退款
 - ✅ 列表只返回 160 字摘要，完整候选按需读取；读、采纳和舍弃均要求作品正文编辑权限
@@ -726,7 +727,8 @@ baseline，增量实现 Codex embedding 回填、时间锚点解析、issue 生�
    - ✅ 设定随章节变化的状态历史：作者记录与已接受抽取事实合并展示，按目标章裁剪后进入生成上下文
    - ✅ 资料与正文并排：右栏支持本章/全库搜索、原地档案、写作约束和当前章有效状态
    - ✅ 批注/审稿流程（章节版本绑定、段落锚点、打回/批准与协作权限）
-   - Prompt Preview 与用户自带模型配置
+   - ✅ Prompt Preview（已接入 `/generate/preview` 与写作台预览抽屉）
+   - 用户自带模型配置
    - 关系图、地图、日历、出版排版和平台发布数据属于后续增强，不阻塞核心写作闭环
 
 ---

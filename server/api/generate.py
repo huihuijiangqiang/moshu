@@ -17,6 +17,7 @@ from api.auth import ProjectPermission, get_current_user, verify_project_permiss
 from db.models_core import Chapter, Project, User
 from db.models_usage import GenerationDraft, GenerationRun
 from db.session import get_db
+from memory.assembler import ContextAssembler
 from memory.tokenizer import tokenizer
 from services.generation import (
     GenerationGateway,
@@ -52,6 +53,22 @@ class ChapterGenerationRequest(BaseModel):
 
 class InlineGenerationRequest(ChapterGenerationRequest):
     action: Literal["续写", "扩写", "润色", "改写语气", "按我的风格"]
+    selected_text: str = Field("", alias="selectedText", max_length=20000)
+    nearby_text: str = Field("", alias="nearbyText", max_length=30000)
+
+
+class GenerationPreviewRequest(BaseModel):
+    """Inputs accepted by the no-charge prompt preview endpoint."""
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    chapter_id: str = Field(alias="chapterId", min_length=1, max_length=32)
+    target_words: int = Field(alias="targetWords", ge=200, le=20000)
+    model: Literal["basic", "advanced"] = "basic"
+    use_style_profile: bool = Field(True, alias="useStyleProfile")
+    dialogue_density: Literal["low", "mid", "high"] = Field("mid", alias="dialogueDensity")
+    instruction: str = Field("", max_length=2000)
+    action: Literal["续写", "扩写", "润色", "改写语气", "按我的风格"] | None = None
     selected_text: str = Field("", alias="selectedText", max_length=20000)
     nearby_text: str = Field("", alias="nearbyText", max_length=30000)
 
@@ -99,6 +116,65 @@ async def _prepare(
             nearby_text=request.nearby_text,
         )
     return await service.prepare(chapter=chapter, project=project, **kwargs)
+
+
+async def _prepare_preview(
+    request: GenerationPreviewRequest,
+    user: User,
+    db: AsyncSession,
+) -> PromptPackage:
+    """Build the exact generation package without reserving credits or calling a model."""
+    common = request.model_dump(by_alias=False, exclude_none=True)
+    if request.action is not None:
+        preview_request = InlineGenerationRequest(**common)
+    else:
+        common.pop("selected_text", None)
+        common.pop("nearby_text", None)
+        preview_request = ChapterGenerationRequest(**common)
+    return await _prepare(preview_request, user, db)
+
+
+def _preview_payload(package: PromptPackage) -> dict:
+    layers = [
+        package.context.layer1_resident,
+        package.context.layer2_retrieved,
+        package.context.layer3_summary,
+        package.context.layer4_adjacent,
+    ]
+    return {
+        "chapterId": package.chapter.id,
+        "projectId": package.project.id,
+        "chapterTitle": package.chapter.title,
+        "task": package.task,
+        "targetWords": package.target_words,
+        "model": {"id": package.model_id, "tier": package.model_tier},
+        "tokenBudget": {
+            "total": ContextAssembler.BUDGET_TOTAL,
+            "prompt": package.prompt_tokens,
+            "context": package.context.total_tokens,
+            "trimmedLayers": package.context.trimmed_layers,
+        },
+        "skills": [
+            {
+                "id": skill.id,
+                "version": skill.version,
+                "category": skill.category,
+                "priority": skill.priority,
+            }
+            for skill in package.skills.skills
+        ],
+        "scene": package.skills.scene,
+        "layers": [
+            {
+                "key": layer.key,
+                "tokens": layer.tokens,
+                "items": layer.items,
+                "content": layer.content,
+            }
+            for layer in layers
+        ],
+        "messages": package.messages,
+    }
 
 
 def _generation_response(
@@ -331,6 +407,17 @@ async def preview_context(
         "skills": selection.ids,
         "scene": selection.scene,
     }
+
+
+@router.post("/preview")
+async def preview_generation_prompt(
+    request: GenerationPreviewRequest,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Return the exact prompt package without model calls, reservations, or usage writes."""
+    package = await _prepare_preview(request, user, db)
+    return _preview_payload(package)
 
 
 @router.post("/chapter")

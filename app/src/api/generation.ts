@@ -3,6 +3,25 @@ import { mockApi } from './mock'
 import { getAccessToken } from './session'
 import type { GenerateOptions, GenerationDraftDetail, GenerationDraftSummary, GenerationMeta, InlineGenerateOptions } from '@/types'
 
+export interface GenerationPreview {
+  chapterId: string
+  projectId: string
+  chapterTitle: string
+  task: string
+  targetWords: number
+  model: { id: string; tier: string }
+  tokenBudget: {
+    total: number
+    prompt: number
+    context: number
+    trimmedLayers: string[]
+  }
+  skills: Array<{ id: string; version: string; category: string; priority: number }>
+  scene: string
+  layers: Array<{ key: string; tokens: number; items: Array<Record<string, unknown>>; content: string }>
+  messages: Array<{ role: 'system' | 'user'; content: string }>
+}
+
 export interface StreamHandlers {
   onChunk: (text: string) => void
   onNode?: (nodeIndex: number) => void
@@ -24,6 +43,32 @@ export function streamChapter(opts: GenerateOptions, h: StreamHandlers): () => v
 
 export function streamInline(opts: InlineGenerateOptions, h: StreamHandlers): () => void {
   return startStream('/generate/inline', opts, h)
+}
+
+export async function previewGeneration(opts: GenerateOptions | InlineGenerateOptions): Promise<GenerationPreview> {
+  if (USE_MOCK) {
+    return {
+      chapterId: opts.chapterId,
+      projectId: 'mock-project',
+      chapterTitle: '当前章节',
+      task: 'chapter',
+      targetWords: opts.targetWords,
+      model: { id: 'mock', tier: opts.model },
+      tokenBudget: { total: 25000, prompt: 0, context: 0, trimmedLayers: [] },
+      skills: [],
+      scene: 'general',
+      layers: [],
+      messages: [
+        { role: 'system', content: '模拟模式不会调用模型。' },
+        { role: 'user', content: '请切换到真实 API 后查看完整提示词。' }
+      ]
+    }
+  }
+  return request<GenerationPreview>('/generate/preview', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(opts)
+  })
 }
 
 export const generationDraftApi = {

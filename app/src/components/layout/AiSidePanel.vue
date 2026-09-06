@@ -8,7 +8,7 @@ import { useGuardStore } from '@/stores/guard'
 import { useStylesStore } from '@/stores/styles'
 import { CODEX_KIND_LABEL, type CodexEntry, type CodexStateHistoryItem, type ContextLayer, type GenerationControls } from '@/types'
 import { useProjectNavigation } from '@/composables/use-project-navigation'
-import { generationDraftApi } from '@/api/generation'
+import { generationDraftApi, previewGeneration, type GenerationPreview } from '@/api/generation'
 import AppIcon from '@/components/ui/AppIcon.vue'
 import ReviewPanel from '@/components/editor/ReviewPanel.vue'
 import type { GenerationDraftDetail, GenerationDraftSummary, ReviewAnchor, ReviewComment, ReviewRound, ReviewWorkspace } from '@/types'
@@ -67,7 +67,12 @@ const selectedReferenceId = ref<string | null>(null)
 const referenceStates = ref<CodexStateHistoryItem[]>([])
 const referenceStatesLoading = ref(false)
 const referenceStatesError = ref('')
+const previewOpen = ref(false)
+const previewLoading = ref(false)
+const previewError = ref('')
+const preview = ref<GenerationPreview | null>(null)
 let referenceStateRequest = 0
+let previewRequest = 0
 
 const BUDGET = 25000
 
@@ -102,6 +107,38 @@ function requestGeneration() {
   })
 }
 
+async function openPromptPreview() {
+  if (!project.activeId || previewLoading.value) return
+  const requestId = ++previewRequest
+  const chapterId = project.activeId
+  previewOpen.value = true
+  previewLoading.value = true
+  previewError.value = ''
+  try {
+    const result = await previewGeneration({
+      chapterId,
+      targetWords: Math.max(200, Math.min(20000, targetWords.value || 3000)),
+      model: model.value,
+      useStyleProfile: true,
+      dialogueDensity: 'high'
+    })
+    if (requestId === previewRequest) preview.value = result
+  } catch (error) {
+    if (requestId === previewRequest) {
+      preview.value = null
+      previewError.value = error instanceof Error ? error.message : '提示词预览加载失败'
+    }
+  } finally {
+    if (requestId === previewRequest) previewLoading.value = false
+  }
+}
+
+function closePromptPreview() {
+  ++previewRequest
+  previewOpen.value = false
+  previewLoading.value = false
+}
+
 const total = computed(() => layers.value.reduce((s, l) => s + l.tokens, 0))
 const over = computed(() => total.value > BUDGET)
 const k = (n: number) => (n / 1000).toFixed(1) + 'k'
@@ -112,6 +149,12 @@ const CAP: Record<ContextLayer['key'], number> = {
   retrieved: 5000,
   summary: 4000,
   adjacent: 10000
+}
+const LAYER_LABEL: Record<string, string> = {
+  resident: '常驻设定',
+  retrieved: '本章相关设定',
+  summary: '前情摘要',
+  adjacent: '相邻章节原文'
 }
 
 const cost = computed(() => (model.value === 'advanced' ? 35 : 18))
@@ -165,11 +208,16 @@ const effectiveReferenceStates = computed(() => {
 
 watch(() => project.activeId, () => {
   ++referenceStateRequest
+  ++previewRequest
   selectedDraft.value = null
   draftDetailError.value = ''
   selectedReferenceId.value = null
   referenceStates.value = []
   referenceStatesLoading.value = false
+  previewOpen.value = false
+  preview.value = null
+  previewError.value = ''
+  previewLoading.value = false
 })
 
 watch(
@@ -264,6 +312,58 @@ function forwardReviewDecision(round: ReviewRound, decision: 'approved' | 'chang
       </button>
     </div>
 
+    <div v-if="previewOpen" class="prompt-preview" role="region" aria-label="生成提示词预览">
+      <div class="prompt-preview-head">
+        <div>
+          <div class="wk-label">生成前检查</div>
+          <h2>本次提示词</h2>
+        </div>
+        <button class="prompt-preview-close" type="button" aria-label="关闭提示词预览" @click="closePromptPreview"><AppIcon name="close" :size="15" /></button>
+      </div>
+
+      <p v-if="previewLoading" class="prompt-preview-state">正在装配本章设定，不会调用模型或扣除积分…</p>
+      <p v-else-if="previewError" class="prompt-preview-state prompt-preview-error">{{ previewError }}</p>
+      <template v-else-if="preview">
+        <div class="prompt-preview-summary">
+          <span>{{ preview.chapterTitle }}</span>
+          <span>{{ preview.model.id }} · {{ preview.targetWords }} 字</span>
+          <span>{{ preview.tokenBudget.prompt.toLocaleString() }} tokens</span>
+        </div>
+
+        <section class="prompt-preview-section">
+          <div class="wk-label">已加载技能 · {{ preview.skills.length }}</div>
+          <div class="prompt-skill-list">
+            <span v-for="skill in preview.skills" :key="skill.id" class="prompt-skill">
+              {{ skill.id }} <small>{{ skill.version }}</small>
+            </span>
+          </div>
+          <p class="prompt-preview-note">场景判断：{{ preview.scene }}。技能只影响写法，不会覆盖已确认设定。</p>
+        </section>
+
+        <section class="prompt-preview-section">
+          <div class="row-between">
+            <div class="wk-label">四层上下文</div>
+            <span class="prompt-preview-metric">{{ preview.tokenBudget.context.toLocaleString() }} / {{ preview.tokenBudget.total.toLocaleString() }}</span>
+          </div>
+          <details v-for="layer in preview.layers" :key="layer.key" class="prompt-layer">
+            <summary><span>{{ LAYER_LABEL[layer.key] ?? layer.key }}</span><span>{{ layer.tokens.toLocaleString() }} tokens · {{ layer.items.length }} 项</span></summary>
+            <pre>{{ layer.content || '（这一层为空）' }}</pre>
+          </details>
+          <p v-if="preview.tokenBudget.trimmedLayers.length" class="prompt-preview-note prompt-preview-warning">
+            已按预算裁剪：{{ preview.tokenBudget.trimmedLayers.join('、') }}
+          </p>
+        </section>
+
+        <section class="prompt-preview-section">
+          <div class="wk-label">最终发送消息</div>
+          <details v-for="message in preview.messages" :key="message.role" class="prompt-message" :open="message.role === 'user'">
+            <summary>{{ message.role === 'system' ? 'System · 写作规则' : 'User · 本章任务' }}</summary>
+            <pre>{{ message.content }}</pre>
+          </details>
+        </section>
+      </template>
+    </div>
+
     <template v-if="tab === 'ai'">
       <!-- 章纲：生成的依据，放最上面 -->
       <section class="wk-sec">
@@ -291,6 +391,12 @@ function forwardReviewDecision(round: ReviewRound, decision: 'approved' | 'chang
           data-primary="true"
           @click="requestGeneration"
         >按章纲生成整章</button>
+        <button
+          v-if="!props.generating"
+          class="wk-btn wk-btn-block"
+          type="button"
+          @click="openPromptPreview"
+        >预览提示词</button>
         <p v-if="props.generationError" :style="{ margin: 'var(--u2) 0 0', color: 'var(--alert-ink)', fontSize: 'var(--fs-sm)', lineHeight: 1.6 }">
           {{ props.generationError }}
         </p>
@@ -541,6 +647,37 @@ function forwardReviewDecision(round: ReviewRound, decision: 'approved' | 'chang
 </template>
 
 <style scoped>
+.prompt-preview {
+  position: relative;
+  z-index: 2;
+  max-height: min(78vh, 760px);
+  overflow: auto;
+  padding: var(--u3);
+  color: var(--ink-2);
+  background: var(--panel-sunken);
+  border-bottom: var(--hair) solid var(--line-strong);
+}
+.prompt-preview-head { display: flex; align-items: flex-start; justify-content: space-between; gap: var(--u3); }
+.prompt-preview-head h2 { margin: 3px 0 0; color: var(--ink); font-family: var(--font-prose); font-size: 20px; font-weight: 600; }
+.prompt-preview-close { width: 26px; height: 26px; padding: 0; color: var(--ink-3); background: transparent; border: 0; font-size: 20px; line-height: 1; cursor: pointer; }
+.prompt-preview-close:hover { color: var(--ink); }
+.prompt-preview-summary { display: flex; flex-wrap: wrap; gap: 6px 12px; margin: var(--u3) 0; color: var(--ink-3); font: var(--fs-xs)/1.5 var(--font-mono); }
+.prompt-preview-summary span:first-child { color: var(--ink); font-family: var(--font-prose); font-size: var(--fs); }
+.prompt-preview-section { padding: var(--u3) 0; border-top: var(--hair) solid var(--line); }
+.prompt-skill-list { display: flex; flex-wrap: wrap; gap: 5px; margin-top: var(--u2); }
+.prompt-skill { padding: 3px 6px; color: var(--ink-2); background: var(--panel); border: var(--hair) solid var(--line-strong); font: 10px/1.3 var(--font-mono); }
+.prompt-skill small { color: var(--ink-4); }
+.prompt-preview-note { margin: var(--u2) 0 0; color: var(--ink-3); font-size: var(--fs-xs); line-height: 1.6; }
+.prompt-preview-warning { color: var(--alert-ink); }
+.prompt-preview-metric { color: var(--ink-3); font: 10px var(--font-mono); }
+.prompt-layer, .prompt-message { margin-top: 5px; background: var(--panel); border: var(--hair) solid var(--line); }
+.prompt-layer summary, .prompt-message summary { display: flex; justify-content: space-between; gap: var(--u2); padding: 7px 8px; color: var(--ink-2); font-size: var(--fs-xs); cursor: pointer; list-style: none; }
+.prompt-layer summary::-webkit-details-marker, .prompt-message summary::-webkit-details-marker { display: none; }
+.prompt-layer summary span:last-child { color: var(--ink-4); font: 10px var(--font-mono); }
+.prompt-layer pre, .prompt-message pre { max-height: 220px; overflow: auto; margin: 0; padding: 8px; color: var(--ink-2); border-top: var(--hair) solid var(--line); font: 11px/1.7 var(--font-mono); white-space: pre-wrap; overflow-wrap: anywhere; }
+.prompt-preview-state { margin: var(--u4) 0; color: var(--ink-3); font-size: var(--fs-sm); line-height: 1.7; }
+.prompt-preview-error { color: var(--alert-ink); }
+.prompt-preview:focus-within { outline: 2px solid var(--primary-line); outline-offset: -2px; }
 .draft-refresh {
   display: grid;
   place-items: center;

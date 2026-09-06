@@ -101,4 +101,33 @@ describe('writing reference side panel', () => {
     expect(wrapper.get('.reference-detail').text()).not.toContain('不应覆盖新档案')
     wrapper.unmount()
   })
+
+  it('previews the assembled prompt without starting generation', async () => {
+    const pinia = createPinia()
+    setActivePinia(pinia)
+    const router = createRouter({
+      history: createMemoryHistory(),
+      routes: [{ path: '/projects/:projectId/write', component: { template: '<div />' } }]
+    })
+    await router.push('/projects/p1/write')
+    await router.isReady()
+    await Promise.all([useProjectStore().load('p1'), useCodexStore().load('p1')])
+    vi.spyOn(contentApi, 'getContextLayers').mockResolvedValue([])
+    const wrapper = mount(AiSidePanel, {
+      attachTo: document.body,
+      props: { drafts: [], draftsLoading: false },
+      global: { plugins: [pinia, router] }
+    })
+    await flushPromises()
+
+    const previewButton = wrapper.findAll('button').find((button) => button.text() === '预览提示词')
+    if (!previewButton) throw new Error('prompt preview button not found')
+    await previewButton.trigger('click')
+    await flushPromises()
+
+    expect(wrapper.get('[role="region"]').text()).toContain('本次提示词')
+    expect(wrapper.get('[role="region"]').text()).toContain('模拟模式不会调用模型')
+    expect(wrapper.emitted('generate')).toBeUndefined()
+    wrapper.unmount()
+  })
 })
