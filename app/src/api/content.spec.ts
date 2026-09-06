@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { reactive } from 'vue'
 import { ApiError } from './http'
-import { bodyConflictFromError, codexDraftAttrs, codexFromDto, guardIssueFromDto, guardOverviewFromDto, htmlToDocument, temporalReviewFromDto, timelineBoardFromDto, timelineReflowFromDto } from './content'
+import { bodyConflictFromError, characterStatisticsFromDto, codexDraftAttrs, codexFromDto, guardIssueFromDto, guardOverviewFromDto, htmlToDocument, temporalReviewFromDto, timelineBoardFromDto, timelineReflowFromDto } from './content'
 
 describe('htmlToDocument', () => {
   it('uses the backend paragraph pid contract', () => {
@@ -177,6 +177,28 @@ describe('codexFromDto', () => {
       kind: 'place', name: '白鹭洲', aliases: [], summary: '', resident: false,
       status: 'confirmed', facts: [{ label: '通行', value: '枯水期可达' }]
     }, existing)).not.toThrow()
+  })
+})
+
+describe('characterStatisticsFromDto', () => {
+  it('maps auditable character presence and POV fields', () => {
+    const statistics = characterStatisticsFromDto({
+      entry_id: 'cx-1', name: '许知微', appearance_chapters: 3,
+      explicit_references: 2, extracted_claims: 4, pov_chapters: 1, pov_words: 3260,
+      first_appearance: 2, last_appearance: 9, hiatus_chapters: 5,
+      chapters: [{
+        chapter_id: 'ch-9', chapter_index: 9, chapter_title: '秋收前夜', words: 3260,
+        explicit_references: 1, extracted_claims: 2, is_pov: true
+      }]
+    })
+
+    expect(statistics).toMatchObject({
+      entryId: 'cx-1', appearanceChapters: 3, povChapters: 1, povWords: 3260,
+      firstAppearance: 2, lastAppearance: 9, hiatusChapters: 5
+    })
+    expect(statistics.chapters[0]).toMatchObject({
+      chapterId: 'ch-9', chapterIndex: 9, extractedClaims: 2, isPov: true
+    })
   })
 })
 

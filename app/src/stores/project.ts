@@ -108,6 +108,15 @@ export const useProjectStore = defineStore('project', () => {
     return updated
   }
 
+  async function updateChapterPov(id: string, entryId?: string) {
+    const chapter = chapters.value.find((item) => item.id === id)
+    if (!chapter) throw new Error('chapter_not_found')
+    const result = await contentApi.updateChapterPov(id, entryId, chapter.povRevision ?? 0)
+    chapter.povEntryId = result.entryId
+    chapter.povRevision = result.revision
+    return result
+  }
+
   async function insertChapterAfter(volumeId: string, afterIndex: number) {
     const projectId = loadedProjectId.value
     if (!projectId) throw new Error('project_not_loaded')
@@ -191,7 +200,7 @@ export const useProjectStore = defineStore('project', () => {
   return {
     project, chapters, activeId, active, byVolume, totalWords, totalChapters, loading, loadedProjectId,
     load, refreshStructure, openChapter, reloadReplacedChapters, setWords, setContent, setStyleProfile, updateChapterPlan,
-    insertChapterAfter, updateProject, createVolume, updateVolume, reorderVolumes, moveChapter,
+    insertChapterAfter, updateProject, createVolume, updateVolume, reorderVolumes, moveChapter, updateChapterPov,
     trashChapter, trashVolume, getTrash, restoreTrash, deleteTrash
   }
 })

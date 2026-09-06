@@ -107,4 +107,24 @@ describe('continuous outline editing', () => {
     expect(wrapper.get('[aria-label="作品回收站"]').text()).toContain('没有已删除章节')
     wrapper.unmount()
   })
+
+  it('assigns a confirmed character as chapter POV and shows it in the outline', async () => {
+    const { wrapper, store } = await mountOutline()
+    await new Promise((resolve) => setTimeout(resolve, 320))
+    await flushPromises()
+    await wrapper.get('[data-chapter-id="ch89"]').trigger('click')
+    const select = wrapper.get<HTMLSelectElement>('.outline-pov-field select')
+    expect(select.findAll('option').some((option) => option.text().includes('沈砚'))).toBe(true)
+
+    await select.setValue('c-shenyan')
+    await new Promise((resolve) => setTimeout(resolve, 140))
+    await flushPromises()
+
+    expect(store.chapters.find((chapter) => chapter.id === 'ch89')).toMatchObject({
+      povEntryId: 'c-shenyan', povRevision: 1
+    })
+    expect(wrapper.text()).toContain('本章视角已设为沈砚')
+    expect(wrapper.get('[data-chapter-id="ch89"]').text()).toContain('视角 · 沈砚')
+    wrapper.unmount()
+  })
 })

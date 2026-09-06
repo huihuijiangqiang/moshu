@@ -6,9 +6,9 @@
 所有声明基于实际代码与测试结果，不夸大、不省略已知缺口。
 
 **关键事实**：
-- ✅ 37 张表完整 Alembic baseline，增量迁移已到 `018_timeline_entries`
-- ✅ 1101 个单元/功能测试通过（SQLite in-memory，mock embedding/LLM）
-- ✅ 前端 103 个测试、TypeScript 类型检查和生产构建通过
+- ✅ 37 张表完整 Alembic baseline，增量迁移已到 `019_chapter_pov`
+- ✅ 1106 个单元/功能测试通过（SQLite in-memory，mock embedding/LLM）
+- ✅ 前端 108 个测试、TypeScript 类型检查和生产构建通过
 - ✅ 36 个集成测试已在本机真实 PostgreSQL + pgvector 环境通过
 - ✅ 已完成真实账号认证、作品创建、作品归档、分卷与章节增删改排、回收站和章纲编辑闭环
 - ✅ Refresh session 持久化轮换、防重放、注销即时吊销，系统管理员与项目 RBAC 已接通
@@ -68,6 +68,8 @@ PostgreSQL/pgvector 检索必须在真实部署上单独压测；该脚本只覆
 卷纲，以及章节章纲备注与修改时间，支持当前真实产品流程。
 `012_content_lifecycle.py` 为卷和章节增加软删除时间与索引；正文读取、生成、记忆组装、
 一致性扫描、来源分析和导出均排除回收站内容。
+`019_chapter_pov.py` 为章节增加作者指定 POV 与独立乐观锁；POV 只能引用同作品已确认人物，
+人物被章节用作 POV 时不能直接删除。
 
 #### 设定库 (4 张)
 - `codex_entries` - 设定条目（HALFVEC(2048) embedding 列）
@@ -123,8 +125,9 @@ PostgreSQL/pgvector 检索必须在真实部署上单独压测；该脚本只覆
   `002_embedding_halfvec_2048.py` 清理旧向量并迁移到 HALFVEC(2048)，以
   `halfvec_cosine_ops` 重建 HNSW 索引；upgrade/downgrade 均会要求重新回填向量
 - ✅ `alembic upgrade head --sql` 与 `alembic downgrade -1 --sql` 语法验证通过
-- ✅ 36 个集成测试已在本机真实 PostgreSQL + pgvector 运行通过；当前审核数据库已真实执行
-  `004_auth_admin_rbac -> 005_usage_ledger -> 006_usage_reservation_expiry -> 007_style_profiles -> 008_embedding_job_visibility -> 009_embedding_dispatch_attempts -> 010_claim_temporal_evidence -> 011_guard_issue_arbitration -> 012_content_lifecycle -> 013_generation_drafts -> 014_text_replacement_runs -> 015_foreshadow_lifecycle -> 016_platform_usage_ledger -> 017_temporal_resolution -> 018_timeline_entries`；部署后以 readiness 返回的 Alembic head 为准
+- ✅ 36 个集成测试已在本机真实 PostgreSQL + pgvector 运行通过；此前审核数据库已真实执行至
+  `018_timeline_entries`。`019_chapter_pov` 的 upgrade/downgrade SQL 已生成验证，但本轮 Docker daemon
+  未启动，尚未在真实 PostgreSQL 重复执行；部署后以 readiness 返回的 Alembic head 为准
 
 ---
 
@@ -140,6 +143,9 @@ PostgreSQL/pgvector 检索必须在真实部署上单独压测；该脚本只覆
 - ✅ `queued/running/retrying/succeeded/dead_letter` 状态持久化，记录失败次数、最后错误与耗尽时间
 - ✅ 作者可查询当前新鲜/待补条目数，并在耗尽后明确重新入队
 - ✅ worker 执行失败与 broker 重新投递次数独立计数；beat 自动回收发布窗口中断的过期 `queued` 作业
+- ✅ 人物出场统计按实体 ID 合并正文显式引用、已接受正文抽取事实、作者 POV 与导入 legacy 章节引用
+- ✅ 人物档案展示出场/POV 章数、POV 字数、首末出场、断档和逐章可审计来源；章节可直接跳回写作台
+- ⚠️ 未标记为 CodexRef、未被抽取接受且未指定 POV 的纯文本姓名不会计入统计，避免同名与改名造成误报
 
 #### 章纲服务 (`services/outlines.py`)
 - ✅ 独立章纲版本控制（与正文解耦）
@@ -427,12 +433,13 @@ PostgreSQL/pgvector 检索必须在真实部署上单独压测；该脚本只覆
 
 ### 5. 测试覆盖
 
-#### 单元测试（1101 passed，SQLite in-memory，mock providers）
+#### 单元测试（1106 passed，SQLite in-memory，mock providers）
 
-**全量测试结果**：1101 passed, 37 skipped（未设置集成测试 URL 时）, 0 warnings；前端 103 passed
+**全量测试结果**：1106 passed, 37 skipped（未设置集成测试 URL 时）, 0 warnings；前端 108 passed
 
 主要测试覆盖（不逐文件列举测试数量，以实际 pytest 结果为准）：
 - ✅ Codex 设定库：页面与 API 完整 CRUD、引用删除保护、原子别名替换、可检索文本判据、两段式事务、deferred 降级、httpx 错误重试
+- ✅ 人物追踪：跨作品隔离、POV 乐观锁、来源去重、删除保护、前端响应防串位和 760px 无横向溢出
 - ✅ 章纲服务：独立版本控制、body_policy 约束、不变量测试、outbox 事件
 - ✅ 正文服务：content_hash 幂等性、paragraph ID 提取、CodexRef 提取
 - ✅ 一致性服务：Claim fingerprint、规则逻辑、hard negative 案例
@@ -695,7 +702,8 @@ baseline，增量实现 Codex embedding 回填、时间锚点解析、issue 生�
 
 3. **竞品常见的深度规划与审稿能力**
    - ✅ 多剧情线时间板
-   - 人物出场与视角统计、设定随章节变化的状态历史
+   - ✅ 人物出场与视角统计：大纲指定 POV、人物档案汇总和逐章来源轨迹已接通
+   - 设定随章节变化的状态历史
    - 资料与正文并排、批注/审稿流程、Prompt Preview 与用户自带模型配置
    - 关系图、地图、日历、出版排版和平台发布数据属于后续增强，不阻塞核心写作闭环
 
@@ -753,9 +761,9 @@ baseline，增量实现 Codex embedding 回填、时间锚点解析、issue 生�
 - `server/tasks/consistency.py` - 一致性任务
 - `server/tasks/codex.py` - Codex 回填任务
 
-### 测试（1101 passed；另有 36 个真实 PostgreSQL 测试通过）
-- `server/tests/` - 单元/功能测试（1101 passed）
-- `app/src/**/*.spec.ts` - 前端测试（103 passed）
+### 测试（1106 passed；另有 36 个真实 PostgreSQL 测试通过）
+- `server/tests/` - 单元/功能测试（1106 passed）
+- `app/src/**/*.spec.ts` - 前端测试（108 passed）
 - `server/tests/integration/` - 集成测试（36 passed，需设置真实 PostgreSQL URL）
 
 ### 文档（1 个文件）
@@ -765,16 +773,17 @@ baseline，增量实现 Codex embedding 回填、时间锚点解析、issue 生�
 
 ## 总结
 
-墨枢一致性后端已完成核心数据模型、服务层、API 端点和异步任务定义，1101 个单元/功能
+墨枢一致性后端已完成核心数据模型、服务层、API 端点和异步任务定义，1106 个单元/功能
 测试在 SQLite in-memory + mock providers 环境下通过，另有 36 个集成测试在真实
 PostgreSQL + pgvector 环境通过。真实认证、可吊销会话、管理员、工作室 RBAC、作品创建、
-作品归档、分卷与章节生命周期、虚拟化章节导航、章纲、故事/章节双序时间板、作者人工计划事件、正文版本历史与恢复、AI 多候选草稿、全书查找替换、全量导出、非覆盖备份恢复、风格指纹、AI 来源账本、作者生成用量与平台模型成本台账已经接通，前端 103 个测试与生产构建通过。
+作品归档、分卷与章节生命周期、虚拟化章节导航、章纲、章节 POV、人物出场轨迹、故事/章节双序时间板、作者人工计划事件、正文版本历史与恢复、AI 多候选草稿、全书查找替换、全量导出、非覆盖备份恢复、风格指纹、AI 来源账本、作者生成用量与平台模型成本台账已经接通，前端 108 个测试与生产构建通过。
 
 **关键限制**：
 1. 七条确定性规则的 280/140 结构化评测门禁、模糊区间人工确认和多剧情线时间板已完成，但真实正文盲评仍需补充
 2. 当前 100% 指标来自真实 scanner 而非硬编码，但输入仍是合成 claim，**不代表正文抽取和 LLM 仲裁的端到端质量**
 3. 模糊时间已完成规范化区间、作者确认、项目级 reflow 与依赖复检；影响集时间区间裁剪仍未实现，仲裁只提供建议，不自动处置
 4. 真实长文本扫描吞吐受上游模型网关稳定性和并发限制影响
+5. 人物出场统计只接受实体 ID 可追溯来源，不对正文姓名做模糊全文计数；本轮 Docker daemon 未启动，`019` 尚未重复执行真实 PostgreSQL 验收
 
 当前是“核心一致性能力 + 首轮真实产品流程”，不是功能完整 MVP。生产部署前仍需完成上述产品闭环、
 扩充评测集并验证长文本规模下的质量和性能。

@@ -109,8 +109,36 @@ export interface Chapter {
   content?: string
   /** 写完后异步生成的 200 字摘要，供第 3 层滚动记忆使用 */
   summary?: string
+  /** 作者指定的本章叙事视角；只允许指向同作品已确认人物。 */
+  povEntryId?: string
+  /** POV 元数据独立乐观锁，不与正文或章纲版本混用。 */
+  povRevision?: number
   /** 服务端正文乐观锁版本。 */
   rev?: number
+}
+
+export interface CharacterChapterStatistics {
+  chapterId: string
+  chapterIndex: number
+  chapterTitle: string
+  words: number
+  explicitReferences: number
+  extractedClaims: number
+  isPov: boolean
+}
+
+export interface CharacterStatistics {
+  entryId: string
+  name: string
+  appearanceChapters: number
+  explicitReferences: number
+  extractedClaims: number
+  povChapters: number
+  povWords: number
+  firstAppearance?: number
+  lastAppearance?: number
+  hiatusChapters?: number
+  chapters: CharacterChapterStatistics[]
 }
 
 export interface ChapterVersionSummary {

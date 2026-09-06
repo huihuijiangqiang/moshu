@@ -65,6 +65,8 @@ class ChapterListItem(BaseModel):
     words: int
     outline: list[str]
     summary: str | None
+    pov_entry_id: str | None = None
+    pov_revision: int = 0
     outline_note: str = ""
     outline_revision: int = 0
     outline_updated_at: str | None = None
@@ -238,6 +240,8 @@ def _chapter_list_item(chapter: Chapter, state: ChapterOutlineState | None = Non
         words=chapter.words,
         outline=chapter.outline,
         summary=chapter.summary,
+        pov_entry_id=chapter.pov_entry_id,
+        pov_revision=chapter.pov_revision,
         outline_note=state.note if state else "",
         outline_revision=state.revision if state else 0,
         outline_updated_at=state.updated_at.isoformat() if state and state.updated_at else None,
@@ -725,6 +729,8 @@ async def list_chapters(
             words=ch.words,
             outline=ch.outline,
             summary=ch.summary,
+            pov_entry_id=ch.pov_entry_id,
+            pov_revision=ch.pov_revision,
             outline_note=state.note if state else "",
             outline_revision=state.revision if state else 0,
             outline_updated_at=state.updated_at.isoformat() if state and state.updated_at else None,

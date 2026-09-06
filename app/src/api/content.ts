@@ -1,6 +1,6 @@
 import { ApiError, USE_MOCK, request } from './http'
 import { mockApi } from './mock'
-import type { Chapter, ChapterPlanPatch, ChapterVersionDetail, ChapterVersionRestoreResult, ChapterVersionSummary, CodexEntry, CodexEntryDraft, CodexKind, ContextLayer, GuardIssue, GuardOverview, GuardResolutionAction, Project, ProjectPatch, ProjectTrash, TemporalDecisionResult, TemporalReviewItem, TimelineBoard, TimelineEntry, TimelineEntryDraft, TimelinePlacementStatus, TimelineReflowResult, Volume } from '@/types'
+import type { Chapter, ChapterPlanPatch, ChapterVersionDetail, ChapterVersionRestoreResult, ChapterVersionSummary, CharacterStatistics, CodexEntry, CodexEntryDraft, CodexKind, ContextLayer, GuardIssue, GuardOverview, GuardResolutionAction, Project, ProjectPatch, ProjectTrash, TemporalDecisionResult, TemporalReviewItem, TimelineBoard, TimelineEntry, TimelineEntryDraft, TimelinePlacementStatus, TimelineReflowResult, Volume } from '@/types'
 
 interface ProjectDto {
   id: string
@@ -32,10 +32,34 @@ interface ChapterListDto {
   words: number
   outline: string[]
   summary: string | null
+  pov_entry_id?: string | null
+  pov_revision?: number
   outline_note?: string
   outline_revision?: number
   outline_updated_at?: string | null
   body_needs_revision?: boolean
+}
+
+interface CharacterStatisticsDto {
+  entry_id: string
+  name: string
+  appearance_chapters: number
+  explicit_references: number
+  extracted_claims: number
+  pov_chapters: number
+  pov_words: number
+  first_appearance: number | null
+  last_appearance: number | null
+  hiatus_chapters: number | null
+  chapters: Array<{
+    chapter_id: string
+    chapter_index: number
+    chapter_title: string
+    words: number
+    explicit_references: number
+    extracted_claims: number
+    is_pov: boolean
+  }>
 }
 
 interface ChapterDto extends ChapterListDto {
@@ -628,7 +652,33 @@ function chapterFromDto(dto: ChapterListDto, status: Chapter['status']): Chapter
     outlineRevision: dto.outline_revision ?? 0,
     outlineUpdatedAt: dto.outline_updated_at ?? undefined,
     bodyNeedsRevision: dto.body_needs_revision ?? false,
-    summary: dto.summary ?? undefined
+    summary: dto.summary ?? undefined,
+    povEntryId: dto.pov_entry_id ?? undefined,
+    povRevision: dto.pov_revision ?? 0
+  }
+}
+
+export function characterStatisticsFromDto(dto: CharacterStatisticsDto): CharacterStatistics {
+  return {
+    entryId: dto.entry_id,
+    name: dto.name,
+    appearanceChapters: dto.appearance_chapters,
+    explicitReferences: dto.explicit_references,
+    extractedClaims: dto.extracted_claims,
+    povChapters: dto.pov_chapters,
+    povWords: dto.pov_words,
+    firstAppearance: dto.first_appearance ?? undefined,
+    lastAppearance: dto.last_appearance ?? undefined,
+    hiatusChapters: dto.hiatus_chapters ?? undefined,
+    chapters: dto.chapters.map((chapter) => ({
+      chapterId: chapter.chapter_id,
+      chapterIndex: chapter.chapter_index,
+      chapterTitle: chapter.chapter_title,
+      words: chapter.words,
+      explicitReferences: chapter.explicit_references,
+      extractedClaims: chapter.extracted_claims,
+      isPov: chapter.is_pov
+    }))
   }
 }
 
@@ -696,6 +746,30 @@ const realApi = {
     const chapter = { ...chapterFromDto(dto, dto.words > 0 ? 'done' : 'outlined'), content: dto.content_html, rev: dto.rev }
     chapterCache.set(id, chapter)
     return chapter
+  },
+
+  async updateChapterPov(
+    id: string,
+    entryId: string | undefined,
+    expectedRevision: number
+  ): Promise<{ entryId?: string; revision: number }> {
+    try {
+      const dto = await request<{ entry_id: string | null; revision: number }>(`/chapters/${id}/pov`, {
+        method: 'PUT',
+        body: JSON.stringify({ entry_id: entryId ?? null, expected_revision: expectedRevision })
+      })
+      return { entryId: dto.entry_id ?? undefined, revision: dto.revision }
+    } catch (error) {
+      if (error instanceof ApiError && error.status === 409) throw new Error('pov_revision_conflict')
+      throw error
+    }
+  },
+
+  async getCharacterStatistics(projectId: string, entryId: string): Promise<CharacterStatistics> {
+    const dto = await request<CharacterStatisticsDto>(
+      `/codex/${projectId}/entries/${entryId}/statistics`
+    )
+    return characterStatisticsFromDto(dto)
   },
 
   async listChapterVersions(id: string): Promise<ChapterVersionSummary[]> {

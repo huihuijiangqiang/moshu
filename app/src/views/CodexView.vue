@@ -7,6 +7,8 @@ import { useShellStore } from '@/stores/shell'
 import { CODEX_KIND_LABEL, type CharacterProfile, type CodexEntry, type CodexEntryDraft, type CodexKind } from '@/types'
 import { useProjectNavigation } from '@/composables/use-project-navigation'
 import { embeddingApi, type EmbeddingJob } from '@/api/embedding'
+import { contentApi } from '@/api/content'
+import type { CharacterStatistics } from '@/types'
 
 const codex = useCodexStore()
 const project = useProjectStore()
@@ -29,7 +31,11 @@ const formError = ref('')
 const deleteOpen = ref(false)
 const actionBusy = ref(false)
 const actionError = ref('')
+const characterStatistics = ref<CharacterStatistics | null>(null)
+const characterStatisticsLoading = ref(false)
+const characterStatisticsError = ref('')
 let embeddingTimer: ReturnType<typeof setTimeout> | null = null
+let characterStatisticsRequest = 0
 
 interface CodexFormState {
   kind: CodexKind
@@ -151,6 +157,8 @@ const rows = computed<CodexEntry[]>(() => {
 })
 
 const selected = computed(() => rows.value.find((entry) => entry.id === selectedId.value) ?? rows.value[0] ?? null)
+const selectedInUse = computed(() => (selected.value?.refChapters.length ?? 0) > 0
+  || (characterStatistics.value?.entryId === selected.value?.id && characterStatistics.value.povChapters > 0))
 const currentListLabel = computed(() => scope.value === 'kind' ? CODEX_KIND_LABEL[codex.kind] : scopes.find((item) => item.key === scope.value)?.label)
 
 watch(rows, (list) => {
@@ -159,6 +167,29 @@ watch(rows, (list) => {
     selectedId.value = preferred?.id ?? null
   }
 }, { immediate: true })
+
+watch(
+  [() => selected.value?.id, () => selected.value?.kind, () => selected.value?.status, () => project.loadedProjectId],
+  async ([entryId, kind, status, projectId]) => {
+    const requestId = ++characterStatisticsRequest
+    characterStatistics.value = null
+    characterStatisticsError.value = ''
+    if (!entryId || kind !== 'character' || status !== 'confirmed' || !projectId) {
+      characterStatisticsLoading.value = false
+      return
+    }
+    characterStatisticsLoading.value = true
+    try {
+      const result = await contentApi.getCharacterStatistics(projectId, entryId)
+      if (requestId === characterStatisticsRequest) characterStatistics.value = result
+    } catch {
+      if (requestId === characterStatisticsRequest) characterStatisticsError.value = '人物出场统计加载失败，请稍后重试。'
+    } finally {
+      if (requestId === characterStatisticsRequest) characterStatisticsLoading.value = false
+    }
+  },
+  { immediate: true }
+)
 
 function pickKind(kind: CodexKind) {
   scope.value = 'kind'
@@ -233,6 +264,10 @@ function openChapter(index: number) {
     path: toProject('write'),
     query: chapter ? { chapter: chapter.id } : undefined
   })
+}
+
+function openTrackedChapter(chapterId: string) {
+  router.push({ path: toProject('write'), query: { chapter: chapterId } })
 }
 
 function openCreate() {
@@ -405,7 +440,7 @@ async function deleteSelected() {
     deleteOpen.value = false
   } catch (error) {
     actionError.value = error instanceof Error && error.message === 'codex_entry_in_use'
-      ? '这条设定已被正文引用，不能直接删除。'
+      ? '这条设定正被正文引用或用作章节视角，不能直接删除。'
       : '删除失败，请稍后重试。'
   } finally {
     actionBusy.value = false
@@ -470,6 +505,7 @@ async function deleteSelected() {
           v-for="entry in rows"
           :key="entry.id"
           class="codex-list-row"
+          :data-entry-id="entry.id"
           type="button"
           role="option"
           :aria-selected="entry.id === selected?.id"
@@ -507,7 +543,7 @@ async function deleteSelected() {
           </span>
           <span class="codex-detail-actions">
             <button type="button" @click="openEdit">编辑</button>
-            <button v-if="selected.status === 'confirmed'" type="button" :disabled="selected.refChapters.length > 0" :title="selected.refChapters.length ? '正文已引用，不能直接删除' : '删除设定'" @click="openDelete">删除</button>
+            <button v-if="selected.status === 'confirmed'" type="button" :disabled="selectedInUse" :title="selectedInUse ? '章节正在引用，不能直接删除' : '删除设定'" @click="openDelete">删除</button>
           </span>
         </div>
 
@@ -592,8 +628,35 @@ async function deleteSelected() {
           </section>
 
           <section class="codex-section codex-evidence" aria-labelledby="codex-evidence-title">
-            <div class="codex-section-heading"><h3 id="codex-evidence-title">正文依据</h3><p>档案来自哪些章节</p></div>
-            <div class="codex-stats">
+            <div class="codex-section-heading"><h3 id="codex-evidence-title">{{ selected.kind === 'character' ? '出场与视角' : '正文依据' }}</h3><p>{{ selected.kind === 'character' ? '按可审计来源追踪人物在长篇中的分布' : '档案来自哪些章节' }}</p></div>
+            <template v-if="selected.kind === 'character' && selected.status === 'confirmed'">
+              <p v-if="characterStatisticsLoading" class="codex-tracking-state" role="status">正在汇总人物轨迹…</p>
+              <p v-else-if="characterStatisticsError" class="codex-tracking-state is-error" role="alert">{{ characterStatisticsError }}</p>
+              <template v-else-if="characterStatistics">
+                <div class="codex-stats codex-character-stats">
+                  <div><strong>{{ characterStatistics.appearanceChapters }}</strong><span>出场章数</span></div>
+                  <div><strong>{{ characterStatistics.povChapters }}</strong><span>视角章数</span></div>
+                  <div><strong>{{ characterStatistics.povWords.toLocaleString() }}</strong><span>视角字数</span></div>
+                  <div><strong>{{ characterStatistics.firstAppearance ?? '—' }}</strong><span>首次出场</span></div>
+                  <div><strong>{{ characterStatistics.lastAppearance ?? '—' }}</strong><span>最近出场</span></div>
+                  <div><strong :data-alert="(characterStatistics.hiatusChapters ?? 0) > 30">{{ characterStatistics.hiatusChapters ?? '—' }}</strong><span>断档章数</span></div>
+                </div>
+                <div v-if="characterStatistics.chapters.length" class="codex-character-track" aria-label="人物章节轨迹">
+                  <button v-for="chapter in characterStatistics.chapters" :key="chapter.chapterId" type="button" @click="openTrackedChapter(chapter.chapterId)">
+                    <span class="codex-track-index">{{ String(chapter.chapterIndex).padStart(3, '0') }}</span>
+                    <span class="codex-track-title">{{ chapter.chapterTitle || '未命名章节' }}</span>
+                    <span class="codex-track-sources">
+                      <small v-if="chapter.isPov" data-source="pov">POV</small>
+                      <small v-if="chapter.explicitReferences" data-source="reference">正文引用 {{ chapter.explicitReferences }}</small>
+                      <small v-if="chapter.extractedClaims" data-source="claim">抽取事实 {{ chapter.extractedClaims }}</small>
+                    </span>
+                    <span class="codex-track-words">{{ chapter.words.toLocaleString() }} 字</span>
+                  </button>
+                </div>
+                <p v-else class="codex-tracking-state">还没有可审计的出场记录。可在正文中引用人物、接受抽取事实，或在大纲指定 POV。</p>
+              </template>
+            </template>
+            <div v-else class="codex-stats">
               <div><strong>{{ selected.refChapters.length }}</strong><span>引用章数</span></div>
               <div><strong>{{ latestRef(selected) ?? '—' }}</strong><span>最近出现</span></div>
               <div><strong :data-alert="(gapChapters(selected) ?? 0) > 30">{{ gapChapters(selected) ?? '—' }}</strong><span>断档章数</span></div>
@@ -609,7 +672,7 @@ async function deleteSelected() {
               <template v-if="selected.foreshadowResolved"> · 已回收</template>
               <template v-else> · 未回收</template>
             </p>
-            <div class="codex-chapters">
+            <div v-if="selected.kind !== 'character' || selected.status !== 'confirmed'" class="codex-chapters">
               <button
                 v-for="chapter in selected.refChapters.slice(-40)"
                 :key="chapter"
@@ -712,6 +775,19 @@ async function deleteSelected() {
 .codex-detail-actions button:hover { color: var(--ink); background: var(--paper); }
 .codex-detail-actions button:disabled { cursor: not-allowed; opacity: .42; }
 .codex-action-error { flex-basis: 100%; color: var(--alert-ink) !important; }
+.codex-character-stats { grid-template-columns: repeat(6, minmax(0, 1fr)); }
+.codex-character-stats > div { padding-inline: var(--u3); }
+.codex-tracking-state { margin: 0; padding: var(--u4); border-block: var(--hair) solid var(--line); color: var(--ink-3); font-size: var(--fs-sm); line-height: 1.6; }
+.codex-tracking-state.is-error { color: var(--alert-ink); background: var(--alert-soft); }
+.codex-character-track { margin-top: var(--u4); border-top: var(--hair) solid var(--line-strong); }
+.codex-character-track > button { width: 100%; min-width: 0; min-height: 44px; display: grid; grid-template-columns: 42px minmax(80px, 1fr) minmax(0, auto) 78px; align-items: center; gap: var(--u3); padding: 7px 0; border: 0; border-bottom: var(--hair) solid var(--line); background: transparent; color: var(--ink-2); text-align: left; cursor: pointer; }
+.codex-character-track > button:hover { color: var(--primary); background: var(--primary-soft); }
+.codex-track-index, .codex-track-words { color: var(--ink-4); font: var(--fs-xs)/1.4 var(--font-mono); }
+.codex-track-title { overflow: hidden; font-size: var(--fs-sm); font-weight: 700; text-overflow: ellipsis; white-space: nowrap; }
+.codex-track-sources { min-width: 0; display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 4px; }
+.codex-track-sources small { padding: 2px 5px; border: var(--hair) solid var(--line-strong); color: var(--ink-3); font-size: 10px; white-space: nowrap; }
+.codex-track-sources small[data-source='pov'] { border-color: var(--primary); color: var(--primary); font-weight: 700; }
+.codex-track-words { text-align: right; white-space: nowrap; }
 .codex-dialog-backdrop { position: fixed; inset: 0; z-index: 80; display: grid; place-items: center; padding: 18px; background: rgb(20 24 25 / 55%); }
 .codex-dialog { width: min(780px, 100%); max-height: calc(100vh - 36px); display: grid; grid-template-rows: auto minmax(0, 1fr); overflow: hidden; border: var(--hair) solid var(--line-strong); border-radius: 4px; background: var(--paper); box-shadow: 0 18px 56px rgb(0 0 0 / 24%); }
 .codex-dialog > header { min-height: 72px; display: flex; align-items: center; justify-content: space-between; padding: 14px 22px; border-bottom: 2px solid var(--ink); }
@@ -745,6 +821,11 @@ async function deleteSelected() {
 @media (max-width: 700px) {
   .codex-detail-status { display: none; }
   .codex-detail-actions { margin-left: auto; }
+  .codex-character-stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .codex-character-stats > div { border-top: var(--hair) solid var(--line); border-left: 0; padding-left: 0; }
+  .codex-character-track > button { grid-template-columns: 36px minmax(0, 1fr) auto; gap: var(--u2); }
+  .codex-track-sources { grid-column: 2 / -1; justify-content: flex-start; }
+  .codex-track-words { grid-column: 3; grid-row: 1; }
   .codex-dialog-backdrop { padding: 0; place-items: stretch; }
   .codex-dialog { width: 100%; max-height: 100vh; border: 0; border-radius: 0; }
   .codex-form-basics, .codex-form-grid, .codex-form-arc { grid-template-columns: minmax(0, 1fr); }

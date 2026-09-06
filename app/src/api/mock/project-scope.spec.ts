@@ -29,6 +29,12 @@ describe('mock project scoping', () => {
     expect(primaryCodex.length).toBeGreaterThan(0)
   })
 
+  it('rejects assigning a character from another project as chapter POV', async () => {
+    const [chapter] = await mockApi.listChapters('p3')
+    await expect(mockApi.updateChapterPov(chapter!.id, 'c-shenyan', chapter!.povRevision ?? 0))
+      .rejects.toThrow('invalid_pov_character')
+  })
+
   it('keeps author timeline entries versioned and scoped to their project', async () => {
     const created = await mockApi.createTimelineEntry('p3', {
       title: '渡口相逢', timelineId: '主线', timeText: '子夜', storyOrder: 12

@@ -1,7 +1,7 @@
 import { delay } from '../http'
 import * as seed from './seed'
 import { findShelfBook } from './shelf'
-import type { Chapter, ChapterPlanPatch, ChapterVersionDetail, ChapterVersionRestoreResult, ChapterVersionSummary, CodexEntry, CodexEntryDraft, GuardIssue, GuardOverview, GuardResolutionAction, Project, ContextLayer, ProjectPatch, ProjectTrash, TemporalDecisionResult, TemporalReviewItem, TimelineBoard, TimelineEntry, TimelineEntryDraft, TimelineReflowResult } from '@/types'
+import type { Chapter, ChapterPlanPatch, ChapterVersionDetail, ChapterVersionRestoreResult, ChapterVersionSummary, CharacterStatistics, CodexEntry, CodexEntryDraft, GuardIssue, GuardOverview, GuardResolutionAction, Project, ContextLayer, ProjectPatch, ProjectTrash, TemporalDecisionResult, TemporalReviewItem, TimelineBoard, TimelineEntry, TimelineEntryDraft, TimelineReflowResult } from '@/types'
 
 /** 内存态副本：mock 下的写操作要真的改变数据，否则界面行为是假的。 */
 const state = {
@@ -124,6 +124,11 @@ function findChapter(id: string): Chapter | undefined {
   return [...state.chapters, ...projectDrafts.values()].flat().find((chapter) => chapter.id === id)
 }
 
+function projectIdForChapter(chapter: Chapter): string | undefined {
+  if (state.chapters.includes(chapter)) return state.project.id
+  return [...projectDrafts.entries()].find(([, chapters]) => chapters.includes(chapter))?.[0]
+}
+
 function plainText(content = ''): string {
   return new DOMParser().parseFromString(content, 'text/html').body.textContent?.trim() ?? ''
 }
@@ -185,6 +190,65 @@ export const mockApi = {
     const c = findChapter(id)
     versionsFor(id)
     return c ? structuredClone(c) : undefined
+  },
+
+  async updateChapterPov(
+    id: string,
+    entryId: string | undefined,
+    expectedRevision: number
+  ): Promise<{ entryId?: string; revision: number }> {
+    await delay(100)
+    const chapter = findChapter(id)
+    if (!chapter) throw new Error('chapter_not_found')
+    if ((chapter.povRevision ?? 0) !== expectedRevision) throw new Error('pov_revision_conflict')
+    if (entryId) {
+      const entry = state.codex.find((item) => item.id === entryId)
+      if (projectIdForChapter(chapter) !== state.project.id || !entry || entry.kind !== 'character' || entry.status !== 'confirmed') {
+        throw new Error('invalid_pov_character')
+      }
+    }
+    chapter.povEntryId = entryId
+    chapter.povRevision = (chapter.povRevision ?? 0) + 1
+    return { entryId: chapter.povEntryId, revision: chapter.povRevision }
+  },
+
+  async getCharacterStatistics(projectId: string, entryId: string): Promise<CharacterStatistics> {
+    await delay(100)
+    const entry = projectId === state.project.id
+      ? state.codex.find((item) => item.id === entryId && item.kind === 'character' && item.status === 'confirmed')
+      : undefined
+    if (!entry) throw new Error('character_statistics_not_found')
+    const rows = chaptersFor(projectId)
+    const points = rows.flatMap((chapter) => {
+      const referenced = entry.refChapters.includes(chapter.index)
+      const isPov = chapter.povEntryId === entryId
+      if (!referenced && !isPov) return []
+      return [{
+        chapterId: chapter.id,
+        chapterIndex: chapter.index,
+        chapterTitle: chapter.title,
+        words: chapter.words,
+        explicitReferences: referenced ? 1 : 0,
+        extractedClaims: 0,
+        isPov
+      }]
+    })
+    const first = points[0]
+    const last = points.at(-1)
+    const latestIndex = rows.at(-1)?.index ?? 0
+    return structuredClone({
+      entryId: entry.id,
+      name: entry.name,
+      appearanceChapters: points.length,
+      explicitReferences: points.reduce((sum, point) => sum + point.explicitReferences, 0),
+      extractedClaims: 0,
+      povChapters: points.filter((point) => point.isPov).length,
+      povWords: points.filter((point) => point.isPov).reduce((sum, point) => sum + point.words, 0),
+      firstAppearance: first?.chapterIndex,
+      lastAppearance: last?.chapterIndex,
+      hiatusChapters: last ? Math.max(0, latestIndex - last.chapterIndex) : undefined,
+      chapters: points
+    })
   },
 
   async listChapterVersions(id: string): Promise<ChapterVersionSummary[]> {

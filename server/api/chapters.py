@@ -17,6 +17,12 @@ from services.body import (
     count_words,
     save_chapter_body,
 )
+from services.character_tracking import (
+    CharacterStatisticsNotFoundError,
+    InvalidPovEntryError,
+    PovRevisionConflictError,
+    update_chapter_pov,
+)
 from services.idempotency import IdempotencyConflictError
 
 router = APIRouter()
@@ -36,6 +42,8 @@ class ChapterOut(BaseModel):
     words: int
     outline: list[str]
     summary: str | None
+    pov_entry_id: str | None
+    pov_revision: int
     content_html: str
     content_json: dict
     rev: int  # 乐观锁版本号
@@ -95,6 +103,17 @@ class RestoreChapterVersionResponse(BaseModel):
     content_json: dict
     words: int
     consistency_status: str
+
+
+class ChapterPovRequest(BaseModel):
+    entry_id: str | None = Field(default=None, max_length=32)
+    expected_revision: int = Field(ge=0)
+
+
+class ChapterPovResponse(BaseModel):
+    chapter_id: str
+    entry_id: str | None
+    revision: int
 
 
 def _document_excerpt(content_json: dict, limit: int = 140) -> str:
@@ -177,6 +196,8 @@ async def get_chapter(
             words=chapter.words,
             outline=chapter.outline,
             summary=chapter.summary,
+            pov_entry_id=chapter.pov_entry_id,
+            pov_revision=chapter.pov_revision,
             content_html="",
             content_json={},
             rev=0,
@@ -192,11 +213,58 @@ async def get_chapter(
         words=chapter.words,
         outline=chapter.outline,
         summary=chapter.summary,
+        pov_entry_id=chapter.pov_entry_id,
+        pov_revision=chapter.pov_revision,
         content_html=body.content_html,
         content_json=body.content_json,
         rev=body.rev,
         updated_at=chapter.updated_at.isoformat(),
     )
+
+
+@router.put("/{chapter_id}/pov", response_model=ChapterPovResponse)
+async def set_chapter_pov(
+    chapter_id: str,
+    request: ChapterPovRequest,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> ChapterPovResponse:
+    chapter = await _active_chapter(chapter_id, db)
+    await verify_project_permission(chapter.project_id, ProjectPermission.MANAGE_OUTLINE, user, db)
+    try:
+        chapter = await update_chapter_pov(
+            db,
+            chapter_id=chapter_id,
+            entry_id=request.entry_id,
+            expected_revision=request.expected_revision,
+        )
+        response = ChapterPovResponse(
+            chapter_id=chapter.id,
+            entry_id=chapter.pov_entry_id,
+            revision=chapter.pov_revision,
+        )
+        await db.commit()
+    except PovRevisionConflictError as error:
+        await db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "code": "POV_REVISION_CONFLICT",
+                "current_entry_id": error.current_entry_id,
+                "current_revision": error.current_revision,
+            },
+        ) from error
+    except InvalidPovEntryError as error:
+        await db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail={"code": "INVALID_POV_CHARACTER", "entry_id": str(error)},
+        ) from error
+    except CharacterStatisticsNotFoundError as error:
+        await db.rollback()
+        raise HTTPException(status_code=404, detail={"code": "CHAPTER_NOT_FOUND"}) from error
+
+    return response
 
 
 @router.get("/{chapter_id}/versions", response_model=list[ChapterVersionSummary])

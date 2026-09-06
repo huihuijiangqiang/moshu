@@ -2,6 +2,7 @@
 import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useProjectStore } from '@/stores/project'
+import { useCodexStore } from '@/stores/codex'
 import { useShellStore } from '@/stores/shell'
 import type { Chapter, ProjectTrash } from '@/types'
 import { useProjectNavigation } from '@/composables/use-project-navigation'
@@ -16,6 +17,7 @@ interface PlanDraft {
 const route = useRoute()
 const router = useRouter()
 const store = useProjectStore()
+const codex = useCodexStore()
 const shell = useShellStore()
 const { toProject } = useProjectNavigation()
 const view = ref<'grid' | 'list'>('grid')
@@ -27,6 +29,9 @@ const saving = ref(false)
 const inserting = ref(false)
 const saveNotice = ref('')
 const saveError = ref('')
+const povSaving = ref(false)
+const povNotice = ref('')
+const povError = ref('')
 const structureBusy = ref(false)
 const structureError = ref('')
 const trashOpen = ref(false)
@@ -44,6 +49,9 @@ const selected = computed<Chapter | null>(
   () => currentVolume.value?.chapters.find((c) => c.id === selectedId.value) ?? currentVolume.value?.chapters.at(-1) ?? null
 )
 const currentDraft = computed(() => selected.value ? drafts.value[selected.value.id] ?? null : null)
+const confirmedCharacters = computed(() => codex.entries
+  .filter((entry) => entry.kind === 'character' && entry.status === 'confirmed')
+  .sort((a, b) => a.name.localeCompare(b.name, 'zh-CN')))
 const isDirty = computed(() => {
   const chapter = selected.value
   const draft = currentDraft.value
@@ -61,7 +69,13 @@ watch(selected, (chapter) => {
   pendingDecision.value = false
   saveNotice.value = ''
   saveError.value = ''
+  povNotice.value = ''
+  povError.value = ''
   if (chapter && !drafts.value[chapter.id]) drafts.value[chapter.id] = draftFrom(chapter)
+}, { immediate: true })
+
+watch(() => store.loadedProjectId, (projectId) => {
+  if (projectId) void codex.load(projectId)
 }, { immediate: true })
 
 watch(
@@ -115,6 +129,33 @@ function selectVolume(id: string) {
   selectedVolumeId.value = id
   const group = store.byVolume.find((item) => item.volume.id === id)
   selectedId.value = group?.chapters.at(-1)?.id ?? null
+}
+
+function povName(entryId?: string) {
+  return entryId ? codex.byId.get(entryId)?.name : undefined
+}
+
+async function changeChapterPov(event: Event) {
+  const chapter = selected.value
+  if (!chapter || povSaving.value) return
+  const entryId = (event.target as HTMLSelectElement).value || undefined
+  if (entryId === chapter.povEntryId) return
+  povSaving.value = true
+  povNotice.value = ''
+  povError.value = ''
+  try {
+    await store.updateChapterPov(chapter.id, entryId)
+    povNotice.value = entryId ? `本章视角已设为${povName(entryId) ?? '所选人物'}` : '已清除本章视角'
+  } catch (error) {
+    if (error instanceof Error && error.message === 'pov_revision_conflict') {
+      await store.refreshStructure()
+      povError.value = '本章视角已在其他位置更新，已载入最新选择，请重新设置。'
+    } else {
+      povError.value = '本章视角没有保存，请重试。'
+    }
+  } finally {
+    povSaving.value = false
+  }
 }
 
 function addNode() {
@@ -418,6 +459,7 @@ async function removeTrashItem(kind: 'volumes' | 'chapters', id: string, title: 
               {{ c.status === 'drafting' ? '在写 · ' : '' }}{{ (c.words / 1000).toFixed(1) }}k
             </div>
             <div v-if="c.bodyNeedsRevision" class="outline-revision-flag">正文待调整</div>
+            <div v-if="povName(c.povEntryId)" class="outline-pov-flag">视角 · {{ povName(c.povEntryId) }}</div>
           </button>
           <button class="outline-insert" type="button" :disabled="inserting" @click="insertChapter">
             <AppIcon name="plus" />
@@ -436,8 +478,11 @@ async function removeTrashItem(kind: 'volumes' | 'chapters', id: string, title: 
             @click="selectChapter(c.id)"
           >
             <span><strong>{{ String(c.index).padStart(3, '0') }}</strong>　{{ c.title || '未命名' }}</span>
-            <span :class="c.bodyNeedsRevision ? 'outline-list-warning' : 'muted'">
-              {{ c.bodyNeedsRevision ? '正文待调整' : c.outlineNote || '无章纲' }}
+            <span class="outline-list-meta">
+              <small v-if="povName(c.povEntryId)">视角 · {{ povName(c.povEntryId) }}</small>
+              <span :class="c.bodyNeedsRevision ? 'outline-list-warning' : 'muted'">
+                {{ c.bodyNeedsRevision ? '正文待调整' : c.outlineNote || '无章纲' }}
+              </span>
             </span>
           </button>
           <button class="outline-list-insert" type="button" :disabled="inserting" @click="insertChapter">
@@ -474,6 +519,18 @@ async function removeTrashItem(kind: 'volumes' | 'chapters', id: string, title: 
           <label class="outline-field">
             <span>章节标题</span>
             <input v-model="currentDraft.title" type="text" maxlength="80" placeholder="未命名章节">
+          </label>
+
+          <label class="outline-field outline-pov-field">
+            <span>本章叙事视角</span>
+            <select :value="selected.povEntryId ?? ''" :disabled="povSaving || !confirmedCharacters.length" @change="changeChapterPov">
+              <option value="">未指定</option>
+              <option v-for="character in confirmedCharacters" :key="character.id" :value="character.id">{{ character.name }}{{ character.character?.role ? ` · ${character.character.role}` : '' }}</option>
+            </select>
+            <small v-if="!confirmedCharacters.length">先在设定库确认人物，再为章节指定视角。</small>
+            <small v-else-if="povSaving">正在保存视角…</small>
+            <small v-else-if="povError" class="is-error" role="alert">{{ povError }}</small>
+            <small v-else-if="povNotice" class="is-success" role="status">{{ povNotice }}</small>
           </label>
 
           <section class="outline-node-editor" aria-labelledby="outline-node-title">
@@ -583,6 +640,9 @@ async function removeTrashItem(kind: 'volumes' | 'chapters', id: string, title: 
 .outline-workspace { min-height: 0; grid-template-columns: minmax(0, 1fr) 390px; }
 .outline-chapter-cell { position: relative; }
 .outline-revision-flag { margin-top: 7px; color: var(--alert-ink); font-size: var(--fs-xs); font-weight: 700; }
+.outline-pov-flag { margin-top: 5px; overflow: hidden; color: var(--primary); font-size: var(--fs-xs); font-weight: 700; text-overflow: ellipsis; white-space: nowrap; }
+.outline-list-meta { display: flex; align-items: center; justify-content: flex-end; gap: var(--u3); }
+.outline-list-meta small { color: var(--primary); font-size: var(--fs-xs); font-weight: 700; }
 .outline-insert { min-height: 92px; display: grid; place-items: center; align-content: center; gap: 7px; border: 2px dashed var(--line-strong); background: var(--paper); color: var(--ink-3); font: inherit; font-size: var(--fs-sm); cursor: pointer; }
 .outline-insert:hover, .outline-list-insert:hover { border-color: var(--primary); color: var(--primary); }
 .outline-insert:disabled, .outline-list-insert:disabled { cursor: wait; opacity: .55; }
@@ -604,6 +664,10 @@ async function removeTrashItem(kind: 'volumes' | 'chapters', id: string, title: 
 .outline-field { display: grid; gap: 7px; margin-bottom: var(--u4); }
 .outline-field > span, .outline-node-editor header > span { color: var(--ink-3); font-size: var(--fs-xs); font-weight: 700; }
 .outline-field input, .outline-field textarea, .outline-node-row input { width: 100%; border: var(--hair) solid var(--line-strong); border-radius: 3px; background: var(--paper); color: var(--ink); font: inherit; }
+.outline-field select { width: 100%; height: 38px; padding: 0 var(--u3); border: var(--hair) solid var(--line-strong); border-radius: 3px; background: var(--paper); color: var(--ink); font: inherit; }
+.outline-pov-field small { min-height: 16px; color: var(--ink-4); font-size: var(--fs-xs); line-height: 1.45; }
+.outline-pov-field small.is-success { color: var(--primary); }
+.outline-pov-field small.is-error { color: var(--alert-ink); }
 .outline-field input { height: 40px; padding: 0 var(--u3); font-size: var(--fs-md); font-weight: 700; }
 .outline-field textarea { min-height: 74px; padding: var(--u2) var(--u3); line-height: 1.65; resize: vertical; }
 .outline-node-editor { margin-bottom: var(--u4); border-top: var(--hair) solid var(--line-strong); }
@@ -632,7 +696,7 @@ async function removeTrashItem(kind: 'volumes' | 'chapters', id: string, title: 
 .outline-write-action { width: 100%; height: 38px; margin-top: var(--u2); border: var(--hair) solid var(--line-strong); background: var(--paper); color: var(--ink); font: inherit; font-weight: 700; cursor: pointer; }
 .outline-write-action:hover:not(:disabled) { border-color: var(--primary); color: var(--primary); }
 .outline-write-action:disabled { cursor: not-allowed; opacity: .4; }
-.outline-field input:focus-visible, .outline-field textarea:focus-visible, .outline-node-row input:focus-visible, .outline-node-actions button:focus-visible, .outline-write-action:focus-visible { outline: 2px solid var(--primary); outline-offset: 1px; }
+.outline-field input:focus-visible, .outline-field textarea:focus-visible, .outline-field select:focus-visible, .outline-node-row input:focus-visible, .outline-node-actions button:focus-visible, .outline-write-action:focus-visible { outline: 2px solid var(--primary); outline-offset: 1px; }
 .outline-dialog-backdrop, .outline-trash-backdrop { position: fixed; inset: 0; z-index: 80; background: rgb(20 24 25 / 55%); }
 .outline-dialog-backdrop { display: grid; place-items: center; padding: 18px; }
 .outline-dialog { width: min(560px, 100%); overflow: hidden; border: var(--hair) solid var(--line-strong); border-radius: 4px; background: var(--paper); box-shadow: 0 18px 56px rgb(0 0 0 / 24%); }

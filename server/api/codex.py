@@ -25,6 +25,7 @@ from db.models_core import Chapter, Project, User
 from db.models_embedding import CodexEmbeddingJob
 from db.models_guard import Foreshadow
 from db.session import get_db
+from services.character_tracking import CharacterStatisticsNotFoundError, character_statistics
 from services.codex import (
     add_alias,
     count_stale_entries,
@@ -41,6 +42,32 @@ from services.provider_usage import record_platform_usage
 from services.providers import EmbeddingProvider
 
 router = APIRouter()
+
+
+class CharacterChapterStatisticsResponse(BaseModel):
+    chapter_id: str
+    chapter_index: int
+    chapter_title: str
+    words: int
+    explicit_references: int
+    extracted_claims: int
+    is_pov: bool
+
+
+class CharacterStatisticsResponse(BaseModel):
+    entry_id: str
+    name: str
+    appearance_chapters: int
+    explicit_references: int
+    extracted_claims: int
+    pov_chapters: int
+    pov_words: int
+    first_appearance: int | None
+    last_appearance: int | None
+    hiatus_chapters: int | None
+    chapters: list[CharacterChapterStatisticsResponse]
+
+
 logger = logging.getLogger(__name__)
 
 #: CodexEntry.kind / status 的合法取值。用 Literal 让 FastAPI 直接以 422 拒绝
@@ -432,6 +459,28 @@ async def list_codex_entries(
     ]
 
 
+@router.get(
+    "/{project_id}/entries/{entry_id}/statistics",
+    response_model=CharacterStatisticsResponse,
+)
+async def get_character_statistics(
+    project_id: str,
+    entry_id: str,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> CharacterStatisticsResponse:
+    """Return auditable presence and POV statistics for one confirmed character."""
+    await verify_project_permission(project_id, ProjectPermission.VIEW, user, db)
+    try:
+        result = await character_statistics(db, project_id=project_id, entry_id=entry_id)
+    except CharacterStatisticsNotFoundError as error:
+        raise HTTPException(
+            status_code=404,
+            detail={"code": "CHARACTER_STATISTICS_NOT_FOUND"},
+        ) from error
+    return CharacterStatisticsResponse.model_validate(result)
+
+
 @router.post(
     "/{project_id}/entries",
     response_model=EntryResponse,
@@ -570,13 +619,28 @@ async def delete_codex_entry(
             )
         ).scalar_one()
     )
-    if entry.status == "confirmed" and (reference_count > 0 or entry.ref_chapters):
+    pov_chapter_count = int(
+        (
+            await db.execute(
+                select(func.count(Chapter.id)).where(
+                    Chapter.pov_entry_id == entry.id,
+                    Chapter.deleted_at.is_(None),
+                )
+            )
+        ).scalar_one()
+    )
+    if entry.status == "confirmed" and (
+        reference_count > 0 or entry.ref_chapters or pov_chapter_count > 0
+    ):
+        detail = {
+            "code": "CODEX_ENTRY_IN_USE",
+            "reference_count": max(reference_count, len(entry.ref_chapters)),
+        }
+        if pov_chapter_count:
+            detail["pov_chapter_count"] = pov_chapter_count
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
-            detail={
-                "code": "CODEX_ENTRY_IN_USE",
-                "reference_count": max(reference_count, len(entry.ref_chapters)),
-            },
+            detail=detail,
         )
 
     await db.delete(entry)

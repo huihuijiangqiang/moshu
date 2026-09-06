@@ -4,7 +4,7 @@
 from datetime import datetime
 from typing import TYPE_CHECKING, Optional
 
-from sqlalchemy import BigInteger, Boolean, DateTime, ForeignKey, Integer, String, Text, func
+from sqlalchemy import BigInteger, Boolean, CheckConstraint, DateTime, ForeignKey, Integer, String, Text, func
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -85,6 +85,9 @@ class Chapter(Base, TimestampMixin):
     """章节表 - 不含正文"""
 
     __tablename__ = "chapters"
+    __table_args__ = (
+        CheckConstraint("pov_revision >= 0", name="ck_chapter_pov_revision_nonnegative"),
+    )
 
     id: Mapped[str] = mapped_column(String(32), primary_key=True)
     project_id: Mapped[str] = mapped_column(String(32), ForeignKey("projects.id", ondelete="CASCADE"), index=True)
@@ -96,6 +99,10 @@ class Chapter(Base, TimestampMixin):
     words: Mapped[int] = mapped_column(Integer, default=0)
     outline: Mapped[list[str]] = mapped_column(JSONB, default=list)  # 章纲节点
     summary: Mapped[Optional[str]] = mapped_column(Text, nullable=True)  # 200字章摘要
+    pov_entry_id: Mapped[Optional[str]] = mapped_column(
+        String(32), ForeignKey("codex_entries.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    pov_revision: Mapped[int] = mapped_column(Integer, default=0, server_default="0", nullable=False)
     deleted_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
 
     # 关系
