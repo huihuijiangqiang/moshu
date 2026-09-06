@@ -30,7 +30,11 @@ from config import settings
 from services.chunking import TextChunk, chunk_html
 from services.claim_identity import claim_fingerprint
 from services.provider_usage import chat_prompt_text, provider_usage_event
-from services.timeline import GLOBAL_ORDER_BASES, parse_absolute_anchor
+from services.timeline import (
+    GLOBAL_ORDER_BASES,
+    normalize_relative_expression,
+    parse_absolute_anchor,
+)
 
 if TYPE_CHECKING:
     pass
@@ -227,6 +231,9 @@ class ClaimOutput(BaseModel):
         None, pattern="^(before|after|simultaneous)$"
     )
     temporal_relation_ref: Optional[str] = Field(None, max_length=200)
+
+    #: Deterministic, non-authoritative normalization persisted for review and reflow.
+    temporal_resolution: Optional[dict[str, Any]] = None
 
     #: 顺序依据。absolute_datetime 是根锚点，relative_to_anchor 只能继承已确认锚点；
     #: narration_local 明确表示「只在本块内有意义」，绝不能当全局序号用。
@@ -708,6 +715,9 @@ class ConsistencyProvider:
                 claim.temporal_event_ref = None
 
             claim_dict = claim.model_dump()
+            relative_resolution = normalize_relative_expression(claim.temporal_anchor_text)
+            if relative_resolution is not None and claim.order_basis == "relative_to_anchor":
+                claim_dict["temporal_resolution"] = relative_resolution.as_dict()
             claim_dict["fingerprint"] = claim_fingerprint(
                 subject_text=claim.subject_text,
                 predicate=claim.predicate,

@@ -6,8 +6,8 @@
 所有声明基于实际代码与测试结果，不夸大、不省略已知缺口。
 
 **关键事实**：
-- ✅ 36 张表完整 Alembic baseline，增量迁移已到 `016_platform_usage_ledger`
-- ✅ 1053 个单元/功能测试通过（SQLite in-memory，mock embedding/LLM）
+- ✅ 36 张表完整 Alembic baseline，增量迁移已到 `017_temporal_resolution`
+- ✅ 1060 个单元/功能测试通过（SQLite in-memory，mock embedding/LLM）
 - ✅ 前端 85 个测试、TypeScript 类型检查和生产构建通过
 - ✅ 36 个集成测试已在本机真实 PostgreSQL + pgvector 环境通过
 - ✅ 已完成真实账号认证、作品创建、作品归档、分卷与章节增删改排、回收站和章纲编辑闭环
@@ -117,7 +117,7 @@ PostgreSQL/pgvector 检索必须在真实部署上单独压测；该脚本只覆
   `halfvec_cosine_ops` 重建 HNSW 索引；upgrade/downgrade 均会要求重新回填向量
 - ✅ `alembic upgrade head --sql` 与 `alembic downgrade -1 --sql` 语法验证通过
 - ✅ 36 个集成测试已在本机真实 PostgreSQL + pgvector 运行通过；当前审核数据库已真实执行
-  `004_auth_admin_rbac -> 005_usage_ledger -> 006_usage_reservation_expiry -> 007_style_profiles -> 008_embedding_job_visibility -> 009_embedding_dispatch_attempts -> 010_claim_temporal_evidence -> 011_guard_issue_arbitration -> 012_content_lifecycle -> 013_generation_drafts -> 014_text_replacement_runs -> 015_foreshadow_lifecycle -> 016_platform_usage_ledger`；部署后以 readiness 返回的 Alembic head 为准
+  `004_auth_admin_rbac -> 005_usage_ledger -> 006_usage_reservation_expiry -> 007_style_profiles -> 008_embedding_job_visibility -> 009_embedding_dispatch_attempts -> 010_claim_temporal_evidence -> 011_guard_issue_arbitration -> 012_content_lifecycle -> 013_generation_drafts -> 014_text_replacement_runs -> 015_foreshadow_lifecycle -> 016_platform_usage_ledger -> 017_temporal_resolution`；部署后以 readiness 返回的 Alembic head 为准
 
 ---
 
@@ -218,8 +218,8 @@ PostgreSQL/pgvector 检索必须在真实部署上单独压测；该脚本只覆
 - ✅ 时间原文、事件标签、关系、依据与置信度随 claim 持久化；后章可引用前章事件
 - ⚠️ **保守限制**：
   - 仅支持 ISO-8601 形状的绝对时间（`2024-01-15`, `2024-01-15T10:30:00`）
-  - 支持 `三日后`、`两小时前`、`半个时辰后` 等精确相对表达；`次日`、`过几日`、`一月后` 等日历相关或模糊时间不推断
-  - **不支持** LLM 辅助的模糊时间表达规范化
+  - 支持精确相对表达，并将 `次日`、`过几日`、`一月后`、时段后缀等规范化为可审计区间
+  - 模糊区间不会直接生成 story_order，需确认后再参与硬规则
   - 相对锚点必须同一时间线、精确唯一引用已确认事件、方向与原文一致且置信度至少 0.7；否则保持 NULL
   - 前序锚点后续改写时，既有下游相对 claim 不会主动级联重算，需通过项目重扫/管道升级重新抽取
   - 叙述局部序号（`narration_local`）与未知（`unknown`）保持 story_order=NULL
@@ -415,9 +415,9 @@ PostgreSQL/pgvector 检索必须在真实部署上单独压测；该脚本只覆
 
 ### 5. 测试覆盖
 
-#### 单元测试（1053 passed，SQLite in-memory，mock providers）
+#### 单元测试（1060 passed，SQLite in-memory，mock providers）
 
-**全量测试结果**：1053 passed, 36 skipped（未设置集成测试 URL 时）, 0 warnings；前端 85 passed
+**全量测试结果**：1060 passed, 36 skipped（未设置集成测试 URL 时）, 0 warnings；前端 85 passed
 
 主要测试覆盖（不逐文件列举测试数量，以实际 pytest 结果为准）：
 - ✅ Codex 设定库：页面与 API 完整 CRUD、引用删除保护、原子别名替换、可检索文本判据、两段式事务、deferred 降级、httpx 错误重试
@@ -663,8 +663,10 @@ baseline，增量实现 Codex embedding 回填、时间锚点解析、issue 生�
    - 加入不会漏检的时间线区间裁剪，并用长文本压测校准 500 键降级阈值
 
 2. **时间锚点 LLM 辅助**
-   - 模糊时间表达规范化
-   - 已持久化锚点的依赖图与下游自动重算
+   - ✅ 模糊时间表达确定性规范化：精确表达保留单点，月/年/“过几日”/时段表达保存可审计区间
+   - ✅ claim 持久化 `temporal_resolution`，记录规范化结果与依赖状态（resolved/ambiguous/unresolved）
+   - ✅ 当前批次与跨章节锚点依赖图诊断，检测歧义引用和循环依赖；模糊区间仍需人工确认后才进入硬规则
+   - 下游自动重算目前以重新运行该版本一致性任务触发，尚未提供独立的项目级批量 reflow API
 
 3. **竞品常见的深度规划与审稿能力**
    - 多剧情线时间板、人物出场与视角统计、设定随章节变化的状态历史
@@ -723,8 +725,8 @@ baseline，增量实现 Codex embedding 回填、时间锚点解析、issue 生�
 - `server/tasks/consistency.py` - 一致性任务
 - `server/tasks/codex.py` - Codex 回填任务
 
-### 测试（1053 passed；另有 36 个真实 PostgreSQL 测试通过）
-- `server/tests/` - 单元/功能测试（1053 passed）
+### 测试（1060 passed；另有 36 个真实 PostgreSQL 测试通过）
+- `server/tests/` - 单元/功能测试（1060 passed）
 - `app/src/**/*.spec.ts` - 前端测试（85 passed）
 - `server/tests/integration/` - 集成测试（36 passed，需设置真实 PostgreSQL URL）
 
@@ -735,15 +737,15 @@ baseline，增量实现 Codex embedding 回填、时间锚点解析、issue 生�
 
 ## 总结
 
-墨枢一致性后端已完成核心数据模型、服务层、API 端点和异步任务定义，1053 个单元/功能
+墨枢一致性后端已完成核心数据模型、服务层、API 端点和异步任务定义，1060 个单元/功能
 测试在 SQLite in-memory + mock providers 环境下通过，另有 36 个集成测试在真实
 PostgreSQL + pgvector 环境通过。真实认证、可吊销会话、管理员、工作室 RBAC、作品创建、
 作品归档、分卷与章节生命周期、章纲、正文版本历史与恢复、AI 多候选草稿、全书查找替换、全量导出、非覆盖备份恢复、风格指纹、AI 来源账本、作者生成用量与平台模型成本台账已经接通，前端 85 个测试与生产构建通过。
 
 **关键限制**：
-1. 七条确定性规则的 280/140 结构化评测门禁已完成，但真实正文盲评、模糊时间区间与锚点依赖级联尚未完成
+1. 七条确定性规则的 280/140 结构化评测门禁已完成，但真实正文盲评和模糊区间人工确认闭环仍需补充
 2. 当前 100% 指标来自真实 scanner 而非硬编码，但输入仍是合成 claim，**不代表正文抽取和 LLM 仲裁的端到端质量**
-3. 模糊时间语义理解与影响集时间区间裁剪未实现；仲裁只提供建议，不自动处置
+3. 模糊时间已保存规范化区间与依赖诊断；项目级批量 reflow 和影响集时间区间裁剪未实现，仲裁只提供建议，不自动处置
 4. 真实长文本扫描吞吐受上游模型网关稳定性和并发限制影响
 
 当前是“核心一致性能力 + 首轮真实产品流程”，不是功能完整 MVP。生产部署前仍需完成上述产品闭环、

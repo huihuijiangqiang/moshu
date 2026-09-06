@@ -72,7 +72,7 @@ from services.outbox import OutboxService
 from services.provider_usage import record_platform_usage
 from services.retrieval import ConsistencyRetrieval
 from services.rule_scanner import RuleScanner
-from services.timeline import assign_story_orders
+from services.timeline import assign_story_orders, build_temporal_dependency_graph, normalize_relative_expression
 
 # Create async engine for tasks
 engine = create_async_engine(settings.database_url, echo=False)
@@ -573,6 +573,28 @@ async def _extract_claims_async(task_id: str, run_id: int):
             # 有意义，而规则扫描是全项目范围的 —— 直接采信等于伪造顺序。
             # 没有共同锚点的 claim 保持 story_order=None，只进待确认列表。
             anchored = assign_story_orders(linked, known_anchors=known_anchors)
+
+            # Persist deterministic relative-time normalization and dependency diagnostics.
+            # This metadata is advisory: only exact, unambiguous dependencies receive a
+            # story_order; fuzzy ranges remain visible for manual confirmation/reflow.
+            dependency_graph = build_temporal_dependency_graph(
+                anchored, known_anchors=known_anchors
+            )
+            edge_by_node = {
+                edge["from"]: edge for edge in dependency_graph["edges"]
+            }
+            for claim in anchored:
+                resolution = normalize_relative_expression(claim.get("temporal_anchor_text"))
+                if resolution is None and claim.get("temporal_resolution") is None:
+                    continue
+                metadata = dict(claim.get("temporal_resolution") or {})
+                if resolution is not None:
+                    metadata.update(resolution.as_dict())
+                node_id = str(claim.get("fingerprint") or claim.get("id") or "")
+                edge = edge_by_node.get(node_id)
+                if edge is not None:
+                    metadata["dependency_status"] = edge["status"]
+                claim["temporal_resolution"] = metadata
 
             # 再对已经有全局顺序的状态型 claim 闭合有效区间
             positioned = assign_narrative_positions(anchored)

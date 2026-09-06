@@ -168,6 +168,10 @@ class ConsistencyClaim(Base, TimestampMixin):
     temporal_event_ref: Mapped[Optional[str]] = mapped_column(String(200), nullable=True)
     temporal_relation: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)
     temporal_relation_ref: Mapped[Optional[str]] = mapped_column(String(200), nullable=True)
+    #: Deterministic normalization and dependency diagnostics for relative time text.
+    #: The original evidence remains in temporal_anchor_text; this JSON is derived and
+    #: may be recomputed when an upstream anchor changes.
+    temporal_resolution: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
     order_basis: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
     order_confidence: Mapped[Optional[float]] = mapped_column(Numeric(5, 4), nullable=True)
     story_order: Mapped[Optional[float]] = mapped_column(Numeric(24, 8), nullable=True)

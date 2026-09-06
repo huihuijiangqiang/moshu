@@ -34,8 +34,9 @@
 from __future__ import annotations
 
 import re
+from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Optional
+from typing import Any, Optional
 
 #: order_basis 的合法取值。
 #:
@@ -77,6 +78,34 @@ _UNIT_SECONDS = {
     "日": 86400,
     "周": 7 * 86400,
 }
+
+
+@dataclass(frozen=True)
+class RelativeTimeResolution:
+    """可审计的相对时间解析结果。
+
+    模糊表达只产生区间，不会被提升成一个伪精确的 story_order。
+    """
+
+    original: str
+    offset_min_seconds: float
+    offset_max_seconds: float
+    normalized: str
+    precision: str
+
+    @property
+    def is_exact(self) -> bool:
+        return self.offset_min_seconds == self.offset_max_seconds
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "original": self.original,
+            "offset_min_seconds": self.offset_min_seconds,
+            "offset_max_seconds": self.offset_max_seconds,
+            "normalized": self.normalized,
+            "precision": self.precision,
+            "is_exact": self.is_exact,
+        }
 
 
 class UnparseableAnchorError(ValueError):
@@ -139,6 +168,177 @@ def parse_relative_offset(value: Optional[str]) -> Optional[float]:
         return None
     seconds = number * _UNIT_SECONDS[match.group("unit")]
     return seconds if match.group("direction") == "后" else -seconds
+
+
+_VAGUE_DAY_RE = re.compile(r"^(?P<prefix>过|约|大约|将近)?(?P<number>几|数)(?:个)?(?P<direction>日|天)(?P<suffix>后|前)$")
+_CALENDAR_RE = re.compile(
+    r"^(?P<number>[一二两三四五六七八九十百\d]+)(?:个)?(?P<unit>月|年)(?P<direction>后|前)$"
+)
+_DAYPART_HOURS = {
+    "清晨": (4, 8),
+    "早晨": (5, 9),
+    "上午": (8, 12),
+    "中午": (11, 14),
+    "下午": (12, 18),
+    "傍晚": (17, 20),
+    "夜里": (19, 24),
+    "深夜": (22, 30),
+}
+
+
+def normalize_relative_expression(value: Optional[str]) -> Optional[RelativeTimeResolution]:
+    """Normalize exact and fuzzy relative calendar expressions into auditable ranges.
+
+    The parser deliberately does not guess a single point for calendar units. A month is
+    represented as 28-31 days and a year as 365-366 days. Day-part suffixes widen the
+    range by the documented hours. Callers may safely persist this metadata and keep the
+    claim out of hard ordering rules unless ``is_exact`` is true.
+    """
+    if not value:
+        return None
+    original = str(value)
+    candidate = re.sub(r"\s+", "", original)
+    exact = parse_relative_offset(candidate)
+    if exact is not None:
+        return RelativeTimeResolution(candidate, exact, exact, "exact_duration", "exact")
+
+    if candidate in {"次日", "翌日", "隔日", "第二日"}:
+        return RelativeTimeResolution(candidate, 86400, 86400, "1日后", "calendar_day")
+    if candidate in {"当日", "同日", "当晚", "当天"}:
+        return RelativeTimeResolution(candidate, 0, 0, "同日", "exact_day")
+
+    match = _VAGUE_DAY_RE.fullmatch(candidate)
+    if match:
+        sign = 1 if match.group("suffix") == "后" else -1
+        low, high = sorted((sign * 2 * 86400, sign * 7 * 86400))
+        return RelativeTimeResolution(
+            candidate,
+            low,
+            high,
+            "2-7日后" if sign > 0 else "2-7日前",
+            "fuzzy_days",
+        )
+
+    match = _CALENDAR_RE.fullmatch(candidate)
+    if match:
+        number = _parse_chinese_number(match.group("number"))
+        if number is not None and number > 0:
+            sign = 1 if match.group("direction") == "后" else -1
+            if match.group("unit") == "月":
+                lower, upper = number * 28 * 86400, number * 31 * 86400
+                normalized = f"{number:g}月后" if sign > 0 else f"{number:g}月前"
+            else:
+                lower, upper = number * 365 * 86400, number * 366 * 86400
+                normalized = f"{number:g}年后" if sign > 0 else f"{number:g}年前"
+            return RelativeTimeResolution(
+                candidate,
+                min(sign * lower, sign * upper),
+                max(sign * lower, sign * upper),
+                normalized,
+                "calendar_month" if match.group("unit") == "月" else "calendar_year",
+            )
+
+    daypart = next((name for name in _DAYPART_HOURS if candidate.endswith(name)), None)
+    if daypart:
+        base = candidate[: -len(daypart)]
+        if base.endswith("的"):
+            base = base[:-1]
+        base_resolution = normalize_relative_expression(base)
+        if base_resolution is not None:
+            start, end = _DAYPART_HOURS[daypart]
+            return RelativeTimeResolution(
+                candidate,
+                base_resolution.offset_min_seconds + start * 3600,
+                base_resolution.offset_max_seconds + end * 3600,
+                f"{base_resolution.normalized}+{daypart}",
+                "fuzzy_daypart",
+            )
+    return None
+
+
+def build_temporal_dependency_graph(
+    claims: list[dict], *, known_anchors: Optional[list[dict]] = None
+) -> dict[str, Any]:
+    """Build a dependency graph and report unresolved, ambiguous, or cyclic references."""
+    nodes: dict[str, dict[str, Any]] = {}
+    edges: list[dict[str, Any]] = []
+    by_ref: dict[tuple[str, str], set[float]] = {}
+    for anchor in known_anchors or []:
+        ref = _event_ref(anchor)
+        timeline = anchor.get("timeline_id")
+        order = anchor.get("story_order")
+        if ref and timeline and order is not None:
+            by_ref.setdefault((timeline, ref), set()).add(float(order))
+    # Current-batch absolute anchors are valid dependencies even before persistence.
+    for claim in claims:
+        ref = _event_ref(claim)
+        timeline = claim.get("timeline_id")
+        if not ref or not timeline:
+            continue
+        order = claim.get("story_order")
+        if order is None and claim.get("order_basis") in GLOBAL_ORDER_BASES:
+            order = parse_absolute_anchor(claim.get("temporal_anchor_value"))
+        if order is not None:
+            by_ref.setdefault((timeline, ref), set()).add(float(order))
+    for index, claim in enumerate(claims):
+        ref = _event_ref(claim)
+        node_id = str(claim.get("fingerprint") or claim.get("id") or f"claim:{index}")
+        nodes[node_id] = {"timeline_id": claim.get("timeline_id"), "event_ref": ref}
+        relation_ref = re.sub(
+            r"\s+", "", str(claim.get("temporal_relation_ref") or "")
+        ).casefold() or None
+        if claim.get("order_basis") != "relative_to_anchor" or not relation_ref:
+            continue
+        timeline = claim.get("timeline_id")
+        candidates = set(by_ref.get((timeline, relation_ref), set()))
+        for candidate in claims:
+            if candidate is claim or candidate.get("timeline_id") != timeline:
+                continue
+            if _event_ref(candidate) == relation_ref and candidate.get("story_order") is not None:
+                candidates.add(float(candidate["story_order"]))
+        resolution = normalize_relative_expression(claim.get("temporal_anchor_text"))
+        status = "resolved" if len(candidates) == 1 and resolution and resolution.is_exact else (
+            "ambiguous" if len(candidates) > 1 else "unresolved"
+        )
+        edges.append({
+            "from": node_id,
+            "to_ref": relation_ref,
+            "timeline_id": timeline,
+            "status": status,
+            "offset_min_seconds": resolution.offset_min_seconds if resolution else None,
+            "offset_max_seconds": resolution.offset_max_seconds if resolution else None,
+        })
+
+    adjacency: dict[str, set[str]] = {}
+    ref_nodes = {(node["timeline_id"], node["event_ref"]): node_id for node_id, node in nodes.items() if node["event_ref"]}
+    for edge in edges:
+        target = ref_nodes.get((edge["timeline_id"], edge["to_ref"]))
+        if target:
+            adjacency.setdefault(edge["from"], set()).add(target)
+    cycles: list[list[str]] = []
+    visiting: set[str] = set()
+    visited: set[str] = set()
+
+    def visit(node: str, path: list[str]) -> None:
+        if node in visiting:
+            cycles.append(path[path.index(node):] + [node])
+            return
+        if node in visited:
+            return
+        visiting.add(node)
+        for child in adjacency.get(node, set()):
+            visit(child, path + [child])
+        visiting.remove(node)
+        visited.add(node)
+
+    for node in nodes:
+        visit(node, [node])
+    return {
+        "nodes": nodes,
+        "edges": edges,
+        "cycles": cycles,
+        "has_blocking_issue": bool(cycles) or any(e["status"] in {"ambiguous", "unresolved"} for e in edges),
+    }
 
 
 def _event_ref(claim: dict) -> Optional[str]:
@@ -270,4 +470,7 @@ __all__ = [
     "is_globally_anchored",
     "parse_absolute_anchor",
     "parse_relative_offset",
+    "RelativeTimeResolution",
+    "normalize_relative_expression",
+    "build_temporal_dependency_graph",
 ]

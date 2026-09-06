@@ -57,6 +57,7 @@ MUTABLE_FIELDS = (
     "temporal_event_ref",
     "temporal_relation",
     "temporal_relation_ref",
+    "temporal_resolution",
     "order_basis",
     "order_confidence",
     "story_order",

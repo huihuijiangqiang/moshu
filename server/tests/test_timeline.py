@@ -14,7 +14,9 @@ from services.timeline import (
     MIN_ORDER_CONFIDENCE,
     VALID_ORDER_BASES,
     assign_story_orders,
+    build_temporal_dependency_graph,
     is_globally_anchored,
+    normalize_relative_expression,
     parse_absolute_anchor,
     parse_relative_offset,
 )
@@ -113,6 +115,80 @@ def test_relative_duration_parser_is_deterministic(text, seconds):
 )
 def test_vague_relative_durations_are_rejected(text):
     assert parse_relative_offset(text) is None
+
+
+@pytest.mark.parametrize(
+    "text,normalized,low,high,precision",
+    [
+        ("次日", "1日后", 86400, 86400, "calendar_day"),
+        ("一月后", "1月后", 28 * 86400, 31 * 86400, "calendar_month"),
+        ("一年后", "1年后", 365 * 86400, 366 * 86400, "calendar_year"),
+        ("过几日前", "2-7日前", -7 * 86400, -2 * 86400, "fuzzy_days"),
+    ],
+)
+def test_vague_relative_expression_is_normalized_to_a_range(
+    text, normalized, low, high, precision
+):
+    result = normalize_relative_expression(text)
+    assert result is not None
+    assert result.normalized == normalized
+    assert result.offset_min_seconds == low
+    assert result.offset_max_seconds == high
+    assert result.precision == precision
+    assert result.is_exact is (low == high)
+
+
+def test_daypart_suffix_widens_relative_range_without_fabricating_a_point():
+    result = normalize_relative_expression("三日后的清晨")
+    assert result is not None
+    assert result.offset_min_seconds == 3 * 86400 + 4 * 3600
+    assert result.offset_max_seconds == 3 * 86400 + 8 * 3600
+    assert result.is_exact is False
+
+
+def test_dependency_graph_reports_ambiguous_anchor():
+    graph = build_temporal_dependency_graph(
+        [
+            anchored_claim(temporal_event_ref="启程"),
+            anchored_claim(temporal_anchor_value="0812-11-04", temporal_event_ref="启程"),
+            anchored_claim(
+                subject_text="抵达",
+                order_basis="relative_to_anchor",
+                temporal_anchor_value=None,
+                temporal_anchor_text="一日后",
+                temporal_relation="after",
+                temporal_relation_ref="启程",
+                fingerprint="arrival",
+            ),
+        ]
+    )
+    assert graph["edges"][0]["status"] == "ambiguous"
+    assert graph["has_blocking_issue"] is True
+
+
+def test_dependency_graph_detects_cycle():
+    claims = [
+        anchored_claim(
+            temporal_event_ref="甲",
+            order_basis="relative_to_anchor",
+            temporal_anchor_value=None,
+            temporal_anchor_text="一日后",
+            temporal_relation="after",
+            temporal_relation_ref="乙",
+            fingerprint="a",
+        ),
+        anchored_claim(
+            temporal_event_ref="乙",
+            order_basis="relative_to_anchor",
+            temporal_anchor_value=None,
+            temporal_anchor_text="一日后",
+            temporal_relation="after",
+            temporal_relation_ref="甲",
+            fingerprint="b",
+        ),
+    ]
+    graph = build_temporal_dependency_graph(claims)
+    assert graph["cycles"]
 
 
 # --- 全局锚点判定 -------------------------------------------------------------
