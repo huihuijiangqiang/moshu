@@ -1,9 +1,12 @@
 import { defineStore } from 'pinia'
 import { computed, ref } from 'vue'
 import { mockApi } from '@/api/mock'
+import { USE_MOCK } from '@/api/http'
+import { storyboardApi } from '@/api/storyboard'
 import type { StoryboardAdaptation, StoryboardEpisode, StoryboardScene, StoryboardShot, VisualProfile } from '@/types'
 
 export const useStoryboardStore = defineStore('storyboard', () => {
+  const api = USE_MOCK ? mockApi : storyboardApi
   const adaptation = ref<StoryboardAdaptation | null>(null)
   const loadedProjectId = ref<string | null>(null)
   const selectedEpisodeId = ref<string | null>(null)

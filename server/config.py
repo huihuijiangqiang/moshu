@@ -1,14 +1,19 @@
 """
 配置管理 - 从环境变量加载所有配置
 """
+from pathlib import Path
 from typing import Optional
 
 from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+# Resolve .env relative to this module so Celery, Alembic, pytest, and server
+# startup all read the same local configuration regardless of cwd.
+_ENV_FILE = Path(__file__).resolve().parent / ".env"
+
 
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
+    model_config = SettingsConfigDict(env_file=_ENV_FILE, env_file_encoding="utf-8", extra="ignore")
 
     # Database
     database_url: str = "postgresql+asyncpg://moshu:moshu@localhost:5432/moshu"
