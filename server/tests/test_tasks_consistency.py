@@ -2720,6 +2720,7 @@ async def test_temporal_dependent_rescan_runs_rules_without_resetting_pipeline(
     class FakeScanner:
         last_scan_claim_count = 4
         last_scan_pruned_count = 3
+        last_scan_interval_filter_applied = True
         last_scan_scope = "impact"
 
         def __init__(self, rule_version):
@@ -2745,6 +2746,7 @@ async def test_temporal_dependent_rescan_runs_rules_without_resetting_pipeline(
     assert result["issues_found"] == 1
     assert result["claims_scanned"] == 4
     assert result["claims_pruned"] == 3
+    assert result["interval_filter_applied"] is True
     assert arbitration == [pipeline_setup.id]
     await use_test_session.refresh(pipeline_setup)
     assert pipeline_setup.status == original_status

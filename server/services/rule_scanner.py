@@ -77,6 +77,7 @@ class RuleScanner:
         self.rule_version = rule_version
         self.last_scan_claim_count = 0
         self.last_scan_pruned_count = 0
+        self.last_scan_interval_filter_applied = False
         self.last_scan_scope = "project"
 
     @staticmethod
@@ -178,6 +179,100 @@ class RuleScanner:
                 result.append(candidate)
         return result
 
+    @classmethod
+    def _interval_possible_clause(
+        cls,
+        source: ConsistencyClaim,
+    ):
+        """SQL equivalent of the safe part of ``_intervals_may_conflict``.
+
+        This deliberately returns a superset for unknown or malformed bounds;
+        the in-memory pass remains authoritative after the query.
+        """
+        source_start = cls._claim_start(source)
+        candidate_start = func.coalesce(
+            ConsistencyClaim.valid_from_order,
+            ConsistencyClaim.story_order,
+        )
+        if source_start is None:
+            return True
+        if source.valid_to_order is not None and source.valid_to_order < source_start:
+            return True
+
+        candidate_malformed = and_(
+            candidate_start.is_not(None),
+            ConsistencyClaim.valid_to_order.is_not(None),
+            ConsistencyClaim.valid_to_order < candidate_start,
+        )
+        conditions = [
+            candidate_start.is_(None),
+            candidate_malformed,
+            candidate_start == source_start,
+            and_(
+                candidate_start < source_start,
+                or_(
+                    ConsistencyClaim.valid_to_order.is_(None),
+                    ConsistencyClaim.valid_to_order > source_start,
+                ),
+            ),
+        ]
+        if source.valid_to_order is None:
+            conditions.append(candidate_start > source_start)
+        else:
+            conditions.append(
+                and_(
+                    candidate_start > source_start,
+                    candidate_start < source.valid_to_order,
+                )
+            )
+        return or_(*conditions)
+
+    @staticmethod
+    def _same_timeline_clause(timeline_id: str | None):
+        return (
+            ConsistencyClaim.timeline_id.is_(None)
+            if timeline_id is None
+            else ConsistencyClaim.timeline_id == timeline_id
+        )
+
+    @classmethod
+    def _owns_interval_pushdown_clause(
+        cls,
+        source_rows: list[ConsistencyClaim],
+        *,
+        chapter_id: str,
+    ):
+        """Build a conservative SQL pre-filter for ownership intervals.
+
+        A candidate with no matching source object id is retained. Candidates on
+        another timeline are intentionally excluded here, matching the existing
+        in-memory identity isolation; changed-chapter claims always bypass the
+        pre-filter and are checked normally.
+        """
+        sources = [
+            source
+            for source in source_rows
+            if source.predicate == "owns" and source.object_entry_id
+        ]
+        if not sources:
+            return None
+        object_ids = {source.object_entry_id for source in sources}
+        possible_matches = [
+            and_(
+                ConsistencyClaim.object_entry_id == source.object_entry_id,
+                cls._same_timeline_clause(source.timeline_id),
+                cls._interval_possible_clause(source),
+            )
+            for source in sources
+        ]
+        return or_(
+            ConsistencyClaim.chapter_id == chapter_id,
+            ConsistencyClaim.predicate != "owns",
+            ConsistencyClaim.object_entry_id.is_(None),
+            ~ConsistencyClaim.object_entry_id.in_(object_ids),
+            or_(*possible_matches),
+        )
+
     async def _load_impacted_claims(
         self,
         db: AsyncSession,
@@ -267,6 +362,7 @@ class RuleScanner:
         if not source_rows or key_count == 0 or key_count > MAX_IMPACT_KEYS:
             self.last_scan_scope = "project"
             self.last_scan_pruned_count = 0
+            self.last_scan_interval_filter_applied = False
             query = select(ConsistencyClaim).where(
                 ConsistencyClaim.project_id == project_id,
                 ConsistencyClaim.status == "accepted",
@@ -301,6 +397,15 @@ class RuleScanner:
                 ConsistencyClaim.status == "accepted",
                 or_(*clauses),
             )
+            owns_pushdown = self._owns_interval_pushdown_clause(
+                source_rows,
+                chapter_id=chapter_id,
+            )
+            if owns_pushdown is not None:
+                query = query.where(owns_pushdown)
+                self.last_scan_interval_filter_applied = True
+            else:
+                self.last_scan_interval_filter_applied = False
 
         claims = list((await db.execute(query.order_by(ConsistencyClaim.id))).scalars().all())
         if self.last_scan_scope == "impact":

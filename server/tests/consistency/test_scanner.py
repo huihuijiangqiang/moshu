@@ -408,7 +408,8 @@ async def test_impact_scan_prunes_only_disjoint_ownership_intervals(
         "fp_overlapping_ownership",
     }
     assert scanner.last_scan_scope == "impact"
-    assert scanner.last_scan_pruned_count == 1
+    assert scanner.last_scan_interval_filter_applied is True
+    assert scanner.last_scan_pruned_count == 0
 
 
 async def test_impact_scan_prunes_disjoint_locations_but_keeps_unknown_time(
@@ -629,7 +630,8 @@ async def test_same_identity_on_another_timeline_is_safely_pruned(
     )
 
     assert [claim.fingerprint for claim in claims] == ["fp_main_timeline"]
-    assert scanner.last_scan_pruned_count == 1
+    assert scanner.last_scan_interval_filter_applied is True
+    assert scanner.last_scan_pruned_count == 0
 
 
 async def test_project_fallback_resets_previous_pruning_telemetry(
@@ -650,6 +652,7 @@ async def test_project_fallback_resets_previous_pruning_telemetry(
 
     assert scanner.last_scan_scope == "project"
     assert scanner.last_scan_pruned_count == 0
+    assert scanner.last_scan_interval_filter_applied is False
 
 
 # --- 规则 1：生死冲突 ----------------------------------------------------------
