@@ -11,9 +11,10 @@
 - **写作台**：章节正文、章纲、AI 草稿、风格档和上下文预算在同一工作区协同。
 - **作品记忆**：人物、地点、势力、物品、伏笔和时间线按作品隔离，支持持续修改。
 - **一致性守卫**：展示冲突两端的证据，支持回到正文处理，不让模型静默改写作者设定。
+- **漫剧分镜**：在独立改编版本中管理集、场景、镜头和人物视觉档案，镜头可维护景别、运镜、动作、对白、旁白与画面提示词。
 - **长文本基础设施**：PostgreSQL/pgvector 负责持久化与检索，Redis/Celery 承担异步分析和生成任务；正文按确定性分块覆盖全文，摘要、设定和向量检索分层装配。
 
-当前仓库包含 Vue 3 写作前端、FastAPI API、PostgreSQL/pgvector、Redis 与 Celery 异步任务，以及架构、计费和实现文档。后端当前 migration head 为 `027_chapter_temporal_anchor`。
+当前仓库包含 Vue 3 写作前端、FastAPI API、PostgreSQL/pgvector、Redis 与 Celery 异步任务，以及架构、计费和实现文档。后端当前 migration head 为 `028_adaptation_storyboard`。
 
 ### 长篇一致性保障
 
@@ -219,8 +220,13 @@ MOSHU_REDIS_DATA_DIR=<redis-data-directory>
 
 当前实现状态与后端验收记录见 `server/docs/IMPLEMENTATION_STATUS.md`；架构约束见 `docs/architecture/`。
 
-最近一次后端回归结果：`1297 passed, 37 skipped`。被跳过的测试需要显式配置真实
-PostgreSQL/pgvector 集成环境；测试正文、模型 key、`.env` 和 Docker 数据卷均不提交 Git。
+漫剧分镜在 mock 模式和真实 API 模式下使用同一套交互。真实 API 将改编版本、集、场景、
+镜头和视觉档案持久化到 PostgreSQL，并按作品权限限制查看、编辑分镜和维护视觉档案。
+当前阶段不包含实际视频、配音、字幕时间轴或合成任务；图片生成仍属于待接入能力。
+
+最近一次后端回归记录：`1297 passed, 37 skipped`；本轮前端回归为 `153 passed`。后端被跳过的
+测试需要显式配置真实 PostgreSQL/pgvector 集成环境；测试正文、模型 key、`.env` 和 Docker
+数据卷均不提交 Git。
 
 ## 许可
 
