@@ -11,9 +11,16 @@
 - **写作台**：章节正文、章纲、AI 草稿、风格档和上下文预算在同一工作区协同。
 - **作品记忆**：人物、地点、势力、物品、伏笔和时间线按作品隔离，支持持续修改。
 - **一致性守卫**：展示冲突两端的证据，支持回到正文处理，不让模型静默改写作者设定。
-- **长文本基础设施**：PostgreSQL/pgvector 负责持久化与检索，Redis/Celery 承担异步分析和生成任务。
+- **长文本基础设施**：PostgreSQL/pgvector 负责持久化与检索，Redis/Celery 承担异步分析和生成任务；正文按确定性分块覆盖全文，摘要、设定和向量检索分层装配。
 
-当前仓库包含 Vue 3 写作前端、FastAPI API、PostgreSQL/pgvector、Redis 与 Celery 异步任务，以及架构、计费和实现文档。
+当前仓库包含 Vue 3 写作前端、FastAPI API、PostgreSQL/pgvector、Redis 与 Celery 异步任务，以及架构、计费和实现文档。后端当前 migration head 为 `027_chapter_temporal_anchor`。
+
+### 长篇一致性保障
+
+- 章节可保存作者确认的结构化时间范围，生成时同时注入本章和上一章时间锚点，减少日期回退。
+- AI 输出先进入候选草稿；上游 SSE 未收到完整结束标记时，草稿会标记为 `failed`，返回 `STREAM_INTERRUPTED`，不会进入正文。
+- Guard 优先使用确定性规则，对抽取器提供的结构化账目执行现金/库存、计件工资和资源数量校验；LLM 只负责抽取和补充软性问题，不负责最终算术结论。
+- 设定库使用 PostgreSQL/pgvector 检索，四层上下文预算上限为 25k token，正文、摘要、常驻设定和相关条目分层进入生成提示。
 
 ## 系统截图
 
@@ -36,7 +43,7 @@
 ```text
 .
 ├── app/       Vue 3 + TypeScript + Tiptap 前端
-├── server/    FastAPI + SQLAlchemy 后端骨架
+├── server/    FastAPI + SQLAlchemy 后端与一致性任务
 ├── docs/      架构与产品技术文档
 ├── _ds/       设计系统资源
 └── LICENSE    项目使用许可
@@ -161,6 +168,13 @@ docker compose up -d --build
 `migration` 会在 API 和 worker 启动前执行 `alembic upgrade head`。就绪探针同时检查
 PostgreSQL、Redis 与数据库迁移版本；任一项不满足就返回 503。
 
+首次启动或更新代码后建议显式执行一次迁移，再重建依赖 migration 的服务：
+
+```bash
+docker compose run --rm migration
+docker compose up -d --build api worker dispatcher beat frontend
+```
+
 ### 数据目录（Windows）
 
 Compose 默认使用项目下的 `.docker-data` 目录作为开发兜底。部署前建议把数据放到非系统盘，
@@ -202,6 +216,9 @@ MOSHU_REDIS_DATA_DIR=<redis-data-directory>
 主要创作流程是：创建或选择作品 → 梳理大纲与设定 → 写作 → 一致性与 AI 痕迹复核 → 导出。写作、大纲和设定允许反复往返；守卫问题必须能跳回对应正文或时间线。账户用量不属于任何作品。
 
 当前实现状态与后端验收记录见 `server/docs/IMPLEMENTATION_STATUS.md`；架构约束见 `docs/architecture/`。
+
+最近一次后端回归结果：`1297 passed, 37 skipped`。被跳过的测试需要显式配置真实
+PostgreSQL/pgvector 集成环境；测试正文、模型 key、`.env` 和 Docker 数据卷均不提交 Git。
 
 ## 许可
 

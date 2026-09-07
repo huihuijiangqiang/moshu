@@ -117,6 +117,14 @@ uvicorn main:app --reload --host 0.0.0.0 --port 8000
 PostgreSQL、Redis 与 Alembic head，全部通过时返回 200，否则返回 503 和逐项状态。
 响应包含 `BUILD_REVISION`，用于判断正在运行的实例是否与待验收提交一致。
 
+当前 migration head 为 `027_chapter_temporal_anchor`。更新代码后建议显式执行 migration
+容器，再重建 API 和 worker，避免复用旧的已完成 migration 容器：
+
+```bash
+docker compose run --rm migration
+docker compose up -d --build api worker dispatcher beat frontend
+```
+
 ## 已实现
 
 ### 数据模型（43张表）
@@ -144,6 +152,12 @@ PostgreSQL、Redis 与 Alembic head，全部通过时返回 200，否则返回 5
   - `gpt-5.6-sol` 等具体模型由环境变量配置，代码不保存网关凭据
   - 章节/行内生成均使用带鉴权的 SSE，可中断并返回 Skill 与四层 token 报告
   - 成功运行写入 `generation_runs`，上游错误通过结构化 SSE 返回且不改正文
+  - SSE 未收到完整结束标记时返回 `STREAM_INTERRUPTED`，保留失败草稿供恢复，不会误标记为 ready
+
+- ✅ **长篇时间与资源一致性** (`services/temporal_anchor.py`, `services/continuity_validation.py`)
+  - 章纲可保存作者确认的 ISO-8601 时间范围，并将本章/上一章锚点注入生成上下文
+  - Guard 对结构化现金、库存、计件工资和资源数量执行确定性算术校验
+  - 不对普通自由文本强行猜测数字，避免把模型推断当成硬事实
 
 - ✅ **乐观锁保存** (`api/chapters.py`)
   - 带 `base_rev` 的 PUT 请求
@@ -167,6 +181,7 @@ PostgreSQL、Redis 与 Alembic head，全部通过时返回 200，否则返回 5
 - ✅ `GET /chapters/:id` - 章节详情（含正文 + rev）
 - ✅ `PUT /chapters/:id/body` - 保存章节（带乐观锁）
 - ✅ `PUT /chapters/:id/outline` - 保存章纲（带独立乐观锁）
+- ✅ `PUT /chapters/:id/outline` - 同时支持保存 `temporal_anchor`（`start`、`end`、`precision`）
 - ✅ `GET /chapters/:id/outline/revisions` - 章纲版本历史
 - ✅ `POST /chapters/:id/body-revision/resolve` - 作者确认正文调整状态
 - ✅ `GET /generate/context/:chapterId` - 预览四层上下文与自动选择的 Skill
@@ -180,7 +195,7 @@ PostgreSQL、Redis 与 Alembic head，全部通过时返回 200，否则返回 5
 session、管理员设置与审计、项目/工作室 RBAC、设定库 CRUD 与 embedding 回填、
 持续章纲、版本化正文保存、四层上下文、SSE 生成、导出备份、用量结算、Guard
 扫描与 LLM 仲裁、平台后台模型用量台账、移动端只读与私有速记均已接通。后端单元/功能
-测试为 1202 passed，另有 37 个真实 PostgreSQL/pgvector 集成测试；前端测试为 147 passed。
+测试为 1297 passed，另有 37 个需要真实 PostgreSQL/pgvector 的集成测试按条件跳过；前端测试为 151 passed。
 
 仍需在生产数据上继续验证的事项：
 
@@ -211,8 +226,8 @@ session、管理员设置与审计、项目/工作室 RBAC、设定库 CRUD 与 
 ## 测试
 
 ```bash
-# 运行全部测试
-pytest
+# 运行全部后端测试（在 server 目录）
+PYTHONPATH=. pytest -q
 
 # 覆盖率
 pytest --cov=. --cov-report=html
