@@ -169,7 +169,9 @@ describe('guard store', () => {
     vi.spyOn(contentApi, 'getGuardOverview').mockResolvedValue(overview('completed', 0))
     let finishReflow!: (value: Awaited<ReturnType<typeof contentApi.reflowProjectTimeline>>) => void
     vi.spyOn(contentApi, 'reflowProjectTimeline').mockImplementation(
-      () => new Promise((resolve) => { finishReflow = resolve })
+      () => new Promise<Awaited<ReturnType<typeof contentApi.reflowProjectTimeline>>>((resolve) => {
+        finishReflow = resolve
+      })
     )
     const store = useGuardStore()
     await store.load('p1')
