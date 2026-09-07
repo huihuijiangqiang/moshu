@@ -70,6 +70,82 @@ cp .env.example .env
 uvicorn main:app --reload --port 8000
 ```
 
+### 配置自己的大模型调用地址
+
+墨枢使用 OpenAI 兼容协议调用文本模型。请根据使用场景选择一种配置方式，API
+key 只保存在本机环境变量或账户加密配置中，不要写入 Git、README、Dockerfile 或
+前端代码。
+
+#### 部署者配置平台默认网关
+
+复制 `server/.env.example` 为 `server/.env`，填写三档网关（不需要三档时可以让它们
+指向同一个服务）：
+
+```dotenv
+MODEL_GATEWAY_MAIN_URL=https://api.example.com/v1/chat/completions
+MODEL_GATEWAY_MAIN_KEY=your-api-key
+MODEL_GATEWAY_CHEAP_URL=https://api.example.com/v1/chat/completions
+MODEL_GATEWAY_CHEAP_KEY=your-api-key
+MODEL_GATEWAY_PREMIUM_URL=https://api.example.com/v1/chat/completions
+MODEL_GATEWAY_PREMIUM_KEY=your-api-key
+
+# 生成和一致性分析使用的模型名
+GENERATION_GATEWAY_TIER=main
+GENERATION_MODEL=your-text-model
+CONSISTENCY_GATEWAY_TIER=main
+CONSISTENCY_SUMMARY_MODEL=your-text-model
+CONSISTENCY_EXTRACTION_MODEL=your-text-model
+```
+
+网关地址应直接对应 `POST /chat/completions`，支持 `stream: true` 的 SSE 返回，
+并返回 OpenAI 风格的 `choices[].delta.content`；服务端会发送 Bearer 鉴权。若网关
+只提供 `/v1` 根地址，请在这里补上 `/chat/completions`。重启 API、worker 和
+dispatcher 后配置生效：
+
+```bash
+docker compose up -d --build api worker dispatcher beat
+curl http://localhost:8000/health/ready
+```
+
+#### 用户配置自己的服务（BYOK）
+
+登录后打开全局菜单 **我的模型服务**（路由 `/model-settings`），填写：
+
+- 服务名称：便于识别的名称；
+- 基础地址：例如 `https://api.example.com/v1`，系统会自动拼接
+  `/chat/completions`；也可以直接填写完整聊天端点；
+- 模型名：供应商实际接受的模型 ID；
+- API key：只在保存或更新时提交，界面只显示脱敏提示。
+
+出于 SSRF 防护，用户自定义地址必须是可解析的公网 `https` 地址，不能包含账号密码、
+query、fragment、`localhost`、内网 IP 或 Docker 服务名。点击“测试连接”前，供应商
+还需要提供可访问的 `GET /models`（返回 401/403 会显示为鉴权失败）。保存后的 key
+使用 `CREDENTIAL_ENCRYPTION_KEY` 加密存储，修改该密钥会使已保存的用户 key 无法解密；
+生产环境应设置一个稳定、独立于 JWT 的随机值：
+
+```dotenv
+CREDENTIAL_ENCRYPTION_KEY=replace-with-a-long-random-secret
+```
+
+启用用户配置后，该用户的章节生成和行内生成优先走自己的服务；未启用或未配置时回退
+到平台默认网关。用户自定义服务的用量会记录到该用户的模型配置台账，平台网关的用量
+仍按平台套餐和积分规则结算。
+
+#### 单独配置 Embedding 服务
+
+设定库的向量检索可以使用独立的 OpenAI 兼容 embedding 端点。填写完整端点或 base
+URL 均可，后者会自动补 `/embeddings`：
+
+```dotenv
+EMBEDDING_GATEWAY_URL=https://embedding.example.com/v1
+EMBEDDING_GATEWAY_KEY=your-embedding-key
+EMBEDDING_MODEL=your-embedding-model
+EMBEDDING_DIMENSIONS=2048
+```
+
+Embedding 响应必须包含与输入数量相同的 `data[].embedding` 数组，且维度为 2048；
+当前 PostgreSQL schema 使用 `HALFVEC(2048)`，更换维度前必须先做数据库迁移。
+
 ## 完整环境启动
 
 准备好仅保存在本机的 `server/.env` 后，可在仓库根目录一次启动迁移、API、前端与异步任务：
