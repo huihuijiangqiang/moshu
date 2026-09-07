@@ -20,11 +20,16 @@ from memory.tokenizer import tokenizer
 from services.embedding import GatewayEmbeddingProvider
 from services.model_configs import InvalidModelEndpointError, assert_public_endpoint_resolution
 from services.retrieval import ConsistencyRetrieval
+from services.temporal_anchor import format_temporal_anchor
 from services.writing_skills import SkillSelection, select_writing_skills
 
 
 class GenerationProviderError(RuntimeError):
     """The generation gateway returned an invalid or incomplete stream."""
+
+    def __init__(self, message: str, *, code: str = "GENERATION_PROVIDER_ERROR"):
+        super().__init__(message)
+        self.code = code
 
 
 @dataclass(frozen=True)
@@ -172,6 +177,29 @@ class GenerationService:
         context_text = (
             "\n\n".join(f"# {title}\n{content}" for title, content in context_parts if content) or "（暂无可用前情）"
         )
+        anchor_prompt = format_temporal_anchor(chapter.temporal_anchor)
+        previous = await self.db.scalar(
+            select(Chapter)
+            .where(
+                Chapter.project_id == project.id,
+                Chapter.idx < chapter.idx,
+                Chapter.deleted_at.is_(None),
+            )
+            .order_by(Chapter.idx.desc())
+            .limit(1)
+        )
+        previous_anchor_prompt = format_temporal_anchor(previous.temporal_anchor) if previous else ""
+        if anchor_prompt or previous_anchor_prompt:
+            temporal_lines = []
+            if previous_anchor_prompt:
+                temporal_lines.append(f"上一章时间锚点：{previous_anchor_prompt}")
+            if anchor_prompt:
+                temporal_lines.append(f"本章硬性时间锚点：{anchor_prompt}")
+            context_text += (
+                "\n\n# 时间线硬约束\n"
+                + "\n".join(temporal_lines)
+                + "\n不得让本章时间早于上一章已确认的结束时间；无法确定时不要擅自编造日期。"
+            )
         outline_text = (
             "\n".join(f"{index + 1}. {node}" for index, node in enumerate(chapter.outline or []))
             or "（本章未设置章纲；只依据当前指令推进，不得擅自改变主线。）"
@@ -308,7 +336,9 @@ class GenerationGateway:
                         if isinstance(content, str) and content:
                             yield StreamEvent("chunk", text=content)
                 if not seen_done:
-                    raise GenerationProviderError("模型生成流在完成前中断")
+                    raise GenerationProviderError(
+                        "模型生成流在完成前中断", code="STREAM_INTERRUPTED"
+                    )
         except (httpx.TimeoutException, httpx.TransportError) as exc:
             raise GenerationProviderError(f"模型网关连接失败：{exc}") from exc
         finally:

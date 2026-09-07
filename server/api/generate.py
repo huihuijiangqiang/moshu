@@ -393,15 +393,20 @@ def _generation_response(
             )
             yield "data: [DONE]\n\n"
         except GenerationProviderError as exc:
-            await persist_failed_draft("generation_provider_error")
+            error_code = "stream_interrupted" if exc.code == "STREAM_INTERRUPTED" else "generation_provider_error"
+            await persist_failed_draft(error_code)
             if reservation is not None:
-                await release_reservation(db, reservation, reason="provider_error")
+                await release_reservation(
+                    db,
+                    reservation,
+                    reason="stream_interrupted" if exc.code == "STREAM_INTERRUPTED" else "provider_error",
+                )
             await db.commit()
             finalized = True
             yield _sse(
                 {
                     "type": "error",
-                    "code": "generation_provider_error",
+                    "code": "STREAM_INTERRUPTED" if exc.code == "STREAM_INTERRUPTED" else "generation_provider_error",
                     "message": _safe_generation_error(package, exc),
                 }
             )

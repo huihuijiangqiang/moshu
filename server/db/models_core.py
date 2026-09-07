@@ -126,6 +126,9 @@ class Chapter(Base, TimestampMixin):
     words: Mapped[int] = mapped_column(Integer, default=0)
     outline: Mapped[list[str]] = mapped_column(JSONB, default=list)  # 章纲节点
     summary: Mapped[Optional[str]] = mapped_column(Text, nullable=True)  # 200字章摘要
+    # 作者确认的本章时间范围，供生成和一致性校验使用。
+    # 结构示例：{"start": "2024-03-12", "end": "2024-03-20", "precision": "day"}
+    temporal_anchor: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
     pov_entry_id: Mapped[Optional[str]] = mapped_column(
         String(32), ForeignKey("codex_entries.id", ondelete="SET NULL"), nullable=True, index=True
     )

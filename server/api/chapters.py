@@ -47,6 +47,7 @@ class ChapterOut(BaseModel):
     words: int
     outline: list[str]
     summary: str | None
+    temporal_anchor: dict | None
     pov_entry_id: str | None
     pov_revision: int
     content_html: str
@@ -201,6 +202,7 @@ async def get_chapter(
             words=chapter.words,
             outline=chapter.outline,
             summary=chapter.summary,
+            temporal_anchor=chapter.temporal_anchor,
             pov_entry_id=chapter.pov_entry_id,
             pov_revision=chapter.pov_revision,
             content_html="",
@@ -218,6 +220,7 @@ async def get_chapter(
         words=chapter.words,
         outline=chapter.outline,
         summary=chapter.summary,
+        temporal_anchor=chapter.temporal_anchor,
         pov_entry_id=chapter.pov_entry_id,
         pov_revision=chapter.pov_revision,
         content_html=body.content_html,

@@ -150,6 +150,31 @@ async def test_prompt_preview_returns_exact_package_without_charging(
     assert "sk-" not in response.text
 
 
+async def test_prompt_preview_includes_confirmed_chapter_time_anchor(
+    app_client, async_db_session, seed_project, auth_headers
+):
+    chapters = await seed_project(
+        user_id="temporal_writer",
+        project_id="temporal_novel",
+        chapter_ids=("temporal_prev", "temporal_current"),
+    )
+    chapters[0].temporal_anchor = {"start": "2024-03-12", "end": "2024-03-12", "precision": "day"}
+    chapters[1].temporal_anchor = {"start": "2024-03-13", "end": "2024-03-20", "precision": "day"}
+    await async_db_session.commit()
+
+    response = await app_client.post(
+        "/generate/preview",
+        headers=auth_headers("temporal_writer"),
+        json={"chapterId": "temporal_current", "targetWords": 800},
+    )
+
+    assert response.status_code == 200
+    prompt = response.json()["messages"][1]["content"]
+    assert "2024-03-13" in prompt
+    assert "2024-03-20" in prompt
+    assert "不得让本章时间早于上一章已确认的结束时间" in prompt
+
+
 async def test_prompt_preview_requires_generation_permission(
     app_client, async_db_session, seed_project, auth_headers
 ):

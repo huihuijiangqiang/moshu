@@ -6,8 +6,8 @@
 所有声明基于实际代码与测试结果，不夸大、不省略已知缺口。
 
 **关键事实**：
-- ✅ 43 张表完整 Alembic baseline，增量迁移已到 `024_project_daily_writing`
-- ✅ 1218 个单元/功能测试通过（SQLite in-memory，mock embedding/LLM）
+- ✅ 43 张表完整 Alembic baseline，增量迁移已到 `027_chapter_temporal_anchor`
+- ✅ 1297 个单元/功能测试通过，37 个需要真实外部依赖的集成测试按条件跳过（SQLite in-memory，mock embedding/LLM）
 - ✅ 前端 151 个测试、TypeScript 类型检查和生产构建通过
 - ✅ 前端生产与开发依赖均通过 `npm audit`，当前为 0 个已知漏洞（2026-09-07）
 - ✅ 37 个集成测试已在 Docker 真实 PostgreSQL + pgvector 环境通过（2026-09-07）
@@ -41,7 +41,7 @@
 - ✅ 七类确定性规则已由真实 `RuleScanner` 跑过 280 正例、140 hard negatives、20 easy negatives，
   recall / 证据定位 / hard-negative precision 均为 100%
 - ⚠️ 上述结构化评测不覆盖正文抽取和 LLM 仲裁的真实盲评质量，不能据此宣称全链路生产就绪
-- ✅ 2026-09-07 Docker Compose 真实验收：PostgreSQL/Redis/API/frontend/worker/dispatcher/beat 全部运行，`/health/ready` 返回 200，迁移 head 为 `024_project_daily_writing`；默认数据卷位于当前 D 盘 worktree 的 `.docker-data`
+- ✅ 2026-09-07 Docker Compose 真实验收：PostgreSQL/Redis/API/frontend/worker/dispatcher/beat 全部运行，`/health/ready` 返回 200，迁移 head 为 `027_chapter_temporal_anchor`；数据卷使用 Compose 配置的相对路径或部署环境显式配置，不绑定开发机盘符
 
 ### 性能基准（可重复）
 
@@ -162,8 +162,8 @@ PostgreSQL/pgvector 检索必须在真实部署上单独压测；该脚本只覆
   `halfvec_cosine_ops` 重建 HNSW 索引；upgrade/downgrade 均会要求重新回填向量
 - ✅ `alembic upgrade head --sql` 与 `alembic downgrade head:-1 --sql` 语法验证通过
 - ✅ 37 个集成测试已在 Docker 真实 PostgreSQL + pgvector 运行通过；覆盖 `019_chapter_pov` 至
-  `024_project_daily_writing` 的真实 schema、pgvector、唯一约束、upsert、GIN 索引和 CHECK 约束；
-  `/health/ready` 已确认 Alembic head 为 `024_project_daily_writing`
+  `027_chapter_temporal_anchor` 的真实 schema、pgvector、唯一约束、upsert、GIN 索引和 CHECK 约束；
+  `/health/ready` 已确认 Alembic head 为 `027_chapter_temporal_anchor`
 
 ---
 

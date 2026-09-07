@@ -75,6 +75,7 @@ class ChapterListItem(BaseModel):
     words: int
     outline: list[str]
     summary: str | None
+    temporal_anchor: dict | None = None
     pov_entry_id: str | None = None
     pov_revision: int = 0
     outline_note: str = ""
@@ -289,6 +290,7 @@ def _chapter_list_item(chapter: Chapter, state: ChapterOutlineState | None = Non
         words=chapter.words,
         outline=chapter.outline,
         summary=chapter.summary,
+        temporal_anchor=chapter.temporal_anchor,
         pov_entry_id=chapter.pov_entry_id,
         pov_revision=chapter.pov_revision,
         outline_note=state.note if state else "",

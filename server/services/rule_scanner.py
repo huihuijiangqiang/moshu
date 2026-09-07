@@ -32,6 +32,7 @@ from db.models_codex import CodexEntry
 from db.models_consistency_extended import ConsistencyClaim, GuardIssueEvidence
 from db.models_core import Chapter
 from db.models_guard import Foreshadow, GuardIssue
+from services.continuity_validation import validate_structured_claims
 
 logger = logging.getLogger(__name__)
 
@@ -567,6 +568,7 @@ class RuleScanner:
         detected_issues.extend(await self._check_timeline_conflicts(db, project_id, all_claims))
         detected_issues.extend(await self._check_ability_boundary(db, project_id, all_claims))
         detected_issues.extend(await self._check_location_conflicts(db, project_id, all_claims))
+        detected_issues.extend(self._check_structured_continuity(all_claims))
         detected_issues.extend(
             await self._check_foreshadow_overdue(db, project_id, chapter_id)
         )
@@ -589,6 +591,27 @@ class RuleScanner:
         await self._mark_stale_issues(db, run_id, project_id, chapter_id, issue_ids)
 
         return issue_ids
+
+    @staticmethod
+    def _check_structured_continuity(claims: list[ConsistencyClaim]) -> list[dict]:
+        """Turn explicit arithmetic failures into normal Guard issues."""
+        by_id = {claim.id: claim for claim in claims}
+        detected: list[dict] = []
+        for finding in validate_structured_claims(claims):
+            claim = by_id.get(finding.claim_id)
+            if claim is None:
+                continue
+            detected.append(
+                {
+                    "issue_type": finding.kind,
+                    "severity": "high",
+                    "confidence": 1.0,
+                    "description": finding.description,
+                    "evidence_claims": [claim.id],
+                    "anchor": claim_anchor(claim),
+                }
+            )
+        return detected
 
     @staticmethod
     def _subject_key(claim: ConsistencyClaim) -> str:

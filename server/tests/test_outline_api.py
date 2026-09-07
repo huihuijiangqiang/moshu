@@ -51,3 +51,29 @@ async def test_outline_revision_history_requires_access(
     assert (
         await app_client.get("/chapters/ch_1/outline/revisions", headers=auth_headers("user_b"))
     ).status_code == 403
+
+
+async def test_outline_update_persists_temporal_anchor(
+    app_client, async_db_session, seed_project, auth_headers
+):
+    await seed_project(chapter_ids=("ch_temporal",))
+    response = await app_client.put(
+        "/chapters/ch_temporal/outline",
+        headers=auth_headers("user_a"),
+        json={
+            "title": "时间锚点",
+            "nodes": ["确认日期"],
+            "base_outline_revision": 0,
+            "body_policy": "plan_only",
+            "temporal_anchor": {
+                "start": "2024-03-12",
+                "end": "2024-03-20",
+                "precision": "day",
+            },
+        },
+    )
+    assert response.status_code == 200
+    assert response.json()["temporal_anchor"]["start"] == "2024-03-12"
+
+    chapter = await app_client.get("/chapters/ch_temporal", headers=auth_headers("user_a"))
+    assert chapter.json()["temporal_anchor"]["end"] == "2024-03-20"

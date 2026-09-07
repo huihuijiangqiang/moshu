@@ -28,6 +28,7 @@ from services.outlines import (
     list_outline_revisions,
     update_outline,
 )
+from services.temporal_anchor import TemporalAnchorError, normalize_temporal_anchor
 
 router = APIRouter()
 
@@ -38,6 +39,7 @@ class UpdateOutlineRequest(BaseModel):
     note: str = Field(default="", max_length=20_000)
     base_outline_revision: int = Field(ge=0)
     body_policy: BodyPolicy | None = None
+    temporal_anchor: dict | None = None
 
 
 class OutlineResponse(BaseModel):
@@ -50,6 +52,7 @@ class OutlineResponse(BaseModel):
     body_needs_revision: bool
     marked_outline_rev: int | None
     marked_body_rev: int | None
+    temporal_anchor: dict | None = None
 
 
 class OutlineRevisionResponse(BaseModel):
@@ -70,7 +73,7 @@ class AcknowledgeBodyRevisionRequest(BaseModel):
     addressed_outline_revision: int = Field(ge=0)
 
 
-def outline_response(result: OutlineResult) -> OutlineResponse:
+def outline_response(result: OutlineResult, *, temporal_anchor: dict | None = None) -> OutlineResponse:
     return OutlineResponse(
         chapter_id=result.chapter_id,
         title=result.content.title,
@@ -81,6 +84,7 @@ def outline_response(result: OutlineResult) -> OutlineResponse:
         body_needs_revision=result.state.body_needs_revision,
         marked_outline_rev=result.state.marked_outline_rev,
         marked_body_rev=result.state.marked_body_rev,
+        temporal_anchor=temporal_anchor,
     )
 
 
@@ -121,6 +125,15 @@ async def put_outline(
             body_policy=request.body_policy,
             created_by=user.id,
         )
+        chapter = await _verify_chapter_access(db, chapter_id, user, ProjectPermission.MANAGE_OUTLINE)
+        try:
+            chapter.temporal_anchor = normalize_temporal_anchor(request.temporal_anchor)
+        except TemporalAnchorError as error:
+            await db.rollback()
+            raise HTTPException(
+                status_code=422,
+                detail={"code": "INVALID_TEMPORAL_ANCHOR", "message": str(error)},
+            ) from error
         await db.commit()
     except ChapterNotFoundError as error:
         await db.rollback()
@@ -143,7 +156,7 @@ async def put_outline(
     except BodyPolicyRequiredError as error:
         await db.rollback()
         raise HTTPException(status_code=422, detail={"code": "BODY_POLICY_REQUIRED"}) from error
-    return outline_response(result)
+    return outline_response(result, temporal_anchor=chapter.temporal_anchor)
 
 
 @router.get("/{chapter_id}/outline/revisions", response_model=list[OutlineRevisionResponse])
@@ -198,4 +211,5 @@ async def resolve_body_revision(
     except BodyRevisionResolutionConflictError as error:
         await db.rollback()
         raise HTTPException(status_code=409, detail={"code": "BODY_REVISION_MARKER_CONFLICT"}) from error
-    return outline_response(result)
+    chapter = await _verify_chapter_access(db, chapter_id, user)
+    return outline_response(result, temporal_anchor=chapter.temporal_anchor)

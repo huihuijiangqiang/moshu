@@ -98,6 +98,25 @@ async def test_successful_sse_stream_still_yields_text_and_usage():
 
 
 @pytest.mark.asyncio
+async def test_incomplete_sse_stream_has_recoverable_error_code():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            request=request,
+            text='data: {"choices":[{"delta":{"content":"半截"}}]}\n\n',
+        )
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    try:
+        with pytest.raises(GenerationProviderError) as captured:
+            _ = [event async for event in GenerationGateway(client).stream(package())]
+    finally:
+        await client.aclose()
+
+    assert captured.value.code == "STREAM_INTERRUPTED"
+
+
+@pytest.mark.asyncio
 async def test_http_error_is_retried_only_before_visible_output(monkeypatch):
     attempts = 0
 
