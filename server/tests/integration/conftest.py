@@ -1,8 +1,8 @@
 """
 真实 PostgreSQL 集成测试的夹具。
 
-⚠️ 本目录下的测试在本次开发中**从未运行过** —— 本地没有可用的 PostgreSQL。
-未设置 TEST_POSTGRES_URL 时全部 skip，绝不会伪装成通过。
+未设置 TEST_POSTGRES_URL 时全部 skip，绝不会伪装成通过；设置该变量后会连接
+真实 PostgreSQL + pgvector，并在独立 schema 中执行。
 
 这里覆盖的是 SQLite 单元测试**结构上无法验证**的部分：
 
@@ -35,7 +35,7 @@ POSTGRES_URL_ENV = "TEST_POSTGRES_URL"
 #: 没有真实 PostgreSQL 时的统一 skip 原因（保持文案一致，便于在报告里识别）。
 SKIP_REASON = (
     f"需要真实 PostgreSQL + pgvector；设置 {POSTGRES_URL_ENV} 后才会运行。"
-    "这些用例在本地未跑过。"
+    "未设置变量时用例会跳过。"
 )
 
 requires_postgres = pytest.mark.skipif(

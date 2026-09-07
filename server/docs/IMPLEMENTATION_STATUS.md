@@ -7,9 +7,9 @@
 
 **关键事实**：
 - ✅ 43 张表完整 Alembic baseline，增量迁移已到 `024_project_daily_writing`
-- ✅ 1193 个单元/功能测试通过（SQLite in-memory，mock embedding/LLM）
+- ✅ 1202 个单元/功能测试通过（SQLite in-memory，mock embedding/LLM）
 - ✅ 前端 147 个测试、TypeScript 类型检查和生产构建通过
-- ✅ 36 个集成测试已在本机真实 PostgreSQL + pgvector 环境通过
+- ✅ 37 个集成测试已在 Docker 真实 PostgreSQL + pgvector 环境通过（2026-09-07）
 - ✅ 已完成真实账号认证、作品创建、作品归档、分卷与章节增删改排、回收站和章纲编辑闭环
 - ✅ 大纲页支持卷排序、同卷章节排序与跨卷拖放；键盘/按钮排序保留为无障碍回退
 - ✅ P1 拆书分析支持 TXT/Markdown/DOCX/EPUB，内存解析章节结构、节奏节点和爽点分布；不落库、不调用模型、不扣作者积分
@@ -39,7 +39,7 @@
 - ✅ 七类确定性规则已由真实 `RuleScanner` 跑过 280 正例、140 hard negatives、20 easy negatives，
   recall / 证据定位 / hard-negative precision 均为 100%
 - ⚠️ 上述结构化评测不覆盖正文抽取和 LLM 仲裁的真实盲评质量，不能据此宣称全链路生产就绪
-- ⚠️ 本轮 Docker Desktop daemon 未启动，未重复执行 PostgreSQL/Redis 容器验收；文档中的 36 项真实 PostgreSQL 结果来自此前已完成的本机验收
+- ✅ 2026-09-07 Docker Compose 真实验收：PostgreSQL/Redis/API/frontend/worker/dispatcher/beat 全部运行，`/health/ready` 返回 200，迁移 head 为 `024_project_daily_writing`；默认数据卷位于当前 D 盘 worktree 的 `.docker-data`
 
 ### 性能基准（可重复）
 
@@ -155,9 +155,9 @@ PostgreSQL/pgvector 检索必须在真实部署上单独压测；该脚本只覆
   `002_embedding_halfvec_2048.py` 清理旧向量并迁移到 HALFVEC(2048)，以
   `halfvec_cosine_ops` 重建 HNSW 索引；upgrade/downgrade 均会要求重新回填向量
 - ✅ `alembic upgrade head --sql` 与 `alembic downgrade head:-1 --sql` 语法验证通过
-- ✅ 36 个集成测试已在本机真实 PostgreSQL + pgvector 运行通过；此前审核数据库已真实执行至
-  `018_timeline_entries`。`019_chapter_pov` 至 `024_project_daily_writing` 的 upgrade/downgrade SQL 已生成验证，
-  但本轮 Docker daemon 未启动，尚未在真实 PostgreSQL 重复执行；部署后以 readiness 返回的 Alembic head 为准
+- ✅ 37 个集成测试已在 Docker 真实 PostgreSQL + pgvector 运行通过；覆盖 `019_chapter_pov` 至
+  `024_project_daily_writing` 的真实 schema、pgvector、唯一约束、upsert、GIN 索引和 CHECK 约束；
+  `/health/ready` 已确认 Alembic head 为 `024_project_daily_writing`
 
 ---
 
@@ -508,9 +508,9 @@ PostgreSQL/pgvector 检索必须在真实部署上单独压测；该脚本只覆
 
 ### 5. 测试覆盖
 
-#### 单元测试（1193 passed，SQLite in-memory，mock providers）
+#### 单元测试（1202 passed，SQLite in-memory，mock providers）
 
-**全量测试结果**：1193 passed, 37 skipped（未设置集成测试 URL 时）, 0 warnings；前端 147 passed
+**全量测试结果**：1202 passed, 37 skipped（未设置集成测试 URL 时）, 0 warnings；前端 147 passed
 
 主要测试覆盖（不逐文件列举测试数量，以实际 pytest 结果为准）：
 - ✅ Codex 设定库：页面与 API 完整 CRUD、关系增改删与双向投影、引用删除保护、原子别名替换、可检索文本判据、两段式事务、deferred 降级、httpx 错误重试
@@ -543,8 +543,8 @@ PostgreSQL/pgvector 检索必须在真实部署上单独压测；该脚本只覆
 - ⚠️ 这是结构化 claim/生命周期层的合成边界评测；尚未覆盖正文到 claim 的抽取误差、
   有授权真实小说盲评和 LLM 仲裁判断质量
 
-#### 集成测试（36 tests，真实 PostgreSQL + pgvector 已通过）
-- ✅ Docker PostgreSQL + pgvector 环境已执行 36 个测试并全部通过
+#### 集成测试（37 tests，真实 PostgreSQL + pgvector 已通过）
+- ✅ Docker PostgreSQL + pgvector 环境已执行 37 个测试并全部通过（2026-09-07）
 - ✅ 审核数据库已执行 `011_guard_issue_arbitration` 到 Alembic head
 - 覆盖内容：
   - 部分唯一索引（`postgresql_where`）的并发 upsert 去重
@@ -710,7 +710,7 @@ baseline，增量实现 Codex embedding 回填、时间锚点解析、issue 生�
 - `42a577a` - docs: fix implementation status report factual errors and supersede old reports
   - 修正 API 路径、时间锚点能力、提交分组
   - 为 5 个历史报告添加 SUPERSEDED banner
-  - 区分「代码已实现」与「真实 PostgreSQL 未验证」
+  - 区分「代码已实现」与「真实部署验证范围」
 
 ---
 
@@ -873,10 +873,10 @@ cd server
 - `server/tasks/consistency.py` - 一致性任务
 - `server/tasks/codex.py` - Codex 回填任务
 
-### 测试（1193 passed；另有 36 个真实 PostgreSQL 测试通过）
-- `server/tests/` - 单元/功能测试（1193 passed）
+### 测试（1202 passed；另有 37 个真实 PostgreSQL 测试通过）
+- `server/tests/` - 单元/功能测试（1202 passed）
 - `app/src/**/*.spec.ts` - 前端测试（147 passed）
-- `server/tests/integration/` - 集成测试（36 passed，需设置真实 PostgreSQL URL）
+- `server/tests/integration/` - 集成测试（37 passed，需设置真实 PostgreSQL URL）
 
 ### 文档（1 个文件）
 - `server/docs/IMPLEMENTATION_STATUS.md` - **本文档**（唯一当前事实来源）
@@ -885,8 +885,8 @@ cd server
 
 ## 总结
 
-墨枢一致性后端已完成核心数据模型、服务层、API 端点和异步任务定义，1193 个单元/功能
-测试在 SQLite in-memory + mock providers 环境下通过，另有 36 个集成测试在真实
+墨枢一致性后端已完成核心数据模型、服务层、API 端点和异步任务定义，1202 个单元/功能
+测试在 SQLite in-memory + mock providers 环境下通过，另有 37 个集成测试在真实
 PostgreSQL + pgvector 环境通过。真实认证、可吊销会话、管理员、工作室 RBAC、作品创建、
 作品归档、分卷与章节生命周期、虚拟化章节导航、写作台新建章节、章纲、章节 POV、人物出场轨迹、逐章设定状态沿革、可编辑设定关系、资料与正文并排、故事/章节双序时间板、作者人工计划事件、正文版本历史与恢复、AI 多候选草稿、移动端只读与私有速记、全书查找替换、章节审稿与段落批注、工作室章节任务与产量看板、全量导出、非覆盖备份恢复、风格指纹、AI 来源账本、可定位句式校样、拆书分析、作者生成用量与平台模型成本台账已经接通，前端 147 个测试与生产构建通过。
 
@@ -895,7 +895,7 @@ PostgreSQL + pgvector 环境通过。真实认证、可吊销会话、管理员�
 2. 当前 100% 指标来自真实 scanner 而非硬编码，但输入仍是合成 claim，**不代表正文抽取和 LLM 仲裁的端到端质量**
 3. 模糊时间已完成规范化区间、作者确认、项目级 reflow 与依赖复检；影响集时间区间裁剪仍未实现，仲裁只提供建议，不自动处置
 4. 真实长文本扫描吞吐受上游模型网关稳定性和并发限制影响
-5. 人物出场统计只接受实体 ID 可追溯来源，不对正文姓名做模糊全文计数；本轮 Docker daemon 未启动，`019` 至 `023` 尚未重复执行真实 PostgreSQL 验收
+5. 人物出场统计只接受实体 ID 可追溯来源，不对正文姓名做模糊全文计数；Docker 运行链路已验收，但真实长文本模型压测仍未完成
 
 当前是“核心一致性能力 + 首轮真实产品流程”，不是功能完整 MVP。生产部署前仍需完成上述产品闭环、
 扩充评测集并验证长文本规模下的质量和性能。
