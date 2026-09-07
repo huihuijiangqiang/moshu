@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { GenerationError, normalizeGenerationError, responseError } from './generation'
+import { GenerationError, generationDraftApi, normalizeGenerationError, responseError } from './generation'
 
 describe('generation stream failure contract', () => {
   afterEach(() => vi.unstubAllGlobals())
@@ -26,5 +26,21 @@ describe('generation stream failure contract', () => {
     const auth = await responseError(new Response(JSON.stringify({ detail: '登录已过期' }), { status: 401 }))
     const conflict = await responseError(new Response(JSON.stringify({ detail: '正文版本已变化' }), { status: 409 }))
     expect([auth.code, conflict.code]).toEqual(['AUTH_REQUIRED', 'GENERATION_CONFLICT'])
+  })
+
+  it('persists versioned paragraph review decisions', async () => {
+    vi.stubGlobal('localStorage', { getItem: () => null })
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({ id: 'draft-1' }), {
+      status: 200,
+      headers: { 'content-type': 'application/json' }
+    }))
+    vi.stubGlobal('fetch', fetchMock)
+
+    await generationDraftApi.review('draft-1', ['p1', 'p3'], 'accepted', 4)
+
+    expect(fetchMock).toHaveBeenCalledWith('/api/generate/drafts/draft-1/review', expect.objectContaining({
+      method: 'PATCH',
+      body: JSON.stringify({ segmentIds: ['p1', 'p3'], decision: 'accepted', baseVersion: 4 })
+    }))
   })
 })

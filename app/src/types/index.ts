@@ -561,6 +561,20 @@ export interface GenerationMeta {
 }
 
 export type GenerationDraftStatus = 'streaming' | 'ready' | 'failed' | 'accepted' | 'rejected'
+export type GenerationDraftDecision = 'pending' | 'accepted' | 'rejected'
+
+export interface GenerationDraftReview {
+  total: number
+  pending: number
+  accepted: number
+  rejected: number
+}
+
+export interface GenerationDraftSegment {
+  id: string
+  text: string
+  decision: GenerationDraftDecision
+}
 
 export interface GenerationDraftSummary {
   id: string
@@ -583,8 +597,11 @@ export interface GenerationDraftSummary {
   createdAt: string
   updatedAt: string
   acceptedAt: string | null
+  reviewVersion: number
+  review: GenerationDraftReview
 }
 
 export interface GenerationDraftDetail extends GenerationDraftSummary {
   content: string
+  segments: GenerationDraftSegment[]
 }

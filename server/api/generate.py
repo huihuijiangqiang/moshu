@@ -81,6 +81,14 @@ class GenerationPreviewRequest(BaseModel):
     nearby_text: str = Field("", alias="nearbyText", max_length=30000)
 
 
+class DraftReviewUpdateRequest(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    segment_ids: list[str] = Field(alias="segmentIds", min_length=1, max_length=500)
+    decision: Literal["pending", "accepted", "rejected"]
+    base_version: int = Field(alias="baseVersion", ge=0)
+
+
 def get_generation_gateway() -> GenerationGateway:
     return GenerationGateway()
 
@@ -513,8 +521,52 @@ def _request_summary(request: ChapterGenerationRequest) -> dict:
     return summary
 
 
+def _draft_segments(draft: GenerationDraft) -> tuple[list[dict], int, bool]:
+    paragraphs = [
+        paragraph.strip()
+        for paragraph in (draft.content_text or "").replace("\r\n", "\n").replace("\r", "\n").split("\n")
+        if paragraph.strip()
+    ]
+    summary = draft.request_summary if isinstance(draft.request_summary, dict) else {}
+    raw_review = summary.get("review")
+    has_review = isinstance(raw_review, dict)
+    review = raw_review if has_review else {}
+    raw_decisions = review.get("decisions")
+    decisions = raw_decisions if isinstance(raw_decisions, dict) else {}
+    version = review.get("version", 0)
+    if not isinstance(version, int) or version < 0:
+        version = 0
+    segments = []
+    for index, text in enumerate(paragraphs, start=1):
+        segment_id = f"p{index}"
+        decision = decisions.get(segment_id, "pending")
+        if decision not in {"pending", "accepted", "rejected"}:
+            decision = "pending"
+        segments.append({"id": segment_id, "text": text, "decision": decision})
+    return segments, version, has_review
+
+
+def _review_counts(segments: list[dict]) -> dict:
+    return {
+        "total": len(segments),
+        "pending": sum(segment["decision"] == "pending" for segment in segments),
+        "accepted": sum(segment["decision"] == "accepted" for segment in segments),
+        "rejected": sum(segment["decision"] == "rejected" for segment in segments),
+    }
+
+
+def _accepted_draft_content(draft: GenerationDraft) -> tuple[str, bool]:
+    segments, _, has_review = _draft_segments(draft)
+    if not has_review:
+        return draft.content_text or "", False
+    return "\n".join(segment["text"] for segment in segments if segment["decision"] == "accepted"), True
+
+
 def _draft_payload(draft: GenerationDraft, *, include_content: bool = False) -> dict:
     content = draft.content_text or ""
+    segments, review_version, _ = _draft_segments(draft)
+    public_summary = dict(draft.request_summary or {})
+    public_summary.pop("review", None)
     payload = {
         "id": draft.id,
         "runId": draft.run_id,
@@ -524,14 +576,18 @@ def _draft_payload(draft: GenerationDraft, *, include_content: bool = False) -> 
         "status": draft.status,
         "generatedWords": draft.generated_words,
         "excerpt": content[:160] + ("…" if len(content) > 160 else ""),
-        "requestSummary": draft.request_summary or {},
+        "requestSummary": public_summary,
         "errorCode": draft.error_code,
         "createdAt": draft.created_at.isoformat() if draft.created_at else None,
         "updatedAt": draft.updated_at.isoformat() if draft.updated_at else None,
         "acceptedAt": draft.accepted_at.isoformat() if draft.accepted_at else None,
+        "reviewVersion": review_version,
+        "review": _review_counts(segments),
     }
     if include_content:
-        payload["content"] = content
+        accepted_content, has_review = _accepted_draft_content(draft)
+        payload["content"] = accepted_content if draft.status == "accepted" and has_review else content
+        payload["segments"] = segments
     return payload
 
 
@@ -580,6 +636,54 @@ async def get_draft(
     return _draft_payload(await _load_draft(draft_id, user, db), include_content=True)
 
 
+@router.patch("/drafts/{draft_id}/review")
+async def update_draft_review(
+    draft_id: str,
+    request: DraftReviewUpdateRequest,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    draft = await _load_draft(draft_id, user, db, lock=True)
+    if draft.status not in {"ready", "failed"} or not draft.content_text:
+        raise HTTPException(
+            status_code=409,
+            detail={"code": "DRAFT_NOT_REVIEWABLE", "message": "候选仍在生成或已经处理，无法继续审阅。"},
+        )
+    segments, version, _ = _draft_segments(draft)
+    if request.base_version != version:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "DRAFT_REVIEW_CONFLICT",
+                "message": "候选已在另一窗口更新，已重新加载最新决定。",
+                "currentVersion": version,
+            },
+        )
+    valid_ids = {segment["id"] for segment in segments}
+    requested_ids = set(request.segment_ids)
+    if len(requested_ids) != len(request.segment_ids) or not requested_ids.issubset(valid_ids):
+        raise HTTPException(
+            status_code=422,
+            detail={"code": "INVALID_DRAFT_SEGMENTS", "message": "候选段落已经变化，请刷新后重试。"},
+        )
+
+    summary = dict(draft.request_summary or {})
+    raw_review = summary.get("review")
+    review = dict(raw_review) if isinstance(raw_review, dict) else {}
+    raw_decisions = review.get("decisions")
+    decisions = dict(raw_decisions) if isinstance(raw_decisions, dict) else {}
+    for segment_id in requested_ids:
+        if request.decision == "pending":
+            decisions.pop(segment_id, None)
+        else:
+            decisions[segment_id] = request.decision
+    summary["review"] = {"version": version + 1, "decisions": decisions}
+    draft.request_summary = summary
+    await db.commit()
+    await db.refresh(draft)
+    return _draft_payload(draft, include_content=True)
+
+
 @router.post("/drafts/{draft_id}/accept")
 async def accept_draft(
     draft_id: str,
@@ -591,6 +695,17 @@ async def accept_draft(
         return _draft_payload(draft, include_content=True)
     if draft.status not in {"ready", "failed"} or not draft.content_text:
         raise HTTPException(status_code=409, detail={"code": "DRAFT_NOT_ACCEPTABLE"})
+    segments, _, has_review = _draft_segments(draft)
+    if has_review and any(segment["decision"] == "pending" for segment in segments):
+        raise HTTPException(
+            status_code=409,
+            detail={"code": "DRAFT_REVIEW_INCOMPLETE", "message": "还有段落未决定，完成审阅后再放入正文。"},
+        )
+    if has_review and not any(segment["decision"] == "accepted" for segment in segments):
+        raise HTTPException(
+            status_code=409,
+            detail={"code": "DRAFT_REVIEW_EMPTY", "message": "没有接受的段落，请舍弃候选或重新选择。"},
+        )
     draft.status = "accepted"
     draft.accepted_at = datetime.now(UTC)
     await db.commit()

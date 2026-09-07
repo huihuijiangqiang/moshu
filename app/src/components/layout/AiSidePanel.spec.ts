@@ -4,9 +4,10 @@ import { createMemoryHistory, createRouter } from 'vue-router'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import AiSidePanel from './AiSidePanel.vue'
 import { contentApi } from '@/api/content'
+import { generationDraftApi } from '@/api/generation'
 import { useCodexStore } from '@/stores/codex'
 import { useProjectStore } from '@/stores/project'
-import type { CodexStateHistoryItem, ProjectNote } from '@/types'
+import type { CodexStateHistoryItem, GenerationDraftDetail, GenerationDraftSummary, ProjectNote } from '@/types'
 
 function authorState(id: string, chapterIndex: number, value: string): CodexStateHistoryItem {
   return {
@@ -157,6 +158,66 @@ describe('writing reference side panel', () => {
 
     await actions[2]!.trigger('click')
     expect(wrapper.find('.wk-tab[aria-selected="true"]').text()).toContain('候选')
+    wrapper.unmount()
+  })
+
+  it('persists paragraph decisions and inserts only accepted draft text', async () => {
+    const summary: GenerationDraftSummary = {
+      id: 'draft-review', runId: 'run-review', projectId: 'p1', chapterId: 'ch87', kind: 'chapter',
+      status: 'ready', generatedWords: 4, excerpt: '甲。乙。', requestSummary: {}, errorCode: null,
+      createdAt: '2026-09-07T10:00:00Z', updatedAt: '2026-09-07T10:00:00Z', acceptedAt: null,
+      reviewVersion: 0, review: { total: 2, pending: 2, accepted: 0, rejected: 0 }
+    }
+    let detail: GenerationDraftDetail = {
+      ...summary,
+      content: '甲。\n乙。',
+      segments: [
+        { id: 'p1', text: '甲。', decision: 'pending' },
+        { id: 'p2', text: '乙。', decision: 'pending' }
+      ]
+    }
+    vi.spyOn(generationDraftApi, 'get').mockImplementation(async () => detail)
+    const review = vi.spyOn(generationDraftApi, 'review').mockImplementation(async (_id, segmentIds, decision) => {
+      const segments = detail.segments.map((segment) => segmentIds.includes(segment.id) ? { ...segment, decision } : segment)
+      detail = {
+        ...detail,
+        segments,
+        reviewVersion: detail.reviewVersion + 1,
+        review: {
+          total: segments.length,
+          pending: segments.filter((segment) => segment.decision === 'pending').length,
+          accepted: segments.filter((segment) => segment.decision === 'accepted').length,
+          rejected: segments.filter((segment) => segment.decision === 'rejected').length
+        }
+      }
+      return detail
+    })
+    const { wrapper } = await mountPanel()
+    await wrapper.setProps({ drafts: [summary] })
+    const draftsTab = wrapper.findAll('.wk-tab').find((button) => button.text().includes('候选'))
+    if (!draftsTab) throw new Error('draft tab not found')
+    await draftsTab.trigger('click')
+    await wrapper.get('.draft-row').trigger('click')
+    await flushPromises()
+
+    const firstAccept = wrapper.findAll('.draft-segment')[0]!.findAll('button').find((button) => button.text() === '接受')
+    if (!firstAccept) throw new Error('accept paragraph button not found')
+    await firstAccept.trigger('click')
+    await flushPromises()
+    const secondReject = wrapper.findAll('.draft-segment')[1]!.findAll('button').find((button) => button.text() === '拒绝')
+    if (!secondReject) throw new Error('reject paragraph button not found')
+    await secondReject.trigger('click')
+    await flushPromises()
+
+    expect(review.mock.calls.map((call) => call.slice(1))).toEqual([
+      [['p1'], 'accepted', 0],
+      [['p2'], 'rejected', 1]
+    ])
+    expect(wrapper.text()).toContain('1 接受 / 1 拒绝 / 0 待定')
+    const insert = wrapper.findAll('.draft-actions button').find((button) => button.text() === '放入正文检查')
+    if (!insert) throw new Error('insert reviewed draft button not found')
+    await insert.trigger('click')
+    expect(wrapper.emitted('insertDraft')?.[0]?.[0]).toMatchObject({ content: '甲。' })
     wrapper.unmount()
   })
 

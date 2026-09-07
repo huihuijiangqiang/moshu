@@ -11,7 +11,7 @@ import { useProjectNavigation } from '@/composables/use-project-navigation'
 import { generationDraftApi, previewGeneration, type GenerationPreview } from '@/api/generation'
 import AppIcon from '@/components/ui/AppIcon.vue'
 import ReviewPanel from '@/components/editor/ReviewPanel.vue'
-import type { GenerationDraftDetail, GenerationDraftSummary, ReviewAnchor, ReviewComment, ReviewRound, ReviewWorkspace } from '@/types'
+import type { GenerationDraftDecision, GenerationDraftDetail, GenerationDraftSummary, ReviewAnchor, ReviewComment, ReviewRound, ReviewWorkspace } from '@/types'
 
 /**
  * AI 面板。三件事按重要性排：能不能生成（章纲 + 参数）、
@@ -66,6 +66,7 @@ const contextError = ref('')
 const selectedDraft = ref<GenerationDraftDetail | null>(null)
 const draftDetailLoading = ref(false)
 const draftDetailError = ref('')
+const draftReviewBusy = ref(false)
 const referenceScope = ref<'chapter' | 'all'>('chapter')
 const referenceQuery = ref('')
 const selectedReferenceId = ref<string | null>(null)
@@ -388,6 +389,41 @@ function rejectSelected() {
   selectedDraft.value = null
 }
 
+const acceptedDraftContent = computed(() => selectedDraft.value?.segments
+  .filter((segment) => segment.decision === 'accepted')
+  .map((segment) => segment.text)
+  .join('\n') ?? '')
+
+async function decideDraftSegments(segmentIds: string[], decision: GenerationDraftDecision) {
+  const draft = selectedDraft.value
+  if (!draft || draftReviewBusy.value || draft.status === 'streaming' || !segmentIds.length) return
+  draftReviewBusy.value = true
+  draftDetailError.value = ''
+  try {
+    selectedDraft.value = await generationDraftApi.review(draft.id, segmentIds, decision, draft.reviewVersion)
+  } catch (error) {
+    draftDetailError.value = error instanceof Error ? error.message : '候选审阅保存失败'
+    try {
+      selectedDraft.value = await generationDraftApi.get(draft.id)
+    } catch {
+      // 保留原稿，避免二次加载失败让作者失去当前阅读位置。
+    }
+  } finally {
+    draftReviewBusy.value = false
+  }
+}
+
+function decideAllDraftSegments(decision: Exclude<GenerationDraftDecision, 'pending'>) {
+  const ids = selectedDraft.value?.segments.map((segment) => segment.id) ?? []
+  void decideDraftSegments(ids, decision)
+}
+
+function insertReviewedDraft() {
+  const draft = selectedDraft.value
+  if (!draft || draft.review.pending > 0 || !acceptedDraftContent.value) return
+  emit('insertDraft', { ...draft, content: acceptedDraftContent.value })
+}
+
 function forwardReviewComment(roundId: string, content: string) {
   emit('addReviewComment', roundId, content)
 }
@@ -648,18 +684,57 @@ function forwardReviewDecision(round: ReviewRound, decision: 'approved' | 'chang
             {{ selectedDraft.status === 'streaming' ? '生成中' : selectedDraft.status === 'failed' ? '生成中断' : '待采纳' }}
           </span>
         </div>
-        <div class="draft-meta">{{ selectedDraft.generatedWords }} 字 · {{ draftTime(selectedDraft.createdAt) }}</div>
-        <div class="draft-prose">{{ selectedDraft.content || '没有可恢复的内容。' }}</div>
+        <div class="draft-meta">
+          {{ selectedDraft.generatedWords }} 字 · {{ draftTime(selectedDraft.createdAt) }} ·
+          {{ selectedDraft.review.accepted }} 接受 / {{ selectedDraft.review.rejected }} 拒绝 / {{ selectedDraft.review.pending }} 待定
+        </div>
+        <div v-if="selectedDraft.segments.length" class="draft-review-tools">
+          <button class="wk-btn wk-btn-xs" type="button" :disabled="draftReviewBusy || selectedDraft.status === 'streaming'" @click="decideAllDraftSegments('accepted')">全部接受</button>
+          <button class="wk-btn wk-btn-xs" type="button" :disabled="draftReviewBusy || selectedDraft.status === 'streaming'" @click="decideAllDraftSegments('rejected')">全部拒绝</button>
+        </div>
+        <div v-if="selectedDraft.segments.length" class="draft-segments" aria-label="候选段落审阅">
+          <article
+            v-for="segment in selectedDraft.segments"
+            :key="segment.id"
+            class="draft-segment"
+            :data-decision="segment.decision"
+          >
+            <p>{{ segment.text }}</p>
+            <footer>
+              <span>{{ segment.decision === 'accepted' ? '已接受' : segment.decision === 'rejected' ? '已拒绝' : '待决定' }}</span>
+              <button
+                v-if="segment.decision !== 'accepted'"
+                type="button"
+                :disabled="draftReviewBusy || selectedDraft.status === 'streaming'"
+                @click="decideDraftSegments([segment.id], 'accepted')"
+              >接受</button>
+              <button
+                v-if="segment.decision !== 'rejected'"
+                type="button"
+                :disabled="draftReviewBusy || selectedDraft.status === 'streaming'"
+                @click="decideDraftSegments([segment.id], 'rejected')"
+              >拒绝</button>
+              <button
+                v-if="segment.decision !== 'pending'"
+                type="button"
+                :disabled="draftReviewBusy || selectedDraft.status === 'streaming'"
+                @click="decideDraftSegments([segment.id], 'pending')"
+              >撤销</button>
+            </footer>
+          </article>
+        </div>
+        <div v-else class="draft-prose">{{ selectedDraft.content || '没有可恢复的内容。' }}</div>
         <p v-if="selectedDraft.status === 'failed'" class="draft-warning">这次生成提前中断，已保留完成的部分。</p>
         <p v-else-if="selectedDraft.status === 'streaming'" class="draft-warning">候选仍在写入，完成或停止后才能处理。</p>
+        <p v-if="draftDetailError" class="draft-warning" role="alert">{{ draftDetailError }}</p>
         <div class="draft-actions">
           <button class="wk-btn wk-btn-xs" type="button" :disabled="selectedDraft.status === 'streaming'" @click="rejectSelected">舍弃</button>
           <button
             class="wk-btn wk-btn-xs"
             data-primary="true"
             type="button"
-            :disabled="!selectedDraft.content || selectedDraft.status === 'streaming'"
-            @click="emit('insertDraft', selectedDraft)"
+            :disabled="!acceptedDraftContent || selectedDraft.review.pending > 0 || selectedDraft.status === 'streaming' || draftReviewBusy"
+            @click="insertReviewedDraft"
           >放入正文检查</button>
         </div>
       </div>
@@ -886,6 +961,24 @@ function forwardReviewDecision(round: ReviewRound, decision: 'approved' | 'chang
   border-top: var(--hair) solid var(--line);
   border-bottom: var(--hair) solid var(--line);
 }
+.draft-review-tools { display: flex; justify-content: flex-end; gap: var(--u2); }
+.draft-segments { display: grid; gap: var(--u2); max-height: min(52vh, 520px); overflow: auto; }
+.draft-segment {
+  display: grid;
+  gap: var(--u2);
+  padding: var(--u3);
+  background: var(--panel-sunken);
+  border-left: 3px solid var(--line-strong);
+}
+.draft-segment[data-decision='accepted'] { border-left-color: var(--success); }
+.draft-segment[data-decision='rejected'] { color: var(--ink-4); border-left-color: var(--alert); }
+.draft-segment p { margin: 0; font-family: var(--font-serif); font-size: var(--fs); line-height: 1.85; white-space: pre-wrap; }
+.draft-segment[data-decision='rejected'] p { text-decoration: line-through; }
+.draft-segment footer { display: flex; align-items: center; justify-content: flex-end; gap: var(--u2); color: var(--ink-4); font-size: var(--fs-xs); }
+.draft-segment footer span { margin-right: auto; }
+.draft-segment footer button { padding: 2px 5px; color: var(--ink-2); background: transparent; border: 0; cursor: pointer; }
+.draft-segment footer button:hover { color: var(--ink); background: var(--panel); }
+.draft-segment footer button:focus-visible { outline: 2px solid var(--primary); outline-offset: 1px; }
 .draft-warning { margin: 0; color: var(--alert-ink); font-size: var(--fs-sm); line-height: 1.6; }
 .draft-actions { display: flex; justify-content: flex-end; gap: var(--u2); }
 .generation-recovery {

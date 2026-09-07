@@ -1,7 +1,7 @@
 import { request, requestResponse, USE_MOCK } from './http'
 import { mockApi } from './mock'
 import { getAccessToken } from './session'
-import type { GenerateOptions, GenerationDraftDetail, GenerationDraftSummary, GenerationMeta, InlineGenerateOptions } from '@/types'
+import type { GenerateOptions, GenerationDraftDecision, GenerationDraftDetail, GenerationDraftSummary, GenerationMeta, InlineGenerateOptions } from '@/types'
 
 export interface GenerationPreview {
   chapterId: string
@@ -89,6 +89,19 @@ export const generationDraftApi = {
 
   async accept(id: string): Promise<GenerationDraftDetail> {
     return request<GenerationDraftDetail>(`/generate/drafts/${encodeURIComponent(id)}/accept`, { method: 'POST' })
+  },
+
+  async review(
+    id: string,
+    segmentIds: string[],
+    decision: GenerationDraftDecision,
+    baseVersion: number
+  ): Promise<GenerationDraftDetail> {
+    return request<GenerationDraftDetail>(`/generate/drafts/${encodeURIComponent(id)}/review`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ segmentIds, decision, baseVersion })
+    })
   },
 
   async reject(id: string): Promise<void> {

@@ -461,6 +461,114 @@ async def test_partial_provider_failure_keeps_recoverable_candidate(
     assert accepted.json()["content"] == draft.content_text
 
 
+async def test_draft_review_persists_paragraph_decisions_and_accepts_only_selected_text(
+    app_client,
+    async_db_session,
+    seed_project,
+    auth_headers,
+):
+    await seed_project(user_id="review_writer", project_id="review_novel", chapter_ids=("review_ch",))
+    draft = GenerationDraft(
+        id="draft_review",
+        user_id="review_writer",
+        project_id="review_novel",
+        chapter_id="review_ch",
+        kind="chapter",
+        status="ready",
+        content_text="第一段。\n第二段。\n第三段。",
+        generated_words=12,
+        request_summary={},
+    )
+    async_db_session.add(draft)
+    await async_db_session.commit()
+
+    detail = await app_client.get("/generate/drafts/draft_review", headers=auth_headers("review_writer"))
+    assert detail.status_code == 200
+    assert detail.json()["review"] == {"total": 3, "pending": 3, "accepted": 0, "rejected": 0}
+    assert [segment["id"] for segment in detail.json()["segments"]] == ["p1", "p2", "p3"]
+
+    first = await app_client.patch(
+        "/generate/drafts/draft_review/review",
+        headers=auth_headers("review_writer"),
+        json={"segmentIds": ["p1", "p3"], "decision": "accepted", "baseVersion": 0},
+    )
+    assert first.status_code == 200
+    assert first.json()["reviewVersion"] == 1
+    assert first.json()["review"] == {"total": 3, "pending": 1, "accepted": 2, "rejected": 0}
+
+    stale = await app_client.patch(
+        "/generate/drafts/draft_review/review",
+        headers=auth_headers("review_writer"),
+        json={"segmentIds": ["p2"], "decision": "rejected", "baseVersion": 0},
+    )
+    assert stale.status_code == 409
+    assert stale.json()["detail"]["code"] == "DRAFT_REVIEW_CONFLICT"
+    assert stale.json()["detail"]["currentVersion"] == 1
+
+    incomplete = await app_client.post(
+        "/generate/drafts/draft_review/accept", headers=auth_headers("review_writer")
+    )
+    assert incomplete.status_code == 409
+    assert incomplete.json()["detail"]["code"] == "DRAFT_REVIEW_INCOMPLETE"
+
+    final = await app_client.patch(
+        "/generate/drafts/draft_review/review",
+        headers=auth_headers("review_writer"),
+        json={"segmentIds": ["p2"], "decision": "rejected", "baseVersion": 1},
+    )
+    assert final.status_code == 200
+    assert final.json()["review"] == {"total": 3, "pending": 0, "accepted": 2, "rejected": 1}
+
+    accepted = await app_client.post(
+        "/generate/drafts/draft_review/accept", headers=auth_headers("review_writer")
+    )
+    assert accepted.status_code == 200
+    assert accepted.json()["content"] == "第一段。\n第三段。"
+
+
+async def test_draft_review_can_undo_a_decision_and_rejects_invalid_segments(
+    app_client,
+    async_db_session,
+    seed_project,
+    auth_headers,
+):
+    await seed_project(user_id="undo_writer", project_id="undo_novel", chapter_ids=("undo_ch",))
+    async_db_session.add(
+        GenerationDraft(
+            id="draft_undo",
+            user_id="undo_writer",
+            project_id="undo_novel",
+            chapter_id="undo_ch",
+            kind="inline",
+            status="ready",
+            content_text="保留。\n待定。",
+            generated_words=6,
+            request_summary={},
+        )
+    )
+    await async_db_session.commit()
+
+    invalid = await app_client.patch(
+        "/generate/drafts/draft_undo/review",
+        headers=auth_headers("undo_writer"),
+        json={"segmentIds": ["p9"], "decision": "accepted", "baseVersion": 0},
+    )
+    assert invalid.status_code == 422
+
+    decided = await app_client.patch(
+        "/generate/drafts/draft_undo/review",
+        headers=auth_headers("undo_writer"),
+        json={"segmentIds": ["p1"], "decision": "accepted", "baseVersion": 0},
+    )
+    undone = await app_client.patch(
+        "/generate/drafts/draft_undo/review",
+        headers=auth_headers("undo_writer"),
+        json={"segmentIds": ["p1"], "decision": "pending", "baseVersion": decided.json()["reviewVersion"]},
+    )
+    assert undone.status_code == 200
+    assert undone.json()["review"] == {"total": 2, "pending": 2, "accepted": 0, "rejected": 0}
+
+
 async def test_draft_access_requires_body_edit_permission_and_reject_is_idempotent(
     app_client,
     async_db_session,

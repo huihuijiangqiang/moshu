@@ -126,6 +126,18 @@ describe('AiDraft', () => {
     editor.destroy()
   })
 
+  it('采纳作为单次事务，可一次撤销回到采纳前正文', () => {
+    const editor = makeEditor()
+    const before = canonicalBody(editor).html
+    editor.commands.insertPersistedDraft({ id: 'draft-undo', runId: 'run-undo', content: '待审第一段\n待审第二段' })
+    editor.commands.acceptDraftById('draft-undo')
+    expect(canonicalBody(editor).html).toContain('待审第一段')
+
+    editor.commands.undo()
+    expect(canonicalBody(editor).html).toBe(before)
+    editor.destroy()
+  })
+
   it('可以按候选标识只舍弃指定草稿', () => {
     const editor = makeEditor()
     editor.commands.insertPersistedDraft({ id: 'draft-1', runId: 'run-1', content: '第一份' })
