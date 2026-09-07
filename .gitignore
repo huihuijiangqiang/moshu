@@ -12,6 +12,7 @@ coverage/
 # Python environments and generated files
 .venv/
 venv/
+.docker-data/
 __pycache__/
 *.py[cod]
 .pytest_cache/
