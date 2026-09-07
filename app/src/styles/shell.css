@@ -1276,6 +1276,7 @@ body { font-family: var(--font-ui); font-size: var(--fs); }
   border-bottom: var(--hair) solid var(--line);
 }
 .codex-library-head h1 { margin: 4px 0 0; font-family: var(--font-prose); font-size: 21px; font-weight: 600; }
+.codex-library-head-actions { display: flex; align-items: center; gap: 8px; }
 .codex-library-head > strong { color: var(--ink-4); font-family: var(--font-mono); font-size: 13px; }
 .codex-library-controls { display: grid; gap: var(--u3); padding: var(--u3); border-bottom: var(--hair) solid var(--line); }
 .codex-kind-tabs { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 4px; }
@@ -1373,6 +1374,8 @@ body { font-family: var(--font-ui); font-size: var(--fs); }
   font-weight: 700;
 }
 .codex-detail-status { display: flex; gap: 5px; margin-left: auto; }
+.codex-detail-status .icon-button { width: 26px; height: 26px; }
+.codex-delete-button:hover { color: var(--alert); background: var(--alert-soft); }
 .codex-mobile-back { display: none; }
 .codex-sheet { width: min(100%, 1080px); margin: 0 auto; padding: 42px clamp(36px, 5vw, 64px) 92px; }
 .codex-pending {
@@ -1468,6 +1471,19 @@ body { font-family: var(--font-ui); font-size: var(--fs); }
 .codex-chapters { display: flex; flex-wrap: wrap; gap: 4px; margin-top: var(--u4); }
 .codex-chapters .pill { height: 21px; cursor: pointer; font-family: var(--font-mono); }
 .codex-chapters > span { align-self: center; margin-left: var(--u2); color: var(--ink-4); font-size: var(--fs-xs); }
+
+.codex-editor-backdrop { position: fixed; inset: 0; z-index: var(--z-float); display: grid; place-items: center; padding: 20px; background: rgb(24 34 35 / 34%); }
+.codex-editor-dialog { width: min(100%, 520px); display: grid; gap: 15px; padding: 22px; border: 1px solid var(--line-strong); background: var(--paper); box-shadow: 0 20px 60px rgb(31 42 44 / 22%); }
+.codex-editor-dialog header { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; padding-bottom: 8px; border-bottom: 1px solid var(--line); }
+.codex-editor-dialog header h2 { margin: 5px 0 0; font-family: var(--font-prose); font-size: 22px; font-weight: 600; }
+.codex-editor-dialog > label:not(.codex-editor-check) { display: grid; gap: 6px; color: var(--ink-3); font-size: 11px; font-weight: 700; }
+.codex-editor-dialog input:not([type='checkbox']), .codex-editor-dialog select, .codex-editor-dialog textarea { width: 100%; min-width: 0; padding: 9px 10px; border: 1px solid var(--line-strong); border-radius: 2px; color: var(--ink); background: var(--paper); font: inherit; font-size: 13px; font-weight: 400; line-height: 1.6; resize: vertical; }
+.codex-editor-dialog input:focus, .codex-editor-dialog select:focus, .codex-editor-dialog textarea:focus { outline: 2px solid var(--primary-line); border-color: var(--primary); }
+.codex-editor-check { display: grid; grid-template-columns: 18px minmax(0, auto) minmax(0, 1fr); align-items: center; gap: 7px; color: var(--ink-2); font-size: 12px; }
+.codex-editor-check input { accent-color: var(--primary); }
+.codex-editor-check small { color: var(--ink-4); font-size: 10px; }
+.codex-editor-error { margin: 0; color: var(--alert-ink); font-size: 12px; }
+.codex-editor-dialog footer { display: flex; justify-content: flex-end; gap: 7px; padding-top: 7px; border-top: 1px solid var(--line); }
 
 @media (max-width: 1100px) {
   .codex-layout { grid-template-columns: 280px minmax(0, 1fr); }

@@ -206,7 +206,9 @@ MOSHU_REDIS_DATA_DIR=<redis-data-directory>
 | 全局 | `/projects/new` | 创建作品，确认骨架后进入该作品写作台 |
 | 全局 | `/usage` | 账户套餐、积分与模型用量 |
 | 项目 | `/projects/:projectId/outline` | 卷纲、章纲、时间线与节奏规划 |
+| 项目 | `/projects/:projectId/timeline` | 可编辑故事事实、时间锚点和 Guard 冲突落点 |
 | 项目 | `/projects/:projectId/codex` | 当前作品的人物、地点、势力、物品和伏笔设定 |
+| 项目 | `/projects/:projectId/storyboard` | 漫剧改编版本、人物视觉档案、场景与静态分镜稿（暂不生成视频） |
 | 项目 | `/projects/:projectId/write` | 章节选择、正文编辑、AI 生成和引用设定 |
 | 项目 | `/projects/:projectId/guard` | 当前作品的一致性、伏笔和待确认设定处置 |
 | 项目 | `/projects/:projectId/style` | 为当前作品选择或管理作者风格档 |

@@ -41,6 +41,7 @@ from db.models_usage import (
     UsageLog,
 )
 from db.models_writing import ProjectDailyWriting
+from db.models_adaptation import Adaptation, Episode, Scene, Shot, VisualProfile
 
 __all__ = [
     "Base",
@@ -102,4 +103,9 @@ __all__ = [
     "ChapterReviewRound",
     "ReviewComment",
     "UserModelConfig",
+    "Adaptation",
+    "Episode",
+    "Scene",
+    "Shot",
+    "VisualProfile",
 ]

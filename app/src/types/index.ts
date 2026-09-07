@@ -605,3 +605,91 @@ export interface GenerationDraftDetail extends GenerationDraftSummary {
   content: string
   segments: GenerationDraftSegment[]
 }
+
+export type AdaptationStatus = 'draft' | 'in_review' | 'approved'
+export type StoryboardStatus = 'draft' | 'approved'
+
+export interface VisualProfile {
+  id: string
+  adaptationId: string
+  codexEntryId: string
+  displayName: string
+  style: string
+  appearance: string
+  costume: string
+  palette: string[]
+  referenceAssetIds: string[]
+  version: number
+  locked: boolean
+  notes: string
+}
+
+export interface StoryboardShot {
+  id: string
+  sceneId: string
+  order: number
+  shotType: 'wide' | 'medium' | 'close' | 'detail' | 'overhead'
+  camera: string
+  durationTarget: number
+  action: string
+  dialogue: string
+  narration: string
+  visualPrompt: string
+  referenceAssetIds: string[]
+  status: StoryboardStatus
+}
+
+export interface StoryboardScene {
+  id: string
+  episodeId: string
+  order: number
+  purpose: string
+  locationEntryId?: string
+  timeAnchor: string
+  characterEntryIds: string[]
+  summary: string
+  shots: StoryboardShot[]
+}
+
+export interface StoryboardEpisode {
+  id: string
+  adaptationId: string
+  number: number
+  title: string
+  sourceChapterIds: string[]
+  targetDuration: number
+  status: AdaptationStatus
+  scenes: StoryboardScene[]
+}
+
+export interface StoryboardAdaptation {
+  id: string
+  projectId: string
+  title: string
+  format: 'comic_drama'
+  aspectRatio: '9:16' | '16:9'
+  styleProfile: { label: string; description: string }
+  status: AdaptationStatus
+  episodes: StoryboardEpisode[]
+  visualProfiles: VisualProfile[]
+}
+
+export interface TimelineEvent {
+  id: string
+  projectId: string
+  chapterId?: string
+  chapterIndex?: number
+  title: string
+  anchor: string
+  summary: string
+  status: 'confirmed' | 'draft' | 'conflict'
+}
+
+export interface ChapterVersion {
+  id: string
+  chapterId: string
+  content: string
+  rev: number
+  trigger: 'manual' | 'autosave' | 'accept_draft' | 'restore'
+  createdAt: string
+}

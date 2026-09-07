@@ -18,6 +18,7 @@ except ModuleNotFoundError:  # pragma: no cover - production dependencies includ
     redis = None
 
 from api import (
+    adaptations,
     admin,
     agent,
     auth,
@@ -151,6 +152,7 @@ app.include_router(outlines.router, prefix="/chapters", tags=["章纲"])
 app.include_router(consistency.router, prefix="/consistency", tags=["一致性"])
 app.include_router(deconstruct.router, prefix="/analysis", tags=["拆书分析"])
 app.include_router(codex.router, prefix="/codex", tags=["设定库"])
+app.include_router(adaptations.router, tags=["漫剧改编"])
 app.include_router(generate.router, prefix="/generate", tags=["生成"])
 app.include_router(model_configs.router, prefix="/account", tags=["模型配置"])
 app.include_router(admin.router, prefix="/admin", tags=["管理"])

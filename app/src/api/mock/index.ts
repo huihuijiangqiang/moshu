@@ -1,7 +1,7 @@
 import { delay } from '../http'
 import * as seed from './seed'
 import { findShelfBook } from './shelf'
-import type { Chapter, ChapterPlanPatch, ChapterVersionDetail, ChapterVersionRestoreResult, ChapterVersionSummary, CharacterStatistics, CodexEntry, CodexEntryDraft, CodexRelation, CodexRelationDraft, CodexStateDraft, CodexStateHistoryItem, GuardIssue, GuardOverview, GuardResolutionAction, Project, ProjectNote, ContextLayer, ProjectPatch, ProjectTrash, TemporalDecisionResult, TemporalReviewItem, TimelineBoard, TimelineEntry, TimelineEntryDraft, TimelineReflowResult, WritingProgressDay } from '@/types'
+import type { Chapter, ChapterPlanPatch, ChapterVersionDetail, ChapterVersionRestoreResult, ChapterVersionSummary, CharacterStatistics, CodexEntry, CodexEntryDraft, CodexRelation, CodexRelationDraft, CodexStateDraft, CodexStateHistoryItem, GuardIssue, GuardOverview, GuardResolutionAction, Project, ProjectNote, ContextLayer, ProjectPatch, ProjectTrash, TemporalDecisionResult, TemporalReviewItem, TimelineBoard, TimelineEntry, TimelineEntryDraft, TimelineReflowResult, WritingProgressDay, StoryboardAdaptation, StoryboardEpisode, StoryboardScene, StoryboardShot, VisualProfile } from '@/types'
 
 /** 内存态副本：mock 下的写操作要真的改变数据，否则界面行为是假的。 */
 const state = {
@@ -20,10 +20,42 @@ const timelineEntryStates = new Map<string, TimelineEntry[]>()
 const codexEntryStates = new Map<string, CodexEntry[]>()
 const codexStateHistoryStates = new Map<string, CodexStateHistoryItem[]>()
 const projectNoteStates = new Map<string, ProjectNote[]>()
+const storyboardStates = new Map<string, StoryboardAdaptation>()
 let timelineEntrySequence = 1
 let codexStateSequence = 1
 let codexRelationSequence = 1
 let projectNoteSequence = 1
+
+function storyboardFor(projectId: string): StoryboardAdaptation {
+  const existing = storyboardStates.get(projectId)
+  if (existing) return existing
+  const entries = codexEntriesFor(projectId)
+  const character = entries.find((entry) => entry.kind === 'character')
+  const place = entries.find((entry) => entry.kind === 'place')
+  const adaptationId = `${projectId}-ad1`
+  const profile: VisualProfile | undefined = character ? {
+    id: `${projectId}-vp-${character.id}`, adaptationId, codexEntryId: character.id,
+    displayName: character.name, style: '国风半厚涂 · 低饱和冷色', appearance: character.character?.appearance ?? character.summary,
+    costume: '沿用设定库中的服装和标志性道具，不在镜头间改变', palette: ['#1f3e45', '#b9c6c0', '#d8a36b'],
+    referenceAssetIds: [], version: 1, locked: true, notes: '当前为文字视觉档案，后续接入参考图时沿用该版本。'
+  } : undefined
+  const sceneId = `${projectId}-scene-1`
+  const episodeId = `${projectId}-ep1`
+  const shot = (order: number, shotType: StoryboardShot['shotType'], action: string, visualPrompt: string): StoryboardShot => ({
+    id: `${projectId}-shot-${order}`, sceneId, order, shotType, camera: order === 1 ? '缓慢推近' : '平移跟拍', durationTarget: 4,
+    action, dialogue: order === 2 ? '「先把这一处看清。」' : '', narration: order === 1 ? '风雪停后，城墙露出一线灰白的天。' : '', visualPrompt,
+    referenceAssetIds: profile ? [profile.id] : [], status: 'draft'
+  })
+  const scene: StoryboardScene = {
+    id: sceneId, episodeId, order: 1, purpose: '建立本集的核心悬念和人物视觉锚点', locationEntryId: place?.id, timeAnchor: '清晨 · 关键地点',
+    characterEntryIds: character ? [character.id] : [], summary: '从小说当前章节拆出第一场，先确认人物、地点和叙事动作。',
+    shots: [shot(1, 'wide', '人物进入环境，停在视觉焦点前。', '竖屏国风漫剧，环境建立镜头，人物留出字幕空间。'), shot(2, 'medium', '人物抬手或回头，动作落在对白之前。', '中景，服装与标志性道具保持连续，冷色环境中的一处暖色反光。'), shot(3, 'close', '人物看向画外，留下下一镜头的悬念。', '近景，克制表情，背景虚化，只保留叙事关键物件。')]
+  }
+  const episode: StoryboardEpisode = { id: episodeId, adaptationId, number: 1, title: '第一集 · 开场', sourceChapterIds: [], targetDuration: 90, status: 'draft', scenes: [scene] }
+  const adaptation: StoryboardAdaptation = { id: adaptationId, projectId, title: `《${projectFor(projectId).title}》· 竖屏漫剧`, format: 'comic_drama', aspectRatio: '9:16', styleProfile: { label: '冷峻叙事 · 半厚涂', description: '以人物动作和场景锚点保持镜头连续。' }, status: 'draft', episodes: [episode], visualProfiles: profile ? [profile] : [] }
+  storyboardStates.set(projectId, adaptation)
+  return adaptation
+}
 
 function codexEntriesFor(projectId: string): CodexEntry[] {
   if (projectId === state.project.id) return state.codex
@@ -663,6 +695,53 @@ export const mockApi = {
         return
       }
     }
+  },
+
+  async getStoryboard(projectId = 'p1'): Promise<StoryboardAdaptation> {
+    await delay(140)
+    return structuredClone(storyboardFor(projectId))
+  },
+
+  async createStoryboardEpisode(projectId: string, input: Pick<StoryboardEpisode, 'title' | 'sourceChapterIds' | 'targetDuration'>): Promise<StoryboardEpisode> {
+    await delay(100)
+    const adaptation = storyboardFor(projectId)
+    const episode: StoryboardEpisode = { id: `${projectId}-ep-${Date.now().toString(36)}`, adaptationId: adaptation.id, number: adaptation.episodes.length + 1, title: input.title, sourceChapterIds: [...input.sourceChapterIds], targetDuration: input.targetDuration, status: 'draft', scenes: [] }
+    adaptation.episodes.push(episode)
+    return structuredClone(episode)
+  },
+
+  async createStoryboardScene(projectId: string, episodeId: string, input: Pick<StoryboardScene, 'purpose' | 'summary' | 'timeAnchor' | 'locationEntryId' | 'characterEntryIds'>): Promise<StoryboardScene> {
+    await delay(100)
+    const episode = storyboardFor(projectId).episodes.find((item) => item.id === episodeId)
+    if (!episode) throw new Error('episode_not_found')
+    const scene: StoryboardScene = { id: `${projectId}-scene-${Date.now().toString(36)}`, episodeId, order: episode.scenes.length + 1, purpose: input.purpose, summary: input.summary, timeAnchor: input.timeAnchor, locationEntryId: input.locationEntryId, characterEntryIds: [...input.characterEntryIds], shots: [] }
+    episode.scenes.push(scene)
+    return structuredClone(scene)
+  },
+
+  async createStoryboardShot(projectId: string, sceneId: string, input: Partial<StoryboardShot>): Promise<StoryboardShot> {
+    await delay(80)
+    const scene = storyboardFor(projectId).episodes.flatMap((episode) => episode.scenes).find((item) => item.id === sceneId)
+    if (!scene) throw new Error('scene_not_found')
+    const shot: StoryboardShot = { id: `${projectId}-shot-${Date.now().toString(36)}`, sceneId, order: scene.shots.length + 1, shotType: 'medium', camera: 'static', durationTarget: 4, action: '', dialogue: '', narration: '', visualPrompt: '', referenceAssetIds: [], status: 'draft', ...input }
+    scene.shots.push(shot)
+    return structuredClone(shot)
+  },
+
+  async updateStoryboardShot(projectId: string, shotId: string, patch: Partial<StoryboardShot>): Promise<StoryboardShot> {
+    await delay(80)
+    const shot = storyboardFor(projectId).episodes.flatMap((episode) => episode.scenes).flatMap((scene) => scene.shots).find((item) => item.id === shotId)
+    if (!shot) throw new Error('shot_not_found')
+    Object.assign(shot, patch)
+    return structuredClone(shot)
+  },
+
+  async updateVisualProfile(projectId: string, profileId: string, patch: Partial<VisualProfile>): Promise<VisualProfile> {
+    await delay(80)
+    const profile = storyboardFor(projectId).visualProfiles.find((item) => item.id === profileId)
+    if (!profile) throw new Error('visual_profile_not_found')
+    Object.assign(profile, patch, { version: profile.version + 1 })
+    return structuredClone(profile)
   },
 
   async createCodexRelation(projectId: string, entryId: string, draft: CodexRelationDraft): Promise<CodexRelation> {

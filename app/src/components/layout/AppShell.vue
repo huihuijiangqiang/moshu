@@ -58,6 +58,7 @@ const rail = computed<RailEntry[]>(() => {
     { to: projectPath(projectId.value, 'write'), icon: 'write', label: '写作台', shortLabel: '正文' },
     { to: projectPath(projectId.value, 'outline'), icon: 'outline', label: '大纲', shortLabel: '大纲' },
     { to: projectPath(projectId.value, 'timeline'), icon: 'timeline', label: '故事时间线', shortLabel: '时间' },
+    { to: projectPath(projectId.value, 'storyboard'), icon: 'storyboard', label: '漫剧分镜', shortLabel: '漫剧' },
     { to: projectPath(projectId.value, 'codex'), icon: 'codex', label: `设定库 · ${codex.entries.length}`, shortLabel: '设定', dot: codex.pending.length > 0 },
     { to: projectPath(projectId.value, 'guard'), icon: 'guard', label: `一致性守卫 · ${guard.open.length}`, shortLabel: '守卫', dot: guard.open.length > 0 },
     { to: projectPath(projectId.value, 'style'), icon: 'style', label: '风格档', shortLabel: '风格' },
