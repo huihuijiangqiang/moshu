@@ -29,7 +29,7 @@ export const useStoryboardStore = defineStore('storyboard', () => {
     if (loadedProjectId.value === projectId && adaptation.value) return
     loading.value = true
     try {
-      adaptation.value = await mockApi.getStoryboard(projectId)
+      adaptation.value = await api.getStoryboard(projectId)
       loadedProjectId.value = projectId
       selectedEpisodeId.value = null
       selectedSceneId.value = null
@@ -41,7 +41,7 @@ export const useStoryboardStore = defineStore('storyboard', () => {
   }
 
   async function createEpisode(projectId: string) {
-    const episode = await mockApi.createStoryboardEpisode(projectId, { title: `第 ${(adaptation.value?.episodes.length ?? 0) + 1} 集 · 待命名`, sourceChapterIds: [], targetDuration: 90 })
+    const episode = await api.createStoryboardEpisode(projectId, { title: `第 ${(adaptation.value?.episodes.length ?? 0) + 1} 集 · 待命名`, sourceChapterIds: [], targetDuration: 90 })
     adaptation.value?.episodes.push(episode)
     selectedEpisodeId.value = episode.id
     selectedSceneId.value = null
@@ -50,7 +50,7 @@ export const useStoryboardStore = defineStore('storyboard', () => {
 
   async function createScene(projectId: string) {
     if (!selectedEpisode.value) return
-    const scene = await mockApi.createStoryboardScene(projectId, selectedEpisode.value.id, { purpose: '填写这一场要完成的叙事任务', summary: '', timeAnchor: '', locationEntryId: undefined, characterEntryIds: [] })
+    const scene = await api.createStoryboardScene(projectId, selectedEpisode.value.id, { purpose: '填写这一场要完成的叙事任务', summary: '', timeAnchor: '', locationEntryId: undefined, characterEntryIds: [] })
     selectedEpisode.value.scenes.push(scene)
     selectedSceneId.value = scene.id
     selectedShotId.value = null
@@ -58,19 +58,19 @@ export const useStoryboardStore = defineStore('storyboard', () => {
 
   async function createShot(projectId: string) {
     if (!selectedScene.value) return
-    const shot = await mockApi.createStoryboardShot(projectId, selectedScene.value.id, {})
+    const shot = await api.createStoryboardShot(projectId, selectedScene.value.id, {})
     selectedScene.value.shots.push(shot)
     selectedShotId.value = shot.id
   }
 
   async function updateShot(projectId: string, patch: Partial<StoryboardShot>) {
     if (!selectedShot.value) return
-    const updated = await mockApi.updateStoryboardShot(projectId, selectedShot.value.id, patch)
+    const updated = await api.updateStoryboardShot(projectId, selectedShot.value.id, patch)
     Object.assign(selectedShot.value, updated)
   }
 
   async function updateVisualProfile(projectId: string, profileId: string, patch: Partial<VisualProfile>) {
-    const updated = await mockApi.updateVisualProfile(projectId, profileId, patch)
+    const updated = await api.updateVisualProfile(projectId, profileId, patch)
     const profile = adaptation.value?.visualProfiles.find((item) => item.id === profileId)
     if (profile) Object.assign(profile, updated)
   }
