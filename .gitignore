@@ -9,6 +9,12 @@ dist/
 coverage/
 *.tsbuildinfo
 
+# Generated research/design exports and local test output
+*.dc.html
+/support.js
+/.thumbnail
+/output/
+
 # Python environments and generated files
 .venv/
 venv/

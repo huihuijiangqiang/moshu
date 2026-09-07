@@ -2,7 +2,7 @@
 
 墨枢是面向长篇网文创作的 AI 写作平台。项目以一键成章为入口，重点解决长程设定记忆、一致性检查、伏笔追踪和作者风格保真。
 
-当前仓库包含 Vue 3 写作前端、FastAPI API、PostgreSQL/pgvector、Redis 与 Celery 异步任务，以及产品调研、需求和开发文档。
+当前仓库包含 Vue 3 写作前端、FastAPI API、PostgreSQL/pgvector、Redis 与 Celery 异步任务，以及必要的架构与实现文档。
 
 ## 仓库结构
 
@@ -10,10 +10,9 @@
 .
 ├── app/       Vue 3 + TypeScript + Tiptap 前端
 ├── server/    FastAPI + SQLAlchemy 后端骨架
-├── docs/      代码审阅与实施辅助文档
+├── docs/      架构与产品技术文档
 ├── _ds/       设计系统资源
-├── HANDOFF.md 开发交接与关键约束
-└── *.dc.html  调研、需求、界面设计和技术规划
+└── LICENSE    项目使用许可
 ```
 
 ## 前端启动
@@ -99,4 +98,8 @@ MOSHU_REDIS_DATA_DIR=D:/moshu-data/redis
 
 主要创作流程是：创建或选择作品 → 梳理大纲与设定 → 写作 → 一致性与 AI 痕迹复核 → 导出。写作、大纲和设定允许反复往返；守卫问题必须能跳回对应正文或时间线。账户用量不属于任何作品。
 
-开始开发前请先阅读 `HANDOFF.md`，产品范围以 `需求文档与技术选型.dc.html` 的功能需求表为准。
+当前实现状态与后端验收记录见 `server/docs/IMPLEMENTATION_STATUS.md`；架构约束见 `docs/architecture/`。
+
+## 许可
+
+本项目采用保留所有权利（All Rights Reserved）许可，详见 [`LICENSE`](LICENSE)。除版权所有者书面授权外，不得复制、修改、再发布、销售或将本项目用于生产部署。第三方依赖仍受其各自许可证约束。

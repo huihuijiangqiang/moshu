@@ -232,10 +232,10 @@ docker-compose up -d
 
 ## 参考文档
 
-- [开发规划与技术选型](../开发规划与技术选型.dc.html) - 架构决策与排期
-- [需求文档与技术选型](../需求文档与技术选型.dc.html) - 功能需求与验收标准
-- [HANDOFF.md](../HANDOFF.md) - 前端交接文档
+- [长文本一致性架构](../docs/architecture/long-text-consistency.md) - 记忆装配、检索与一致性守卫
+- [书稿拆解架构](../docs/architecture/book-deconstruction.md) - 书稿导入与结构化处理
+- [当前实现状态](docs/IMPLEMENTATION_STATUS.md) - 后端实现与验收记录
 
 ## 许可
 
-内部项目，未开源
+项目采用保留所有权利（All Rights Reserved）许可，详见根目录 [`LICENSE`](../LICENSE)。
