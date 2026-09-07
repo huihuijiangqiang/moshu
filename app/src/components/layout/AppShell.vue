@@ -8,6 +8,7 @@ import { useCodexStore } from '@/stores/codex'
 import { useGuardStore } from '@/stores/guard'
 import { useShellStore } from '@/stores/shell'
 import { useUsageStore } from '@/stores/usage'
+import { useOrgStore } from '@/stores/orgs'
 import { projectPath, routeProjectId } from '@/router/project-route'
 import { authApi } from '@/api/auth'
 import { getSessionUser } from '@/api/session'
@@ -27,8 +28,9 @@ const codex = useCodexStore()
 const guard = useGuardStore()
 const shell = useShellStore()
 const usage = useUsageStore()
+const orgs = useOrgStore()
 const sessionUser = getSessionUser()
-const isAdmin = ['admin', 'super_admin'].includes(sessionUser?.system_role ?? 'user')
+const isSystemAdmin = ['admin', 'super_admin'].includes(sessionUser?.system_role ?? 'user')
 
 interface RailEntry {
   to: string
@@ -45,9 +47,10 @@ const rail = computed<RailEntry[]>(() => {
   const entries: RailEntry[] = [{ to: '/', icon: 'shelf', label: '作品库', shortLabel: '作品' }]
   if (!projectId.value) {
     entries.push({ to: '/deconstruct', icon: 'outline', label: '拆书分析', shortLabel: '拆书' })
+    entries.push({ to: '/teams', icon: 'team', label: orgs.teamLabel, shortLabel: '团队' })
     entries.push({ to: '/usage', icon: 'usage', label: '用量与计费', shortLabel: '用量' })
     entries.push({ to: '/model-settings', icon: 'key', label: '我的模型服务', shortLabel: '模型' })
-    if (isAdmin) entries.push({ to: '/admin', icon: 'guard', label: '系统管理', shortLabel: '管理' })
+    if (isSystemAdmin) entries.push({ to: '/admin', icon: 'guard', label: '系统管理', shortLabel: '系统' })
     return entries
   }
   return entries.concat([
@@ -64,10 +67,10 @@ const rail = computed<RailEntry[]>(() => {
 const railFoot = computed<RailEntry[]>(() => projectId.value ? [
   { to: '/deconstruct', icon: 'outline', label: '拆书分析', shortLabel: '拆书' },
   { to: projectPath(projectId.value, 'export'), icon: 'export', label: '导出', shortLabel: '导出' },
-  { to: projectPath(projectId.value, 'access'), icon: 'codex', label: '协作与权限', shortLabel: '协作' },
+  { to: projectPath(projectId.value, 'access'), icon: 'team', label: orgs.teamLabel, shortLabel: '团队' },
   { to: '/usage', icon: 'usage', label: '用量与计费', shortLabel: '用量' },
   { to: '/model-settings', icon: 'key', label: '我的模型服务', shortLabel: '模型' },
-  ...(isAdmin ? [{ to: '/admin', icon: 'guard' as IconName, label: '系统管理', shortLabel: '管理' }] : [])
+  ...(isSystemAdmin ? [{ to: '/admin', icon: 'guard' as IconName, label: '系统管理', shortLabel: '系统' }] : [])
 ] : [])
 
 const library = computed(() => route.name === 'shelf')
@@ -85,6 +88,7 @@ const remaining = computed(() =>
 const refreshUsage = () => { void usage.load(true).catch(() => undefined) }
 onMounted(() => {
   void usage.load().catch(() => undefined)
+  void orgs.load().catch(() => undefined)
   window.addEventListener('moshu:usage-changed', refreshUsage)
 })
 onUnmounted(() => window.removeEventListener('moshu:usage-changed', refreshUsage))
