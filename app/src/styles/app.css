@@ -114,10 +114,14 @@ button { font: inherit; color: inherit; }
 .suggest-item { padding: 8px 12px; font-size: 13px; cursor: pointer; display: flex; justify-content: space-between; gap: 10px; }
 .suggest-item[aria-selected='true'] { background: var(--color-accent); color: var(--on-alert); }
 
-/* 浮动 AI 工具条 */
+/* 章节末尾的 AI 工具条：跟随正文自然滚动，不遮挡当前段落。 */
 .ai-bar {
-  position: absolute; left: 50%; transform: translateX(-50%); bottom: 26px;
-  display: flex; border: 2px solid var(--color-text);
+  position: static;
+  display: flex;
+  width: fit-content;
+  max-width: 100%;
+  margin: 34px auto 0;
+  border: 2px solid var(--color-text);
   background: var(--color-neutral-100); box-shadow: var(--shadow-md);
   white-space: nowrap;
 }

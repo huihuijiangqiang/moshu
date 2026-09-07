@@ -1,4 +1,5 @@
 import { Node, mergeAttributes, type CommandProps } from '@tiptap/core'
+import { Fragment } from '@tiptap/pm/model'
 import { VueNodeViewRenderer } from '@tiptap/vue-3'
 import AiDraftBlock from '@/components/editor/AiDraftBlock.vue'
 
@@ -8,10 +9,15 @@ declare module '@tiptap/core' {
   interface Commands<ReturnType> {
     aiDraft: {
       insertAiDraft: () => ReturnType
+      insertPersistedDraft: (draft: { id: string; runId: string | null; content: string }) => ReturnType
       appendDraftText: (text: string) => ReturnType
       setDraftStatus: (status: DraftStatus) => ReturnType
+      setDraftRunId: (runId: string) => ReturnType
+      setDraftCandidateId: (draftId: string) => ReturnType
       acceptDraftAt: (pos: number) => ReturnType
+      acceptDraftById: (draftId: string) => ReturnType
       rejectDraftAt: (pos: number) => ReturnType
+      rejectDraftById: (draftId: string) => ReturnType
       rejectAllDrafts: () => ReturnType
     }
   }
@@ -23,6 +29,23 @@ function findDraft(state: CommandProps['state']) {
     if (node.type.name === 'aiDraft') found = { pos, size: node.nodeSize }
   })
   return found as { pos: number; size: number } | null
+}
+
+function findDraftById(state: CommandProps['state'], draftId: string) {
+  let found: { pos: number; size: number } | null = null
+  state.doc.descendants((node, pos) => {
+    if (node.type.name === 'aiDraft' && node.attrs.draftId === draftId) {
+      found = { pos, size: node.nodeSize }
+      return false
+    }
+  })
+  return found as { pos: number; size: number } | null
+}
+
+export function provenanceHash(text: string) {
+  let hash = 5381
+  for (const character of text) hash = ((hash * 33) ^ (character.codePointAt(0) ?? 0)) >>> 0
+  return hash.toString(16).padStart(8, '0')
 }
 
 /**
@@ -41,7 +64,9 @@ export const AiDraft = Node.create({
   addAttributes() {
     return {
       status: { default: 'pending' as DraftStatus },
-      label: { default: 'AI 草稿' }
+      label: { default: 'AI 草稿' },
+      runId: { default: null },
+      draftId: { default: null }
     }
   },
 
@@ -68,15 +93,38 @@ export const AiDraft = Node.create({
             content: [{ type: 'paragraph' }]
           }),
 
+      insertPersistedDraft:
+        (draft) =>
+        ({ state, commands }) => {
+          if (findDraftById(state, draft.id)) return false
+          const paragraphs = draft.content.replace(/\r\n?/g, '\n').split('\n')
+          return commands.insertContent({
+            type: this.name,
+            attrs: { status: 'pending', runId: draft.runId, draftId: draft.id },
+            content: paragraphs.map((text) => ({
+              type: 'paragraph',
+              ...(text ? { content: [{ type: 'text', text }] } : {})
+            }))
+          })
+        },
+
       appendDraftText:
         (text) =>
         ({ state, tr, dispatch }) => {
           const found = findDraft(state)
           if (!found) return false
           // 容器内最后一个子节点的内部末尾
-          const insertAt = found.pos + found.size - 2
-          if (text === '\n') tr.split(insertAt)
-          else tr.insertText(text, insertAt)
+          let insertAt = found.pos + found.size - 2
+          for (const part of text.replace(/\r\n?/g, '\n').split(/(\n)/)) {
+            if (!part) continue
+            if (part === '\n') {
+              tr.split(insertAt)
+              insertAt += 2
+            } else {
+              tr.insertText(part, insertAt)
+              insertAt += part.length
+            }
+          }
           tr.setMeta('addToHistory', false)
           if (dispatch) dispatch(tr)
           return true
@@ -95,15 +143,57 @@ export const AiDraft = Node.create({
           return true
         },
 
+      setDraftRunId:
+        (runId) =>
+        ({ state, tr, dispatch }) => {
+          const found = findDraft(state)
+          if (!found) return false
+          const node = state.doc.nodeAt(found.pos)
+          if (!node) return false
+          tr.setNodeMarkup(found.pos, undefined, { ...node.attrs, runId })
+          tr.setMeta('addToHistory', false)
+          if (dispatch) dispatch(tr)
+          return true
+        },
+
+      setDraftCandidateId:
+        (draftId) =>
+        ({ state, tr, dispatch }) => {
+          const found = findDraft(state)
+          if (!found) return false
+          const node = state.doc.nodeAt(found.pos)
+          if (!node) return false
+          tr.setNodeMarkup(found.pos, undefined, { ...node.attrs, draftId })
+          tr.setMeta('addToHistory', false)
+          if (dispatch) dispatch(tr)
+          return true
+        },
+
       /** 解包：草稿内容原地成为正文，一次事务完成 */
       acceptDraftAt:
         (pos) =>
         ({ state, tr, dispatch }) => {
           const node = state.doc.nodeAt(pos)
           if (!node || node.type.name !== 'aiDraft') return false
-          tr.replaceWith(pos, pos + node.nodeSize, node.content)
+          const runId = typeof node.attrs.runId === 'string' ? node.attrs.runId : null
+          const content = node.content.content.map((child) => {
+            if (!runId || child.type.name !== 'paragraph') return child
+            return child.type.create(
+              { ...child.attrs, aiRunId: runId, aiSourceHash: provenanceHash(child.textContent) },
+              child.content,
+              child.marks
+            )
+          })
+          tr.replaceWith(pos, pos + node.nodeSize, Fragment.fromArray(content))
           if (dispatch) dispatch(tr)
           return true
+        },
+
+      acceptDraftById:
+        (draftId) =>
+        ({ state, commands }) => {
+          const found = findDraftById(state, draftId)
+          return found ? commands.acceptDraftAt(found.pos) : false
         },
 
       rejectDraftAt:
@@ -114,6 +204,13 @@ export const AiDraft = Node.create({
           tr.delete(pos, pos + node.nodeSize)
           if (dispatch) dispatch(tr)
           return true
+        },
+
+      rejectDraftById:
+        (draftId) =>
+        ({ state, commands }) => {
+          const found = findDraftById(state, draftId)
+          return found ? commands.rejectDraftAt(found.pos) : false
         },
 
       rejectAllDrafts:

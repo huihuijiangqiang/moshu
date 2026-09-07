@@ -1,12 +1,15 @@
 """
 组织权限模型 - 3张表（MVP建表不开功能）
 """
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
 
 from sqlalchemy import ForeignKey, Integer, String, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from db.base import Base, TimestampMixin
+
+if TYPE_CHECKING:
+    from db.models_core import Chapter, User
 
 
 class Org(Base, TimestampMixin):
@@ -32,7 +35,7 @@ class OrgMember(Base, TimestampMixin):
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     org_id: Mapped[str] = mapped_column(String(32), ForeignKey("orgs.id", ondelete="CASCADE"), index=True)
     user_id: Mapped[str] = mapped_column(String(32), ForeignKey("users.id", ondelete="CASCADE"), index=True)
-    role: Mapped[str] = mapped_column(String(20))  # owner, lead, writer, editor
+    role: Mapped[str] = mapped_column(String(20))  # owner, lead, writer, editor, viewer
 
     # 关系
     org: Mapped["Org"] = relationship(back_populates="members")

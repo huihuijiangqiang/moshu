@@ -3,19 +3,30 @@ import { computed, onMounted, ref } from 'vue'
 import { mockApi } from '@/api/mock'
 import { useProjectStore } from '@/stores/project'
 import { useGuardStore } from '@/stores/guard'
+import { useUsageStore } from '@/stores/usage'
+import { useStylesStore } from '@/stores/styles'
 import type { ContextLayer } from '@/types'
 
 const emit = defineEmits<{ generate: [] }>()
 
 const store = useProjectStore()
 const guard = useGuardStore()
+const usage = useUsageStore()
+const styles = useStylesStore()
 const layers = ref<ContextLayer[]>([])
 const tab = ref<'ai' | 'refs' | 'notes'>('ai')
 
-onMounted(async () => { layers.value = await mockApi.getContextLayers() })
+onMounted(async () => {
+  const [context] = await Promise.all([mockApi.getContextLayers(), styles.load()])
+  layers.value = context
+})
 
 const total = computed(() => layers.value.reduce((s, l) => s + l.tokens, 0))
 const fmt = (n: number) => (n / 1000).toFixed(1) + 'k'
+const styleName = computed(() => {
+  const id = store.project?.styleProfile
+  return id ? styles.byId.get(id)?.name ?? '已绑定风格档' : '未设置'
+})
 </script>
 
 <template>
@@ -55,8 +66,8 @@ const fmt = (n: number) => (n / 1000).toFixed(1) + 'k'
             <span class="muted">{{ fmt(l.tokens) }}</span>
           </div>
           <div class="row-between rule-t" :style="{ paddingTop: '9px', fontWeight: 700 }">
-            <span>风格档 · {{ store.project?.styleProfile ?? '未设置' }}</span>
-            <span :style="{ color: 'var(--color-accent-700)' }">已启用</span>
+            <span>风格档 · {{ styleName }}</span>
+            <span :style="{ color: 'var(--color-accent-700)' }">{{ store.project?.styleProfile ? '已启用' : '未启用' }}</span>
           </div>
         </div>
       </section>
@@ -83,7 +94,7 @@ const fmt = (n: number) => (n / 1000).toFixed(1) + 'k'
 
       <section :style="{ padding: '16px', fontSize: '13px' }" class="row-between">
         <span class="muted">本月积分</span>
-        <span><strong>2,840</strong> <span class="muted">/ 5,000</span></span>
+        <span><strong>{{ usage.remaining.toLocaleString() }}</strong> <span class="muted">/ {{ usage.quota.toLocaleString() }}</span></span>
       </section>
     </template>
 

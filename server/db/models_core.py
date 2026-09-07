@@ -1,14 +1,17 @@
 """
-核心数据模型 - 骨架（6张表）
+核心数据模型 - 骨架（7张表）
 """
 from datetime import datetime
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
 
-from sqlalchemy import BigInteger, ForeignKey, Integer, String, Text
+from sqlalchemy import BigInteger, Boolean, CheckConstraint, DateTime, ForeignKey, Integer, String, Text, func
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from db.base import Base, TimestampMixin
+
+if TYPE_CHECKING:
+    from db.models_codex import CodexEntry
 
 
 class User(Base, TimestampMixin):
@@ -19,11 +22,24 @@ class User(Base, TimestampMixin):
     id: Mapped[str] = mapped_column(String(32), primary_key=True)
     phone: Mapped[Optional[str]] = mapped_column(String(20), unique=True, index=True)
     email: Mapped[Optional[str]] = mapped_column(String(255), unique=True, index=True)
+    password_hash: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     name: Mapped[str] = mapped_column(String(100))
     avatar_url: Mapped[Optional[str]] = mapped_column(String(512))
     plan: Mapped[str] = mapped_column(String(50), default="free")  # free, author, studio
+    system_role: Mapped[str] = mapped_column(String(20), default="user")  # user, admin, super_admin
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     quota_remaining: Mapped[int] = mapped_column(Integer, default=0)
     quota_total: Mapped[int] = mapped_column(Integer, default=0)
+    # 充值积分独立于每月赠送额度，不能被月度重置覆盖。
+    purchased_credits_remaining: Mapped[int] = mapped_column(Integer, default=0)
+    quota_resets_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    __table_args__ = (
+        CheckConstraint(
+            "purchased_credits_remaining >= 0",
+            name="ck_users_purchased_credits_nonnegative",
+        ),
+    )
 
     # 关系
     projects: Mapped[list["Project"]] = relationship(back_populates="owner", cascade="all, delete-orphan")
@@ -43,13 +59,36 @@ class Project(Base, TimestampMixin):
     genre: Mapped[Optional[str]] = mapped_column(String(100))
     status: Mapped[str] = mapped_column(String(20), default="ongoing")  # ongoing, finished, archived
     target_words_daily: Mapped[int] = mapped_column(Integer, default=3000)
-    style_profile_id: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
+    style_profile_id: Mapped[Optional[str]] = mapped_column(
+        String(32), ForeignKey("style_profiles.id", ondelete="SET NULL"), nullable=True
+    )
+    inspiration: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    synopsis: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    story_settings: Mapped[dict] = mapped_column(JSONB, default=dict)
 
     # 关系
     owner: Mapped["User"] = relationship(back_populates="projects")
     volumes: Mapped[list["Volume"]] = relationship(back_populates="project", cascade="all, delete-orphan")
     chapters: Mapped[list["Chapter"]] = relationship(back_populates="project", cascade="all, delete-orphan")
     codex_entries: Mapped[list["CodexEntry"]] = relationship(back_populates="project", cascade="all, delete-orphan")
+
+
+class ProjectNote(Base, TimestampMixin):
+    """用户在作品内保存的私有灵感速记，不进入正文或模型上下文。"""
+
+    __tablename__ = "project_notes"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True)
+    project_id: Mapped[str] = mapped_column(
+        String(32), ForeignKey("projects.id", ondelete="CASCADE"), index=True
+    )
+    user_id: Mapped[str] = mapped_column(
+        String(32), ForeignKey("users.id", ondelete="CASCADE"), index=True
+    )
+    chapter_id: Mapped[Optional[str]] = mapped_column(
+        String(32), ForeignKey("chapters.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    content: Mapped[str] = mapped_column(Text)
 
 
 class Volume(Base, TimestampMixin):
@@ -62,16 +101,20 @@ class Volume(Base, TimestampMixin):
     title: Mapped[str] = mapped_column(String(200))
     idx: Mapped[int] = mapped_column(Integer)  # 稀疏索引，步长 1024
     summary: Mapped[Optional[str]] = mapped_column(Text, nullable=True)  # 卷摘要（每10章压缩一次）
+    deleted_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
 
     # 关系
     project: Mapped["Project"] = relationship(back_populates="volumes")
-    chapters: Mapped[list["Chapter"]] = relationship(back_populates="volume", cascade="all, delete-orphan")
+    chapters: Mapped[list["Chapter"]] = relationship(back_populates="volume")
 
 
 class Chapter(Base, TimestampMixin):
     """章节表 - 不含正文"""
 
     __tablename__ = "chapters"
+    __table_args__ = (
+        CheckConstraint("pov_revision >= 0", name="ck_chapter_pov_revision_nonnegative"),
+    )
 
     id: Mapped[str] = mapped_column(String(32), primary_key=True)
     project_id: Mapped[str] = mapped_column(String(32), ForeignKey("projects.id", ondelete="CASCADE"), index=True)
@@ -83,6 +126,11 @@ class Chapter(Base, TimestampMixin):
     words: Mapped[int] = mapped_column(Integer, default=0)
     outline: Mapped[list[str]] = mapped_column(JSONB, default=list)  # 章纲节点
     summary: Mapped[Optional[str]] = mapped_column(Text, nullable=True)  # 200字章摘要
+    pov_entry_id: Mapped[Optional[str]] = mapped_column(
+        String(32), ForeignKey("codex_entries.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    pov_revision: Mapped[int] = mapped_column(Integer, default=0, server_default="0", nullable=False)
+    deleted_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
 
     # 关系
     project: Mapped["Project"] = relationship(back_populates="chapters")
@@ -116,6 +164,7 @@ class ChapterVersion(Base):
     content_json: Mapped[dict] = mapped_column(JSONB)
     rev: Mapped[int] = mapped_column(Integer)
     trigger: Mapped[str] = mapped_column(String(50))  # manual, autosave, accept_draft
+    content_hash: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     # 关系

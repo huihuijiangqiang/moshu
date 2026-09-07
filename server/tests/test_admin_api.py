@@ -1,0 +1,209 @@
+"""Administrator access, configuration, and audit behavior."""
+
+from datetime import UTC, datetime
+
+from sqlalchemy import func, select
+
+from db.models_admin import AdminAuditLog
+from db.models_core import User
+from db.models_usage import UsageLog
+
+
+async def test_regular_user_cannot_open_admin_api(
+    app_client, async_db_session, make_user, auth_headers
+):
+    async_db_session.add(make_user("regular"))
+    await async_db_session.commit()
+
+    response = await app_client.get("/admin/overview", headers=auth_headers("regular"))
+
+    assert response.status_code == 403
+
+
+async def test_admin_overview_returns_real_counts(
+    app_client, async_db_session, make_user, make_project, auth_headers
+):
+    async_db_session.add_all([
+        make_user("overview_admin", system_role="admin"),
+        make_user("overview_user"),
+    ])
+    await async_db_session.flush()
+    async_db_session.add(make_project("overview_project", owner_id="overview_user"))
+    await async_db_session.commit()
+
+    response = await app_client.get(
+        "/admin/overview", headers=auth_headers("overview_admin")
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "users": 2,
+        "projects": 1,
+        "active_consistency_runs": 0,
+        "open_guard_issues": 0,
+        "active_sessions": 0,
+    }
+
+
+async def test_super_admin_can_update_user_and_audit_is_written(
+    app_client, async_db_session, make_user, auth_headers
+):
+    admin = make_user("root_admin", system_role="super_admin")
+    target = make_user("target_user")
+    async_db_session.add_all([admin, target])
+    await async_db_session.commit()
+
+    response = await app_client.patch(
+        "/admin/users/target_user",
+        json={"plan": "author", "quota_remaining": 2500, "quota_total": 5000},
+        headers=auth_headers("root_admin"),
+    )
+
+    assert response.status_code == 200
+    assert response.json()["plan"] == "author"
+    assert response.json()["quota_remaining"] == 2500
+    assert await async_db_session.scalar(select(func.count(AdminAuditLog.id))) == 1
+
+
+async def test_admin_cannot_promote_system_roles(
+    app_client, async_db_session, make_user, auth_headers
+):
+    async_db_session.add_all([
+        make_user("plain_admin", system_role="admin"),
+        make_user("target_user"),
+    ])
+    await async_db_session.commit()
+
+    response = await app_client.patch(
+        "/admin/users/target_user",
+        json={"system_role": "admin"},
+        headers=auth_headers("plain_admin"),
+    )
+
+    assert response.status_code == 403
+
+
+async def test_admin_settings_control_new_account_defaults(
+    app_client, async_db_session, make_user, auth_headers
+):
+    async_db_session.add(make_user("settings_admin", system_role="super_admin"))
+    await async_db_session.commit()
+    headers = auth_headers("settings_admin")
+
+    updated = await app_client.patch(
+        "/admin/settings",
+        json={"registration_enabled": True, "default_plan": "author", "default_monthly_quota": 1200},
+        headers=headers,
+    )
+    assert updated.status_code == 200
+
+    registered = await app_client.post(
+        "/auth/register",
+        json={"name": "Default", "email": "default@example.test", "password": "password-123"},
+    )
+    assert registered.status_code == 201
+    created = await async_db_session.scalar(select(User).where(User.email == "default@example.test"))
+    assert created is not None
+    assert created.plan == "author"
+    assert created.quota_remaining == 1200
+
+
+async def test_admin_can_disable_public_registration(
+    app_client, async_db_session, make_user, auth_headers
+):
+    async_db_session.add(make_user("registration_admin", system_role="super_admin"))
+    await async_db_session.commit()
+
+    updated = await app_client.patch(
+        "/admin/settings",
+        json={"registration_enabled": False},
+        headers=auth_headers("registration_admin"),
+    )
+    assert updated.status_code == 200
+
+    registered = await app_client.post(
+        "/auth/register",
+        json={"name": "Blocked", "email": "blocked@example.test", "password": "password-123"},
+    )
+    assert registered.status_code == 403
+    assert registered.json()["detail"]["code"] == "REGISTRATION_DISABLED"
+
+
+async def test_super_admin_can_update_credit_rates(
+    app_client, async_db_session, make_user, auth_headers
+):
+    async_db_session.add(make_user("billing_admin", system_role="super_admin"))
+    await async_db_session.commit()
+
+    response = await app_client.patch(
+        "/admin/settings",
+        json={
+            "basic_input_credits": 2,
+            "basic_output_credits": 3,
+            "advanced_input_credits": 6,
+            "advanced_output_credits": 12,
+            "cached_input_percent": 10,
+        },
+        headers=auth_headers("billing_admin"),
+    )
+
+    assert response.status_code == 200
+    assert response.json()["credit_rates"] == {
+        "basic_input": 2,
+        "basic_output": 3,
+        "advanced_input": 6,
+        "advanced_output": 12,
+        "cached_percent": 10,
+    }
+    audit = await async_db_session.scalar(
+        select(AdminAuditLog).where(AdminAuditLog.action == "settings.update")
+    )
+    assert audit is not None
+    assert audit.detail["advanced_output_credits"] == 12
+
+
+async def test_admin_can_audit_platform_model_usage(
+    app_client, async_db_session, make_user, make_project, auth_headers
+):
+    async_db_session.add_all([
+        make_user("cost_admin", system_role="admin"),
+        make_user("cost_owner"),
+    ])
+    await async_db_session.flush()
+    async_db_session.add(make_project("cost_project", owner_id="cost_owner"))
+    await async_db_session.flush()
+    async_db_session.add(
+        UsageLog(
+            user_id="cost_owner",
+            project_id="cost_project",
+            platform_event_id="cost-event",
+            provider_requests=2,
+            feature="consistency_extract",
+            model="model-a",
+            prompt_tokens=100,
+            cached_tokens=25,
+            completion_tokens=30,
+            credits=0,
+            status="completed",
+            detail={"billing_scope": "platform"},
+            timestamp=datetime.now(UTC),
+        )
+    )
+    await async_db_session.commit()
+
+    response = await app_client.get(
+        "/admin/platform-usage?days=7", headers=auth_headers("cost_admin")
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["totals"] == {
+        "events": 1,
+        "requests": 2,
+        "prompt_tokens": 100,
+        "cached_tokens": 25,
+        "completion_tokens": 30,
+        "estimated_events": 0,
+    }
+    assert payload["items"][0]["label"] == "事实抽取"
+    assert payload["recent"][0]["project_id"] == "cost_project"

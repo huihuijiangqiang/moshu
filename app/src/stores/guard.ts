@@ -1,14 +1,33 @@
 import { defineStore } from 'pinia'
 import { computed, ref } from 'vue'
-import { mockApi } from '@/api/mock'
-import type { GuardIssue, GuardKind } from '@/types'
+import { contentApi } from '@/api/content'
+import { ApiError } from '@/api/http'
+import type { GuardIssue, GuardKind, GuardOverview, GuardResolutionAction, TemporalReviewItem, TimelineReflowResult } from '@/types'
+
+const EMPTY_OVERVIEW: GuardOverview = {
+  status: 'idle', queued: 0, running: 0, completed: 0, failed: 0,
+  outboxPending: 0, outboxDeadLetter: 0, runs: []
+}
 
 export const useGuardStore = defineStore('guard', () => {
   const issues = ref<GuardIssue[]>([])
   const tab = ref<GuardKind | 'resolved'>('conflict')
   const scanning = ref(false)
+  const scanRequestPending = ref(false)
+  const timelineReflowPending = ref(false)
+  const timelineReflowResult = ref<TimelineReflowResult | null>(null)
+  const timelineReflowError = ref<string | null>(null)
+  const temporalReviews = ref<TemporalReviewItem[]>([])
+  const temporalDecisionPendingId = ref<number | null>(null)
+  const temporalDecisionError = ref<string | null>(null)
   const loaded = ref(false)
   const loadedProjectId = ref<string | null>(null)
+  const overview = ref<GuardOverview>({ ...EMPTY_OVERVIEW })
+  let polling: Promise<void> | null = null
+  let pollingProjectId: string | null = null
+  let pollingGeneration = 0
+  let timelineReflowGeneration = 0
+  let temporalDecisionGeneration = 0
 
   const open = computed(() => issues.value.filter((i) => !i.resolved))
   const counts = computed(() => ({
@@ -29,27 +48,167 @@ export const useGuardStore = defineStore('guard', () => {
     [...open.value].sort((a, b) => (a.severity === b.severity ? 0 : a.severity === 'high' ? -1 : 1)).slice(0, 3)
   )
 
-  async function load(projectId = 'p1') {
-    if (loaded.value && loadedProjectId.value === projectId) return
-    issues.value = await mockApi.listGuardIssues(projectId)
+  function hasActiveWork(value: GuardOverview) {
+    return value.outboxPending > 0 || value.queued > 0 || value.running > 0
+  }
+
+  async function refresh(projectId: string) {
+    const [nextIssues, nextOverview, nextReviews] = await Promise.all([
+      contentApi.listGuardIssues(projectId),
+      contentApi.getGuardOverview(projectId),
+      contentApi.listTemporalReviews(projectId)
+    ])
+    if (loadedProjectId.value !== projectId) return
+    issues.value = nextIssues
+    overview.value = nextOverview
+    temporalReviews.value = nextReviews
     loadedProjectId.value = projectId
     loaded.value = true
   }
 
-  async function rescan() {
+  function pollUntilSettled(projectId: string, firstDelay = 250) {
+    if (polling && pollingProjectId === projectId) return polling
+    if (polling) {
+      polling = null
+      pollingProjectId = null
+    }
+    const generation = ++pollingGeneration
     scanning.value = true
+    const current = (async () => {
+      let first = true
+      while (true) {
+        await new Promise((resolve) => setTimeout(resolve, first ? firstDelay : 2000))
+        first = false
+        if (generation !== pollingGeneration || loadedProjectId.value !== projectId) return
+        await refresh(projectId)
+        if (!hasActiveWork(overview.value)) return
+      }
+    })()
+    polling = current
+    pollingProjectId = projectId
+    void current
+      .finally(() => {
+        if (polling === current) {
+          polling = null
+          pollingProjectId = null
+          scanning.value = false
+        }
+      })
+      .catch(() => undefined)
+    return current
+  }
+
+  async function load(projectId = 'p1', force = false) {
+    if (!force && loaded.value && loadedProjectId.value === projectId) {
+      if (hasActiveWork(overview.value)) void pollUntilSettled(projectId).catch(() => undefined)
+      return
+    }
+    if (loadedProjectId.value !== projectId) {
+      ++timelineReflowGeneration
+      ++temporalDecisionGeneration
+      timelineReflowPending.value = false
+      timelineReflowResult.value = null
+      timelineReflowError.value = null
+      temporalReviews.value = []
+      temporalDecisionPendingId.value = null
+      temporalDecisionError.value = null
+      // Mark the route target before I/O so a late request from the previous
+      // project cannot refresh its data back into this shared store.
+      loadedProjectId.value = projectId
+    }
+    await refresh(projectId)
+    if (hasActiveWork(overview.value)) void pollUntilSettled(projectId).catch(() => undefined)
+  }
+
+  async function rescan() {
+    const projectId = loadedProjectId.value
+    if (!projectId || scanRequestPending.value) return
+    scanRequestPending.value = true
     try {
-      issues.value = await mockApi.listGuardIssues(loadedProjectId.value ?? 'p1')
+      await contentApi.scanProject(projectId)
+      await refresh(projectId)
+      if (hasActiveWork(overview.value)) {
+        void pollUntilSettled(projectId).catch(() => undefined)
+      }
     } finally {
-      scanning.value = false
+      scanRequestPending.value = false
     }
   }
 
-  async function resolve(id: string) {
-    await mockApi.resolveGuardIssue(id)
-    const i = issues.value.find((x) => x.id === id)
+  async function reflowTimeline() {
+    const projectId = loadedProjectId.value
+    if (!projectId || timelineReflowPending.value) return
+    const generation = ++timelineReflowGeneration
+    timelineReflowPending.value = true
+    timelineReflowError.value = null
+    try {
+      const result = await contentApi.reflowProjectTimeline(projectId)
+      if (generation !== timelineReflowGeneration || loadedProjectId.value !== projectId) return
+      timelineReflowResult.value = result
+      await refresh(projectId)
+      if (hasActiveWork(overview.value)) {
+        void pollUntilSettled(projectId).catch(() => undefined)
+      }
+    } catch {
+      if (generation === timelineReflowGeneration && loadedProjectId.value === projectId) {
+        timelineReflowError.value = '时间线重算失败，请稍后重试。'
+      }
+    } finally {
+      if (generation === timelineReflowGeneration) timelineReflowPending.value = false
+    }
+  }
+
+  async function decideTemporalReview(
+    item: TemporalReviewItem,
+    action: 'confirm' | 'clear',
+    offsetSeconds?: number
+  ) {
+    const projectId = loadedProjectId.value
+    if (!projectId || temporalDecisionPendingId.value !== null) return false
+    const generation = ++temporalDecisionGeneration
+    temporalDecisionPendingId.value = item.claimId
+    temporalDecisionError.value = null
+    try {
+      const result = await contentApi.decideTemporalReview(
+        projectId,
+        item.claimId,
+        action,
+        item.overrideVersion,
+        offsetSeconds
+      )
+      if (generation !== temporalDecisionGeneration || loadedProjectId.value !== projectId) return false
+      const index = temporalReviews.value.findIndex((row) => row.claimId === item.claimId)
+      if (index >= 0) temporalReviews.value[index] = result.item
+      timelineReflowResult.value = result.reflow
+      await refresh(projectId)
+      if (hasActiveWork(overview.value)) void pollUntilSettled(projectId).catch(() => undefined)
+      return true
+    } catch (error) {
+      if (generation !== temporalDecisionGeneration || loadedProjectId.value !== projectId) return false
+      temporalDecisionError.value = error instanceof ApiError && error.status === 409
+        ? '这条时间已被其他编辑修改，已重新载入最新值。'
+        : '时间确认未保存，请检查取值后重试。'
+      await refresh(projectId).catch(() => undefined)
+      return false
+    } finally {
+      if (generation === temporalDecisionGeneration && loadedProjectId.value === projectId) {
+        temporalDecisionPendingId.value = null
+      }
+    }
+  }
+
+  async function resolve(id: string, action: GuardResolutionAction = 'defer') {
+    const projectId = loadedProjectId.value
+    const i = issues.value.find((item) => item.id === id)
+    if (!projectId || !i) return
+    await contentApi.resolveGuardIssue(projectId, id, i.issueRev ?? 1, action)
     if (i) i.resolved = true
   }
 
-  return { issues, tab, scanning, open, counts, visible, topThree, load, rescan, resolve, loadedProjectId }
+  return {
+    issues, tab, scanning, scanRequestPending, timelineReflowPending,
+    timelineReflowResult, timelineReflowError, temporalReviews,
+    temporalDecisionPendingId, temporalDecisionError, overview, open, counts, visible,
+    topThree, load, rescan, reflowTimeline, decideTemporalReview, resolve, loadedProjectId
+  }
 })

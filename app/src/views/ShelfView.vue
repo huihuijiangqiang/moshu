@@ -1,7 +1,9 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
-import { shelfApi, type ShelfBook } from '@/api/mock/shelf'
+import { contentApi } from '@/api/content'
+import { shelfApi, type ShelfBook } from '@/api/shelf'
+import type { WritingProgressDay } from '@/types'
 import AppIcon from '@/components/ui/AppIcon.vue'
 import { useShellStore } from '@/stores/shell'
 import { projectPath } from '@/router/project-route'
@@ -18,6 +20,12 @@ const status = ref<StatusFilter>('all')
 const sort = ref<SortKey>('updated')
 const view = ref<ViewMode>('list')
 const filtersOpen = ref(false)
+const settingsBook = ref<ShelfBook | null>(null)
+const settingsForm = ref({ title: '', genre: '', status: 'ongoing' as 'ongoing' | 'finished' | 'archived', dailyGoal: 3000 })
+const settingsBusy = ref(false)
+const settingsError = ref('')
+const writingProgress = ref<WritingProgressDay[]>([])
+const progressBusy = ref(false)
 
 onMounted(async () => {
   shell.setCrumb('作品库')
@@ -28,7 +36,8 @@ const statusItems = computed(() => [
   { key: 'all' as const, label: '全部作品', count: books.value.length },
   { key: 'ongoing' as const, label: '正在写', count: books.value.filter((b) => b.status === 'ongoing').length },
   { key: 'planning' as const, label: '构思中', count: books.value.filter((b) => b.status === 'planning').length },
-  { key: 'finished' as const, label: '已完稿', count: books.value.filter((b) => b.status === 'finished').length }
+  { key: 'finished' as const, label: '已完稿', count: books.value.filter((b) => b.status === 'finished').length },
+  { key: 'archived' as const, label: '已归档', count: books.value.filter((b) => b.status === 'archived').length }
 ])
 
 const filtered = computed(() => {
@@ -49,17 +58,72 @@ const filtered = computed(() => {
 const currentBook = computed(() => filtered.value.find((book) => book.status === 'ongoing') ?? filtered.value[0] ?? null)
 const otherBooks = computed(() => filtered.value.filter((book) => book.id !== currentBook.value?.id))
 const totalToday = computed(() => books.value.reduce((sum, book) => sum + book.todayWords, 0))
-const dailyGoal = 6000
-const dailyPct = computed(() => Math.min(100, Math.round((totalToday.value / dailyGoal) * 100)))
+const dailyGoal = computed(() => books.value.reduce((sum, book) => sum + (book.dailyGoal ?? 0), 0) || 6000)
+const dailyPct = computed(() => Math.min(100, Math.round((totalToday.value / dailyGoal.value) * 100)))
+const todayLabel = new Intl.DateTimeFormat('zh-CN', { year: 'numeric', month: 'long', day: 'numeric' }).format(new Date())
+const primaryBookId = computed(() => currentBook.value?.id ?? books.value[0]?.id ?? null)
+const guardTotal = computed(() => books.value.reduce((sum, book) => sum + book.guardOpen, 0))
+const codexTotal = computed(() => books.value.reduce((sum, book) => sum + book.codexCount, 0))
+const recentProgress = computed(() => writingProgress.value.slice(-7))
+const progressPeak = computed(() => Math.max(currentBook.value?.dailyGoal ?? 0, ...recentProgress.value.map((day) => day.wordsAdded), 1))
+
+watch(primaryBookId, async (bookId) => {
+  writingProgress.value = []
+  if (!bookId) return
+  progressBusy.value = true
+  try {
+    writingProgress.value = await contentApi.getWritingProgress(bookId, 7)
+  } catch {
+    writingProgress.value = []
+  } finally {
+    progressBusy.value = false
+  }
+}, { immediate: true })
+
+function progressLabel(day: WritingProgressDay) {
+  return new Intl.DateTimeFormat('zh-CN', { month: 'numeric', day: 'numeric' }).format(new Date(`${day.date}T00:00:00`))
+}
 
 const statusLabel: Record<ShelfBook['status'], string> = {
   ongoing: '正在写',
   planning: '构思中',
-  finished: '已完稿'
+  finished: '已完稿',
+  archived: '已归档'
 }
 
 function open(book: ShelfBook) {
-  router.push(projectPath(book.id, book.status === 'planning' || book.status === 'finished' ? 'outline' : 'write'))
+  router.push(projectPath(book.id, book.status === 'ongoing' ? 'write' : 'outline'))
+}
+
+function openSettings(book: ShelfBook) {
+  settingsBook.value = book
+  settingsForm.value = {
+    title: book.title,
+    genre: book.genre,
+    status: book.status === 'planning' ? 'ongoing' : book.status,
+    dailyGoal: book.dailyGoal ?? 3000
+  }
+  settingsError.value = ''
+}
+
+async function saveSettings() {
+  if (!settingsBook.value || !settingsForm.value.title.trim() || settingsBusy.value) return
+  settingsBusy.value = true
+  settingsError.value = ''
+  try {
+    const updated = await shelfApi.updateBook(settingsBook.value.id, {
+      ...settingsForm.value,
+      title: settingsForm.value.title.trim(),
+      genre: settingsForm.value.genre.trim()
+    })
+    const index = books.value.findIndex((book) => book.id === updated.id)
+    if (index >= 0) books.value[index] = updated
+    settingsBook.value = null
+  } catch {
+    settingsError.value = '作品设置没有保存，请检查内容后重试。'
+  } finally {
+    settingsBusy.value = false
+  }
 }
 
 function setStatus(next: StatusFilter) {
@@ -99,16 +163,16 @@ function formatWords(words: number) {
         <span class="studio-section-label">写作计划</span>
         <div class="studio-goal-copy"><strong>{{ totalToday.toLocaleString() }}</strong><span>/ {{ dailyGoal.toLocaleString() }} 字</span></div>
         <span class="studio-progress"><span :style="{ width: dailyPct + '%' }" /></span>
-        <p>今天已完成 {{ dailyPct }}%，还差 {{ (dailyGoal - totalToday).toLocaleString() }} 字。</p>
+        <p>今天已完成 {{ dailyPct }}%，还差 {{ Math.max(0, dailyGoal - totalToday).toLocaleString() }} 字。</p>
       </section>
 
       <section class="studio-sidebar-section studio-reminder-block">
         <span class="studio-section-label">需要留意</span>
-        <button type="button" @click="router.push(projectPath('p1', 'guard'))">
-          <span class="reminder-mark">3</span><span><strong>一致性问题</strong><small>《剑起山河》有 3 条待处理</small></span>
+        <button type="button" :disabled="!primaryBookId" @click="primaryBookId && router.push(projectPath(primaryBookId, 'guard'))">
+          <span class="reminder-mark">{{ guardTotal }}</span><span><strong>一致性问题</strong><small>{{ guardTotal ? `${guardTotal} 条待处理` : '当前没有待处理问题' }}</small></span>
         </button>
-        <button type="button" @click="router.push(projectPath('p1', 'codex'))">
-          <span class="reminder-mark reminder-mark-muted">5</span><span><strong>新设定待确认</strong><small>写作前确认可提升生成准确度</small></span>
+        <button type="button" :disabled="!primaryBookId" @click="primaryBookId && router.push(projectPath(primaryBookId, 'codex'))">
+          <span class="reminder-mark reminder-mark-muted">{{ codexTotal }}</span><span><strong>设定库</strong><small>{{ codexTotal }} 条人物与世界设定</small></span>
         </button>
       </section>
 
@@ -119,13 +183,13 @@ function formatWords(words: number) {
 
     <main class="studio-main">
       <header class="studio-main-head">
-        <div><span class="studio-kicker">2026 年 8 月 30 日</span><h2>继续你的故事</h2></div>
+        <div><span class="studio-kicker">{{ todayLabel }}</span><h2>继续你的故事</h2></div>
         <button class="wk-btn" data-primary="true" type="button" @click="router.push('/projects/new')"><AppIcon name="plus" :size="15" />新建作品</button>
       </header>
 
       <section v-if="currentBook" class="featured-manuscript">
         <button class="featured-cover" :data-tone="currentBook.coverTone" type="button" @click="open(currentBook)">
-          <span class="cover-series">长篇小说</span><strong>{{ currentBook.title }}</strong><span class="cover-author">沈砚 著</span>
+          <span class="cover-series">长篇小说</span><strong>{{ currentBook.title }}</strong><span class="cover-author">{{ statusLabel[currentBook.status] }}</span>
         </button>
 
         <div class="featured-copy">
@@ -134,9 +198,9 @@ function formatWords(words: number) {
           <p class="featured-genre">{{ currentBook.genre }}</p>
           <p class="featured-last">{{ currentBook.lastTouched }}</p>
           <div class="featured-actions">
-            <button class="wk-btn" data-primary="true" type="button" @click="open(currentBook)">继续写作</button>
+            <button class="wk-btn" data-primary="true" type="button" @click="open(currentBook)">{{ currentBook.status === 'ongoing' ? '继续写作' : '打开作品' }}</button>
             <button class="wk-btn" type="button" @click="router.push(projectPath(currentBook.id, 'outline'))">查看大纲</button>
-            <button class="icon-button" type="button" title="更多操作"><AppIcon name="more" /></button>
+            <button class="icon-button" type="button" title="作品设置" aria-label="打开作品设置" @click="openSettings(currentBook)"><AppIcon name="edit" /></button>
           </div>
         </div>
 
@@ -146,6 +210,18 @@ function formatWords(words: number) {
           <div><span>今日写作</span><strong>+{{ currentBook.todayWords.toLocaleString() }}</strong></div>
           <span class="featured-progress"><span :style="{ height: currentBook.progress + '%' }" /></span>
         </div>
+
+        <section class="writing-trend" aria-label="最近七日日更">
+          <header><span>近 7 日日更</span><small v-if="progressBusy">读取中…</small><small v-else>净新增字数</small></header>
+          <div v-if="recentProgress.length" class="writing-trend-bars">
+            <div v-for="day in recentProgress" :key="day.date" class="writing-trend-day" :title="`${progressLabel(day)} · ${day.wordsAdded.toLocaleString()} 字`">
+              <span class="writing-trend-bar"><i :style="{ height: `${Math.max(day.wordsAdded ? 8 : 2, Math.round((day.wordsAdded / progressPeak) * 100))}%` }" :data-met="day.targetMet" /></span>
+              <strong>{{ day.wordsAdded ? day.wordsAdded.toLocaleString() : '—' }}</strong>
+              <small>{{ progressLabel(day) }}</small>
+            </div>
+          </div>
+          <p v-else>暂无日更记录</p>
+        </section>
       </section>
 
       <section v-if="filtered.length" class="manuscripts-section">
@@ -166,7 +242,7 @@ function formatWords(words: number) {
         <div class="manuscript-list" :data-view="view">
           <article v-for="book in otherBooks" :key="book.id" class="manuscript-item" :data-tone="book.coverTone">
             <button class="manuscript-spine" type="button" :aria-label="`打开《${book.title}》`" @click="open(book)"><span :style="{ height: book.progress + '%' }" /></button>
-            <div class="manuscript-title"><span class="book-status" :data-status="book.status">{{ statusLabel[book.status] }}</span><h4>《{{ book.title }}》</h4><p>{{ book.genre }}</p></div>
+            <div class="manuscript-title"><span class="book-status" :data-status="book.status">{{ statusLabel[book.status] }}</span><button class="manuscript-settings" type="button" title="作品设置" :aria-label="`设置《${book.title}》`" @click="openSettings(book)"><AppIcon name="edit" :size="15" /></button><h4>《{{ book.title }}》</h4><p>{{ book.genre }}</p></div>
             <div class="manuscript-meta"><span>字数</span><strong>{{ formatWords(book.words) }}</strong></div>
             <div class="manuscript-meta"><span>章节</span><strong>{{ book.chapters || '—' }}</strong></div>
             <div class="manuscript-touched"><span>最后编辑</span><strong>{{ book.lastTouched }}</strong></div>
@@ -178,5 +254,61 @@ function formatWords(words: number) {
 
       <div v-else class="library-empty"><h3>没有找到作品</h3><p>换个关键词或查看全部作品。</p><button class="wk-btn" type="button" @click="clearFilters">清除筛选</button></div>
     </main>
+
+    <div v-if="settingsBook" class="shelf-settings-backdrop" @click.self="settingsBook = null">
+      <section class="shelf-settings" role="dialog" aria-modal="true" aria-labelledby="shelf-settings-title">
+        <header><div><span>作品管理</span><h2 id="shelf-settings-title">作品设置</h2></div><button type="button" aria-label="关闭" @click="settingsBook = null">×</button></header>
+        <div class="shelf-settings-body">
+          <label><span>书名</span><input v-model="settingsForm.title" maxlength="200"></label>
+          <label><span>题材</span><input v-model="settingsForm.genre" maxlength="100" placeholder="例如：女频 · 穿越种田"></label>
+          <label><span>每日目标</span><input v-model.number="settingsForm.dailyGoal" type="number" min="100" max="100000" step="100"><small>字</small></label>
+          <fieldset><legend>创作状态</legend><button v-for="item in ([['ongoing', '正在写'], ['finished', '已完稿'], ['archived', '已归档']] as const)" :key="item[0]" type="button" :aria-pressed="settingsForm.status === item[0]" @click="settingsForm.status = item[0]">{{ item[1] }}</button></fieldset>
+          <p v-if="settingsError" role="alert">{{ settingsError }}</p>
+        </div>
+        <footer><span>归档作品仍会保留全部正文与设定。</span><div><button class="wk-btn" type="button" @click="settingsBook = null">取消</button><button class="wk-btn" data-primary="true" type="button" :disabled="settingsBusy || !settingsForm.title.trim()" @click="saveSettings">{{ settingsBusy ? '保存中…' : '保存设置' }}</button></div></footer>
+      </section>
+    </div>
   </div>
 </template>
+
+<style scoped>
+.manuscript-title { position: relative; padding-right: 28px; }
+.manuscript-settings { position: absolute; top: 0; right: 0; width: 26px; height: 26px; display: grid; place-items: center; padding: 0; border: 0; background: transparent; color: var(--ink-4); cursor: pointer; }
+.manuscript-settings:hover { color: var(--primary); background: var(--primary-soft); }
+.shelf-settings-backdrop { position: fixed; inset: 0; z-index: 80; display: grid; place-items: center; padding: 18px; background: rgb(20 24 25 / 55%); }
+.shelf-settings { width: min(560px, 100%); overflow: hidden; border: var(--hair) solid var(--line-strong); border-radius: 4px; background: var(--paper); box-shadow: 0 18px 56px rgb(0 0 0 / 24%); }
+.shelf-settings > header { min-height: 72px; display: flex; align-items: center; justify-content: space-between; padding: 14px 20px; border-bottom: 2px solid var(--ink); }
+.shelf-settings header span { color: var(--ink-4); font: 9px/1 var(--font-mono); }
+.shelf-settings h2 { margin: 5px 0 0; font-size: 20px; }
+.shelf-settings header button { width: 30px; height: 30px; border: 0; background: transparent; color: var(--ink-2); font-size: 22px; cursor: pointer; }
+.shelf-settings-body { display: grid; gap: 16px; padding: 20px; }
+.shelf-settings-body > label { position: relative; display: grid; gap: 7px; color: var(--ink-3); font-size: var(--fs-xs); font-weight: 700; }
+.shelf-settings-body input { width: 100%; height: 40px; padding: 0 11px; border: var(--hair) solid var(--line-strong); border-radius: 3px; background: var(--paper); color: var(--ink); font: inherit; }
+.shelf-settings-body label small { position: absolute; right: 11px; bottom: 12px; color: var(--ink-4); }
+.shelf-settings-body fieldset { display: grid; grid-template-columns: repeat(3, 1fr); padding: 0; border: var(--hair) solid var(--line-strong); }
+.shelf-settings-body legend { margin-left: 8px; padding: 0 5px; color: var(--ink-4); font-size: var(--fs-xs); }
+.shelf-settings-body fieldset button { min-height: 38px; border: 0; border-right: var(--hair) solid var(--line); background: var(--paper); color: var(--ink-3); font: inherit; cursor: pointer; }
+.shelf-settings-body fieldset button:last-child { border-right: 0; }
+.shelf-settings-body fieldset button[aria-pressed="true"] { background: var(--primary-soft); color: var(--primary); font-weight: 700; }
+.shelf-settings-body > p { margin: 0; color: var(--alert-ink); font-size: var(--fs-sm); }
+.writing-trend { grid-column: 1 / -1; margin-top: 8px; padding-top: 14px; border-top: var(--hair) solid var(--line); }
+.writing-trend header { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; color: var(--ink-2); font-size: var(--fs-xs); font-weight: 700; }
+.writing-trend header small { color: var(--ink-4); font-size: 10px; font-weight: 400; }
+.writing-trend-bars { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 8px; align-items: end; min-height: 94px; margin-top: 10px; }
+.writing-trend-day { display: grid; grid-template-rows: 16px 48px 14px; gap: 3px; min-width: 0; text-align: center; }
+.writing-trend-day > strong { overflow: hidden; color: var(--ink-3); font: 10px/1 var(--font-mono); text-overflow: ellipsis; white-space: nowrap; }
+.writing-trend-day > small { color: var(--ink-4); font-size: 9px; }
+.writing-trend-bar { display: flex; align-items: end; justify-content: center; height: 48px; border-bottom: 1px solid var(--line-strong); }
+.writing-trend-bar i { display: block; width: min(22px, 70%); min-height: 2px; border-radius: 2px 2px 0 0; background: var(--ink-4); }
+.writing-trend-bar i[data-met="true"] { background: var(--primary); }
+.writing-trend > p { margin: 10px 0 0; color: var(--ink-4); font-size: var(--fs-xs); }
+.shelf-settings footer { min-height: 60px; display: flex; align-items: center; justify-content: space-between; gap: 14px; padding: 10px 20px; border-top: var(--hair) solid var(--line); color: var(--ink-4); font-size: var(--fs-xs); }
+.shelf-settings footer > div { display: flex; gap: 7px; }
+@media (max-width: 620px) {
+  .shelf-settings-backdrop { padding: 0; place-items: end stretch; }
+  .shelf-settings { width: 100%; border-radius: 0; }
+  .shelf-settings footer { align-items: flex-start; flex-direction: column; }
+  .shelf-settings footer > div { align-self: stretch; }
+  .shelf-settings footer .wk-btn { flex: 1; }
+}
+</style>

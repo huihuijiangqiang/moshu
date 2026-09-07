@@ -5,11 +5,11 @@ Alembic 环境配置 - 数据库迁移
 import asyncio
 from logging.config import fileConfig
 
+from alembic import context
 from sqlalchemy import pool
 from sqlalchemy.engine import Connection
 from sqlalchemy.ext.asyncio import async_engine_from_config
 
-from alembic import context
 from config import settings
 from db import Base  # 导入所有模型
 

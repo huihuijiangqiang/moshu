@@ -4,8 +4,16 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, ConfigDict, Field
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from api.auth import (
+    ProjectPermission,
+    get_current_user,
+    verify_chapter_assignment,
+    verify_project_permission,
+)
+from db.models_core import Chapter, User
 from db.session import get_db
 from domain.outlines import (
     BodyPolicy,
@@ -76,26 +84,49 @@ def outline_response(result: OutlineResult) -> OutlineResponse:
     )
 
 
+async def _verify_chapter_access(
+    db: AsyncSession,
+    chapter_id: str,
+    user: User,
+    permission: ProjectPermission = ProjectPermission.VIEW,
+) -> Chapter:
+    result = await db.execute(
+        select(Chapter).where(Chapter.id == chapter_id, Chapter.deleted_at.is_(None))
+    )
+    chapter = result.scalar_one_or_none()
+    if chapter is None:
+        raise HTTPException(status_code=404, detail={"code": "CHAPTER_NOT_FOUND"})
+    await verify_project_permission(chapter.project_id, permission, user, db)
+    if permission == ProjectPermission.MANAGE_OUTLINE:
+        await verify_chapter_assignment(chapter, user, db)
+    return chapter
+
+
 @router.put("/{chapter_id}/outline", response_model=OutlineResponse)
 async def put_outline(
     chapter_id: str,
     request: UpdateOutlineRequest,
+    user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> OutlineResponse:
     try:
-        async with db.begin():
-            result = await update_outline(
-                db,
-                chapter_id=chapter_id,
-                title=request.title,
-                nodes=request.nodes,
-                note=request.note,
-                base_outline_revision=request.base_outline_revision,
-                body_policy=request.body_policy,
-            )
+        await _verify_chapter_access(db, chapter_id, user, ProjectPermission.MANAGE_OUTLINE)
+        result = await update_outline(
+            db,
+            chapter_id=chapter_id,
+            title=request.title,
+            nodes=request.nodes,
+            note=request.note,
+            base_outline_revision=request.base_outline_revision,
+            body_policy=request.body_policy,
+            created_by=user.id,
+        )
+        await db.commit()
     except ChapterNotFoundError as error:
+        await db.rollback()
         raise HTTPException(status_code=404, detail={"code": "CHAPTER_NOT_FOUND"}) from error
     except OutlineRevisionConflictError as error:
+        await db.rollback()
         raise HTTPException(
             status_code=409,
             detail={
@@ -110,6 +141,7 @@ async def put_outline(
             },
         ) from error
     except BodyPolicyRequiredError as error:
+        await db.rollback()
         raise HTTPException(status_code=422, detail={"code": "BODY_POLICY_REQUIRED"}) from error
     return outline_response(result)
 
@@ -119,8 +151,10 @@ async def get_outline_revisions(
     chapter_id: str,
     before_revision: Annotated[int | None, Query(ge=1)] = None,
     limit: Annotated[int, Query(ge=1, le=100)] = 50,
+    user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> list[OutlineRevisionResponse]:
+    await _verify_chapter_access(db, chapter_id, user)
     rows = await list_outline_revisions(
         db,
         chapter_id,
@@ -146,18 +180,22 @@ async def get_outline_revisions(
 async def resolve_body_revision(
     chapter_id: str,
     request: AcknowledgeBodyRevisionRequest,
+    user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> OutlineResponse:
     try:
-        async with db.begin():
-            result = await acknowledge_body_revision(
-                db,
-                chapter_id=chapter_id,
-                base_body_rev=request.base_body_rev,
-                addressed_outline_revision=request.addressed_outline_revision,
-            )
+        await _verify_chapter_access(db, chapter_id, user, ProjectPermission.MANAGE_OUTLINE)
+        result = await acknowledge_body_revision(
+            db,
+            chapter_id=chapter_id,
+            base_body_rev=request.base_body_rev,
+            addressed_outline_revision=request.addressed_outline_revision,
+        )
+        await db.commit()
     except ChapterNotFoundError as error:
+        await db.rollback()
         raise HTTPException(status_code=404, detail={"code": "CHAPTER_NOT_FOUND"}) from error
     except BodyRevisionResolutionConflictError as error:
+        await db.rollback()
         raise HTTPException(status_code=409, detail={"code": "BODY_REVISION_MARKER_CONFLICT"}) from error
     return outline_response(result)

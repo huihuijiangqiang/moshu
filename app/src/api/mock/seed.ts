@@ -7,7 +7,7 @@ export const project: Project = {
   chapterCount: 89,
   dailyGoal: 6000,
   dailyWords: 2780,
-  styleProfile: '沈氏白描',
+  styleProfile: 'style_demo',
   volumes: [
     { id: 'v1', index: 1, title: '少年出山' },
     { id: 'v2', index: 2, title: '北境风雪' }
@@ -191,7 +191,8 @@ export const guardIssues: GuardIssue[] = [
       { label: '第 87 章 · 本次', text: '「手里的残锋还在渗血——不是敌人的。」', accent: true }
     ],
     actions: ['以第 41 章为准，改写本段', '以本章为准，更新设定', '有意为之，忽略'],
-    resolved: false
+    resolved: false, arbitrationStatus: 'supported', arbitrationConfidence: 0.92,
+    arbitrationRationale: '两处原文对器物是否完整给出了直接相反的描述。'
   },
   {
     id: 'g2', kind: 'conflict', severity: 'high', category: '人物能力',
@@ -201,7 +202,8 @@ export const guardIssues: GuardIssue[] = [
       { label: '第 84 章', text: '「他抬手一引，雪中三十步内的铁器齐齐震鸣。」（第七境「共鸣」的表现）', accent: true }
     ],
     actions: ['改写第 84 章', '补一段破境情节', '有意为之，忽略'],
-    resolved: false
+    resolved: false, arbitrationStatus: 'uncertain', arbitrationConfidence: 0.58,
+    arbitrationRationale: '现有证据没有说明能力是否来自临时外力。'
   },
   {
     id: 'g3', kind: 'conflict', severity: 'mid', category: '时间线',
@@ -209,19 +211,20 @@ export const guardIssues: GuardIssue[] = [
     detail: '第 79 章交代雁回关四月始融雪，第 86 章「风雪压着城墙走了三日」，按前后章推算此时应为五月中。二者需调其一。',
     evidence: [],
     actions: ['查看时间线视图', '有意为之，忽略'],
-    resolved: false
+    resolved: false, arbitrationStatus: 'pending'
   },
   {
     id: 'g4', kind: 'foreshadow', severity: 'mid', category: '伏笔',
     title: '玄铁令已 35 章未提', chapterRef: '埋于第 52 章',
     detail: '预计回收点为第二卷末，当前已写至第 87 章。超过 30 章未提及会持续提醒。',
-    evidence: [], actions: ['在下一章提及', '调整预计回收点', '忽略'], resolved: false
+    evidence: [], actions: ['在下一章提及', '调整预计回收点', '忽略'], resolved: false,
+    arbitrationStatus: 'not_requested'
   },
   {
     id: 'g5', kind: 'pending-entry', severity: 'mid', category: '新设定',
     title: '「师父」尚无条目，是否入库？', chapterRef: '第 87 章 · 第 4 段',
     detail: '守卫从正文抽取到一个反复出现但未建条目的人物。入库后会进入常驻上下文候选。',
-    evidence: [], actions: ['入库', '忽略'], resolved: false
+    evidence: [], actions: ['入库', '忽略'], resolved: false, arbitrationStatus: 'not_requested'
   }
 ]
 

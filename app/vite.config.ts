@@ -11,7 +11,11 @@ export default defineConfig({
     port: 5173,
     // 后端就绪后打开：所有 /api 请求转发到 FastAPI / NestJS
     proxy: {
-      // '/api': { target: 'http://localhost:8000', changeOrigin: true }
+      '/api': {
+        target: 'http://127.0.0.1:8000',
+        changeOrigin: true,
+        rewrite: (path) => path.replace(/^\/api/, '')
+      }
     }
   }
 })

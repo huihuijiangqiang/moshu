@@ -2,7 +2,7 @@
 
 墨枢是面向长篇网文创作的 AI 写作平台。项目以一键成章为入口，重点解决长程设定记忆、一致性检查、伏笔追踪和作者风格保真。
 
-当前仓库包含可运行的 Vue 3 前端原型、FastAPI 后端骨架，以及产品调研、需求、界面设计和开发规划。
+当前仓库包含 Vue 3 写作前端、FastAPI API、PostgreSQL/pgvector、Redis 与 Celery 异步任务，以及必要的架构与实现文档。
 
 ## 仓库结构
 
@@ -10,10 +10,9 @@
 .
 ├── app/       Vue 3 + TypeScript + Tiptap 前端
 ├── server/    FastAPI + SQLAlchemy 后端骨架
-├── docs/      代码审阅与实施辅助文档
+├── docs/      架构与产品技术文档
 ├── _ds/       设计系统资源
-├── HANDOFF.md 开发交接与关键约束
-└── *.dc.html  调研、需求、界面设计和技术规划
+└── LICENSE    项目使用许可
 ```
 
 ## 前端启动
@@ -44,6 +43,34 @@ cp .env.example .env
 uvicorn main:app --reload --port 8000
 ```
 
+## 完整环境启动
+
+准备好仅保存在本机的 `server/.env` 后，可在仓库根目录一次启动迁移、API、前端与异步任务：
+
+```bash
+docker compose up -d --build
+```
+
+- 前端：http://localhost:5180
+- API 文档：http://localhost:8000/docs
+- 就绪探针：http://localhost:8000/health/ready
+
+`migration` 会在 API 和 worker 启动前执行 `alembic upgrade head`。就绪探针同时检查
+PostgreSQL、Redis 与数据库迁移版本；任一项不满足就返回 503。
+
+### 数据目录（Windows）
+
+Compose 默认使用项目下的 `.docker-data` 目录作为开发兜底。部署前建议把数据放到非系统盘，
+在项目根目录创建仅本机使用的 `.env`（不要提交），例如：
+
+```dotenv
+MOSHU_POSTGRES_DATA_DIR=D:/moshu-data/postgres
+MOSHU_REDIS_DATA_DIR=D:/moshu-data/redis
+```
+
+这两个目录会以 bind mount 方式挂载，不使用 Docker Desktop 默认 named volume 位置。目录需提前创建，
+并在 Docker Desktop 中共享所在磁盘。
+
 ## 核心约束
 
 - 一章一文档，章节列表接口不返回正文。
@@ -71,4 +98,8 @@ uvicorn main:app --reload --port 8000
 
 主要创作流程是：创建或选择作品 → 梳理大纲与设定 → 写作 → 一致性与 AI 痕迹复核 → 导出。写作、大纲和设定允许反复往返；守卫问题必须能跳回对应正文或时间线。账户用量不属于任何作品。
 
-开始开发前请先阅读 `HANDOFF.md`，产品范围以 `需求文档与技术选型.dc.html` 的功能需求表为准。
+当前实现状态与后端验收记录见 `server/docs/IMPLEMENTATION_STATUS.md`；架构约束见 `docs/architecture/`。
+
+## 许可
+
+本项目采用保留所有权利（All Rights Reserved）许可，详见 [`LICENSE`](LICENSE)。除版权所有者书面授权外，不得复制、修改、再发布、销售或将本项目用于生产部署。第三方依赖仍受其各自许可证约束。

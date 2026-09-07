@@ -1,12 +1,53 @@
-const BASE = import.meta.env.VITE_API_BASE ?? '/api'
-export const USE_MOCK = (import.meta.env.VITE_USE_MOCK ?? 'true') === 'true'
+import { clearSession, getAccessToken, getRefreshToken, setSession, type SessionTokens } from './session'
 
-export async function request<T>(path: string, init?: RequestInit): Promise<T> {
+const BASE = import.meta.env.VITE_API_BASE ?? '/api'
+export const USE_MOCK = import.meta.env.MODE === 'test' || (import.meta.env.VITE_USE_MOCK ?? 'true') === 'true'
+let refreshInFlight: Promise<string | null> | null = null
+
+async function refreshAccessToken(): Promise<string | null> {
+  const refreshToken = getRefreshToken()
+  if (!refreshToken) return null
+  if (!refreshInFlight) {
+    refreshInFlight = fetch(BASE + '/auth/refresh', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ refresh_token: refreshToken })
+    }).then(async (response) => {
+      if (!response.ok) {
+        clearSession()
+        return null
+      }
+      const session = await response.json() as SessionTokens
+      setSession(session)
+      return session.access_token
+    }).finally(() => { refreshInFlight = null })
+  }
+  return refreshInFlight
+}
+
+export async function requestResponse(path: string, init?: RequestInit, retryAuth = true): Promise<Response> {
+  const token = getAccessToken()
+  const isFormData = typeof FormData !== 'undefined' && init?.body instanceof FormData
   const res = await fetch(BASE + path, {
     ...init,
-    headers: { 'Content-Type': 'application/json', ...(init?.headers ?? {}) }
+    headers: {
+      ...(!isFormData ? { 'Content-Type': 'application/json' } : {}),
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      ...(init?.headers ?? {})
+    }
   })
+  if (res.status === 401 && retryAuth && !path.startsWith('/auth/')) {
+    const refreshed = await refreshAccessToken()
+    if (refreshed) return requestResponse(path, init, false)
+    window.dispatchEvent(new CustomEvent('moshu:unauthorized'))
+  }
   if (!res.ok) throw new ApiError(res.status, await res.text())
+  return res
+}
+
+export async function request<T>(path: string, init?: RequestInit, retryAuth = true): Promise<T> {
+  const res = await requestResponse(path, init, retryAuth)
+  if (res.status === 204) return undefined as T
   return (await res.json()) as T
 }
 

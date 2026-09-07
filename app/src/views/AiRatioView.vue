@@ -1,134 +1,259 @@
 <script setup lang="ts">
-import { onMounted, ref, watch } from 'vue'
-import { ratioApi, type SegmentSource } from '@/api/mock/ai-ratio'
+import { computed, ref, watch } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
+import {
+  provenanceApi,
+  type ProvenanceReport,
+  type ProvenanceSource,
+  type SuspectedSentence
+} from '@/api/provenance'
+import AppIcon from '@/components/ui/AppIcon.vue'
+import { projectPath } from '@/router/project-route'
 import { useProjectStore } from '@/stores/project'
 import { useShellStore } from '@/stores/shell'
 
+const route = useRoute()
+const router = useRouter()
 const store = useProjectStore()
 const shell = useShellStore()
-const report = ref<Awaited<ReturnType<typeof ratioApi.report>> | null>(null)
+const report = ref<ProvenanceReport | null>(null)
 const scope = ref<'chapter' | 'book'>('chapter')
+const loading = ref(false)
+const error = ref('')
+let requestSerial = 0
 
-onMounted(async () => {
-  shell.setCrumb('AI 占比自查')
-})
+const projectId = computed(() => String(route.params.projectId ?? store.loadedProjectId ?? ''))
+const totalAiWords = computed(() => (report.value?.aiRawWords ?? 0) + (report.value?.aiEditedWords ?? 0))
+const percent = (words: number) => report.value?.totalWords ? Math.round(words / report.value.totalWords * 100) : 0
+const sourceLabel: Record<ProvenanceSource, string> = {
+  'ai-raw': 'AI 原文',
+  'ai-edited': 'AI 起草已改',
+  human: '手写'
+}
 
 watch(
-  [() => store.activeId, scope],
-  async ([chapterId, nextScope]) => {
-    report.value = await ratioApi.report(chapterId ?? '', nextScope)
+  [projectId, () => store.activeId, scope],
+  async ([nextProjectId, chapterId, nextScope]) => {
+    shell.setCrumb('AI 来源')
+    if (!nextProjectId || (nextScope === 'chapter' && !chapterId)) {
+      report.value = null
+      return
+    }
+    const serial = ++requestSerial
+    loading.value = true
+    error.value = ''
+    try {
+      const next = await provenanceApi.report(nextProjectId, chapterId, nextScope)
+      if (serial === requestSerial) report.value = next
+    } catch (caught) {
+      if (serial === requestSerial) {
+        report.value = null
+        error.value = caught instanceof Error ? caught.message : '来源记录加载失败'
+      }
+    } finally {
+      if (serial === requestSerial) loading.value = false
+    }
   },
   { immediate: true }
 )
 
-const legend: { source: SegmentSource; label: string }[] = [
-  { source: 'ai-raw', label: 'AI 原文' },
-  { source: 'ai-edited', label: 'AI 起草已改' },
-  { source: 'human', label: '你手写' },
-  { source: 'suspect', label: '疑似 AI 句式' }
-]
-
-function swatch(source: SegmentSource) {
-  switch (source) {
-    case 'ai-raw': return { background: 'var(--color-accent-200)' }
-    case 'ai-edited': return { background: 'var(--color-neutral-300)' }
-    case 'suspect': return { background: 'var(--color-accent)' }
-    default: return { background: 'transparent', border: '2px solid var(--color-neutral-400)' }
-  }
+function exportReport() {
+  if (!report.value) return
+  const blob = new Blob([JSON.stringify(report.value, null, 2)], { type: 'application/json;charset=utf-8' })
+  const link = document.createElement('a')
+  link.href = URL.createObjectURL(blob)
+  link.download = `${store.project?.title ?? '作品'}-AI来源-${scope.value}.json`
+  link.click()
+  URL.revokeObjectURL(link.href)
 }
 
-function segStyle(source: SegmentSource) {
-  switch (source) {
-    case 'ai-raw': return { background: 'var(--color-accent-200)' }
-    case 'ai-edited': return { background: 'var(--color-neutral-300)' }
-    case 'suspect': return { background: 'var(--color-accent-100)', borderBottom: '2px solid var(--color-accent)' }
-    default: return {}
-  }
+function selectChapter(event: Event) {
+  store.activeId = (event.target as HTMLSelectElement).value
+}
+
+function openSentence(item: SuspectedSentence, rewrite = false) {
+  if (!projectId.value || !store.activeId) return
+  void router.push({
+    path: projectPath(projectId.value, 'write'),
+    query: {
+      chapter: store.activeId,
+      paragraph: item.paragraphId,
+      start: String(item.start),
+      end: String(item.end),
+      ...(rewrite ? { rewrite: '1' } : {})
+    }
+  })
 }
 </script>
 
 <template>
-  <div class="wk-pane" :style="{ height: '100%', overflow: 'auto' }">
-    <Teleport to="#topbar-actions">
-      <button
-        v-for="s in (['chapter', 'book'] as const)"
-        :key="s"
-        class="topbar-btn"
-        type="button"
-        :data-primary="scope === s"
-        @click="scope = s"
-      >{{ s === 'chapter' ? '本章' : '全书' }}</button>
-      <button class="topbar-btn" type="button">导出自查报告</button>
+  <div class="provenance-page">
+    <Teleport defer to="#topbar-actions">
+      <div class="scope-switch" aria-label="统计范围">
+        <button type="button" :aria-pressed="scope === 'chapter'" @click="scope = 'chapter'">本章</button>
+        <button type="button" :aria-pressed="scope === 'book'" @click="scope = 'book'">全书</button>
+      </div>
+      <button class="topbar-btn" type="button" :disabled="!report" @click="exportReport"><AppIcon name="export" :size="14" />导出</button>
     </Teleport>
 
-    <template v-if="report">
-      <div class="grid-rule rule-b" :style="{ gridTemplateColumns: 'repeat(4, 1fr)', flex: 'none' }">
-        <div :style="{ padding: '24px 22px', background: 'var(--color-bg)', fontSize: '13px' }">
-          <div class="num" :style="{ fontSize: '40px' }">{{ report.aiRaw }}%</div>
-          <div :style="{ marginTop: '8px', fontWeight: 700 }">AI 原文未改动</div>
-          <div class="muted" :style="{ marginTop: '4px' }">采纳后一字未动的部分</div>
-        </div>
-        <div :style="{ padding: '24px 22px', background: 'var(--color-bg)', fontSize: '13px' }">
-          <div class="num" :style="{ fontSize: '40px' }">{{ report.aiEdited }}%</div>
-          <div :style="{ marginTop: '8px', fontWeight: 700 }">AI 起草后你改过</div>
-          <div class="muted" :style="{ marginTop: '4px' }">改动 30% 以上视为你的</div>
-        </div>
-        <div :style="{ padding: '24px 22px', background: 'var(--color-bg)', fontSize: '13px' }">
-          <div class="num" :style="{ fontSize: '40px' }">{{ report.human }}%</div>
-          <div :style="{ marginTop: '8px', fontWeight: 700 }">你手写</div>
-          <div class="muted" :style="{ marginTop: '4px' }">完全由你键入</div>
-        </div>
-        <div :style="{ padding: '24px 22px', background: 'var(--color-bg)', fontSize: '13px' }">
-          <div class="num" :style="{ fontSize: '40px', color: 'var(--color-accent)' }">{{ report.suspectCount }}</div>
-          <div :style="{ marginTop: '8px', fontWeight: 700 }">疑似 AI 句式</div>
-          <div class="muted" :style="{ marginTop: '4px' }">本章内，建议逐条改写</div>
-        </div>
+    <header class="report-head">
+      <div>
+        <div class="kicker">PROVENANCE LEDGER</div>
+        <h1>AI 来源账本</h1>
+      </div>
+      <div class="report-total">
+        <strong>{{ report?.totalWords.toLocaleString() ?? '—' }}</strong>
+        <span>统计字数</span>
+      </div>
+    </header>
+
+    <div v-if="loading" class="state-line">正在核对生成记录…</div>
+    <div v-else-if="error" class="state-line state-error">{{ error }}</div>
+    <template v-else-if="report">
+      <section class="source-summary" aria-label="来源统计">
+        <article>
+          <span class="source-dot source-ai" />
+          <strong>{{ percent(report.aiRawWords) }}%</strong>
+          <div>AI 原文</div>
+          <small>{{ report.aiRawWords.toLocaleString() }} 字</small>
+        </article>
+        <article>
+          <span class="source-dot source-edited" />
+          <strong>{{ percent(report.aiEditedWords) }}%</strong>
+          <div>AI 起草已改</div>
+          <small>{{ report.aiEditedWords.toLocaleString() }} 字</small>
+        </article>
+        <article>
+          <span class="source-dot source-human" />
+          <strong>{{ percent(report.humanWords) }}%</strong>
+          <div>手写</div>
+          <small>{{ report.humanWords.toLocaleString() }} 字</small>
+        </article>
+      </section>
+
+      <div class="source-bar" aria-label="来源占比">
+        <span class="bar-ai" :style="{ width: `${percent(report.aiRawWords)}%` }" />
+        <span class="bar-edited" :style="{ width: `${percent(report.aiEditedWords)}%` }" />
+        <span class="bar-human" :style="{ width: `${percent(report.humanWords)}%` }" />
       </div>
 
-      <div class="app-body" :style="{ gridTemplateColumns: '1fr 340px' }">
-        <main class="pane" :style="{ padding: '30px 40px', background: 'var(--color-neutral-100)' }">
-          <div class="row muted" :style="{ gap: '20px', marginBottom: '24px', fontSize: '13px' }">
-            <span v-for="l in legend" :key="l.source" class="row" :style="{ gap: '8px' }">
-              <span :style="{ width: '16px', height: '10px', ...swatch(l.source) }" />{{ l.label }}
-            </span>
-          </div>
-
-          <div :style="{ maxWidth: '640px', fontSize: '15px', lineHeight: 2.1 }">
-            <p v-for="(para, i) in report.paragraphs" :key="i" :style="{ margin: '0 0 20px' }">
-              <span v-for="(seg, j) in para" :key="j" :style="segStyle(seg.source)">{{ seg.text }}</span>
-              <span
-                v-if="para.some((s) => s.note)"
-                :style="{ color: 'var(--color-accent-700)', fontWeight: 700, fontSize: '12px', marginLeft: '8px' }"
-              >← 疑似 AI 句式：{{ para.find((s) => s.note)?.note }}</span>
-            </p>
-          </div>
-        </main>
-
-        <aside class="pane pane-right" :style="{ padding: '24px 20px', fontSize: '13px' }">
-          <div class="kicker" :style="{ color: 'var(--color-accent)', marginBottom: '18px' }">
-            疑似 AI 句式 · {{ report.suspectCount }}
-          </div>
-          <div class="grid-rule">
-            <div v-for="s in report.suspects" :key="s.id" :style="{ padding: '14px 0', background: 'var(--color-bg)' }">
-              <div :style="{ lineHeight: 1.7, marginBottom: '10px' }">{{ s.text }}</div>
-              <div class="muted" :style="{ lineHeight: 1.6, marginBottom: '10px' }">{{ s.reason }}</div>
-              <div class="row" :style="{ gap: '8px' }">
-                <button class="chip chip-strong" type="button">按我的风格改写</button>
-                <button class="chip" type="button">保留</button>
-              </div>
+      <section v-if="scope === 'chapter'" class="risk-proof" aria-labelledby="risk-proof-title">
+        <div class="proof-heading">
+          <div><span class="wk-label">STYLE PROOF</span><h2 id="risk-proof-title">疑似模板句式</h2></div>
+          <strong>{{ report.suspectedSentences.length }}</strong>
+        </div>
+        <p class="proof-disclaimer">{{ report.sentenceRiskDisclaimer }}</p>
+        <div v-if="report.suspectedSentences.length" class="proof-list">
+          <article v-for="item in report.suspectedSentences" :key="item.id">
+            <div class="proof-index"><strong>{{ item.score }}</strong><span>风险分</span></div>
+            <div class="proof-copy">
+              <div class="proof-meta"><span>{{ sourceLabel[item.source] }}</span><span>{{ item.reasons.join(' · ') }}</span></div>
+              <p>{{ item.text }}</p>
             </div>
-            <div class="muted" :style="{ padding: '14px 0', background: 'var(--color-bg)' }">
-              还有 {{ Math.max(0, report.suspectCount - report.suspects.length) }} 条 · 展开
+            <div class="proof-actions">
+              <button class="wk-btn wk-btn-xs" type="button" @click="openSentence(item)"><AppIcon name="write" :size="13" />定位</button>
+              <button class="wk-btn wk-btn-xs" data-primary="true" type="button" @click="openSentence(item, true)"><AppIcon name="edit" :size="13" />重写</button>
             </div>
-          </div>
-          <button class="btn btn-primary" type="button" :style="{ width: '100%', height: '38px', fontSize: '13px', marginTop: '20px' }">
-            全部按我的风格改写
-          </button>
-          <p class="muted" :style="{ margin: '18px 0 0', lineHeight: 1.7 }">
-            这些数字只在你的账号内可见，不会提供给任何平台。检测标准会随平台政策更新。
-          </p>
-        </aside>
-      </div>
+          </article>
+        </div>
+        <div v-else class="proof-empty">本章没有命中当前规则。仍建议按平台要求和作者判断人工复核。</div>
+      </section>
+
+      <section v-if="scope === 'chapter'" class="paragraph-ledger">
+        <div class="ledger-heading">
+          <select aria-label="选择章节" :value="store.activeId ?? ''" @change="selectChapter">
+            <option v-for="chapter in store.chapters" :key="chapter.id" :value="chapter.id">
+              第 {{ chapter.index }} 章 · {{ chapter.title }}
+            </option>
+          </select>
+          <span>{{ report.paragraphs.length }} 段 · {{ totalAiWords.toLocaleString() }} 字来自 AI 草稿</span>
+        </div>
+        <div v-if="report.paragraphs.length" class="paragraph-list">
+          <article v-for="paragraph in report.paragraphs" :key="paragraph.id" :data-source="paragraph.source">
+            <div class="paragraph-meta">
+              <span>{{ sourceLabel[paragraph.source] }}</span>
+              <small>{{ paragraph.words }} 字</small>
+            </div>
+            <p>{{ paragraph.text || '空段落' }}</p>
+          </article>
+        </div>
+        <div v-else class="empty-state">本章还没有可统计的正文。</div>
+      </section>
+
+      <section v-else class="book-summary">
+        <strong>{{ totalAiWords.toLocaleString() }}</strong>
+        <span>字由墨枢生成并被采纳，其中 {{ report.aiEditedWords.toLocaleString() }} 字后来经过修改。</span>
+      </section>
     </template>
   </div>
 </template>
+
+<style scoped>
+.provenance-page { height: 100%; overflow: auto; background: var(--color-bg); color: var(--ink); }
+.report-head { min-height: 126px; padding: 28px 34px 24px; border-bottom: 1px solid var(--line); display: flex; align-items: end; justify-content: space-between; gap: 24px; }
+.report-head h1 { margin: 6px 0 0; font-family: var(--font-prose); font-size: 28px; font-weight: 700; letter-spacing: 0; }
+.report-total { text-align: right; display: grid; gap: 2px; }
+.report-total strong { font-family: var(--font-mono); font-size: 30px; font-weight: 500; }
+.report-total span, .source-summary small, .ledger-heading span { color: var(--ink-3); font-size: 12px; }
+.source-summary { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); border-bottom: 1px solid var(--line); }
+.source-summary article { position: relative; padding: 24px 34px; border-right: 1px solid var(--line); }
+.source-summary article:last-child { border-right: 0; }
+.source-summary strong { display: block; margin: 8px 0 5px; font-family: var(--font-mono); font-size: 32px; font-weight: 500; }
+.source-summary div { font-size: 13px; font-weight: 700; margin-bottom: 4px; }
+.source-dot { display: block; width: 18px; height: 3px; }
+.source-ai, .bar-ai { background: var(--accent); }
+.source-edited, .bar-edited { background: var(--ink-3); }
+.source-human, .bar-human { background: var(--line-strong); }
+.source-bar { display: flex; height: 5px; background: var(--color-neutral-200); }
+.source-bar span { min-width: 0; }
+.risk-proof { padding: 32px 34px 8px; max-width: 1120px; }
+.proof-heading { display: flex; align-items: end; justify-content: space-between; gap: 20px; padding-bottom: 13px; border-bottom: 2px solid var(--ink); }
+.proof-heading h2 { margin: 6px 0 0; font: 700 20px/1.2 var(--font-prose); letter-spacing: 0; }
+.proof-heading > strong { font: 500 30px/1 var(--font-mono); }
+.proof-disclaimer { max-width: 760px; margin: 12px 0 0; color: var(--ink-3); font-size: var(--fs-sm); line-height: 1.65; }
+.proof-list { margin-top: 18px; }
+.proof-list article { display: grid; grid-template-columns: 62px minmax(0, 1fr) auto; gap: 18px; align-items: start; padding: 17px 0; border-bottom: 1px solid var(--line); }
+.proof-index { display: grid; gap: 3px; }
+.proof-index strong { color: var(--accent); font: 700 20px/1 var(--font-mono); }
+.proof-index span, .proof-meta { color: var(--ink-3); font-size: 11px; }
+.proof-meta { display: flex; flex-wrap: wrap; gap: 7px 14px; margin-bottom: 7px; }
+.proof-meta span:first-child { color: var(--ink-2); font-weight: 700; }
+.proof-copy p { margin: 0; font: 15px/1.8 var(--font-prose); }
+.proof-actions { display: flex; gap: 6px; }
+.proof-empty { padding: 26px 0; border-bottom: 1px solid var(--line); color: var(--ink-3); }
+.paragraph-ledger { padding: 38px 34px 56px; max-width: 1040px; }
+.ledger-heading { display: flex; align-items: baseline; justify-content: space-between; gap: 18px; padding-bottom: 16px; border-bottom: 1px solid var(--line-strong); }
+.ledger-heading select { min-width: 260px; max-width: 60%; height: 32px; border: 1px solid var(--line-strong); background: var(--paper); color: var(--ink); padding: 0 30px 0 10px; font-family: var(--font-prose); font-size: 14px; }
+.paragraph-list article { display: grid; grid-template-columns: 116px minmax(0, 1fr); gap: 18px; padding: 18px 0 18px 15px; border-bottom: 1px solid var(--line); border-left: 3px solid var(--line-strong); }
+.paragraph-list article[data-source='ai-raw'] { border-left-color: var(--accent); }
+.paragraph-list article[data-source='ai-edited'] { border-left-color: var(--ink-3); }
+.paragraph-meta { display: flex; flex-direction: column; gap: 5px; font-size: 12px; font-weight: 700; }
+.paragraph-meta small { color: var(--ink-3); font-weight: 400; }
+.paragraph-list p { margin: 0; font-family: var(--font-prose); font-size: 15px; line-height: 1.9; white-space: pre-wrap; }
+.book-summary { padding: 48px 34px; display: flex; align-items: baseline; gap: 14px; }
+.book-summary strong { font-family: var(--font-mono); font-size: 42px; font-weight: 500; }
+.book-summary span { color: var(--ink-3); line-height: 1.7; }
+.state-line, .empty-state { padding: 40px 34px; color: var(--ink-3); }
+.state-error { color: var(--alert-ink); }
+.scope-switch { display: flex; border: 1px solid var(--line-strong); }
+.scope-switch button { min-width: 52px; height: 30px; border: 0; border-right: 1px solid var(--line-strong); background: var(--paper); color: var(--ink-3); font-size: 12px; cursor: pointer; }
+.scope-switch button:last-child { border-right: 0; }
+.scope-switch button[aria-pressed='true'] { background: var(--ink); color: var(--paper); }
+button:focus-visible, select:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+@media (max-width: 720px) {
+  .report-head { min-height: 104px; padding: 20px; }
+  .report-head h1 { font-size: 23px; }
+  .source-summary { grid-template-columns: 1fr; }
+  .source-summary article { padding: 18px 20px; border-right: 0; border-bottom: 1px solid var(--line); }
+  .source-summary article:last-child { border-bottom: 0; }
+  .source-summary strong { font-size: 27px; }
+  .risk-proof, .paragraph-ledger { padding-inline: 20px; }
+  .proof-list article { grid-template-columns: 48px minmax(0, 1fr); }
+  .proof-actions { grid-column: 2; }
+  .ledger-heading { align-items: flex-start; flex-direction: column; gap: 5px; }
+  .ledger-heading select { min-width: 0; max-width: none; width: 100%; }
+  .paragraph-list article { grid-template-columns: 1fr; gap: 9px; }
+  .paragraph-meta { flex-direction: row; justify-content: space-between; }
+  .book-summary { padding: 36px 20px; align-items: flex-start; flex-direction: column; }
+}
+</style>

@@ -1,58 +1,150 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
-import { useRouter } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
+import { authApi } from '@/api/auth'
+import { ApiError } from '@/api/http'
 
+type Mode = 'login' | 'register'
+
+const route = useRoute()
 const router = useRouter()
-const phone = ref('')
-const code = ref('')
-const sent = ref(false)
+const mode = ref<Mode>('login')
+const name = ref('')
+const email = ref('')
+const password = ref('')
+const submitting = ref(false)
+const errorMessage = ref('')
 
-const canSend = computed(() => /^1\d{10}$/.test(phone.value))
-const canSubmit = computed(() => canSend.value && code.value.length === 6)
+const canSubmit = computed(() => {
+  const credentialsValid = email.value.trim().includes('@') && password.value.length >= 8
+  return credentialsValid && (mode.value === 'login' || !!name.value.trim()) && !submitting.value
+})
 
-function send() { if (canSend.value) sent.value = true }
-function submit() { if (canSubmit.value) router.push('/') }
+function switchMode(next: Mode) {
+  mode.value = next
+  errorMessage.value = ''
+}
+
+async function submit() {
+  if (!canSubmit.value) return
+  submitting.value = true
+  errorMessage.value = ''
+  try {
+    if (mode.value === 'login') await authApi.login(email.value, password.value)
+    else await authApi.register(name.value, email.value, password.value)
+    const redirect = typeof route.query.redirect === 'string' && route.query.redirect.startsWith('/')
+      ? route.query.redirect
+      : '/'
+    await router.replace(redirect)
+  } catch (error) {
+    if (error instanceof ApiError && error.status === 401) errorMessage.value = '邮箱或密码不正确。'
+    else if (error instanceof ApiError && error.status === 409) errorMessage.value = '这个邮箱已经注册，请直接登录。'
+    else errorMessage.value = '暂时无法完成登录，请检查服务连接后重试。'
+  } finally {
+    submitting.value = false
+  }
+}
 </script>
 
 <template>
-  <div :style="{ minHeight: '100%', display: 'grid', placeItems: 'center', padding: '40px', background: 'var(--color-bg)' }">
-    <div :style="{ width: '100%', maxWidth: '980px', border: '2px solid var(--color-divider)', background: 'var(--color-neutral-100)', display: 'grid', gridTemplateColumns: '1.2fr 1fr', minHeight: '480px', fontSize: '13px' }">
-      <div :style="{ padding: '56px 48px', borderRight: '2px solid var(--color-divider)', display: 'flex', flexDirection: 'column', justifyContent: 'space-between' }">
+  <main class="auth-page">
+    <section class="auth-frame">
+      <div class="auth-intro">
         <div>
-          <div :style="{ fontWeight: 700, fontSize: '17px', letterSpacing: '0.06em', marginBottom: '48px' }">墨枢</div>
-          <h1 :style="{ fontSize: '40px', fontWeight: 700, lineHeight: 1.24, letterSpacing: '-0.01em', margin: '0 0 24px' }">
-            能一键出稿，<br>更能在第八十万字<br>不出错
-          </h1>
-          <p :style="{ margin: 0, fontSize: '16px', lineHeight: 1.7, maxWidth: '40ch', color: 'var(--color-neutral-800)' }">
-            AI 铺量，你定调。设定库记住你写过的每一条规矩，一致性守卫替你盯着前后矛盾和没收的伏笔。
-          </p>
+          <div class="auth-brand">墨枢</div>
+          <p class="auth-folio">MANUSCRIPT / 001</p>
+          <h1>把故事写长，<br>也把前因后果留住。</h1>
         </div>
-        <div class="row muted" :style="{ gap: '32px', paddingTop: '40px' }">
-          <span>导出永久免费</span><span>不用你的稿子训练模型</span><span>随时可删</span>
-        </div>
+        <p class="auth-note">进入你的书架，继续当前作品。</p>
       </div>
 
-      <form :style="{ padding: '56px 40px', display: 'flex', flexDirection: 'column', justifyContent: 'center' }" @submit.prevent="submit">
-        <div :style="{ fontSize: '22px', fontWeight: 700, marginBottom: '28px' }">登录 / 注册</div>
-
-        <label class="kicker" :style="{ marginBottom: '10px' }">手机号</label>
-        <input v-model="phone" class="input" inputmode="numeric" placeholder="请输入手机号" :style="{ marginBottom: '18px', height: '44px' }">
-
-        <label class="kicker" :style="{ marginBottom: '10px' }">验证码</label>
-        <div class="row" :style="{ gap: '10px', marginBottom: '26px' }">
-          <input v-model="code" class="input" inputmode="numeric" maxlength="6" placeholder="6 位数字" :style="{ flex: 1, height: '44px' }">
-          <button class="btn btn-secondary" type="button" :disabled="!canSend" :style="{ height: '44px', fontSize: '13px' }" @click="send">
-            {{ sent ? '已发送' : '获取' }}
-          </button>
+      <form class="auth-form" @submit.prevent="submit">
+        <div class="auth-mode" role="tablist" aria-label="账号操作">
+          <button type="button" :aria-selected="mode === 'login'" @click="switchMode('login')">登录</button>
+          <button type="button" :aria-selected="mode === 'register'" @click="switchMode('register')">创建账号</button>
         </div>
 
-        <button class="btn btn-primary" type="submit" :disabled="!canSubmit" :style="{ width: '100%', height: '44px', fontSize: '14px', marginBottom: '20px' }">
-          进入
+        <div class="auth-heading">
+          <span>{{ mode === 'login' ? '继续写作' : '建立你的书架' }}</span>
+          <small>{{ mode === 'login' ? '使用邮箱和密码进入' : '账号创建后即可开新书' }}</small>
+        </div>
+
+        <label v-if="mode === 'register'">
+          <span>显示名称</span>
+          <input v-model="name" autocomplete="name" placeholder="你的笔名或称呼">
+        </label>
+        <label>
+          <span>邮箱</span>
+          <input v-model="email" autocomplete="email" inputmode="email" placeholder="name@example.com">
+        </label>
+        <label>
+          <span>密码</span>
+          <input v-model="password" autocomplete="current-password" type="password" placeholder="至少 8 位">
+        </label>
+
+        <p v-if="errorMessage" class="auth-error" role="alert">{{ errorMessage }}</p>
+        <button class="auth-submit" type="submit" :disabled="!canSubmit">
+          {{ submitting ? '处理中...' : mode === 'login' ? '进入书架' : '创建并进入' }}
         </button>
-        <p class="muted" :style="{ margin: 0, lineHeight: 1.7 }">
-          未注册的手机号将直接创建账号。继续即表示同意服务条款与隐私政策。
-        </p>
       </form>
-    </div>
-  </div>
+    </section>
+  </main>
 </template>
+
+<style scoped>
+.auth-page {
+  min-height: 100%;
+  display: grid;
+  place-items: center;
+  padding: 40px;
+  background: var(--color-bg);
+}
+
+.auth-frame {
+  width: min(980px, 100%);
+  min-height: 520px;
+  display: grid;
+  grid-template-columns: minmax(0, 1.15fr) minmax(340px, .85fr);
+  border: 1px solid var(--color-divider);
+  background: var(--color-neutral-100);
+  box-shadow: 16px 18px 0 color-mix(in srgb, var(--color-divider) 38%, transparent);
+}
+
+.auth-intro {
+  padding: 54px 50px 44px;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  border-right: 1px solid var(--color-divider);
+  background-image: linear-gradient(var(--color-divider) 1px, transparent 1px);
+  background-size: 100% 34px;
+}
+
+.auth-brand { font-size: 19px; font-weight: 800; letter-spacing: 0; }
+.auth-folio { margin: 70px 0 16px; font-size: 11px; font-family: monospace; color: var(--color-neutral-800); }
+.auth-intro h1 { margin: 0; max-width: 12ch; font-size: 38px; line-height: 1.34; letter-spacing: 0; }
+.auth-note { margin: 0; font-size: 14px; color: var(--color-neutral-800); }
+
+.auth-form { padding: 54px 42px; display: flex; flex-direction: column; justify-content: center; }
+.auth-mode { display: grid; grid-template-columns: 1fr 1fr; margin-bottom: 34px; border-bottom: 1px solid var(--color-divider); }
+.auth-mode button { border: 0; border-bottom: 3px solid transparent; padding: 11px 4px; background: transparent; color: var(--color-neutral-800); cursor: pointer; }
+.auth-mode button[aria-selected="true"] { border-bottom-color: var(--color-accent); color: var(--color-text); font-weight: 800; }
+.auth-heading { display: flex; flex-direction: column; gap: 7px; margin-bottom: 26px; }
+.auth-heading span { font-size: 22px; font-weight: 800; }
+.auth-heading small { color: var(--color-neutral-800); }
+.auth-form label { display: grid; gap: 8px; margin-bottom: 18px; font-size: 12px; font-weight: 700; }
+.auth-form input { height: 44px; min-width: 0; border: 1px solid var(--color-divider); padding: 0 13px; background: var(--color-bg); color: var(--color-text); font: inherit; }
+.auth-form input:focus-visible, .auth-mode button:focus-visible, .auth-submit:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 2px; }
+.auth-error { margin: 0 0 14px; padding: 10px 12px; border-left: 3px solid var(--alert); background: color-mix(in srgb, var(--alert) 8%, transparent); color: var(--color-text); }
+.auth-submit { height: 44px; border: 0; background: var(--color-accent); color: #fff; font-weight: 800; cursor: pointer; }
+.auth-submit:disabled { cursor: not-allowed; opacity: .45; }
+
+@media (max-width: 760px) {
+  .auth-page { padding: 18px; place-items: start center; }
+  .auth-frame { grid-template-columns: 1fr; min-height: 0; box-shadow: 8px 10px 0 color-mix(in srgb, var(--color-divider) 38%, transparent); }
+  .auth-intro { min-height: 250px; padding: 30px 28px; border-right: 0; border-bottom: 1px solid var(--color-divider); }
+  .auth-folio { margin-top: 34px; }
+  .auth-intro h1 { font-size: 28px; }
+  .auth-form { padding: 32px 28px 38px; }
+}
+</style>

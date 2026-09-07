@@ -234,7 +234,10 @@ class OutboxService:
         # 判断是否超过最大重试次数
         if event.attempts >= max_attempts:
             new_status = "dead_letter"
-            available_at = None
+            # available_at is NOT NULL in the production schema.  Dead-letter
+            # rows are excluded by status, so retaining the current timestamp
+            # is both valid and keeps the final failure time queryable.
+            available_at = event.available_at
         else:
             new_status = "pending"
             if retry_after_seconds:

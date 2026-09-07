@@ -4,19 +4,18 @@ export interface ShelfBook {
   id: string
   title: string
   genre: string
-  status: 'ongoing' | 'finished' | 'planning'
+  status: 'ongoing' | 'finished' | 'planning' | 'archived'
   words: number
   chapters: number
   codexCount: number
   guardOpen: number
   lastTouched: string
   targetWords: number
+  dailyGoal?: number
   progress: number
   todayWords: number
   coverTone: 'mountain' | 'city' | 'river' | 'spring' | 'space'
 }
-
-export interface UsageBreakdown { label: string; count: string; credits: number | 'free' }
 
 const CREATED_BOOKS_KEY = 'moshu:created-books'
 
@@ -99,25 +98,20 @@ export const shelfApi = {
     return structuredClone(book)
   },
 
+  async updateBook(id: string, patch: { title: string; genre: string; status: 'ongoing' | 'finished' | 'archived'; dailyGoal: number }): Promise<ShelfBook> {
+    await delay(120)
+    const created = readCreatedBooks()
+    const createdIndex = created.findIndex((book) => book.id === id)
+    const book = createdIndex >= 0 ? created[createdIndex] : SHELF_BOOKS.find((item) => item.id === id)
+    if (!book) throw new Error('book_not_found')
+    Object.assign(book, patch)
+    if (createdIndex >= 0) writeCreatedBooks(created)
+    return structuredClone(book)
+  },
+
   async dailySeries(): Promise<number[]> {
     await delay(140)
     return [3100, 4100, 6000, 2650, 0, 4560, 5280, 3600, 4320, 5760, 2880, 3840, 4800, 4280]
   },
 
-  async usage(): Promise<{ remaining: number; quota: number; plan: string; price: string; items: UsageBreakdown[] }> {
-    await delay(160)
-    return {
-      remaining: 2840,
-      quota: 5000,
-      plan: '作者版',
-      price: '69 元 / 月',
-      items: [
-        { label: '一键成章', count: '46 次', credits: 1610 },
-        { label: '行内续写与润色', count: '218 次', credits: 392 },
-        { label: '一致性守卫扫描', count: '88 章', credits: 96 },
-        { label: '风格档抽取', count: '1 次', credits: 62 },
-        { label: '章摘要生成（自动）', count: '每章', credits: 'free' }
-      ]
-    }
-  }
 }
