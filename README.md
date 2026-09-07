@@ -2,6 +2,8 @@
 
 墨枢是面向长篇网文创作的 AI 写作平台。项目以一键成章为入口，重点解决长程设定记忆、一致性检查、伏笔追踪和作者风格保真。
 
+![墨枢长篇小说创作工作台](docs/assets/moshu-overview.png)
+
 当前仓库包含 Vue 3 写作前端、FastAPI API、PostgreSQL/pgvector、Redis 与 Celery 异步任务，以及必要的架构与实现文档。
 
 ## 仓库结构

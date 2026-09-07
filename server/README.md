@@ -2,6 +2,8 @@
 
 AI 网文写作平台后端服务
 
+![墨枢后端服务与创作数据流](../docs/assets/moshu-overview.png)
+
 ## 技术栈
 
 - **Python 3.12+**
