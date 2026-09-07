@@ -296,6 +296,9 @@ async def chat(session_id: str, request: MessageCreate, user: User = Depends(get
     reply, proposals = await _model_reply([{"role": item.role, "content": item.content} for item in history])
     assistant_message = AgentMessage(id=secrets.token_hex(16), session_id=session.id, role="assistant", content=reply, sequence=user_message.sequence + 1, metadata_json={"harness": "approval_required", "action_count": len(proposals)})
     db.add(assistant_message)
+    # Actions reference the assistant message; flush it before inserting the
+    # independent action rows so PostgreSQL/SQLite enforce the FK consistently.
+    await db.flush()
     action_rows: list[AgentAction] = []
     for index, proposal in enumerate(proposals):
         try:

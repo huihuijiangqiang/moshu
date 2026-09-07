@@ -8,6 +8,7 @@ export type IconName =
   | 'guard'
   | 'style'
   | 'ratio'
+  | 'tools'
   | 'export'
   | 'usage'
   | 'search'
@@ -41,6 +42,7 @@ export const ICON_PATHS: Record<IconName, string> = {
   guard: 'M10 2.5l6 2.5v4.5c0 4-2.6 6.8-6 8.2-3.4-1.4-6-4.2-6-8.2V5z',
   style: 'M2.5 12.5c2-7 3.5 3.5 5.5-3.5s2.5 8 4.5 2.5 2.5 2 5 2',
   ratio: 'M10 2.5a7.5 7.5 0 107.5 7.5H10z',
+  tools: 'M4 5.5h12M4 10h12M4 14.5h7M13.5 13l3 3M16.5 13l-3 3',
   export: 'M10 12.5V3M6.5 6.5L10 3l3.5 3.5M3.5 12.5v4h13v-4',
   usage: 'M4.5 16.5V9M9.5 16.5V4M14.5 16.5v-6',
   search: 'M9 3.5a5.5 5.5 0 100 11 5.5 5.5 0 000-11zM13 13l4 4',

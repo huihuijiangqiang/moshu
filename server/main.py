@@ -18,8 +18,8 @@ except ModuleNotFoundError:  # pragma: no cover - production dependencies includ
     redis = None
 
 from api import (
-    agent,
     admin,
+    agent,
     auth,
     billing,
     chapters,

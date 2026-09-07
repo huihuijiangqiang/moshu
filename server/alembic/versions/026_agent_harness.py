@@ -45,9 +45,9 @@ def upgrade() -> None:
         sa.CheckConstraint("role IN ('user', 'assistant', 'system')", name="ck_agent_message_role"),
         sa.ForeignKeyConstraint(["session_id"], ["agent_sessions.id"], ondelete="CASCADE"),
         sa.PrimaryKeyConstraint("id"),
-        sa.UniqueConstraint("session_id", "sequence", name="uq_agent_message_sequence"),
     )
     op.create_index("ix_agent_messages_session_id", "agent_messages", ["session_id"])
+    op.create_index("uq_agent_message_sequence", "agent_messages", ["session_id", "sequence"], unique=True)
 
     op.create_table(
         "agent_actions",
@@ -80,13 +80,13 @@ def upgrade() -> None:
         sa.ForeignKeyConstraint(["user_id"], ["users.id"], ondelete="CASCADE"),
         sa.ForeignKeyConstraint(["project_id"], ["projects.id"], ondelete="CASCADE"),
         sa.PrimaryKeyConstraint("id"),
-        sa.UniqueConstraint("user_id", "idempotency_key", name="uq_agent_action_idempotency"),
     )
     op.create_index("ix_agent_actions_session_id", "agent_actions", ["session_id"])
     op.create_index("ix_agent_actions_message_id", "agent_actions", ["message_id"])
     op.create_index("ix_agent_actions_user_id", "agent_actions", ["user_id"])
     op.create_index("ix_agent_actions_project_id", "agent_actions", ["project_id"])
     op.create_index("ix_agent_actions_status", "agent_actions", ["status"])
+    op.create_index("uq_agent_action_idempotency", "agent_actions", ["user_id", "idempotency_key"], unique=True)
 
 
 def downgrade() -> None:
