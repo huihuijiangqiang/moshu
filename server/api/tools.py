@@ -51,6 +51,12 @@ class MapDraft(BaseModel):
     regions: list[MapRegion] = Field(default_factory=list, max_length=20)
 
 
+class MapGenerateRequest(BaseModel):
+    seed: str = Field("柳溪", min_length=1, max_length=20)
+    terrain: Terrain = "山河"
+    region_count: int = Field(7, ge=4, le=10)
+
+
 class MapDraftResponse(MapDraft):
     project_id: str
     saved: bool = True
@@ -116,6 +122,23 @@ async def generate_names(
 ) -> NameResponse:
     await verify_project_permission(project_id, ProjectPermission.VIEW, user, db)
     return NameResponse(names=_names(request), seed=request.seed, style=request.style, gender=request.gender)
+
+
+@router.post("/{project_id}/tools/maps", response_model=MapDraftResponse)
+async def generate_map(
+    project_id: str,
+    request: MapGenerateRequest,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> MapDraftResponse:
+    await verify_project_permission(project_id, ProjectPermission.VIEW, user, db)
+    return MapDraftResponse(
+        project_id=project_id,
+        seed=request.seed,
+        terrain=request.terrain,
+        regions=_default_map(request.seed, request.terrain, request.region_count),
+        saved=False,
+    )
 
 
 @router.get("/{project_id}/tools/map-draft", response_model=MapDraftResponse)

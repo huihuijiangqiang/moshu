@@ -34,3 +34,17 @@ async def test_map_draft_is_saved_in_project_settings(app_client, seed_project, 
     assert loaded.status_code == 200
     assert loaded.json()["terrain"] == "群岛"
     assert loaded.json()["regions"] == payload["regions"]
+
+
+@pytest.mark.asyncio
+async def test_map_generator_returns_requested_region_count(app_client, seed_project, auth_headers):
+    await seed_project()
+    generated = await app_client.post(
+        "/projects/proj_a/tools/maps",
+        json={"seed": "北境", "terrain": "山河", "region_count": 8},
+        headers=auth_headers("user_a"),
+    )
+
+    assert generated.status_code == 200
+    assert generated.json()["saved"] is False
+    assert len(generated.json()["regions"]) == 8

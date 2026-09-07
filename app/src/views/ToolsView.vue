@@ -21,6 +21,7 @@ const regionCount = ref(7)
 const mapSeed = ref('柳溪')
 const mapVersion = ref(0)
 const mapSaved = ref(false)
+const generatedRegions = ref<Array<{ name: string; x: number; y: number }> | null>(null)
 
 const familyNames = ['许', '沈', '顾', '周', '陆', '谢', '裴', '苏', '林', '秦', '程', '姜']
 const femaleGiven = ['知微', '照棠', '明昭', '云岫', '青禾', '令仪', '晚晴', '栖月', '南枝', '见山', '初霁', '绾宁']
@@ -30,6 +31,7 @@ const exoticFamily = ['阿', '伊', '洛', '赫', '塔', '乌', '赛', '迦']
 const exoticGiven = ['弥娅', '岚歌', '萨恩', '诺娅', '迦南', '维洛', '星遥', '阿岚']
 
 const mapRegions = computed(() => {
+  if (generatedRegions.value) return generatedRegions.value
   const result = []
   const count = Math.max(4, Math.min(10, regionCount.value))
   for (let i = 0; i < count; i += 1) {
@@ -76,9 +78,18 @@ async function copyName(name: string) {
   window.setTimeout(() => { if (copied.value === name) copied.value = '' }, 1200)
 }
 
-function regenerateMap() {
+async function regenerateMap() {
   mapVersion.value += 1
   mapSaved.value = false
+  try {
+    const draft = await request<{ regions: Array<{ name: string; x: number; y: number }> }>(`/projects/${projectId.value}/tools/maps`, {
+      method: 'POST',
+      body: JSON.stringify({ seed: mapSeed.value || '柳溪', terrain: terrain.value, region_count: regionCount.value }),
+    })
+    generatedRegions.value = draft.regions
+  } catch {
+    generatedRegions.value = null
+  }
 }
 
 async function saveToCodex() {
@@ -107,6 +118,7 @@ onMounted(async () => {
     mapSeed.value = draft.seed
     terrain.value = draft.terrain
     regionCount.value = draft.regions.length
+    generatedRegions.value = draft.regions
   } catch {
     // 默认草图可直接使用。
   }
