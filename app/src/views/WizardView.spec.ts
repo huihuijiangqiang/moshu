@@ -1,4 +1,4 @@
-import { flushPromises, mount } from '@vue/test-utils'
+import { mount } from '@vue/test-utils'
 import { createMemoryHistory, createRouter } from 'vue-router'
 import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import { nextTick } from 'vue'
@@ -25,7 +25,7 @@ describe('new project wizard', () => {
       history: createMemoryHistory(),
       routes: [
         { path: '/projects/new', component: WizardView },
-        { path: '/projects/:projectId/outline', component: { template: '<div />' } }
+        { path: '/projects/:projectId/write', component: { template: '<div />' } }
       ]
     })
     await router.push('/projects/new')
@@ -64,10 +64,14 @@ describe('new project wizard', () => {
     expect(wrapper.text()).toContain('内容标签')
     expect(wrapper.text()).toContain('复仇')
     expect(wrapper.text()).toContain('权谋')
-    await buttonByText(wrapper, '创建作品并进入大纲')?.trigger('click')
-    await new Promise((resolve) => setTimeout(resolve, 200))
-    await flushPromises()
-    expect(router.currentRoute.value.path).toMatch(/^\/projects\/draft-[a-z0-9]+\/outline$/)
+    await buttonByText(wrapper, '创建作品并生成第一章')?.trigger('click')
+    await vi.waitFor(
+      () => expect(router.currentRoute.value.path).toMatch(/^\/projects\/draft-[a-z0-9]+\/write$/),
+      { timeout: 3000 }
+    )
+    expect(router.currentRoute.value.path).toMatch(/^\/projects\/draft-[a-z0-9]+\/write$/)
+    expect(router.currentRoute.value.query.autoGenerate).toBe('1')
+    expect(router.currentRoute.value.query.chapter).toMatch(/-ch1$/)
   })
 
   it('accepts and restores a custom genre', async () => {

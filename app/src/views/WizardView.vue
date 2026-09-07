@@ -2,6 +2,7 @@
 import { computed, onMounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { projectPath } from '@/router/project-route'
+import { contentApi } from '@/api/content'
 import { shelfApi } from '@/api/shelf'
 import { planWizard, type WizardPlan } from '@/api/wizard'
 
@@ -352,7 +353,17 @@ async function createProject() {
       }))
     })
     localStorage.removeItem(DRAFT_KEY)
-    await router.push(projectPath(book.id, 'outline'))
+    let firstChapterId: string | undefined
+    try {
+      const createdChapters = await contentApi.listChapters(book.id)
+      firstChapterId = [...createdChapters].sort((a, b) => a.index - b.index)[0]?.id
+    } catch {
+      // The project already exists. Enter it instead of letting a retry create a duplicate.
+    }
+    await router.push({
+      path: projectPath(book.id, 'write'),
+      query: firstChapterId ? { chapter: firstChapterId, autoGenerate: '1' } : undefined
+    })
   } catch {
     createError.value = '创建失败，请保留当前草稿后重试。'
   } finally {
@@ -625,7 +636,7 @@ watch(
           </div>
           <p v-if="createError" class="wizard-create-error">{{ createError }}</p>
           <button class="btn btn-primary wizard-create" type="button" :disabled="creating" @click="createProject">
-            {{ creating ? '创建中…' : '创建作品并进入大纲' }}
+            {{ creating ? '创建并准备正文…' : '创建作品并生成第一章' }}
           </button>
         </section>
 

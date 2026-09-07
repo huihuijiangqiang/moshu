@@ -85,6 +85,7 @@ const {
 } = useAutosave(chapterId, html)
 
 const requestedChapterId = computed(() => typeof route.query.chapter === 'string' ? route.query.chapter : null)
+const autoGenerateRequested = computed(() => route.query.autoGenerate === '1')
 const projectId = computed(() => store.project?.id)
 
 function sentenceRouteTarget() {
@@ -156,12 +157,16 @@ watch(
 
     // 查询参数只负责一次跨页定位，消费后移除，避免用户在章节栏切换时被拉回旧章节。
     if (requestedId === id) {
+      const shouldAutoGenerate = autoGenerateRequested.value
+        && !content.trim()
+        && (store.chapters.find((chapter) => chapter.id === id)?.outline.length ?? 0) > 0
       const query = { ...route.query }
       delete query.chapter
       delete query.paragraph
       delete query.start
       delete query.end
       delete query.rewrite
+      delete query.autoGenerate
       suppressRouteCleanupWatch = true
       try {
         await router.replace({ query })
@@ -170,6 +175,15 @@ watch(
         suppressRouteCleanupWatch = false
       }
       if (rewriteSelection) runInline('改写语气')
+      else if (shouldAutoGenerate) {
+        generate({
+          targetWords: 3000,
+          model: 'basic',
+          useStyleProfile: false,
+          dialogueDensity: 'mid',
+          instruction: '根据已经确认的开书骨架完成第一章，严格遵守章纲，结尾保留进入下一章的钩子。'
+        })
+      }
     }
   },
   { immediate: true }

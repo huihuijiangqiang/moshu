@@ -7,6 +7,12 @@ import { contentApi } from '@/api/content'
 import { useCodexStore } from '@/stores/codex'
 import { useProjectStore } from '@/stores/project'
 import { useShellStore } from '@/stores/shell'
+import { streamChapter } from '@/api/generation'
+
+vi.mock('@/api/generation', async () => {
+  const actual = await vi.importActual<typeof import('@/api/generation')>('@/api/generation')
+  return { ...actual, streamChapter: vi.fn(() => () => undefined) }
+})
 
 describe('mobile writing workspace', () => {
   const originalWidth = window.innerWidth
@@ -98,6 +104,35 @@ describe('mobile writing workspace', () => {
     await flushPromises()
     expect(insert).toHaveBeenCalledWith('p1', current.volumeId, current.index)
     expect(store.activeId).toBe(created.id)
+    wrapper.unmount()
+  })
+
+  it('starts the first chapter candidate once after the wizard redirects', async () => {
+    Object.defineProperty(window, 'innerWidth', { configurable: true, value: 1200 })
+    const pinia = createPinia()
+    setActivePinia(pinia)
+    const router = createRouter({
+      history: createMemoryHistory(),
+      routes: [{ path: '/projects/:projectId/write', component: WorkspaceView }]
+    })
+    await router.push('/projects/p1/write?chapter=ch88&autoGenerate=1')
+    await router.isReady()
+    await Promise.all([useProjectStore().load('p1'), useCodexStore().load('p1')])
+    vi.spyOn(contentApi, 'getContextLayers').mockResolvedValue([])
+    vi.spyOn(contentApi, 'listProjectNotes').mockResolvedValue([])
+
+    const wrapper = mount(WorkspaceView, {
+      attachTo: document.body,
+      global: { plugins: [pinia, router] }
+    })
+    await vi.waitFor(() => expect(streamChapter).toHaveBeenCalledTimes(1), { timeout: 3000 })
+
+    expect(streamChapter).toHaveBeenCalledWith(
+      expect.objectContaining({ chapterId: 'ch88', targetWords: 3000, model: 'basic' }),
+      expect.any(Object)
+    )
+    expect(router.currentRoute.value.query.autoGenerate).toBeUndefined()
+    expect(router.currentRoute.value.query.chapter).toBeUndefined()
     wrapper.unmount()
   })
 })
