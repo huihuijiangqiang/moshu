@@ -6,6 +6,22 @@
 
 当前仓库包含 Vue 3 写作前端、FastAPI API、PostgreSQL/pgvector、Redis 与 Celery 异步任务，以及必要的架构与实现文档。
 
+## 系统截图
+
+以下截图来自本地 mock 前端，展示作品库、写作台、设定库、一致性守卫、拆书分析和用量页面的实际界面。
+
+| 作品库 | 写作台 |
+| --- | --- |
+| ![作品库](docs/assets/screenshots/shelf.png) | ![写作台](docs/assets/screenshots/writer.png) |
+
+| 设定库 | 一致性守卫 |
+| --- | --- |
+| ![设定库](docs/assets/screenshots/codex.png) | ![一致性守卫](docs/assets/screenshots/guard.png) |
+
+| 拆书分析 | 用量与计费 |
+| --- | --- |
+| ![拆书分析](docs/assets/screenshots/deconstruct.png) | ![用量与计费](docs/assets/screenshots/usage.png) |
+
 ## 仓库结构
 
 ```text

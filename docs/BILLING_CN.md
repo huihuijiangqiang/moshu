@@ -2,6 +2,8 @@
 
 ![支付订单与权益流水的可审计链路](assets/moshu-billing.png)
 
+![用量与计费页面](assets/screenshots/usage.png)
+
 ## 当前已完成
 
 - 月度赠送额度和充值积分分开保存；月底重置不会覆盖充值余额。
