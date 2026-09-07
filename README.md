@@ -82,12 +82,12 @@ Compose 默认使用项目下的 `.docker-data` 目录作为开发兜底。部�
 在项目根目录创建仅本机使用的 `.env`（不要提交），例如：
 
 ```dotenv
-MOSHU_POSTGRES_DATA_DIR=D:/moshu-data/postgres
-MOSHU_REDIS_DATA_DIR=D:/moshu-data/redis
+MOSHU_POSTGRES_DATA_DIR=<postgres-data-directory>
+MOSHU_REDIS_DATA_DIR=<redis-data-directory>
 ```
 
-这两个目录会以 bind mount 方式挂载，不使用 Docker Desktop 默认 named volume 位置。目录需提前创建，
-并在 Docker Desktop 中共享所在磁盘。
+这两个目录会以 bind mount 方式挂载，不使用 Docker Desktop 默认 named volume 位置。请按部署主机的操作系统填写实际目录，
+目录需提前创建，并在 Docker Desktop 中共享对应位置。
 
 ## 核心约束
 

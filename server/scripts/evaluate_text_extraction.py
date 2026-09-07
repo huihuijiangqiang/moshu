@@ -1,7 +1,7 @@
 """Run the production claim extractor against an authorized JSONL split.
 
 Example:
-  python scripts/evaluate_text_extraction.py --corpus C:/private/moshu-corpus.jsonl --split holdout
+  python scripts/evaluate_text_extraction.py --corpus <path-to-corpus.jsonl> --split holdout
 """
 
 from __future__ import annotations

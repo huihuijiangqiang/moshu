@@ -322,8 +322,7 @@ Hard negative 是“共享实体和相似表述，但因条件、时间、视角
 工作树边界：
 
 - 主工作区保留现有未提交改动，不直接开发本阶段功能；最终合并前先单独处置这些改动。
-- Claude 固定复用会话 `85240d32-a3ec-4012-8787-ace96fc115df`，实际绑定工作树 `.claude/worktrees/moshu-consistency-backend`；该分支已快进到架构提交。Claude 只负责新增 consistency 模型、outbox/幂等基础设施、纯规则与测试夹具。
-- Codex 使用 `D:/moshu-worktrees/codex-consistency`，负责 API/service 契约、集成测试和最终集成。
+- 开发采用独立 worktree 协作：一侧负责 consistency 模型、outbox/幂等基础设施、纯规则与测试夹具，另一侧负责 API/service 契约、集成测试和最终集成。
 - 仅新增文件可以直接并行；运行时接线必然需要修改 `main.py`、`db/__init__.py` 等共享文件，应由 Codex 在 Claude 提交完成后单线完成。通过迁移给已有表加字段并不等于 ORM 自动获得这些属性，不能把“零修改已有 Python 文件”误称为可运行集成。
 - 两边不得同时修改 `memory/assembler.py`、`config.py`、`db/models_*.py` 或同一迁移；每个提交只包含约定边界内文件。
 

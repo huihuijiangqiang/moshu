@@ -782,7 +782,7 @@ baseline，增量实现 Codex embedding 回填、时间锚点解析、issue 生�
 
 ```powershell
 cd server
-..\.venv\Scripts\python.exe scripts/evaluate_text_extraction.py --corpus C:\private\moshu-corpus.jsonl --split holdout
+..\.venv\Scripts\python.exe scripts/evaluate_text_extraction.py --corpus <path-to-corpus.jsonl> --split holdout
 ```
 
 当前仓库只验证语料加载、split 隔离和指标计算，不伪造真实小说质量数字；接入有授权的正文与金标后，
