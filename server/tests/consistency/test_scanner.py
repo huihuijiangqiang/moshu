@@ -30,6 +30,20 @@ def scanner():
     return RuleScanner(rule_version="1.0.0")
 
 
+def test_subject_key_prefers_resolved_entry_id(scanner):
+    claim = ConsistencyClaim(
+        subject_entry_id="character_alias",
+        subject_text="正文中的别名",
+        predicate="located_at",
+        object_type="location",
+        source_kind="outline",
+        extractor_version="1.0.0",
+        fingerprint="fp_subject_key",
+    )
+
+    assert scanner._subject_key(claim) == "character_alias"
+
+
 @pytest.fixture
 async def scan_context(async_db_session, seed_project, make_run):
     """建好 project + 两章 + 一个 run，返回 (run_id, scan 调用器)。"""
@@ -467,6 +481,293 @@ async def test_impact_scan_prunes_disjoint_locations_but_keeps_unknown_time(
         "fp_unknown_location_time",
     }
     assert scanner.last_scan_pruned_count == 1
+
+
+async def test_sql_pushdown_prunes_resolved_location_intervals(
+    scanner, async_db_session, scan_context, add_claim, add_entry
+):
+    await add_entry("character_he", kind="character")
+    await add_claim(
+        subject_text="沈青禾",
+        subject_entry_id="character_he",
+        predicate="located_at",
+        object_type="location",
+        object_value="沈家村",
+        timeline_id="main",
+        story_order=10,
+        valid_from_order=10,
+        valid_to_order=20,
+        fingerprint="fp_resolved_location_source",
+    )
+    await add_claim(
+        chapter_id="ch_b",
+        subject_text="沈青禾",
+        subject_entry_id="character_he",
+        predicate="located_at",
+        object_type="location",
+        object_value="县城",
+        timeline_id="main",
+        story_order=15,
+        valid_from_order=15,
+        valid_to_order=25,
+        fingerprint="fp_resolved_location_overlap",
+    )
+    await add_claim(
+        chapter_id="ch_b",
+        subject_text="沈青禾",
+        subject_entry_id="character_he",
+        predicate="located_at",
+        object_type="location",
+        object_value="府城",
+        timeline_id="main",
+        story_order=30,
+        valid_from_order=30,
+        valid_to_order=40,
+        fingerprint="fp_resolved_location_disjoint",
+    )
+    await add_claim(
+        chapter_id="ch_b",
+        subject_text="沈青禾",
+        subject_entry_id="character_he",
+        predicate="located_at",
+        object_type="location",
+        object_value="镜中府城",
+        timeline_id="mirror",
+        story_order=15,
+        valid_from_order=15,
+        valid_to_order=25,
+        fingerprint="fp_resolved_location_other_timeline",
+    )
+
+    claims = await scanner._load_impacted_claims(
+        async_db_session, project_id="proj_a", chapter_id="ch_a"
+    )
+
+    assert {claim.fingerprint for claim in claims} == {
+        "fp_resolved_location_source",
+        "fp_resolved_location_overlap",
+    }
+    assert scanner.last_scan_interval_filter_applied is True
+    assert scanner.last_scan_interval_filter_families == ("located_at",)
+    assert scanner.last_scan_pruned_count == 0
+
+
+async def test_sql_pushdown_combines_ownership_and_location_filters(
+    scanner, async_db_session, scan_context, add_claim, add_entry
+):
+    await add_entry("character_dual", kind="character")
+    await add_entry("item_dual", kind="item")
+    await add_claim(
+        subject_text="沈青禾",
+        subject_entry_id="character_dual",
+        predicate="located_at",
+        object_type="location",
+        object_value="沈家村",
+        timeline_id="main",
+        story_order=10,
+        valid_from_order=10,
+        valid_to_order=20,
+        fingerprint="fp_dual_location_source",
+    )
+    await add_claim(
+        subject_text="沈青禾",
+        predicate="owns",
+        object_type="entity",
+        object_value="地契",
+        object_entry_id="item_dual",
+        timeline_id="main",
+        story_order=10,
+        valid_from_order=10,
+        valid_to_order=20,
+        fingerprint="fp_dual_ownership_source",
+    )
+    await add_claim(
+        chapter_id="ch_b",
+        subject_text="沈青禾",
+        subject_entry_id="character_dual",
+        predicate="located_at",
+        object_type="location",
+        object_value="县城",
+        timeline_id="main",
+        story_order=15,
+        valid_from_order=15,
+        valid_to_order=25,
+        fingerprint="fp_dual_location_overlap",
+    )
+    await add_claim(
+        chapter_id="ch_b",
+        subject_text="沈青禾",
+        predicate="owns",
+        object_type="entity",
+        object_value="地契",
+        object_entry_id="item_dual",
+        timeline_id="main",
+        story_order=15,
+        valid_from_order=15,
+        valid_to_order=25,
+        fingerprint="fp_dual_ownership_overlap",
+    )
+    await add_claim(
+        chapter_id="ch_b",
+        subject_text="沈青禾",
+        subject_entry_id="character_dual",
+        predicate="located_at",
+        object_type="location",
+        object_value="府城",
+        timeline_id="main",
+        story_order=30,
+        valid_from_order=30,
+        valid_to_order=40,
+        fingerprint="fp_dual_location_disjoint",
+    )
+    await add_claim(
+        chapter_id="ch_b",
+        subject_text="沈青禾",
+        predicate="owns",
+        object_type="entity",
+        object_value="地契",
+        object_entry_id="item_dual",
+        timeline_id="main",
+        story_order=30,
+        valid_from_order=30,
+        valid_to_order=40,
+        fingerprint="fp_dual_ownership_disjoint",
+    )
+
+    claims = await scanner._load_impacted_claims(
+        async_db_session, project_id="proj_a", chapter_id="ch_a"
+    )
+
+    assert {claim.fingerprint for claim in claims} == {
+        "fp_dual_location_source",
+        "fp_dual_ownership_source",
+        "fp_dual_location_overlap",
+        "fp_dual_ownership_overlap",
+    }
+    assert scanner.last_scan_interval_filter_applied is True
+    assert scanner.last_scan_interval_filter_families == ("owns", "located_at")
+    assert scanner.last_scan_pruned_count == 0
+
+
+async def test_mixed_resolved_and_text_location_sources_disable_pushdown(
+    scanner, async_db_session, scan_context, add_claim, add_entry
+):
+    await add_entry("character_mixed", kind="character")
+    await add_claim(
+        subject_text="沈青禾",
+        subject_entry_id="character_mixed",
+        predicate="located_at",
+        object_type="location",
+        object_value="沈家村",
+        timeline_id="main",
+        story_order=10,
+        valid_from_order=10,
+        valid_to_order=20,
+        fingerprint="fp_mixed_resolved_source",
+    )
+    await add_claim(
+        subject_text="沈青禾",
+        predicate="located_at",
+        object_type="location",
+        object_value="旧宅",
+        timeline_id="main",
+        story_order=100,
+        valid_from_order=100,
+        valid_to_order=200,
+        fingerprint="fp_mixed_text_source",
+    )
+    await add_claim(
+        chapter_id="ch_b",
+        subject_text="沈青禾",
+        predicate="located_at",
+        object_type="location",
+        object_value="新宅",
+        timeline_id="main",
+        story_order=150,
+        valid_from_order=150,
+        valid_to_order=160,
+        fingerprint="fp_mixed_text_overlap",
+    )
+
+    claims = await scanner._load_impacted_claims(
+        async_db_session, project_id="proj_a", chapter_id="ch_a"
+    )
+
+    assert {claim.fingerprint for claim in claims} == {
+        "fp_mixed_resolved_source",
+        "fp_mixed_text_source",
+        "fp_mixed_text_overlap",
+    }
+    assert scanner.last_scan_interval_filter_applied is False
+    assert scanner.last_scan_interval_filter_families == ()
+
+
+async def test_unresolved_ownership_source_does_not_disable_resolved_pushdown(
+    scanner, async_db_session, scan_context, add_claim, add_entry
+):
+    await add_entry("item_mixed", kind="item")
+    await add_claim(
+        subject_text="沈青禾",
+        predicate="owns",
+        object_type="entity",
+        object_value="地契",
+        object_entry_id="item_mixed",
+        timeline_id="main",
+        story_order=10,
+        valid_from_order=10,
+        valid_to_order=20,
+        fingerprint="fp_mixed_ownership_resolved_source",
+    )
+    await add_claim(
+        subject_text="沈青禾",
+        predicate="owns",
+        object_type="entity",
+        object_value="未知物品",
+        timeline_id="main",
+        story_order=100,
+        valid_from_order=100,
+        valid_to_order=200,
+        fingerprint="fp_mixed_ownership_unresolved_source",
+    )
+    await add_claim(
+        chapter_id="ch_b",
+        subject_text="周砚",
+        predicate="owns",
+        object_type="entity",
+        object_value="地契",
+        object_entry_id="item_mixed",
+        timeline_id="main",
+        story_order=15,
+        valid_from_order=15,
+        valid_to_order=25,
+        fingerprint="fp_mixed_ownership_overlap",
+    )
+    await add_claim(
+        chapter_id="ch_b",
+        subject_text="里正",
+        predicate="owns",
+        object_type="entity",
+        object_value="地契",
+        object_entry_id="item_mixed",
+        timeline_id="main",
+        story_order=30,
+        valid_from_order=30,
+        valid_to_order=40,
+        fingerprint="fp_mixed_ownership_disjoint",
+    )
+
+    claims = await scanner._load_impacted_claims(
+        async_db_session, project_id="proj_a", chapter_id="ch_a"
+    )
+
+    assert {claim.fingerprint for claim in claims} == {
+        "fp_mixed_ownership_resolved_source",
+        "fp_mixed_ownership_unresolved_source",
+        "fp_mixed_ownership_overlap",
+    }
+    assert scanner.last_scan_interval_filter_applied is True
+    assert scanner.last_scan_interval_filter_families == ("owns",)
+    assert scanner.last_scan_pruned_count == 0
 
 
 async def test_open_location_interval_does_not_imply_staying_forever(

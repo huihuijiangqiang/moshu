@@ -78,6 +78,7 @@ class RuleScanner:
         self.last_scan_claim_count = 0
         self.last_scan_pruned_count = 0
         self.last_scan_interval_filter_applied = False
+        self.last_scan_interval_filter_families: tuple[str, ...] = ()
         self.last_scan_scope = "project"
 
     @staticmethod
@@ -254,9 +255,12 @@ class RuleScanner:
             for source in source_rows
             if source.predicate == "owns" and source.object_entry_id
         ]
+        # Ownership identity intentionally has no text fallback: the in-memory
+        # rule only compares resolved object_entry_id values, so unresolved
+        # sources and candidates are retained by the broad predicate branches.
         if not sources:
             return None
-        object_ids = {source.object_entry_id for source in sources}
+        object_ids = sorted({source.object_entry_id for source in sources})
         possible_matches = [
             and_(
                 ConsistencyClaim.object_entry_id == source.object_entry_id,
@@ -270,6 +274,50 @@ class RuleScanner:
             ConsistencyClaim.predicate != "owns",
             ConsistencyClaim.object_entry_id.is_(None),
             ~ConsistencyClaim.object_entry_id.in_(object_ids),
+            or_(*possible_matches),
+        )
+
+    @classmethod
+    def _located_at_interval_pushdown_clause(
+        cls,
+        source_rows: list[ConsistencyClaim],
+        *,
+        chapter_id: str,
+    ):
+        """Build a conservative SQL pre-filter for resolved location intervals.
+
+        Location identity follows the in-memory rule's subject key.  Only claims
+        with a resolved subject entry are pushed down; text-only subjects remain
+        in the broad impact set so normalization or future linking changes cannot
+        turn a safe optimization into a missed conflict.
+        """
+        sources = [
+            source
+            for source in source_rows
+            if source.predicate == "located_at" and source.subject_entry_id
+        ]
+        # A text-only source may later be linked to the same entity as a
+        # resolved source.  Keep the whole location family in memory in that
+        # mixed case; the optimization must not depend on today's fallback key.
+        if not sources or any(
+            source.predicate == "located_at" and not source.subject_entry_id
+            for source in source_rows
+        ):
+            return None
+        subject_ids = sorted({source.subject_entry_id for source in sources})
+        possible_matches = [
+            and_(
+                ConsistencyClaim.subject_entry_id == source.subject_entry_id,
+                cls._same_timeline_clause(source.timeline_id),
+                cls._interval_possible_clause(source),
+            )
+            for source in sources
+        ]
+        return or_(
+            ConsistencyClaim.chapter_id == chapter_id,
+            ConsistencyClaim.predicate != "located_at",
+            ConsistencyClaim.subject_entry_id.is_(None),
+            ~ConsistencyClaim.subject_entry_id.in_(subject_ids),
             or_(*possible_matches),
         )
 
@@ -363,6 +411,7 @@ class RuleScanner:
             self.last_scan_scope = "project"
             self.last_scan_pruned_count = 0
             self.last_scan_interval_filter_applied = False
+            self.last_scan_interval_filter_families = ()
             query = select(ConsistencyClaim).where(
                 ConsistencyClaim.project_id == project_id,
                 ConsistencyClaim.status == "accepted",
@@ -401,8 +450,26 @@ class RuleScanner:
                 source_rows,
                 chapter_id=chapter_id,
             )
-            if owns_pushdown is not None:
-                query = query.where(owns_pushdown)
+            located_pushdown = self._located_at_interval_pushdown_clause(
+                source_rows,
+                chapter_id=chapter_id,
+            )
+            pushdown_clauses = [
+                clause for clause in (owns_pushdown, located_pushdown) if clause is not None
+            ]
+            self.last_scan_interval_filter_families = tuple(
+                family
+                for family, clause in (
+                    ("owns", owns_pushdown),
+                    ("located_at", located_pushdown),
+                )
+                if clause is not None
+            )
+            if pushdown_clauses:
+                # Each predicate family gets its own conservative filter.  The
+                # other family is explicitly retained by that filter, so ANDing
+                # them cannot remove unrelated claims.
+                query = query.where(and_(*pushdown_clauses))
                 self.last_scan_interval_filter_applied = True
             else:
                 self.last_scan_interval_filter_applied = False
