@@ -47,6 +47,18 @@ class Settings(BaseSettings):
     log_level: str = "INFO"
     build_revision: str = "local"
 
+    # Mainland payment adapters. Secrets/certificates stay outside the repo;
+    # adapters remain disabled until the merchant credentials are complete.
+    payment_notify_base_url: Optional[str] = None
+    wechat_pay_app_id: Optional[str] = None
+    wechat_pay_mch_id: Optional[str] = None
+    wechat_pay_serial_no: Optional[str] = None
+    wechat_pay_private_key_path: Optional[str] = None
+    wechat_pay_api_v3_key: Optional[str] = None
+    alipay_app_id: Optional[str] = None
+    alipay_private_key_path: Optional[str] = None
+    alipay_alipay_public_key_path: Optional[str] = None
+
     # Consistency pipeline - 抽取/摘要/嵌入使用的网关与模型（不得在代码里硬编码）
     consistency_gateway_tier: str = "main"  # cheap, main, premium
     consistency_extraction_model: str = "gpt-4o-mini"

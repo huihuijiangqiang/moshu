@@ -30,7 +30,16 @@ class User(Base, TimestampMixin):
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     quota_remaining: Mapped[int] = mapped_column(Integer, default=0)
     quota_total: Mapped[int] = mapped_column(Integer, default=0)
+    # 充值积分独立于每月赠送额度，不能被月度重置覆盖。
+    purchased_credits_remaining: Mapped[int] = mapped_column(Integer, default=0)
     quota_resets_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    __table_args__ = (
+        CheckConstraint(
+            "purchased_credits_remaining >= 0",
+            name="ck_users_purchased_credits_nonnegative",
+        ),
+    )
 
     # 关系
     projects: Mapped[list["Project"]] = relationship(back_populates="owner", cascade="all, delete-orphan")

@@ -11,7 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from db.models_admin import SystemSetting
 from db.models_core import User
-from db.models_usage import UsageLog
+from db.models_usage import CreditGrant, UsageLog
 
 DEFAULT_CREDIT_RATES = {
     "basic_input": 1,
@@ -95,6 +95,76 @@ def _same_billing_month(log: UsageLog, now: datetime) -> bool:
     return month_start(_as_utc(log.timestamp)) == month_start(now)
 
 
+def _reservation_split(log: UsageLog) -> tuple[int, int]:
+    """Return (monthly, purchased) reservation portions.
+
+    Older rows predate purchased credits and are treated as monthly quota rows.
+    """
+    detail = log.detail if isinstance(log.detail, dict) else {}
+    split = detail.get("reserved_split") if isinstance(detail.get("reserved_split"), dict) else {}
+    monthly = max(0, int(split.get("monthly", log.reserved_credits) or 0))
+    purchased = max(0, int(split.get("purchased", 0) or 0))
+    total = monthly + purchased
+    if total != log.reserved_credits:
+        monthly = min(max(0, log.reserved_credits), monthly)
+        purchased = max(0, log.reserved_credits - monthly)
+    return monthly, purchased
+
+
+def _restore_reservation(user: User, log: UsageLog, *, restore_monthly: bool) -> tuple[int, int]:
+    monthly, purchased = _reservation_split(log)
+    if restore_monthly:
+        user.quota_remaining += monthly
+    user.purchased_credits_remaining += purchased
+    return monthly if restore_monthly else 0, purchased
+
+
+async def _consume_purchased_grants(db: AsyncSession, user_id: str, amount: int) -> int:
+    """Consume oldest purchased grants so order-level balances remain auditable."""
+    remaining = max(0, amount)
+    if not remaining:
+        return 0
+    grants = (
+        await db.execute(
+            select(CreditGrant)
+            .where(
+                CreditGrant.user_id == user_id,
+                CreditGrant.remaining_credits > 0,
+                CreditGrant.kind.in_(["purchase", "manual", "refund"]),
+            )
+            .order_by(CreditGrant.created_at, CreditGrant.id)
+            .with_for_update()
+        )
+    ).scalars().all()
+    consumed = 0
+    for grant in grants:
+        take = min(remaining, grant.remaining_credits)
+        grant.remaining_credits -= take
+        consumed += take
+        remaining -= take
+        if not remaining:
+            break
+    return consumed
+
+
+async def _charge_current_balance(db: AsyncSession, user: User, amount: int) -> tuple[int, int]:
+    """Consume monthly allowance first, then purchased credits."""
+    amount = max(0, amount)
+    from_monthly = min(amount, max(0, user.quota_remaining))
+    user.quota_remaining -= from_monthly
+    remaining = amount - from_monthly
+    from_purchased = min(remaining, max(0, user.purchased_credits_remaining))
+    user.purchased_credits_remaining -= from_purchased
+    consumed = await _consume_purchased_grants(db, user.id, from_purchased)
+    if consumed < from_purchased:
+        # The aggregate balance is the serialization point. A short grant
+        # ledger can only happen after manual database edits; keep the user
+        # balance conservative rather than minting an untraceable debit.
+        user.purchased_credits_remaining += from_purchased - consumed
+        from_purchased = consumed
+    return from_monthly + from_purchased, from_purchased
+
+
 async def _release_expired_reservations(
     db: AsyncSession,
     user: User,
@@ -112,8 +182,7 @@ async def _release_expired_reservations(
         )
     ).scalars().all()
     for log in rows:
-        if _same_billing_month(log, now):
-            user.quota_remaining += log.reserved_credits
+        _restore_reservation(user, log, restore_monthly=_same_billing_month(log, now))
         log.status = "released"
         log.credits = 0
         log.finalized_at = now
@@ -147,11 +216,15 @@ async def reserve_generation(
         cached_tokens=0,
         completion_tokens=max_completion_tokens,
     )
-    if reserved > user.quota_remaining:
-        remaining = user.quota_remaining
+    available = user.quota_remaining + user.purchased_credits_remaining
+    if reserved > available:
+        remaining = available
         await db.rollback()
         raise InsufficientCreditsError(required=reserved, remaining=remaining)
-    user.quota_remaining -= reserved
+    monthly_reserved = min(reserved, user.quota_remaining)
+    purchased_reserved = reserved - monthly_reserved
+    user.quota_remaining -= monthly_reserved
+    user.purchased_credits_remaining -= purchased_reserved
     log = UsageLog(
         user_id=user.id,
         project_id=project_id,
@@ -161,7 +234,11 @@ async def reserve_generation(
         reserved_credits=reserved,
         credits=0,
         status="reserved",
-        detail={"price_class": price_class, "rates": rates},
+        detail={
+            "price_class": price_class,
+            "rates": rates,
+            "reserved_split": {"monthly": monthly_reserved, "purchased": purchased_reserved},
+        },
         timestamp=now,
         reservation_expires_at=now + timedelta(hours=1),
     )
@@ -194,14 +271,22 @@ async def settle_generation(
         cached_tokens=cached_tokens,
         completion_tokens=completion_tokens,
     )
-    if _same_billing_month(log, datetime.now(UTC)):
-        maximum_charge = log.reserved_credits + user.quota_remaining
-        charged = min(actual, maximum_charge)
-        user.quota_remaining += log.reserved_credits - charged
+    same_month = _same_billing_month(log, datetime.now(UTC))
+    if same_month:
+        _restore_reservation(user, log, restore_monthly=True)
+        charged, _ = await _charge_current_balance(db, user, actual)
     else:
         # The old period has closed. Record actual usage without carrying an old
         # reservation refund or overage into the newly reset monthly balance.
-        charged = min(actual, log.reserved_credits)
+        monthly_reserved, purchased_reserved = _reservation_split(log)
+        # The closed monthly bucket cannot be refunded or overrun. Purchased
+        # credits remain valid, so only their reservation portion is restored
+        # and settled against the actual result.
+        user.purchased_credits_remaining += purchased_reserved
+        purchased_charge = min(max(0, actual - monthly_reserved), purchased_reserved)
+        purchased_charge = await _consume_purchased_grants(db, user.id, purchased_charge)
+        user.purchased_credits_remaining -= purchased_charge
+        charged = min(actual, monthly_reserved + purchased_reserved)
     log.run_id = run_id
     log.prompt_tokens = max(0, prompt_tokens)
     log.cached_tokens = min(log.prompt_tokens, max(0, cached_tokens))
@@ -220,8 +305,8 @@ async def release_reservation(db: AsyncSession, reservation: UsageReservation, *
         return
     user = await db.scalar(select(User).where(User.id == log.user_id).with_for_update())
     now = datetime.now(UTC)
-    if user is not None and _same_billing_month(log, now):
-        user.quota_remaining += log.reserved_credits
+    if user is not None:
+        _restore_reservation(user, log, restore_monthly=_same_billing_month(log, now))
     log.status = "released"
     log.reservation_expires_at = None
     log.credits = 0

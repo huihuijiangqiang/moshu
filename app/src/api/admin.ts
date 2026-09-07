@@ -1,4 +1,5 @@
 import { request } from './http'
+import type { BillingProduct } from './billing'
 
 export interface AdminOverview {
   users: number
@@ -17,6 +18,7 @@ export interface AdminUser {
   is_active: boolean
   quota_remaining: number
   quota_total: number
+  purchased_credits_remaining: number
   quota_resets_at: string | null
   created_at: string
 }
@@ -93,5 +95,10 @@ export const adminApi = {
     request<AdminUser>(`/admin/users/${id}`, { method: 'PATCH', body: JSON.stringify(patch) }),
   settings: () => request<AdminSettings>('/admin/settings'),
   updateSettings: (patch: AdminSettingsPatch) =>
-    request<AdminSettings>('/admin/settings', { method: 'PATCH', body: JSON.stringify(patch) })
+    request<AdminSettings>('/admin/settings', { method: 'PATCH', body: JSON.stringify(patch) }),
+  billingProducts: () => request<BillingProduct[]>('/billing/admin/products'),
+  createBillingProduct: (payload: Omit<BillingProduct, 'id' | 'is_active' | 'sort_order'> & { is_active?: boolean; sort_order?: number }) =>
+    request<BillingProduct>('/billing/admin/products', { method: 'POST', body: JSON.stringify(payload) }),
+  updateBillingProduct: (id: string, patch: Partial<Pick<BillingProduct, 'name' | 'description' | 'plan' | 'amount_minor' | 'credits' | 'billing_interval' | 'sort_order' | 'is_active'>>) =>
+    request<BillingProduct>(`/billing/admin/products/${id}`, { method: 'PATCH', body: JSON.stringify(patch) })
 }

@@ -71,6 +71,8 @@ async def usage_summary(
         "plan_label": PLAN_LABELS.get(current.plan, current.plan),
         "remaining": current.quota_remaining,
         "quota": current.quota_total,
+        "purchased_remaining": current.purchased_credits_remaining,
+        "available": current.quota_remaining + current.purchased_credits_remaining,
         "spent": sum(row.credits for row in rows),
         "period_start": period_start.isoformat(),
         "resets_at": current.quota_resets_at.isoformat() if current.quota_resets_at else None,

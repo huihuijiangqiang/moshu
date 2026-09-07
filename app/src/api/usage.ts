@@ -36,6 +36,8 @@ export interface UsageSummary {
   plan_label: string
   remaining: number
   quota: number
+  purchased_remaining: number
+  available: number
   spent: number
   period_start: string
   resets_at: string | null
@@ -54,7 +56,7 @@ const mockUsageApi = {
     await delay(120)
     return {
       plan: 'author', plan_label: '作者版', remaining: 4980, quota: 5000, spent: 20,
-      period_start: new Date().toISOString(), resets_at: null,
+      period_start: new Date().toISOString(), resets_at: null, purchased_remaining: 0, available: 4980,
       rates: { basic_input: 1, basic_output: 2, advanced_input: 4, advanced_output: 8, cached_percent: 20 },
       items: [], daily: [], recent: []
     }

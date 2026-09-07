@@ -20,6 +20,7 @@ except ModuleNotFoundError:  # pragma: no cover - production dependencies includ
 from api import (
     admin,
     auth,
+    billing,
     chapters,
     codex,
     consistency,
@@ -153,6 +154,7 @@ app.include_router(model_configs.router, prefix="/account", tags=["模型配置"
 app.include_router(admin.router, prefix="/admin", tags=["管理"])
 app.include_router(orgs.router, prefix="/orgs", tags=["组织"])
 app.include_router(usage.router, prefix="/usage", tags=["用量"])
+app.include_router(billing.router, prefix="/billing", tags=["收费与积分"])
 app.include_router(styles.router, tags=["风格档"])
 app.include_router(provenance.router, tags=["AI 来源"])
 app.include_router(text_replacement.router, prefix="/projects", tags=["全书校订"])

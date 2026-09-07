@@ -10,6 +10,8 @@ const sample: UsageSummary = {
   plan_label: '作者版',
   remaining: 987,
   quota: 1000,
+  purchased_remaining: 0,
+  available: 987,
   spent: 13,
   period_start: '2026-09-01T00:00:00+00:00',
   resets_at: '2026-10-01T00:00:00+00:00',

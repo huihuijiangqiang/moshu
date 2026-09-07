@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
 import { adminApi, type AdminOverview, type AdminSettings, type AdminUser, type PlatformUsage } from '@/api/admin'
+import type { BillingProduct } from '@/api/billing'
 import { getSessionUser } from '@/api/session'
 import { useShellStore } from '@/stores/shell'
 
@@ -9,11 +10,13 @@ const overview = ref<AdminOverview | null>(null)
 const users = ref<AdminUser[]>([])
 const settings = ref<AdminSettings | null>(null)
 const costs = ref<PlatformUsage | null>(null)
-const tab = ref<'users' | 'costs' | 'settings'>('users')
+const products = ref<BillingProduct[]>([])
+const tab = ref<'users' | 'costs' | 'billing' | 'settings'>('users')
 const search = ref('')
 const loading = ref(true)
 const message = ref('')
 const currentUser = getSessionUser()
+const productDraft = ref({ code: '', name: '', amount_minor: 0, credits: 0, description: '' })
 const canPromote = computed(() => currentUser?.system_role === 'super_admin')
 const number = new Intl.NumberFormat('zh-CN')
 const tokenSegments = computed(() => {
@@ -32,13 +35,41 @@ async function load() {
   loading.value = true
   message.value = ''
   try {
-    ;[overview.value, users.value, settings.value, costs.value] = await Promise.all([
-      adminApi.overview(), adminApi.users(search.value), adminApi.settings(), adminApi.platformUsage()
+    ;[overview.value, users.value, settings.value, costs.value, products.value] = await Promise.all([
+      adminApi.overview(), adminApi.users(search.value), adminApi.settings(), adminApi.platformUsage(), adminApi.billingProducts()
     ])
   } catch (error) {
     message.value = error instanceof Error ? error.message : '管理数据加载失败'
   } finally {
     loading.value = false
+  }
+}
+
+async function createProduct() {
+  if (!productDraft.value.code.trim() || !productDraft.value.name.trim() || productDraft.value.amount_minor < 0 || productDraft.value.credits <= 0) {
+    message.value = '请填写商品编码、名称、金额和正数积分'
+    return
+  }
+  try {
+    const product = await adminApi.createBillingProduct({
+      code: productDraft.value.code.trim(), name: productDraft.value.name.trim(), description: productDraft.value.description || null,
+      plan: null, currency: 'CNY', amount_minor: productDraft.value.amount_minor, credits: productDraft.value.credits, billing_interval: 'one_time'
+    })
+    products.value.push(product)
+    productDraft.value = { code: '', name: '', amount_minor: 0, credits: 0, description: '' }
+    message.value = '充值商品已发布'
+  } catch (error) {
+    message.value = error instanceof Error ? error.message : '商品保存失败'
+  }
+}
+
+async function toggleProduct(product: BillingProduct) {
+  try {
+    const updated = await adminApi.updateBillingProduct(product.id, { is_active: !product.is_active })
+    Object.assign(product, updated)
+    message.value = updated.is_active ? `已启用 ${updated.name}` : `已下架 ${updated.name}`
+  } catch (error) {
+    message.value = error instanceof Error ? error.message : '商品状态保存失败'
   }
 }
 
@@ -103,6 +134,7 @@ onMounted(() => {
     <div class="admin-tabs" role="tablist" aria-label="管理视图">
       <button type="button" :aria-selected="tab === 'users'" @click="tab = 'users'">用户与权限</button>
       <button type="button" :aria-selected="tab === 'costs'" @click="tab = 'costs'">模型成本</button>
+      <button type="button" :aria-selected="tab === 'billing'" @click="tab = 'billing'">收费商品</button>
       <button type="button" :aria-selected="tab === 'settings'" @click="tab = 'settings'">运行配置</button>
       <span v-if="message" class="admin-message">{{ message }}</span>
     </div>
@@ -114,7 +146,7 @@ onMounted(() => {
       </form>
       <div class="admin-table-wrap">
         <table class="admin-table">
-          <thead><tr><th>账号</th><th>系统角色</th><th>套餐</th><th>剩余额度</th><th>总额度</th><th>状态</th><th /></tr></thead>
+          <thead><tr><th>账号</th><th>系统角色</th><th>套餐</th><th>剩余额度</th><th>总额度</th><th>充值积分</th><th>状态</th><th /></tr></thead>
           <tbody>
             <tr v-for="user in users" :key="user.id">
               <td><strong>{{ user.name }}</strong><small>{{ user.email ?? user.id }}</small></td>
@@ -126,6 +158,7 @@ onMounted(() => {
               <td><select v-model="user.plan"><option value="free">免费</option><option value="author">作者</option><option value="studio">工作室</option></select></td>
               <td><input v-model.number="user.quota_remaining" type="number" min="0"></td>
               <td><input v-model.number="user.quota_total" type="number" min="0"></td>
+              <td>{{ user.purchased_credits_remaining.toLocaleString() }}</td>
               <td><label class="admin-toggle"><input v-model="user.is_active" type="checkbox"><span>{{ user.is_active ? '启用' : '停用' }}</span></label></td>
               <td><button class="wk-btn wk-btn-xs" type="button" @click="saveUser(user)">保存</button></td>
             </tr>
@@ -200,6 +233,31 @@ onMounted(() => {
       </section>
     </main>
 
+    <main v-else-if="!loading && tab === 'billing'" class="admin-content admin-billing">
+      <section class="billing-intro">
+        <div><span class="eyebrow">MAINLAND PAYMENTS</span><h2>充值商品</h2><p>商品只定义金额与权益。微信支付、支付宝的商户密钥和回调验签由服务端环境配置，未配置时不会接受到账回调。</p></div>
+        <div class="billing-provider-state"><span>微信支付 / 支付宝</span><strong>待配置商户凭证</strong></div>
+      </section>
+      <section class="billing-create">
+        <h2>发布一次性积分包</h2>
+        <div class="billing-form">
+          <label><span>商品编码</span><input v-model="productDraft.code" placeholder="author-100k"></label>
+          <label><span>商品名称</span><input v-model="productDraft.name" placeholder="作者积分包"></label>
+          <label><span>金额（分）</span><input v-model.number="productDraft.amount_minor" type="number" min="0"></label>
+          <label><span>赠送积分</span><input v-model.number="productDraft.credits" type="number" min="1"></label>
+          <label class="billing-wide"><span>说明</span><input v-model="productDraft.description" placeholder="一次性充值，永久有效"></label>
+          <button class="wk-btn" data-primary="true" type="button" @click="createProduct">发布商品</button>
+        </div>
+      </section>
+      <section>
+        <h2>已配置商品</h2>
+        <div class="admin-table-wrap"><table class="admin-table billing-table"><thead><tr><th>商品</th><th>金额</th><th>积分</th><th>周期</th><th>状态</th><th /></tr></thead><tbody>
+          <tr v-for="product in products" :key="product.id"><td><strong>{{ product.name }}</strong><small>{{ product.code }}{{ product.description ? ` · ${product.description}` : '' }}</small></td><td>¥{{ (product.amount_minor / 100).toFixed(2) }}</td><td>{{ product.credits.toLocaleString() }}</td><td>{{ product.billing_interval === 'one_time' ? '一次性' : product.billing_interval }}</td><td>{{ product.is_active ? '销售中' : '已下架' }}</td><td><button class="wk-btn wk-btn-xs" type="button" @click="toggleProduct(product)">{{ product.is_active ? '下架' : '启用' }}</button></td></tr>
+          <tr v-if="!products.length"><td colspan="6" class="admin-empty">还没有充值商品</td></tr>
+        </tbody></table></div>
+      </section>
+    </main>
+
     <main v-else-if="!loading && tab === 'settings' && settings" class="admin-content admin-settings">
       <section>
         <h2>账号默认值</h2>
@@ -259,6 +317,19 @@ onMounted(() => {
 .admin-definition div { min-height: 44px; display: grid; grid-template-columns: 130px 1fr; align-items: center; border-bottom: var(--hair) solid var(--line); }
 .admin-definition dt { color: var(--ink-3); }.admin-definition dd { margin: 0; font-family: var(--font-mono); }
 .admin-settings p { color: var(--ink-3); line-height: 1.7; }.admin-loading { padding: 40px 28px; color: var(--ink-3); }
+.admin-billing { display: grid; gap: 34px; }
+.billing-intro { display: flex; justify-content: space-between; gap: 32px; padding-bottom: 26px; border-bottom: var(--hair) solid var(--line-strong); }
+.billing-intro h2, .billing-create h2, .admin-billing > section > h2 { margin: 8px 0 10px; font-size: 17px; }
+.billing-intro p { max-width: 700px; margin: 0; color: var(--ink-3); line-height: 1.7; }
+.eyebrow { color: var(--ink-3); font: 700 10px/1 var(--font-mono); }
+.billing-provider-state { min-width: 190px; align-self: end; padding-left: 20px; border-left: var(--hair) solid var(--line-strong); }
+.billing-provider-state span, .billing-provider-state strong { display: block; }
+.billing-provider-state span { color: var(--ink-3); font-size: 12px; }.billing-provider-state strong { margin-top: 7px; color: var(--alert-ink); font-size: 13px; }
+.billing-form { display: grid; grid-template-columns: repeat(4, minmax(120px, 1fr)); gap: 12px; align-items: end; }
+.billing-form label { display: grid; gap: 6px; color: var(--ink-3); font-size: 12px; }
+.billing-form input { height: 34px; min-width: 0; border: var(--hair) solid var(--line-strong); padding: 0 9px; background: var(--paper); color: var(--ink); }
+.billing-form .billing-wide { grid-column: span 2; }.billing-form button { height: 34px; }
+.billing-table { min-width: 760px; }.billing-table td:not(:first-child) { font-family: var(--font-mono); }
 .admin-costs { display: grid; gap: 34px; }
 .cost-flow { display: grid; grid-template-columns: 180px minmax(260px, 1fr); column-gap: 30px; align-items: center; padding-bottom: 28px; border-bottom: var(--hair) solid var(--line-strong); }
 .cost-period { grid-row: span 2; display: grid; grid-template-columns: auto 1fr; align-items: baseline; }
@@ -279,7 +350,7 @@ onMounted(() => {
 .cost-recent { min-width: 980px; }.cost-recent code { color: var(--ink-2); background: transparent; }
 .admin-empty { height: 80px; text-align: center; color: var(--ink-3); font-family: inherit !important; }
 .cost-empty { grid-column: 2; margin: 12px 0 0; color: var(--ink-3); font-size: var(--fs-sm); }
-@media (max-width: 900px) { .admin-summary { grid-template-columns: repeat(2, 1fr); }.admin-settings { grid-template-columns: 1fr; gap: 36px; } }
+@media (max-width: 900px) { .admin-summary { grid-template-columns: repeat(2, 1fr); }.admin-settings { grid-template-columns: 1fr; gap: 36px; }.billing-form { grid-template-columns: repeat(2, minmax(120px, 1fr)); }.billing-intro { flex-direction: column; }.billing-provider-state { border-left: 0; border-top: var(--hair) solid var(--line); padding: 16px 0 0; } }
 @media (max-width: 680px) { .cost-flow { grid-template-columns: 1fr; row-gap: 18px; }.cost-period { grid-row: auto; }.admin-tabs { overflow-x: auto; }.admin-tabs button { flex: 0 0 auto; } }
 @media (prefers-reduced-motion: reduce) { .token-ruler span { transition: none; } }
 </style>

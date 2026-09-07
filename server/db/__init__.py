@@ -28,7 +28,17 @@ from db.models_model_config import UserModelConfig
 from db.models_org import ChapterAssignment, Org, OrgMember
 from db.models_review import ChapterReviewRound, ReviewComment
 from db.models_timeline import TimelineEntry
-from db.models_usage import GenerationDraft, GenerationRun, RatioReport, StyleProfile, UsageLog
+from db.models_usage import (
+    BillingOrder,
+    BillingProduct,
+    BillingWebhookEvent,
+    CreditGrant,
+    GenerationDraft,
+    GenerationRun,
+    RatioReport,
+    StyleProfile,
+    UsageLog,
+)
 from db.models_writing import ProjectDailyWriting
 
 __all__ = [
@@ -75,6 +85,10 @@ __all__ = [
     "GenerationRun",
     "GenerationDraft",
     "UsageLog",
+    "BillingProduct",
+    "BillingOrder",
+    "CreditGrant",
+    "BillingWebhookEvent",
     "RatioReport",
     "ProjectDailyWriting",
     # Org

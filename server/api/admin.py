@@ -37,6 +37,7 @@ class AdminUserOut(BaseModel):
     is_active: bool
     quota_remaining: int
     quota_total: int
+    purchased_credits_remaining: int
     quota_resets_at: str | None
     created_at: str
 
@@ -82,6 +83,7 @@ def _user_out(user: User) -> AdminUserOut:
         is_active=user.is_active,
         quota_remaining=user.quota_remaining,
         quota_total=user.quota_total,
+        purchased_credits_remaining=user.purchased_credits_remaining,
         quota_resets_at=user.quota_resets_at.isoformat() if user.quota_resets_at else None,
         created_at=user.created_at.isoformat(),
     )

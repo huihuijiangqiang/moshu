@@ -1,14 +1,23 @@
 <script setup lang="ts">
-import { computed, onMounted } from 'vue'
+import { computed, onMounted, ref } from 'vue'
+import { billingApi, type BillingProduct, type BillingStatus } from '@/api/billing'
 import { useShellStore } from '@/stores/shell'
 import { useUsageStore } from '@/stores/usage'
 
 const shell = useShellStore()
 const usage = useUsageStore()
+const products = ref<BillingProduct[]>([])
+const billingStatus = ref<BillingStatus | null>(null)
+const billingLoading = ref(false)
 
 onMounted(() => {
   shell.setCrumb('用量与计费')
   void usage.load(true).catch(() => undefined)
+  billingLoading.value = true
+  void Promise.all([billingApi.products(), billingApi.status()]).then(([availableProducts, status]) => {
+    products.value = availableProducts
+    billingStatus.value = status
+  }).catch(() => undefined).finally(() => { billingLoading.value = false })
 })
 
 const data = computed(() => usage.summary)
@@ -53,8 +62,8 @@ function resetDate(value: string | null) {
         </div>
         <div class="balance-block">
           <span>当前可用</span>
-          <strong>{{ data.remaining.toLocaleString() }}</strong>
-          <small>/ {{ data.quota.toLocaleString() }} 积分</small>
+          <strong>{{ data.available.toLocaleString() }}</strong>
+          <small>月度 {{ data.remaining.toLocaleString() }} · 充值 {{ data.purchased_remaining.toLocaleString() }}</small>
         </div>
       </header>
 
@@ -108,6 +117,19 @@ function resetDate(value: string | null) {
               <div><dt>缓存输入</dt><dd>按输入价 {{ data.rates.cached_percent }}% 折算</dd></div>
             </dl>
             <p>下次额度重置：{{ resetDate(data.resets_at) }}</p>
+          </section>
+
+          <section class="recharge-section">
+            <div class="section-line"><h2>充值积分</h2><span>人民币 / 一次性</span></div>
+            <div v-if="billingLoading" class="billing-note">正在读取商品…</div>
+            <template v-else-if="products.length">
+              <div v-for="product in products" :key="product.id" class="product-row">
+                <div><strong>{{ product.name }}</strong><small>{{ product.credits.toLocaleString() }} 积分</small></div>
+                <b>¥{{ (product.amount_minor / 100).toFixed(2) }}</b>
+              </div>
+              <p class="billing-note">支付渠道：{{ billingStatus?.providers.wechat.configured ? '微信支付' : '' }}{{ billingStatus?.providers.wechat.configured && billingStatus?.providers.alipay.configured ? '、' : '' }}{{ billingStatus?.providers.alipay.configured ? '支付宝' : '' }}{{ !billingStatus?.providers.wechat.configured && !billingStatus?.providers.alipay.configured ? '待管理员配置' : '' }}</p>
+            </template>
+            <p v-else class="billing-note">充值商品尚未发布。管理员配置微信支付或支付宝后，这里会显示可购买的积分包。</p>
           </section>
         </aside>
       </main>
@@ -163,6 +185,13 @@ function resetDate(value: string | null) {
 .pricing-section dt { color: var(--ink-2); }
 .pricing-section dd { margin: 0; font: 11px/1 var(--font-mono); }
 .pricing-section p { margin: 14px 0 0; color: var(--ink-3); font-size: 11px; }
+.recharge-section { padding-top: 2px; }
+.recharge-section .section-line { margin-bottom: 2px; }
+.product-row { min-height: 52px; display: flex; align-items: center; justify-content: space-between; gap: 16px; border-bottom: var(--hair) solid var(--line); }
+.product-row strong, .product-row small { display: block; }
+.product-row small { margin-top: 3px; color: var(--ink-3); font: 10px/1 var(--font-mono); }
+.product-row b { font: 700 13px/1 var(--font-mono); }
+.billing-note { margin: 12px 0 0; color: var(--ink-3); font-size: 11px; line-height: 1.6; }
 button:focus-visible { outline: 2px solid var(--primary); outline-offset: 2px; }
 @media (max-width: 860px) {
   .usage-statement { align-items: flex-start; flex-direction: column; }
