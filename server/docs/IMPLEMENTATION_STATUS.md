@@ -7,7 +7,7 @@
 
 **关键事实**：
 - ✅ 43 张表完整 Alembic baseline，增量迁移已到 `024_project_daily_writing`
-- ✅ 1213 个单元/功能测试通过（SQLite in-memory，mock embedding/LLM）
+- ✅ 1218 个单元/功能测试通过（SQLite in-memory，mock embedding/LLM）
 - ✅ 前端 151 个测试、TypeScript 类型检查和生产构建通过
 - ✅ 前端生产与开发依赖均通过 `npm audit`，当前为 0 个已知漏洞（2026-09-07）
 - ✅ 37 个集成测试已在 Docker 真实 PostgreSQL + pgvector 环境通过（2026-09-07）
@@ -32,6 +32,7 @@
 - ✅ 多剧情线时间板已接通真实 API，支持故事/章节顺序对照、支线泳道、待校对事件和章节跳转
 - ✅ 作者计划事件支持新建、编辑、软删除、章节绑定、公历时间与幻想历序号，并与抽取事件合并展示
 - ✅ 确定性 Guard 告警已接入有依据的 LLM 二次复核；失败保留规则告警且不自动替作者判误报
+- ✅ 增量影响集对已解析归属/地点区间执行保守 SQL 预过滤，并以规则族遥测和内存安全门兜底
 - ✅ Codex embedding 回填具有持久任务状态、失败次数、最后错误、耗尽标记与重试入口
 - ✅ 设定库页面已接通真实新建、编辑、忽略候选和安全删除；人物档案与通用关键事实分表单维护
 - ✅ 设定状态沿革已接通章节锚点、作者增改删、抽取事实合并、乐观锁、项目隔离和生成时的未来状态防泄露
@@ -516,9 +517,9 @@ PostgreSQL/pgvector 检索必须在真实部署上单独压测；该脚本只覆
 
 ### 5. 测试覆盖
 
-#### 单元测试（1213 passed，SQLite in-memory，mock providers）
+#### 单元测试（1218 passed，SQLite in-memory，mock providers）
 
-**全量测试结果**：1213 passed, 37 skipped（未设置集成测试 URL 时）；前端 151 passed
+**全量测试结果**：1218 passed, 37 skipped（未设置集成测试 URL 时）；前端 151 passed
 
 #### 前端依赖安全审计
 
@@ -901,8 +902,8 @@ cd server
 - `server/tasks/consistency.py` - 一致性任务
 - `server/tasks/codex.py` - Codex 回填任务
 
-### 测试（1213 passed；另有 37 个真实 PostgreSQL 测试通过）
-- `server/tests/` - 单元/功能测试（1213 passed）
+### 测试（1218 passed；另有 37 个真实 PostgreSQL 测试通过）
+- `server/tests/` - 单元/功能测试（1218 passed）
 - `app/src/**/*.spec.ts` - 前端测试（151 passed）
 - `server/tests/integration/` - 集成测试（37 passed，需设置真实 PostgreSQL URL）
 
@@ -913,7 +914,7 @@ cd server
 
 ## 总结
 
-墨枢一致性后端已完成核心数据模型、服务层、API 端点和异步任务定义，1213 个单元/功能
+墨枢一致性后端已完成核心数据模型、服务层、API 端点和异步任务定义，1218 个单元/功能
 测试在 SQLite in-memory + mock providers 环境下通过，另有 37 个集成测试在真实
 PostgreSQL + pgvector 环境通过。真实认证、可吊销会话、管理员、工作室 RBAC、作品创建、
 作品归档、分卷与章节生命周期、虚拟化章节导航、写作台新建章节、章纲、章节 POV、人物出场轨迹、逐章设定状态沿革、可编辑设定关系、资料与正文并排、故事/章节双序时间板、作者人工计划事件、正文版本历史与恢复、AI 多候选草稿及逐段审阅、移动端只读与私有速记、全书查找替换、章节审稿与段落批注、工作室章节任务与产量看板、全量导出、非覆盖备份恢复、风格指纹、AI 来源账本、可定位句式校样、拆书分析、作者生成用量与平台模型成本台账已经接通，前端 151 个测试与生产构建通过。
