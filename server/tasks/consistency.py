@@ -859,6 +859,7 @@ async def _scan_rules_async(task_id: str, run_id: int):
                 "run_completed": completed,
                 "issues_found": len(issue_ids),
                 "claims_scanned": scanner.last_scan_claim_count,
+                "claims_pruned": scanner.last_scan_pruned_count,
                 "scan_scope": scanner.last_scan_scope,
             }
         except StaleRevisionError as exc:
@@ -903,6 +904,7 @@ async def _rescan_temporal_dependents_async(task_id: str, run_id: int):
             "run_id": run_id,
             "issues_found": len(issue_ids),
             "claims_scanned": scanner.last_scan_claim_count,
+            "claims_pruned": scanner.last_scan_pruned_count,
             "scan_scope": scanner.last_scan_scope,
         }
 

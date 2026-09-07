@@ -356,6 +356,302 @@ async def test_temporal_dependency_impact_set_follows_downstream_chain(
     }
 
 
+async def test_impact_scan_prunes_only_disjoint_ownership_intervals(
+    scanner, async_db_session, scan_context, add_claim, add_entry
+):
+    await add_entry("item_deed", kind="item")
+    await add_claim(
+        subject_text="沈青禾",
+        predicate="owns",
+        object_type="entity",
+        object_value="地契",
+        object_entry_id="item_deed",
+        timeline_id="main",
+        story_order=10,
+        valid_from_order=10,
+        valid_to_order=20,
+        fingerprint="fp_changed_ownership",
+    )
+    await add_claim(
+        chapter_id="ch_b",
+        subject_text="周砚",
+        predicate="owns",
+        object_type="entity",
+        object_value="地契",
+        object_entry_id="item_deed",
+        timeline_id="main",
+        story_order=15,
+        valid_from_order=15,
+        valid_to_order=25,
+        fingerprint="fp_overlapping_ownership",
+    )
+    await add_claim(
+        chapter_id="ch_b",
+        subject_text="里正",
+        predicate="owns",
+        object_type="entity",
+        object_value="地契",
+        object_entry_id="item_deed",
+        timeline_id="main",
+        story_order=30,
+        valid_from_order=30,
+        valid_to_order=40,
+        fingerprint="fp_disjoint_ownership",
+    )
+
+    claims = await scanner._load_impacted_claims(
+        async_db_session, project_id="proj_a", chapter_id="ch_a"
+    )
+
+    assert {claim.fingerprint for claim in claims} == {
+        "fp_changed_ownership",
+        "fp_overlapping_ownership",
+    }
+    assert scanner.last_scan_scope == "impact"
+    assert scanner.last_scan_pruned_count == 1
+
+
+async def test_impact_scan_prunes_disjoint_locations_but_keeps_unknown_time(
+    scanner, async_db_session, scan_context, add_claim
+):
+    await add_claim(
+        subject_text="沈青禾",
+        predicate="located_at",
+        object_type="location",
+        object_value="沈家村",
+        timeline_id="main",
+        story_order=10,
+        valid_from_order=10,
+        valid_to_order=20,
+        fingerprint="fp_changed_location",
+    )
+    await add_claim(
+        chapter_id="ch_b",
+        subject_text="沈青禾",
+        predicate="located_at",
+        object_type="location",
+        object_value="县城",
+        timeline_id="main",
+        story_order=15,
+        fingerprint="fp_overlapping_location",
+    )
+    await add_claim(
+        chapter_id="ch_b",
+        subject_text="沈青禾",
+        predicate="located_at",
+        object_type="location",
+        object_value="府城",
+        timeline_id="main",
+        story_order=30,
+        fingerprint="fp_disjoint_location",
+    )
+    await add_claim(
+        chapter_id="ch_b",
+        subject_text="沈青禾",
+        predicate="located_at",
+        object_type="location",
+        object_value="未知地点",
+        timeline_id="main",
+        story_order=None,
+        fingerprint="fp_unknown_location_time",
+    )
+
+    claims = await scanner._load_impacted_claims(
+        async_db_session, project_id="proj_a", chapter_id="ch_a"
+    )
+
+    assert {claim.fingerprint for claim in claims} == {
+        "fp_changed_location",
+        "fp_overlapping_location",
+        "fp_unknown_location_time",
+    }
+    assert scanner.last_scan_pruned_count == 1
+
+
+async def test_open_location_interval_does_not_imply_staying_forever(
+    scanner, async_db_session, scan_context, add_claim
+):
+    await add_claim(
+        subject_text="沈青禾",
+        predicate="located_at",
+        object_type="location",
+        object_value="沈家村",
+        timeline_id="main",
+        story_order=10,
+        valid_from_order=10,
+        valid_to_order=None,
+        fingerprint="fp_open_location_source",
+    )
+    await add_claim(
+        chapter_id="ch_b",
+        subject_text="沈青禾",
+        predicate="located_at",
+        object_type="location",
+        object_value="县城",
+        timeline_id="main",
+        story_order=30,
+        valid_from_order=30,
+        valid_to_order=None,
+        fingerprint="fp_later_location",
+    )
+
+    claims = await scanner._load_impacted_claims(
+        async_db_session, project_id="proj_a", chapter_id="ch_a"
+    )
+
+    assert [claim.fingerprint for claim in claims] == ["fp_open_location_source"]
+    assert scanner.last_scan_pruned_count == 1
+
+
+async def test_superseded_interval_keeps_old_overlap_in_impact_set(
+    scanner, async_db_session, scan_context, add_claim, add_entry
+):
+    await add_entry("item_token", kind="item")
+    await add_claim(
+        status="superseded",
+        subject_text="旧主人",
+        predicate="owns",
+        object_type="entity",
+        object_value="令牌",
+        object_entry_id="item_token",
+        timeline_id="main",
+        story_order=10,
+        valid_from_order=10,
+        valid_to_order=20,
+        fingerprint="fp_old_interval",
+    )
+    await add_claim(
+        subject_text="新主人",
+        predicate="owns",
+        object_type="entity",
+        object_value="令牌",
+        object_entry_id="item_token",
+        timeline_id="main",
+        story_order=40,
+        valid_from_order=40,
+        valid_to_order=50,
+        fingerprint="fp_new_interval",
+    )
+    await add_claim(
+        chapter_id="ch_b",
+        subject_text="冲突主人",
+        predicate="owns",
+        object_type="entity",
+        object_value="令牌",
+        object_entry_id="item_token",
+        timeline_id="main",
+        story_order=15,
+        valid_from_order=15,
+        valid_to_order=18,
+        fingerprint="fp_old_overlap",
+    )
+
+    claims = await scanner._load_impacted_claims(
+        async_db_session, project_id="proj_a", chapter_id="ch_a"
+    )
+
+    assert {claim.fingerprint for claim in claims} == {"fp_new_interval", "fp_old_overlap"}
+    assert scanner.last_scan_pruned_count == 0
+
+
+async def test_interval_pruning_keeps_unknown_and_malformed_boundaries(
+    scanner, scan_context, add_claim
+):
+    unknown_source = await add_claim(
+        subject_text="未知行踪者",
+        predicate="located_at",
+        object_type="location",
+        object_value="旧宅",
+        timeline_id="main",
+        story_order=None,
+        valid_to_order=100,
+        fingerprint="fp_unknown_source",
+    )
+    known_candidate = await add_claim(
+        chapter_id="ch_b",
+        subject_text="未知行踪者",
+        predicate="located_at",
+        object_type="location",
+        object_value="新宅",
+        timeline_id="main",
+        story_order=50,
+        fingerprint="fp_known_candidate",
+    )
+    malformed = await add_claim(
+        chapter_id="ch_b",
+        subject_text="未知行踪者",
+        predicate="located_at",
+        object_type="location",
+        object_value="驿站",
+        timeline_id="main",
+        story_order=80,
+        valid_from_order=80,
+        valid_to_order=70,
+        fingerprint="fp_malformed_interval",
+    )
+
+    assert scanner._intervals_may_conflict(
+        unknown_source, known_candidate, predicate="located_at"
+    )
+    assert scanner._intervals_may_conflict(
+        known_candidate, malformed, predicate="located_at"
+    )
+
+
+async def test_same_identity_on_another_timeline_is_safely_pruned(
+    scanner, async_db_session, scan_context, add_claim, add_entry
+):
+    await add_entry("item_map", kind="item")
+    await add_claim(
+        subject_text="沈青禾",
+        predicate="owns",
+        object_type="entity",
+        object_value="舆图",
+        object_entry_id="item_map",
+        timeline_id="main",
+        story_order=10,
+        fingerprint="fp_main_timeline",
+    )
+    await add_claim(
+        chapter_id="ch_b",
+        subject_text="镜中沈青禾",
+        predicate="owns",
+        object_type="entity",
+        object_value="舆图",
+        object_entry_id="item_map",
+        timeline_id="mirror",
+        story_order=10,
+        fingerprint="fp_other_timeline",
+    )
+
+    claims = await scanner._load_impacted_claims(
+        async_db_session, project_id="proj_a", chapter_id="ch_a"
+    )
+
+    assert [claim.fingerprint for claim in claims] == ["fp_main_timeline"]
+    assert scanner.last_scan_pruned_count == 1
+
+
+async def test_project_fallback_resets_previous_pruning_telemetry(
+    scanner, async_db_session, scan_context, add_claim
+):
+    scanner.last_scan_pruned_count = 99
+    await add_claim(
+        chapter_id="ch_b",
+        subject_text="只有远端事实",
+        predicate="alive",
+        object_value="true",
+        fingerprint="fp_fallback_reset",
+    )
+
+    await scanner._load_impacted_claims(
+        async_db_session, project_id="proj_a", chapter_id="ch_a"
+    )
+
+    assert scanner.last_scan_scope == "project"
+    assert scanner.last_scan_pruned_count == 0
+
+
 # --- 规则 1：生死冲突 ----------------------------------------------------------
 
 

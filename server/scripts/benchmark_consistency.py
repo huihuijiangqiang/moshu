@@ -4,6 +4,7 @@ This benchmark intentionally avoids the model gateway and production data.  It
 measures the CPU/memory part that is safe to compare across machines:
 
 * RuleScanner's three deterministic rules over accepted claims;
+* interval-aware impact pruning for ownership claims sharing one hot key;
 * HTML-to-text conversion and token counting used by ContextAssembler.
 
 The output is JSON so CI or a spreadsheet can consume it.  Database retrieval,
@@ -147,6 +148,70 @@ async def measure_rules(claims: list[BenchClaim], repeats: int) -> dict[str, Any
     }
 
 
+def build_interval_impact_claims(target_words: int) -> tuple[list[BenchClaim], list[BenchClaim]]:
+    """Build one changed interval plus a long history for the same owned item."""
+    candidate_count = max(100, target_words // 20)
+    midpoint = candidate_count // 2
+    source_start = float(midpoint * 10)
+    source = BenchClaim(
+        1,
+        "当前持有人",
+        "owns",
+        "entity",
+        "共享地契",
+        source_start,
+        object_entry_id="shared-deed",
+        valid_from_order=source_start,
+        valid_to_order=source_start + 8,
+        chapter_id="changed-chapter",
+    )
+    claims = [source]
+    for index in range(candidate_count):
+        start = float(index * 10)
+        timeline_id = "mirror" if index % 10 == 0 else "main"
+        story_order = None if index % 20 == 2 else start
+        valid_to_order = None if index % 10 == 1 else start + 4
+        claims.append(
+            BenchClaim(
+                index + 2,
+                f"历史持有人{index:06d}",
+                "owns",
+                "entity",
+                "共享地契",
+                story_order,
+                timeline_id=timeline_id,
+                object_entry_id="shared-deed",
+                valid_from_order=story_order,
+                valid_to_order=valid_to_order,
+                chapter_id=f"history-chapter-{index % 270}",
+            )
+        )
+    return claims, [source]
+
+
+def measure_interval_pruning(target_words: int, repeats: int) -> dict[str, Any]:
+    claims, sources = build_interval_impact_claims(target_words)
+    samples: list[float] = []
+    kept: list[BenchClaim] = []
+    for _ in range(repeats):
+        started = time.perf_counter()
+        kept = RuleScanner._prune_disjoint_temporal_claims(
+            claims,
+            sources,
+            chapter_id="changed-chapter",
+        )
+        samples.append((time.perf_counter() - started) * 1000)
+    return {
+        "candidates": len(claims),
+        "kept": len(kept),
+        "pruned": len(claims) - len(kept),
+        "elapsed_ms": {
+            "median": round(statistics.median(samples), 3),
+            "p95": round(sorted(samples)[max(0, int(len(samples) * 0.95) - 1)], 3),
+        },
+    }
+
+
 def measure_context(target_words: int, repeats: int) -> dict[str, Any]:
     paragraph = "这是用于上下文装配基准的正文片段，包含稳定的中文字符。"
     html = "".join(f"<p>{paragraph}</p>" for _ in range(max(1, target_words // 25)))
@@ -180,13 +245,14 @@ async def main() -> None:
     if args.repeats < 1:
         parser.error("--repeats must be positive")
     report = {
-        "benchmark": "moshu-consistency-cpu-v1",
+        "benchmark": "moshu-consistency-cpu-v2",
         "repeats": args.repeats,
         "results": [],
         "limitations": [
             "不包含正文 claim 抽取、摘要、embedding、LLM 仲裁或网络耗时",
             "不包含 PostgreSQL/pgvector 查询耗时；需在真实数据库上另行压测",
             "RuleScanner 此处测量确定性规则 CPU 路径，不写入 GuardIssue",
+            "区间裁剪测量内存中候选过滤，不包含 PostgreSQL 读取候选的耗时",
         ],
     }
     for size in args.sizes:
@@ -197,6 +263,7 @@ async def main() -> None:
             {
                 "target_words": size,
                 "rule_scanner": await measure_rules(claims, args.repeats),
+                "interval_impact_pruning": measure_interval_pruning(size, args.repeats),
                 "context_text_tokenization": measure_context(size, args.repeats),
             }
         )

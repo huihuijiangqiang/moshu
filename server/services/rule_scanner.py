@@ -76,7 +76,107 @@ class RuleScanner:
     def __init__(self, rule_version: str = "v1.0"):
         self.rule_version = rule_version
         self.last_scan_claim_count = 0
+        self.last_scan_pruned_count = 0
         self.last_scan_scope = "project"
+
+    @staticmethod
+    def _claim_start(claim: ConsistencyClaim):
+        return claim.valid_from_order if claim.valid_from_order is not None else claim.story_order
+
+    @classmethod
+    def _intervals_may_conflict(
+        cls,
+        source: ConsistencyClaim,
+        candidate: ConsistencyClaim,
+        *,
+        predicate: str,
+    ) -> bool:
+        """Return false only when the active rule cannot produce a conflict.
+
+        Unknown positions are deliberately retained. Ownership treats an earlier
+        open-ended state as active until replaced; location does not infer that a
+        character stayed somewhere forever, matching the rule implementations.
+        """
+        source_start = cls._claim_start(source)
+        candidate_start = cls._claim_start(candidate)
+        if source_start is None or candidate_start is None:
+            return True
+        if (
+            source.valid_to_order is not None
+            and source.valid_to_order < source_start
+        ) or (
+            candidate.valid_to_order is not None
+            and candidate.valid_to_order < candidate_start
+        ):
+            # Malformed derived intervals are retained for diagnosis instead of
+            # being silently optimized away.
+            return True
+        if source_start == candidate_start:
+            return True
+        earlier, later_start = (
+            (source, candidate_start)
+            if source_start < candidate_start
+            else (candidate, source_start)
+        )
+        if predicate == "owns" and earlier.valid_to_order is None:
+            return True
+        return earlier.valid_to_order is not None and earlier.valid_to_order > later_start
+
+    @classmethod
+    def _prune_disjoint_temporal_claims(
+        cls,
+        claims: list[ConsistencyClaim],
+        source_rows: list[ConsistencyClaim],
+        *,
+        chapter_id: str,
+    ) -> list[ConsistencyClaim]:
+        """Prune only disjoint ownership/location rows tied to a changed interval.
+
+        ``owns`` has an open-ended active interval, while ``located_at`` does not
+        infer that a character remains in one place after a later narration point.
+        The latter deliberately follows ``_check_location_conflicts``: only an
+        equal start or an explicit overlapping end can be a conflict. All other
+        rule families (life, knowledge, ability and uncertain time) are retained.
+        """
+        result: list[ConsistencyClaim] = []
+        for candidate in claims:
+            if candidate.chapter_id == chapter_id or candidate.predicate not in {"owns", "located_at"}:
+                result.append(candidate)
+                continue
+
+            if candidate.predicate == "owns":
+                candidate_key = candidate.object_entry_id
+                identity_sources = [
+                    source
+                    for source in source_rows
+                    if source.predicate == "owns"
+                    and candidate_key
+                    and source.object_entry_id == candidate_key
+                ]
+            else:
+                candidate_key = cls._subject_key(candidate)
+                identity_sources = [
+                    source
+                    for source in source_rows
+                    if source.predicate == "located_at"
+                    and cls._subject_key(source) == candidate_key
+                ]
+            relevant = [
+                source
+                for source in identity_sources
+                if source.timeline_id == candidate.timeline_id
+            ]
+
+            # A broad entity key may have loaded this row for another predicate;
+            # without any same-rule source identity, retaining it is safest. A
+            # matching identity on another timeline is provably isolated and is
+            # therefore omitted (``relevant`` is empty).
+            if not identity_sources or any(
+                cls._intervals_may_conflict(source, candidate, predicate=candidate.predicate)
+                for source in relevant
+            ):
+                result.append(candidate)
+        return result
 
     async def _load_impacted_claims(
         self,
@@ -166,6 +266,7 @@ class RuleScanner:
             key_count += len(temporal_dependency_ids)
         if not source_rows or key_count == 0 or key_count > MAX_IMPACT_KEYS:
             self.last_scan_scope = "project"
+            self.last_scan_pruned_count = 0
             query = select(ConsistencyClaim).where(
                 ConsistencyClaim.project_id == project_id,
                 ConsistencyClaim.status == "accepted",
@@ -201,7 +302,16 @@ class RuleScanner:
                 or_(*clauses),
             )
 
-        return list((await db.execute(query.order_by(ConsistencyClaim.id))).scalars().all())
+        claims = list((await db.execute(query.order_by(ConsistencyClaim.id))).scalars().all())
+        if self.last_scan_scope == "impact":
+            pruned = self._prune_disjoint_temporal_claims(
+                claims,
+                source_rows,
+                chapter_id=chapter_id,
+            )
+            self.last_scan_pruned_count = len(claims) - len(pruned)
+            return pruned
+        return claims
 
     def compute_issue_fingerprint(self, issue_type: str, identity_keys: list[str]) -> str:
         """按语义身份计算稳定指纹。
