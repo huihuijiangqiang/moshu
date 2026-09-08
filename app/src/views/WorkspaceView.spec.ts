@@ -8,6 +8,7 @@ import { useCodexStore } from '@/stores/codex'
 import { useProjectStore } from '@/stores/project'
 import { useShellStore } from '@/stores/shell'
 import { streamChapter } from '@/api/generation'
+import { scenesApi, type ChapterScene } from '@/api/scenes'
 
 vi.mock('@/api/generation', async () => {
   const actual = await vi.importActual<typeof import('@/api/generation')>('@/api/generation')
@@ -133,6 +134,54 @@ describe('mobile writing workspace', () => {
     )
     expect(router.currentRoute.value.query.autoGenerate).toBeUndefined()
     expect(router.currentRoute.value.query.chapter).toBeUndefined()
+    wrapper.unmount()
+  })
+
+  it('keeps scene context visible and links it back to planning and chapter guard', async () => {
+    Object.defineProperty(window, 'innerWidth', { configurable: true, value: 1200 })
+    const pinia = createPinia()
+    setActivePinia(pinia)
+    const router = createRouter({
+      history: createMemoryHistory(),
+      routes: [
+        { path: '/projects/:projectId/write', component: WorkspaceView },
+        { path: '/projects/:projectId/outline', component: { template: '<div />' } },
+        { path: '/projects/:projectId/guard', component: { template: '<div />' } }
+      ]
+    })
+    const scene: ChapterScene = {
+      id: 'scene-ch89-review', chapterId: 'ch89', order: 2,
+      goal: '拿到出城文书', obstacle: '校尉认出了印泥', turn: '校尉提出交换条件',
+      infoGain: '', emotionShift: '', hook: '', status: 'ready', rev: 1, outlineRev: 1,
+      createdAt: '2026-01-01T00:00:00Z', updatedAt: '2026-01-01T00:00:00Z'
+    }
+    vi.spyOn(scenesApi, 'list').mockResolvedValue([scene])
+    vi.spyOn(contentApi, 'getContextLayers').mockResolvedValue([])
+    vi.spyOn(contentApi, 'listProjectNotes').mockResolvedValue([])
+    await router.push('/projects/p1/write?chapter=ch89&scene=scene-ch89-review')
+    await router.isReady()
+    await Promise.all([useProjectStore().load('p1'), useCodexStore().load('p1')])
+
+    const wrapper = mount(WorkspaceView, {
+      attachTo: document.body,
+      global: { plugins: [pinia, router] }
+    })
+    await vi.waitFor(() => expect(wrapper.find('.scene-context-strip').exists()).toBe(true))
+    expect(wrapper.get('.scene-context-strip').text()).toContain('拿到出城文书')
+
+    await wrapper.findAll('.scene-context-actions button')[0].trigger('click')
+    await flushPromises()
+    expect(router.currentRoute.value.path).toBe('/projects/p1/outline')
+    expect(router.currentRoute.value.query).toMatchObject({
+      chapter: 'ch89', mode: 'scenes', scene: 'scene-ch89-review'
+    })
+
+    await router.push('/projects/p1/write?chapter=ch89&scene=scene-ch89-review')
+    await flushPromises()
+    await wrapper.findAll('.scene-context-actions button')[1].trigger('click')
+    await flushPromises()
+    expect(router.currentRoute.value.path).toBe('/projects/p1/guard')
+    expect(router.currentRoute.value.query).toMatchObject({ chapter: 'ch89' })
     wrapper.unmount()
   })
 })

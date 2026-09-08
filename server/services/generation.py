@@ -18,6 +18,7 @@ from db.models_usage import StyleProfile
 from memory.assembler import AssembledContext, ContextAssembler
 from memory.tokenizer import tokenizer
 from services.embedding import GatewayEmbeddingProvider
+from services.generation_coverage import build_prompt_coverage
 from services.model_configs import InvalidModelEndpointError, assert_public_endpoint_resolution
 from services.retrieval import ConsistencyRetrieval
 from services.temporal_anchor import format_temporal_anchor
@@ -52,6 +53,7 @@ class PromptPackage:
     route: GenerationRoute
     target_words: int
     task: str
+    coverage: dict[str, Any]
 
     @property
     def model_tier(self) -> str:
@@ -80,6 +82,7 @@ class PromptPackage:
             "trimmed": self.context.trimmed_layers,
             "skills": self.skills.ids,
             "scene": self.skills.scene,
+            "coverage": self.coverage,
         }
 
 
@@ -150,13 +153,18 @@ class GenerationService:
         route: GenerationRoute | None = None,
     ) -> PromptPackage:
         task = TASK_MAP.get(action or "", "chapter")
+        context = await self.assembler.build(project.id, chapter.id, chapter.outline or [])
         skills = select_writing_skills(
             genre=project.genre,
             task=task,
-            outline=chapter.outline or [],
+            outline=[*(chapter.outline or []), *context.guidance.get("skillNodes", [])],
             instruction=instruction or selected_text,
         )
-        context = await self.assembler.build(project.id, chapter.id, chapter.outline or [])
+        coverage = build_prompt_coverage(
+            context.guidance,
+            included_content=context.layer1_resident.content,
+            task=task,
+        )
         style_prompt = await self._style_prompt(project, use_style_profile)
         density_prompt = {
             "low": "对白密度偏低，以动作和叙述为主。",
@@ -169,7 +177,7 @@ class GenerationService:
             system_parts.append(style_prompt)
 
         context_parts = [
-            ("作者确认的常驻设定", context.layer1_resident.content),
+            ("作者设定、作品承诺与本章场景", context.layer1_resident.content),
             ("本章检索到的相关设定", context.layer2_retrieved.content),
             ("前情摘要", context.layer3_summary.content),
             ("相邻章节原文", context.layer4_adjacent.content),
@@ -246,6 +254,7 @@ class GenerationService:
             route=resolved_route,
             target_words=target_words,
             task=task,
+            coverage=coverage,
         )
 
     async def _style_prompt(self, project: Project, enabled: bool) -> str:

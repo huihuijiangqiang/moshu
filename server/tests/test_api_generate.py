@@ -4,6 +4,8 @@ from sqlalchemy import select
 
 from api.generate import get_generation_gateway
 from db.models_core import User
+from db.models_positioning import ProjectPositioning
+from db.models_scene_cards import ChapterScene
 from db.models_usage import GenerationDraft, GenerationRun, UsageLog
 from main import app
 from services.generation import GenerationProviderError, StreamEvent
@@ -89,6 +91,11 @@ async def test_chapter_generation_streams_meta_text_done_and_records_run(
     assert response.status_code == 200
     events = parse_sse(response.text)
     assert events[0]["type"] == "meta"
+    assert events[0]["coverage"]["blocking"] is False
+    assert {check["id"] for check in events[0]["coverage"]["checks"]} >= {
+        "positioning.missing",
+        "scenes.missing",
+    }
     assert "genre.farming" in events[0]["skills"]
     assert "".join(event.get("text", "") for event in events if isinstance(event, dict)) == (
         "沈禾推开粮铺的门。周掌柜抬眼看她。"
@@ -148,6 +155,116 @@ async def test_prompt_preview_returns_exact_package_without_charging(
     assert "青谷" in payload["messages"][1]["content"]
     assert (await async_db_session.execute(select(UsageLog))).scalars().all() == []
     assert "sk-" not in response.text
+
+
+async def test_positioning_and_scene_coverage_share_preview_generation_and_draft_review_route(
+    app_client,
+    async_db_session,
+    seed_project,
+    auth_headers,
+):
+    chapters = await seed_project(
+        user_id="coverage_writer",
+        project_id="coverage_novel",
+        chapter_ids=("coverage_ch",),
+        genre="女频 · 穿越种田",
+    )
+    chapters[0].outline = ["沈禾去粮铺谈青谷收购价"]
+    async_db_session.add_all(
+        [
+            ProjectPositioning(
+                id="coverage_positioning",
+                project_id="coverage_novel",
+                platform="fanqie",
+                selling_point="沈禾用新农法带全村度过饥荒",
+                synopsis="",
+                tags=["穿越", "种田"],
+                protagonist_dilemma="必须隐藏来历并取得村民信任",
+                first_payoff="第一茬青谷增产",
+                long_term_arc="建立不受粮商盘剥的新秩序",
+                revision=1,
+                status="active",
+            ),
+            ChapterScene(
+                id="coverage_scene",
+                chapter_id="coverage_ch",
+                order=1,
+                goal="沈禾走进粮铺谈判拿到青谷收购契约",
+                obstacle="周掌柜借行情压价",
+                turn="沈禾亮出竞争粮商报价",
+                info_gain="粮铺急需稳定货源",
+                emotion_shift="周掌柜从轻视转为认真",
+                hook="周掌柜提出一桩秘密交易",
+                status="ready",
+                rev=1,
+                outline_rev=0,
+            ),
+        ]
+    )
+    await async_db_session.flush()
+
+    preview = await app_client.post(
+        "/generate/preview",
+        headers=auth_headers("coverage_writer"),
+        json={"chapterId": "coverage_ch", "targetWords": 1200},
+    )
+    assert preview.status_code == 200
+    preview_payload = preview.json()
+    preview_prompt = preview_payload["messages"][1]["content"]
+    assert "# 作品定位与读者承诺" in preview_prompt
+    assert "# 本章场景计划" in preview_prompt
+    assert "沈禾走进粮铺谈判拿到青谷收购契约" in preview_prompt
+    assert preview_payload["scene"] == "negotiation"
+    assert preview_payload["coverage"]["blocking"] is False
+    assert {
+        check["id"] for check in preview_payload["coverage"]["checks"] if check["status"] == "included"
+    } >= {
+        "positioning.selling_point",
+        "scene.coverage_scene.goal",
+        "scene.coverage_scene.turn",
+    }
+
+    fake = FakeGenerationGateway()
+    app.dependency_overrides[get_generation_gateway] = lambda: fake
+    try:
+        generated = await app_client.post(
+            "/generate/chapter",
+            headers=auth_headers("coverage_writer"),
+            json={"chapterId": "coverage_ch", "targetWords": 1200},
+        )
+    finally:
+        app.dependency_overrides.pop(get_generation_gateway, None)
+
+    assert generated.status_code == 200
+    events = parse_sse(generated.text)
+    assert events[0]["coverage"] == preview_payload["coverage"]
+    assert fake.packages[0].messages == preview_payload["messages"]
+    run = (await async_db_session.execute(select(GenerationRun))).scalar_one()
+    assert run.layer_report["coverage"] == preview_payload["coverage"]
+
+    detail = await app_client.get(
+        f"/generate/drafts/{events[-2]['draftId']}",
+        headers=auth_headers("coverage_writer"),
+    )
+    assert detail.status_code == 200
+    draft_coverage = detail.json()["coverage"]
+    assert draft_coverage["blocking"] is False
+    assert draft_coverage["method"] == "lexical_evidence_v1"
+    assert draft_coverage["status"] == "needs_attention"
+    statuses = {check["id"]: check["status"] for check in draft_coverage["checks"]}
+    assert statuses["scene.coverage_scene.goal"] == "evidence_found"
+    assert statuses["scene.coverage_scene.turn"] == "author_review"
+
+    rejected = await app_client.patch(
+        f"/generate/drafts/{events[-2]['draftId']}/review",
+        headers=auth_headers("coverage_writer"),
+        json={"segmentIds": ["p1"], "decision": "rejected", "baseVersion": 0},
+    )
+    assert rejected.status_code == 200
+    rejected_statuses = {
+        check["id"]: check["status"] for check in rejected.json()["coverage"]["checks"]
+    }
+    assert rejected_statuses["scene.coverage_scene.goal"] == "author_review"
 
 
 async def test_prompt_preview_includes_confirmed_chapter_time_anchor(

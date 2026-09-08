@@ -22,7 +22,7 @@ server/
 │   ├── projects.py   # 项目管理
 │   ├── chapters.py   # 章节读写（含乐观锁）
 │   └── ...
-├── db/               # 数据模型（43张表）
+├── db/               # 数据模型（60张表）
 │   ├── models_core.py    # 骨架 7张
 │   ├── models_codex.py   # 设定库 5张
 │   ├── models_guard.py   # 守卫 2张
@@ -117,7 +117,7 @@ uvicorn main:app --reload --host 0.0.0.0 --port 8000
 PostgreSQL、Redis 与 Alembic head，全部通过时返回 200，否则返回 503 和逐项状态。
 响应包含 `BUILD_REVISION`，用于判断正在运行的实例是否与待验收提交一致。
 
-当前 migration head 为 `027_chapter_temporal_anchor`。更新代码后建议显式执行 migration
+当前 migration head 为 `033_payment_provider_workflow`。更新代码后建议显式执行 migration
 容器，再重建 API 和 worker，避免复用旧的已完成 migration 容器：
 
 ```bash
@@ -127,7 +127,7 @@ docker compose up -d --build api worker dispatcher beat frontend
 
 ## 已实现
 
-### 数据模型（43张表）
+### 数据模型（60张表）
 - ✅ 核心 7张：users, projects, volumes, chapters, chapter_bodies, chapter_versions, project_notes
 - ✅ 设定库 5张：codex_entries, codex_aliases, codex_refs, codex_relations, codex_state_changes
 - ✅ Embedding 运维 1张：codex_embedding_jobs

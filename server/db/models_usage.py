@@ -1,6 +1,8 @@
 """
 风格、用量、占比模型 - 4张表
 """
+
+import secrets
 from datetime import datetime
 from typing import TYPE_CHECKING, Optional
 
@@ -117,7 +119,9 @@ class UsageLog(Base):
 
     __tablename__ = "usage_logs"
 
-    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    id: Mapped[int] = mapped_column(
+        BigInteger, primary_key=True, autoincrement=True, default=lambda: secrets.randbits(63)
+    )
     user_id: Mapped[str] = mapped_column(String(32), ForeignKey("users.id", ondelete="CASCADE"), index=True)
     project_id: Mapped[Optional[str]] = mapped_column(
         String(32), ForeignKey("projects.id", ondelete="SET NULL"), nullable=True, index=True
@@ -204,8 +208,11 @@ class BillingOrder(Base, TimestampMixin):
     product_snapshot: Mapped[dict] = mapped_column(JSONB, default=dict)
     provider_order_id: Mapped[Optional[str]] = mapped_column(String(128), nullable=True, index=True)
     provider_checkout_id: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
+    provider_refund_id: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
     idempotency_key: Mapped[str] = mapped_column(String(100))
     failure_code: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
+    refunded_amount_minor: Mapped[int] = mapped_column(Integer, default=0)
+    provider_synced_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
     paid_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
     cancelled_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
     refunded_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
@@ -215,9 +222,13 @@ class BillingOrder(Base, TimestampMixin):
         Index("uq_billing_orders_user_idempotency", "user_id", "idempotency_key", unique=True),
         Index("uq_billing_orders_provider_order", "provider", "provider_order_id", unique=True),
         CheckConstraint("amount_minor >= 0", name="ck_billing_orders_amount_nonnegative"),
+        CheckConstraint(
+            "refunded_amount_minor >= 0 AND refunded_amount_minor <= amount_minor",
+            name="ck_billing_orders_refunded_amount",
+        ),
         CheckConstraint("credits > 0", name="ck_billing_orders_credits_positive"),
         CheckConstraint(
-            "status IN ('pending', 'paid', 'cancelled', 'failed', 'refunded', 'partially_refunded')",
+            "status IN ('pending', 'paid', 'cancelled', 'failed', 'refund_pending', 'refunded', 'partially_refunded')",
             name="ck_billing_orders_status",
         ),
     )

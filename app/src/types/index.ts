@@ -571,6 +571,31 @@ export interface InlineGenerateOptions extends GenerateOptions {
 
 export type GenerationControls = Omit<GenerateOptions, 'chapterId'>
 
+export interface GenerationCoverageCheck {
+  id: string
+  checkType: 'input' | 'requirement'
+  sourceType: 'positioning' | 'scene' | 'plan'
+  sourceId: string | null
+  label: string
+  status: 'included' | 'attention' | 'evidence_found' | 'author_review'
+  severity: 'info' | 'warning'
+  applicability?: 'chapter' | 'reference'
+  message: string
+  expected: string[]
+  expectedTruncated?: boolean
+  evidence: string[]
+}
+
+export interface GenerationCoverageReport {
+  stage: 'prompt' | 'draft'
+  blocking: false
+  status: 'ready' | 'needs_attention'
+  summary: { total: number; confirmed: number; attention: number; message: string }
+  checks: GenerationCoverageCheck[]
+  method?: 'lexical_evidence_v1'
+  disclaimer?: string
+}
+
 export interface GenerationMeta {
   draftId?: string
   skills: string[]
@@ -579,6 +604,7 @@ export interface GenerationMeta {
   promptTokens: number
   model: string
   provider?: 'platform' | 'user'
+  coverage?: GenerationCoverageReport
 }
 
 export type GenerationDraftStatus = 'streaming' | 'ready' | 'failed' | 'accepted' | 'rejected'
@@ -625,6 +651,7 @@ export interface GenerationDraftSummary {
 export interface GenerationDraftDetail extends GenerationDraftSummary {
   content: string
   segments: GenerationDraftSegment[]
+  coverage?: GenerationCoverageReport | null
 }
 
 export type AdaptationStatus = 'draft' | 'in_review' | 'approved'

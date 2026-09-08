@@ -1,6 +1,8 @@
 from db.models_codex import CodexAlias, CodexEntry, CodexRelation, CodexStateChange
 from db.models_consistency_extended import DocumentSummary
 from db.models_core import ChapterBody
+from db.models_positioning import ProjectPositioning
+from db.models_scene_cards import ChapterScene
 from memory.assembler import ContextAssembler
 from memory.tokenizer import tokenizer
 
@@ -116,6 +118,104 @@ def test_context_trim_uses_exact_token_budget_and_can_keep_tail():
     assert trimmed.tokens <= 30
     assert "关键章末" in trimmed.content
     assert trimmed.content.startswith("[前文已截断]")
+
+
+async def test_context_includes_positioning_and_ordered_scene_cards_in_resident_and_retrieval_layers(
+    async_db_session,
+    seed_project,
+):
+    chapters = await seed_project(
+        user_id="planner",
+        project_id="planned_novel",
+        chapter_ids=("planned_ch",),
+    )
+    chapters[0].outline = ["沈禾到镇上寻找销路"]
+    shopkeeper = CodexEntry(
+        id="planned_shopkeeper",
+        project_id="planned_novel",
+        kind="character",
+        name="周万成",
+        description="粮铺掌柜，善于压价。",
+        attrs={},
+        resident=False,
+        status="confirmed",
+        ref_chapters=[],
+        conflicts=[],
+    )
+    async_db_session.add_all(
+        [
+            shopkeeper,
+            ProjectPositioning(
+                id="planned_positioning",
+                project_id="planned_novel",
+                platform="fanqie",
+                selling_point="落魄农女用现代农学带全村度过饥荒",
+                synopsis="沈禾从荒地起步。",
+                tags=["穿越", "种田"],
+                protagonist_dilemma="既要隐藏来历，又要说服村民改变旧法",
+                first_payoff="第一茬青谷增产",
+                long_term_arc="从自救走向建立公平粮食秩序",
+                revision=2,
+                status="active",
+            ),
+            ChapterScene(
+                id="planned_scene_2",
+                chapter_id="planned_ch",
+                order=2,
+                goal="签下青谷长期契约",
+                obstacle="周万成仍想压低收购价",
+                turn="竞争粮商当场抬价",
+                hook="周万成追出门提出秘密条件",
+                status="ready",
+                rev=1,
+                outline_rev=0,
+            ),
+            ChapterScene(
+                id="planned_scene_1",
+                chapter_id="planned_ch",
+                order=1,
+                pov_entry_id="planned_shopkeeper",
+                goal="摸清粮铺真实底价",
+                obstacle="周万成故意报出行情低价",
+                turn="沈禾拿出其他粮商的报价单",
+                info_gain="周万成急需稳定青谷货源",
+                emotion_shift="试探转为紧张",
+                status="planning",
+                rev=1,
+                outline_rev=0,
+            ),
+            ChapterScene(
+                id="planned_scene_old",
+                chapter_id="planned_ch",
+                order=3,
+                goal="不应进入提示词",
+                status="archived",
+                rev=2,
+                outline_rev=0,
+            ),
+        ]
+    )
+    await async_db_session.flush()
+
+    context = await ContextAssembler(async_db_session, tokenizer).build(
+        "planned_novel", "planned_ch", chapters[0].outline
+    )
+
+    resident = context.layer1_resident.content
+    assert "作品定位与读者承诺" in resident
+    assert "落魄农女用现代农学带全村度过饥荒" in resident
+    assert resident.index("## 场景 1") < resident.index("## 场景 2")
+    assert "签下青谷长期契约" in resident
+    assert "不应进入提示词" not in resident
+    # Scene-card text augments the existing retrieval query, so a referenced
+    # non-resident entry is available without another retrieval subsystem.
+    assert "周万成" in context.layer2_retrieved.content
+    assert {item["kind"] for item in context.layer1_resident.items} >= {"positioning", "scene"}
+    assert {requirement["id"] for requirement in context.guidance["requirements"]} >= {
+        "positioning.selling_point",
+        "scene.planned_scene_1.goal",
+        "scene.planned_scene_2.turn",
+    }
 
 
 async def test_context_includes_confirmed_relations_without_leaking_invalid_targets(

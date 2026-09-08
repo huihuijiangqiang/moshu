@@ -1,7 +1,7 @@
 import { request, requestResponse, USE_MOCK } from './http'
 import { mockApi } from './mock'
 import { getAccessToken } from './session'
-import type { GenerateOptions, GenerationDraftDecision, GenerationDraftDetail, GenerationDraftSummary, GenerationMeta, InlineGenerateOptions } from '@/types'
+import type { GenerateOptions, GenerationCoverageReport, GenerationDraftDecision, GenerationDraftDetail, GenerationDraftSummary, GenerationMeta, InlineGenerateOptions } from '@/types'
 
 export interface GenerationPreview {
   chapterId: string
@@ -19,6 +19,7 @@ export interface GenerationPreview {
   }
   skills: Array<{ id: string; version: string; category: string; priority: number }>
   scene: string
+  coverage: GenerationCoverageReport
   layers: Array<{ key: string; tokens: number; items: Array<Record<string, unknown>>; content: string }>
   messages: Array<{ role: 'system' | 'user'; content: string }>
 }
@@ -59,6 +60,13 @@ export async function previewGeneration(opts: GenerateOptions | InlineGenerateOp
       tokenBudget: { total: 25000, prompt: 0, context: 0, trimmedLayers: [] },
       skills: [],
       scene: 'general',
+      coverage: {
+        stage: 'prompt',
+        blocking: false,
+        status: 'ready',
+        summary: { total: 0, confirmed: 0, attention: 0, message: '模拟模式没有可核对的生成依据。' },
+        checks: []
+      },
       layers: [],
       messages: [
         { role: 'system', content: '模拟模式不会调用模型。' },

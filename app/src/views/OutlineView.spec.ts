@@ -1,9 +1,10 @@
 import { flushPromises, mount } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
 import { createMemoryHistory, createRouter } from 'vue-router'
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import OutlineView from './OutlineView.vue'
 import { useProjectStore } from '@/stores/project'
+import { scenesApi, type ChapterScene } from '@/api/scenes'
 
 function buttonByText(wrapper: ReturnType<typeof mount>, text: string) {
   return wrapper.findAll('button').find((button) => button.text().trim() === text)
@@ -32,12 +33,15 @@ async function mountOutline() {
   await store.load('p1')
   const wrapper = mount(OutlineView, { attachTo: document.body, global: { plugins: [pinia, router] } })
   await flushPromises()
-  return { wrapper, store }
+  return { wrapper, store, router }
 }
 
 describe('continuous outline editing', () => {
   beforeEach(() => { document.body.innerHTML = '' })
-  afterEach(() => { document.body.innerHTML = '' })
+  afterEach(() => {
+    vi.restoreAllMocks()
+    document.body.innerHTML = ''
+  })
 
   it('requires an explicit body decision when an outlined plan changes after writing', async () => {
     const { wrapper, store } = await mountOutline()
@@ -186,6 +190,29 @@ describe('continuous outline editing', () => {
     expect(wrapper.text()).toContain('在天亮前拿到出城文书')
     expect(wrapper.text()).toContain('场景卡片已保存')
     expect(store.chapters.find((chapter) => chapter.id === 'ch89')?.outline).toEqual(outlineBefore)
+    wrapper.unmount()
+  })
+
+  it('opens the selected scene in the writing workspace with stable route context', async () => {
+    const { wrapper, router } = await mountOutline()
+    const scene: ChapterScene = {
+      id: 'scene-ch89-route', chapterId: 'ch89', order: 1,
+      goal: '拿到出城文书', obstacle: '校尉认出了印泥', turn: '校尉提出交换条件',
+      infoGain: '', emotionShift: '', hook: '', status: 'ready', rev: 1, outlineRev: 1,
+      createdAt: '2026-01-01T00:00:00Z', updatedAt: '2026-01-01T00:00:00Z'
+    }
+    vi.spyOn(scenesApi, 'list').mockResolvedValue([scene])
+    await wrapper.get('[data-chapter-id="ch89"]').trigger('click')
+    const sceneMode = Array.from(document.querySelectorAll<HTMLButtonElement>('#topbar-actions button'))
+      .find((button) => button.textContent?.trim() === '场景卡片')
+    sceneMode?.click()
+    await vi.waitFor(() => expect(wrapper.find('.scene-card-list button').exists()).toBe(true))
+
+    await buttonByText(wrapper, '打开正文')?.trigger('click')
+    await flushPromises()
+
+    expect(router.currentRoute.value.path).toBe('/projects/p1/write')
+    expect(router.currentRoute.value.query).toMatchObject({ chapter: 'ch89', scene: scene.id })
     wrapper.unmount()
   })
 

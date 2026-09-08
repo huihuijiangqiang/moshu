@@ -2,13 +2,13 @@
 
 ## 执行摘要
 
-本文档记录墨枢一致性后端在 `worktree-moshu-consistency-backend-v2` 分支的真实实现状态。
+本文档记录墨枢主分支的真实实现状态。
 所有声明基于实际代码与测试结果，不夸大、不省略已知缺口。
 
 **关键事实**：
-- ✅ 60 张表完整 Alembic 覆盖，增量迁移已到 `032_timestamp_nullability`
-- ✅ 1390 个单元/功能测试通过，37 个需要真实外部依赖的集成测试按条件跳过（SQLite in-memory，受控 embedding/LLM provider）
-- ✅ 前端 156 个测试、TypeScript 类型检查和生产构建通过
+- ✅ 60 张表完整 Alembic 覆盖，增量迁移已到 `033_payment_provider_workflow`
+- ✅ 1406 个单元/功能测试通过，37 个需要真实外部依赖的集成测试按条件跳过（SQLite in-memory，受控 embedding/LLM provider）
+- ✅ 前端 160 个测试、TypeScript 类型检查和生产构建通过
 - ✅ 前端生产与开发依赖均通过 `npm audit`，当前为 0 个已知漏洞（2026-09-07）
 - ✅ 37 个集成测试已在 Docker 真实 PostgreSQL + pgvector 环境通过（2026-09-07）
 - ✅ 已完成真实账号认证、作品创建、作品归档、分卷与章节增删改排、回收站和章纲编辑闭环
@@ -23,6 +23,9 @@
 - ✅ AI 来源账本已接通真实生成 run、段落指纹校验、编辑分类、采纳字数回写和可定位的疑似模板句式校样
 - ✅ 自然化审查支持按章或选区扫描、原文/候选对比、逐条采纳拒绝、版本过期保护和来源回写；定位为作者校订工具，不作为 AIGC 鉴定结论
 - ✅ 作品定位支持目标平台、核心卖点、首个兑现点与长线承诺的持续编辑、版本快照和恢复；章纲下可维护独立场景卡片
+- ✅ 作品定位与当前章场景卡通过统一装配链进入 Prompt Preview 和真实生成；草稿携带非阻断的逐项覆盖证据
+- ✅ 模型辅助自然化复用风格档、人物声口、GenerationRun 和用量结算，并以数字/时间/实体/专名/否定关系事实锁保护候选
+- ✅ 微信支付 API v3 与支付宝 OpenAPI 已接入预下单、查单、关单、退款、验签回调、幂等到账和积分冲正；真实收款仍需商户配置
 - ✅ AI 生成候选独立持久化，成功、中断和失败输出均可在刷新后恢复，并支持逐段/整批接受拒绝与一次撤销
 - ✅ 全书查找替换支持本章/本卷/全书范围、逐处预览确认、设定名风险提示、原子提交和整批撤销
 - ✅ Docker Compose 已接通 migration、API、前端、PostgreSQL、Redis、Celery worker/dispatcher/beat 与 transactional outbox
@@ -43,7 +46,7 @@
 - ✅ 七类确定性规则已由真实 `RuleScanner` 跑过 280 正例、140 hard negatives、20 easy negatives，
   recall / 证据定位 / hard-negative precision 均为 100%
 - ⚠️ 上述结构化评测不覆盖正文抽取和 LLM 仲裁的真实盲评质量，不能据此宣称全链路生产就绪
-- ✅ 2026-09-08 Docker Compose 真实验收：PostgreSQL/Redis/API/frontend/worker/dispatcher/beat 全部运行，迁移 head 为 `032_timestamp_nullability`；数据卷使用 Compose 配置的相对路径或部署环境显式配置，不绑定开发机盘符
+- ✅ 2026-09-08 Docker Compose 真实验收：PostgreSQL/Redis/API/frontend/worker/dispatcher/beat 全部运行，迁移 head 为 `033_payment_provider_workflow`；数据卷使用 Compose 配置的相对路径或部署环境显式配置，不绑定开发机盘符
 
 ### 性能基准（可重复）
 
@@ -169,7 +172,7 @@ PostgreSQL/pgvector 检索必须在真实部署上单独压测；该脚本只覆
   `halfvec_cosine_ops` 重建 HNSW 索引；upgrade/downgrade 均会要求重新回填向量
 - ✅ `alembic upgrade head --sql` 与 `alembic downgrade head:-1 --sql` 语法验证通过
 - ✅ 迁移契约的 500 项检查通过；Docker 真实 PostgreSQL + pgvector 已从
-  `027_chapter_temporal_anchor` 升级到 `032_timestamp_nullability`，覆盖新增表、唯一约束、
+  `027_chapter_temporal_anchor` 升级到 `033_payment_provider_workflow`，覆盖新增表、唯一约束、
   CHECK 约束和时间戳非空契约
 
 ---
@@ -382,6 +385,9 @@ PostgreSQL/pgvector 检索必须在真实部署上单独压测；该脚本只覆
 
 #### 自然化审查 (`services/naturalization.py`)
 - ✅ 可扫描整章或指定段落，规则使用稳定 ID，候选保留原文位置、原因和建议文本
+- ✅ `assisted` 模式可通过平台模型或 BYOK 生成候选，使用风格档统计特征和已确认人物声口，不发送风格样文原文
+- ✅ 动态正文作为不可信数据隔离；响应执行严格 JSON、数量、ID、长度和字段校验，并锁定数字、时间、实体、引号专名与否定事实
+- ✅ 模型失败释放预留额度并明确回退规则候选；模型候选仍只能逐条采纳
 - ✅ 采纳前校验正文版本、正文哈希、段落 ID 与原文哈希，过期候选不会覆盖新正文
 - ✅ 逐条采纳复用正文保存、版本历史、outbox 与 provenance 管道，并重新定位其余待处理候选
 - ✅ 跨样式范围无法无损同步 HTML/JSON 时拒绝自动采纳，避免破坏正文格式和设定引用
@@ -424,6 +430,14 @@ PostgreSQL/pgvector 检索必须在真实部署上单独压测；该脚本只覆
 - ✅ `GET /usage/summary` - 当前真实余额、本期已结算用量、按功能聚合、14 天序列及最近 20 笔
 - ✅ 仅返回当前认证用户数据；released/reserved 与上月记录不计入本期实际消费
 - ✅ 余额不足在模型请求前返回 402，包含本次最大需求和当前余额
+
+#### 充值与支付 (`api/billing.py`)
+- ✅ 商品、订单和积分权益由本地账本持有，渠道回调不能直接修改用户余额
+- ✅ 微信 Native 和支付宝预下单支持二维码支付；用户可查单、关单、申请退款和查询退款状态
+- ✅ 微信 API v3 RSA 签名、平台证书验签与 AES-GCM 通知解密；支付宝 RSA2 API/通知验签
+- ✅ 回调 inbox、支付订单号和退款冲正均具备幂等约束；重复通知不会重复到账或重复扣减
+- ✅ 退款前冻结未使用积分，明确失败恢复，超时保留处理中，部分退款按金额结算
+- ⚠️ 真实商户联调依赖部署者提供证书、私钥、商户身份和公网 HTTPS 回调地址
 
 #### AI 来源 (`api/provenance.py`)
 - ✅ `GET /projects/{id}/provenance?scope=chapter&chapter_id=...` - 本章段落级来源账本
@@ -484,6 +498,7 @@ PostgreSQL/pgvector 检索必须在真实部署上单独压测；该脚本只覆
 
 #### 自然化审查 (`api/naturalization.py`)
 - ✅ 扫描本章或指定段落，返回带定位和原因的独立候选，不直接重写正文
+- ✅ 可显式选择规则模式或模型辅助模式；模型来源、用量和失败降级可审计
 - ✅ 候选支持逐条采纳或拒绝；采纳后写入新正文版本、来源记录和 outbox 事件
 - ✅ 前端在 AI 来源页提供原文/候选对照和处置入口，不提供全书一键改写
 
@@ -545,16 +560,16 @@ PostgreSQL/pgvector 检索必须在真实部署上单独压测；该脚本只覆
 
 ### 5. 测试覆盖
 
-#### 单元测试（1390 passed，SQLite in-memory，受控 providers）
+#### 单元测试（1406 passed，SQLite in-memory，受控 providers）
 
-**全量测试结果**：1390 passed, 37 skipped（未设置集成测试 URL 时）；前端 156 passed
+**全量测试结果**：1406 passed, 37 skipped（未设置集成测试 URL 时）；前端 160 passed
 
 #### 前端依赖安全审计
 
 - ✅ `vitest` 已升级至 4.1.11，修复测试服务任意文件读取与执行风险
 - ✅ `happy-dom` 已升级至 20.14.0，修复 VM context escape 与跨源凭据泄露风险
 - ✅ `npm audit --omit=dev` 与完整 `npm audit` 均为 0 个已知漏洞
-- ✅ 作品定位、场景卡片和自然化审查实现后 156 个前端测试、TypeScript 类型检查和 Vite 生产构建全部通过
+- ✅ 作品定位、场景卡片、自然化审查和充值订单交互实现后 160 个前端测试、TypeScript 类型检查和 Vite 生产构建全部通过
 
 主要测试覆盖（不逐文件列举测试数量，以实际 pytest 结果为准）：
 - ✅ Codex 设定库：页面与 API 完整 CRUD、关系增改删与双向投影、引用删除保护、原子别名替换、可检索文本判据、两段式事务、deferred 降级、httpx 错误重试
@@ -575,6 +590,9 @@ PostgreSQL/pgvector 检索必须在真实部署上单独压测；该脚本只覆
 - ✅ AI 来源：真实 run/段落指纹校验、编辑后分类、重复与跨章节伪造防护、采纳字数回落
 - ✅ 句式校样：规则原因、段落/字符定位、Unicode 偏移换算、定位与候选重写路由
 - ✅ 作品定位、场景卡片和自然化审查：项目隔离、乐观锁、不可变版本、正文边界、过期拒绝与来源回写
+- ✅ 生成规划覆盖：预览/SSE/运行记录同源、场景版本风险、拒绝段落后证据重算
+- ✅ 支付：渠道协议签名验签、回调幂等、载荷冲突、订单同步、退款冻结/恢复/冲正与 migration 约束
+- ✅ 私有长篇评测：完成度、pipeline 覆盖、表层节奏漂移和人工 gold 指标边界
 - ✅ **持久失败契约测试**：`test_documentation_reflects_persistent_dead_letter_visibility`
   守住 embedding 重试耗尽后仍可查询、可重试的任务契约
 
@@ -590,7 +608,7 @@ PostgreSQL/pgvector 检索必须在真实部署上单独压测；该脚本只覆
 
 #### 集成测试（37 tests，真实 PostgreSQL + pgvector 已通过）
 - ✅ Docker PostgreSQL + pgvector 环境已执行 37 个测试并全部通过（2026-09-07）
-- ✅ 审核数据库已执行 `011_guard_issue_arbitration` 到 Alembic head
+- ✅ 审核数据库已执行到 `033_payment_provider_workflow`，新增支付退款字段与约束已核验
 - 覆盖内容：
   - 部分唯一索引（`postgresql_where`）的并发 upsert 去重
   - pgvector `<=>` 余弦距离与 HNSW 索引

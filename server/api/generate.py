@@ -33,6 +33,7 @@ from services.generation import (
     count_generated_words,
     retryable_stream,
 )
+from services.generation_coverage import assess_draft_coverage
 from services.model_configs import active_user_generation_route
 from services.provenance import PROVENANCE_ALGORITHM, generated_paragraph_hashes
 from services.usage import (
@@ -201,6 +202,7 @@ def _preview_payload(package: PromptPackage) -> dict:
             for skill in package.skills.skills
         ],
         "scene": package.skills.scene,
+        "coverage": package.coverage,
         "layers": [
             {
                 "key": layer.key,
@@ -305,6 +307,7 @@ def _generation_response(
                 "promptTokens": package.prompt_tokens,
                 "model": package.model_id,
                 "provider": package.route.source,
+                "coverage": package.coverage,
             }
         )
         try:
@@ -447,7 +450,7 @@ async def preview_context(
     context = await GenerationService(db).assembler.build(project.id, chapter.id, chapter.outline or [])
     selection = select_writing_skills(genre=project.genre, task="chapter", outline=chapter.outline or [])
     labels = {
-        "resident": "稳定设定 · 常驻",
+        "resident": "设定与本章规划 · 常驻",
         "retrieved": "本章相关设定",
         "summary": "前情摘要",
         "adjacent": "相邻原文",
@@ -567,7 +570,12 @@ def _accepted_draft_content(draft: GenerationDraft) -> tuple[str, bool]:
     return "\n".join(segment["text"] for segment in segments if segment["decision"] == "accepted"), True
 
 
-def _draft_payload(draft: GenerationDraft, *, include_content: bool = False) -> dict:
+def _draft_payload(
+    draft: GenerationDraft,
+    *,
+    include_content: bool = False,
+    coverage: dict | None = None,
+) -> dict:
     content = draft.content_text or ""
     segments, review_version, _ = _draft_segments(draft)
     public_summary = dict(draft.request_summary or {})
@@ -593,7 +601,27 @@ def _draft_payload(draft: GenerationDraft, *, include_content: bool = False) -> 
         accepted_content, has_review = _accepted_draft_content(draft)
         payload["content"] = accepted_content if draft.status == "accepted" and has_review else content
         payload["segments"] = segments
+        payload["coverage"] = coverage
     return payload
+
+
+async def _draft_coverage(db: AsyncSession, draft: GenerationDraft) -> dict | None:
+    if not draft.run_id:
+        return None
+    run = await db.get(GenerationRun, draft.run_id)
+    if run is None or not isinstance(run.layer_report, dict):
+        return None
+    raw = run.layer_report.get("coverage")
+    segments, _, has_review = _draft_segments(draft)
+    review_content = draft.content_text or ""
+    if has_review:
+        # Rejected paragraphs must no longer count as evidence. Pending text
+        # remains in scope until the author decides, and a fully reviewed draft
+        # therefore assesses exactly what can be inserted.
+        review_content = "\n".join(
+            segment["text"] for segment in segments if segment["decision"] != "rejected"
+        )
+    return assess_draft_coverage(raw if isinstance(raw, dict) else None, review_content)
 
 
 async def _load_draft(draft_id: str, user: User, db: AsyncSession, *, lock: bool = False) -> GenerationDraft:
@@ -638,7 +666,12 @@ async def get_draft(
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    return _draft_payload(await _load_draft(draft_id, user, db), include_content=True)
+    draft = await _load_draft(draft_id, user, db)
+    return _draft_payload(
+        draft,
+        include_content=True,
+        coverage=await _draft_coverage(db, draft),
+    )
 
 
 @router.patch("/drafts/{draft_id}/review")
@@ -686,7 +719,11 @@ async def update_draft_review(
     draft.request_summary = summary
     await db.commit()
     await db.refresh(draft)
-    return _draft_payload(draft, include_content=True)
+    return _draft_payload(
+        draft,
+        include_content=True,
+        coverage=await _draft_coverage(db, draft),
+    )
 
 
 @router.post("/drafts/{draft_id}/accept")
@@ -697,7 +734,11 @@ async def accept_draft(
 ):
     draft = await _load_draft(draft_id, user, db, lock=True)
     if draft.status == "accepted":
-        return _draft_payload(draft, include_content=True)
+        return _draft_payload(
+            draft,
+            include_content=True,
+            coverage=await _draft_coverage(db, draft),
+        )
     if draft.status not in {"ready", "failed"} or not draft.content_text:
         raise HTTPException(status_code=409, detail={"code": "DRAFT_NOT_ACCEPTABLE"})
     segments, _, has_review = _draft_segments(draft)
@@ -715,7 +756,11 @@ async def accept_draft(
     draft.accepted_at = datetime.now(UTC)
     await db.commit()
     await db.refresh(draft)
-    return _draft_payload(draft, include_content=True)
+    return _draft_payload(
+        draft,
+        include_content=True,
+        coverage=await _draft_coverage(db, draft),
+    )
 
 
 @router.delete("/drafts/{draft_id}", status_code=204)

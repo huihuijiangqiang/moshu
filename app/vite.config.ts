@@ -17,5 +17,19 @@ export default defineConfig({
         rewrite: (path) => path.replace(/^\/api/, '')
       }
     }
+  },
+  build: {
+    rollupOptions: {
+      output: {
+        manualChunks(id) {
+          const normalized = id.replaceAll('\\\\', '/')
+          if (
+            normalized.includes('/node_modules/@tiptap/')
+            || normalized.includes('/node_modules/prosemirror-')
+          ) return 'editor-core'
+          return undefined
+        }
+      }
+    }
   }
 })

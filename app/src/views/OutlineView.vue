@@ -60,6 +60,7 @@ const positioningDraft = ref<Omit<PositioningPatch, 'expectedRevision'>>({})
 const positioningSaving = ref(false)
 const positioningNotice = ref('')
 const positioningError = ref('')
+const requestedSceneId = computed(() => typeof route.query.scene === 'string' ? route.query.scene : null)
 
 const platformOptions: Array<{ id: TargetPlatform; label: string; note: string }> = [
   { id: 'fanqie', label: '番茄小说', note: '快进入冲突，前段连续兑现' },
@@ -122,14 +123,34 @@ async function loadScenes(chapter: Chapter) {
     const loaded = await scenesApi.list(chapter.id)
     if (sequence !== sceneLoadSequence || selected.value?.id !== chapter.id) return
     scenes.value = loaded
-    selectedSceneId.value = scenes.value[0]?.id ?? null
-    const selectedScene = scenes.value[0]
+    const selectedScene = scenes.value.find((scene) => scene.id === requestedSceneId.value) ?? scenes.value[0]
+    selectedSceneId.value = selectedScene?.id ?? null
     sceneDraft.value = selectedScene ? sceneFrom(selectedScene) : null
   } catch {
     if (sequence === sceneLoadSequence) scenesError.value = '场景卡片加载失败，请重试。'
   } finally {
     if (sequence === sceneLoadSequence) scenesLoading.value = false
   }
+}
+
+watch(
+  () => route.query.mode,
+  (mode) => {
+    if (mode === 'positioning' || mode === 'chapters' || mode === 'scenes') outlineMode.value = mode
+  },
+  { immediate: true }
+)
+
+function openSelectedSceneInWriter() {
+  const chapter = selected.value
+  if (!chapter) return
+  router.push({
+    path: toProject('write'),
+    query: {
+      chapter: chapter.id,
+      ...(selectedSceneId.value ? { scene: selectedSceneId.value } : {})
+    }
+  })
 }
 
 function sceneFrom(scene: ChapterScene): ScenePatch & { id: string } {
@@ -841,7 +862,10 @@ async function removeTrashItem(kind: 'volumes' | 'chapters', id: string, title: 
       <main v-else-if="outlineMode === 'scenes'" class="pane scene-workbench">
         <header class="scene-workbench-head">
           <div><span class="kicker">第 {{ String(selected?.index ?? 0).padStart(3, '0') }} 章</span><h2>场景推进链</h2><p>把本章拆成可调整的目标、阻力和转折，章纲仍会独立保留。</p></div>
-          <button class="wk-btn" type="button" @click="newScene"><AppIcon name="plus" />新增场景</button>
+          <div class="scene-workbench-actions">
+            <button class="wk-btn" type="button" :disabled="!selected" @click="openSelectedSceneInWriter"><AppIcon name="write" />打开正文</button>
+            <button class="wk-btn" type="button" @click="newScene"><AppIcon name="plus" />新增场景</button>
+          </div>
         </header>
         <p v-if="scenesLoading" class="scene-empty" role="status">正在载入场景卡片…</p>
         <p v-else-if="scenesError" class="scene-error" role="alert">{{ scenesError }}</p>
@@ -1077,6 +1101,7 @@ async function removeTrashItem(kind: 'volumes' | 'chapters', id: string, title: 
 .positioning-save { width: 100%; justify-content: center; }
 .scene-workbench { min-width: 0; overflow: auto; padding: 28px; background: var(--panel-sunken); }
 .scene-workbench-head { display: flex; align-items: flex-start; justify-content: space-between; gap: var(--u4); margin-bottom: 22px; padding-bottom: 18px; border-bottom: var(--hair) solid var(--line-strong); }
+.scene-workbench-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .scene-workbench-head h2 { margin: 5px 0 6px; font-family: var(--font-prose); font-size: 23px; font-weight: 600; letter-spacing: 0; }
 .scene-workbench-head p { margin: 0; color: var(--ink-3); font-size: var(--fs-sm); line-height: 1.6; }
 .scene-card-list { display: grid; gap: 10px; }

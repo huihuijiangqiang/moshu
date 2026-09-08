@@ -4,7 +4,7 @@
 """
 
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from html.parser import HTMLParser
 from typing import Optional
 
@@ -13,8 +13,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased, selectinload
 
 from db.models_codex import CodexEntry, CodexRelation
+from db.models_consistency import ChapterOutlineState
 from db.models_consistency_extended import ConsistencyClaim, DocumentSummary
 from db.models_core import Chapter, ChapterBody, Volume
+from db.models_positioning import ProjectPositioning
+from db.models_scene_cards import ChapterScene
 from services.codex_states import latest_author_states
 from services.retrieval import ConsistencyRetrieval
 from services.timeline import author_override_offset
@@ -85,6 +88,7 @@ class AssembledContext:
     total_tokens: int
     budget_exceeded: bool
     trimmed_layers: list[str]  # 被削减的层
+    guidance: dict = field(default_factory=dict)
 
 
 class ContextAssembler:
@@ -97,6 +101,7 @@ class ContextAssembler:
     BUDGET_LAYER3 = 4000  # 前情摘要
     BUDGET_LAYER4 = 10000  # 相邻原文
     BUDGET_CONFIRMED_TIMELINE = 1500
+    BUDGET_STORY_GUIDANCE = 2600
 
     def __init__(
         self,
@@ -125,11 +130,22 @@ class ContextAssembler:
         Returns:
             装配完成的四层上下文
         """
-        # Layer 1: 常驻设定（全量，按 id 排序保证字节稳定）
-        layer1 = await self._build_layer1_resident(project_id, chapter_id)
+        # Layer 1: 常驻设定 + 作者明确写下的作品承诺和本章场景计划。
+        # Guidance is read once here and reused by retrieval, prompt preview and
+        # real generation, so those paths cannot silently diverge.
+        story_guidance, guidance = await self._build_story_guidance(project_id, chapter_id)
+        trimmed_story_guidance = self._trim_layer(story_guidance, self.BUDGET_STORY_GUIDANCE)
+        guidance["storyGuidanceTrimmed"] = trimmed_story_guidance.tokens < story_guidance.tokens
+        layer1 = await self._build_layer1_resident(
+            project_id,
+            chapter_id,
+            story_guidance=trimmed_story_guidance,
+        )
 
-        # Layer 2: 检索条目（章纲实体抽取 → 精确命中 → 向量兜底）
-        layer2 = await self._build_layer2_retrieved(project_id, chapter_id, outline_nodes)
+        # Scene/positioning text participates in the existing exact/vector
+        # retrieval route instead of creating a second RAG implementation.
+        retrieval_nodes = [*outline_nodes, *guidance.pop("retrievalNodes", [])]
+        layer2 = await self._build_layer2_retrieved(project_id, chapter_id, retrieval_nodes)
 
         # Layer 3: 前情摘要（本卷章摘要 + 更早的卷摘要）
         layer3 = await self._build_layer3_summary(project_id, chapter_id)
@@ -143,7 +159,7 @@ class ContextAssembler:
         layer4 = self._trim_layer(layer4, self.BUDGET_LAYER4, keep_tail=True)
 
         total = layer1.tokens + layer2.tokens + layer3.tokens + layer4.tokens
-        trimmed = []
+        trimmed = ["story_guidance"] if guidance["storyGuidanceTrimmed"] else []
 
         if total > self.BUDGET_TOTAL:
             # 按 layer4 → layer3 → layer2 顺序削减，layer1 永不削
@@ -185,6 +201,356 @@ class ContextAssembler:
             total_tokens=total,
             budget_exceeded=len(trimmed) > 0,
             trimmed_layers=trimmed,
+            guidance=guidance,
+        )
+
+    async def _build_story_guidance(
+        self,
+        project_id: str,
+        chapter_id: str,
+    ) -> tuple[ContextLayer, dict]:
+        """Load author-owned positioning and scene plans as generation evidence."""
+        positioning = await self.db.scalar(
+            select(ProjectPositioning).where(
+                ProjectPositioning.project_id == project_id,
+                ProjectPositioning.status != "archived",
+            )
+        )
+        scenes = list(
+            (
+                await self.db.execute(
+                    select(ChapterScene)
+                    .where(
+                        ChapterScene.chapter_id == chapter_id,
+                        ChapterScene.status != "archived",
+                    )
+                    .order_by(ChapterScene.order, ChapterScene.id)
+                )
+            ).scalars()
+        )
+        ref_ids = {
+            entry_id
+            for scene in scenes
+            for entry_id in (scene.pov_entry_id, scene.location_entry_id)
+            if entry_id
+        }
+        ref_entries = {}
+        if ref_ids:
+            ref_entries = {
+                entry.id: entry
+                for entry in (
+                    await self.db.execute(
+                        select(CodexEntry).where(
+                            CodexEntry.id.in_(ref_ids),
+                            CodexEntry.project_id == project_id,
+                            CodexEntry.status == "confirmed",
+                        )
+                    )
+                ).scalars()
+            }
+        outline_state = await self.db.scalar(
+            select(ChapterOutlineState).where(ChapterOutlineState.chapter_id == chapter_id)
+        )
+        chapter_body = await self.db.scalar(
+            select(ChapterBody).where(ChapterBody.chapter_id == chapter_id)
+        )
+        current_outline_rev = outline_state.revision if outline_state else 0
+        current_body_rev = chapter_body.rev if chapter_body else None
+
+        lines = [
+            "以下内容来自作者的作品定位和场景卡。生成整章时按场景顺序自然推进；"
+            "行内任务只把它们作为一致性参考。长线承诺需要持续推进，不要求在本章一次完结。"
+        ]
+        items: list[dict] = []
+        requirements: list[dict] = []
+        input_checks: list[dict] = []
+        retrieval_nodes: list[str] = []
+
+        if positioning is None:
+            input_checks.append(
+                {
+                    "id": "positioning.missing",
+                    "checkType": "input",
+                    "sourceType": "positioning",
+                    "sourceId": None,
+                    "label": "作品承诺",
+                    "status": "attention",
+                    "severity": "warning",
+                    "message": "尚未建立可用的作品定位，本次只能依据题材、章纲和设定生成。",
+                    "expected": [],
+                    "evidence": [],
+                }
+            )
+        else:
+            platform_labels = {
+                "fanqie": "番茄",
+                "qimao": "七猫",
+                "qidian": "起点",
+                "general": "通用",
+            }
+            lines.extend(
+                [
+                    "# 作品定位与读者承诺",
+                    f"- 目标平台：{platform_labels.get(positioning.platform, positioning.platform)}",
+                    f"- 定位状态：{'已启用' if positioning.status == 'active' else '草稿（仍按作者当前版本执行）'}",
+                ]
+            )
+            positioning_fields = (
+                ("selling_point", "核心卖点", positioning.selling_point),
+                ("synopsis", "对外简介", positioning.synopsis),
+                ("protagonist_dilemma", "主角困境", positioning.protagonist_dilemma),
+                ("first_payoff", "首个兑现点", positioning.first_payoff),
+                ("long_term_arc", "长线承诺", positioning.long_term_arc),
+            )
+            for field_name, label, value in positioning_fields:
+                value = (value or "").strip()
+                if not value:
+                    continue
+                lines.append(f"- {label}：{value}")
+                retrieval_nodes.append(value[:800])
+                requirements.append(
+                    {
+                        "id": f"positioning.{field_name}",
+                        "sourceType": "positioning",
+                        "sourceId": positioning.id,
+                        "label": label,
+                        "expected": [value],
+                    }
+                )
+            if positioning.tags:
+                lines.append("- 题材标签：" + "、".join(str(tag) for tag in positioning.tags if str(tag).strip()))
+            items.append(
+                {
+                    "id": positioning.id,
+                    "name": "作品定位",
+                    "kind": "positioning",
+                    "revision": positioning.revision,
+                    "status": positioning.status,
+                }
+            )
+            missing = [
+                label
+                for _, label, value in positioning_fields
+                if label != "对外简介" and not (value or "").strip()
+            ]
+            if missing:
+                input_checks.append(
+                    {
+                        "id": "positioning.incomplete",
+                        "checkType": "input",
+                        "sourceType": "positioning",
+                        "sourceId": positioning.id,
+                        "label": "作品承诺完整度",
+                        "status": "attention",
+                        "severity": "warning",
+                        "message": "仍缺少：" + "、".join(missing) + "。",
+                        "expected": missing,
+                        "evidence": [],
+                    }
+                )
+            if positioning.status == "draft":
+                input_checks.append(
+                    {
+                        "id": "positioning.draft",
+                        "checkType": "input",
+                        "sourceType": "positioning",
+                        "sourceId": positioning.id,
+                        "label": "定位版本状态",
+                        "status": "attention",
+                        "severity": "info",
+                        "message": "当前定位仍为草稿；本次会使用该版本，并在预览中明确展示。",
+                        "expected": [],
+                        "evidence": [],
+                    }
+                )
+
+        if not scenes:
+            input_checks.append(
+                {
+                    "id": "scenes.missing",
+                    "checkType": "input",
+                    "sourceType": "scene",
+                    "sourceId": None,
+                    "label": "本章场景计划",
+                    "status": "attention",
+                    "severity": "warning",
+                    "message": "本章没有场景卡，本次会退回到章纲节点推进。",
+                    "expected": [],
+                    "evidence": [],
+                }
+            )
+        else:
+            lines.append("# 本章场景计划")
+            scene_fields = (
+                ("goal", "目标"),
+                ("obstacle", "阻力"),
+                ("turn", "转折"),
+                ("info_gain", "信息增量"),
+                ("emotion_shift", "情绪变化"),
+                ("hook", "离场钩子"),
+            )
+            for scene in scenes:
+                pov = ref_entries.get(scene.pov_entry_id)
+                location = ref_entries.get(scene.location_entry_id)
+                lines.append(f"## 场景 {scene.order}（{scene.status}）")
+                if pov:
+                    lines.append(f"- 叙事视角：{pov.name}")
+                    retrieval_nodes.append(pov.name)
+                    requirements.append(
+                        {
+                            "id": f"scene.{scene.id}.pov",
+                            "sourceType": "scene",
+                            "sourceId": scene.id,
+                            "label": f"场景 {scene.order} · 叙事视角",
+                            "expected": [pov.name],
+                        }
+                    )
+                if location:
+                    lines.append(f"- 地点：{location.name}")
+                    retrieval_nodes.append(location.name)
+                    requirements.append(
+                        {
+                            "id": f"scene.{scene.id}.location",
+                            "sourceType": "scene",
+                            "sourceId": scene.id,
+                            "label": f"场景 {scene.order} · 地点",
+                            "expected": [location.name],
+                        }
+                    )
+                for attr, label in scene_fields:
+                    value = (getattr(scene, attr) or "").strip()
+                    if value:
+                        lines.append(f"- {label}：{value}")
+                        retrieval_nodes.append(value[:800])
+                        requirements.append(
+                            {
+                                "id": f"scene.{scene.id}.{attr}",
+                                "sourceType": "scene",
+                                "sourceId": scene.id,
+                                "label": f"场景 {scene.order} · {label}",
+                                "expected": [value],
+                            }
+                        )
+                items.append(
+                    {
+                        "id": scene.id,
+                        "name": f"场景 {scene.order}",
+                        "kind": "scene",
+                        "order": scene.order,
+                        "status": scene.status,
+                    }
+                )
+                missing = [
+                    label
+                    for attr, label in scene_fields[:3]
+                    if not (getattr(scene, attr) or "").strip()
+                ]
+                if missing:
+                    input_checks.append(
+                        {
+                            "id": f"scene.{scene.id}.incomplete",
+                            "checkType": "input",
+                            "sourceType": "scene",
+                            "sourceId": scene.id,
+                            "label": f"场景 {scene.order} 完整度",
+                            "status": "attention",
+                            "severity": "warning",
+                            "message": "仍缺少：" + "、".join(missing) + "。",
+                            "expected": missing,
+                            "evidence": [],
+                        }
+                    )
+                if scene.outline_rev != current_outline_rev:
+                    input_checks.append(
+                        {
+                            "id": f"scene.{scene.id}.stale",
+                            "checkType": "input",
+                            "sourceType": "scene",
+                            "sourceId": scene.id,
+                            "label": f"场景 {scene.order} 与章纲版本",
+                            "status": "attention",
+                            "severity": "warning",
+                            "message": (
+                                f"场景基于章纲第 {scene.outline_rev} 版，当前为第 {current_outline_rev} 版；"
+                                "生成前建议复核。"
+                            ),
+                            "expected": [str(current_outline_rev)],
+                            "evidence": [str(scene.outline_rev)],
+                        }
+                    )
+                if scene.body_rev != current_body_rev:
+                    input_checks.append(
+                        {
+                            "id": f"scene.{scene.id}.body_stale",
+                            "checkType": "input",
+                            "sourceType": "scene",
+                            "sourceId": scene.id,
+                            "label": f"场景 {scene.order} 与正文版本",
+                            "status": "attention",
+                            "severity": "warning",
+                            "message": (
+                                f"场景基于正文第 {scene.body_rev or 0} 版，当前为第 {current_body_rev or 0} 版；"
+                                "若保留现有正文，请先复核衔接。"
+                            ),
+                            "expected": [str(current_body_rev or 0)],
+                            "evidence": [str(scene.body_rev or 0)],
+                        }
+                    )
+
+        content = "\n".join(lines) if len(lines) > 1 else ""
+        # Keep the embedding/exact-retrieval query bounded independently from
+        # the 25k prompt budget.
+        bounded_nodes: list[str] = []
+        remaining = 6000
+        for node in retrieval_nodes:
+            if remaining <= 0:
+                break
+            value = node[:remaining]
+            if value:
+                bounded_nodes.append(value)
+                remaining -= len(value)
+        max_report_checks = 200
+        if len(requirements) > max_report_checks:
+            omitted = len(requirements) - max_report_checks
+            requirements = requirements[:max_report_checks]
+            input_checks.append(
+                {
+                    "id": "coverage.requirements_limited",
+                    "checkType": "input",
+                    "sourceType": "plan",
+                    "sourceId": None,
+                    "label": "覆盖报告范围",
+                    "status": "attention",
+                    "severity": "warning",
+                    "message": f"规划项过多，报告只逐项追踪前 {max_report_checks} 项，另有 {omitted} 项请人工复核。",
+                    "expected": [],
+                    "evidence": [],
+                }
+            )
+        if len(input_checks) > max_report_checks:
+            omitted = len(input_checks) - max_report_checks
+            input_checks = input_checks[: max_report_checks - 1] + [
+                {
+                    "id": "coverage.input_checks_limited",
+                    "checkType": "input",
+                    "sourceType": "plan",
+                    "sourceId": None,
+                    "label": "规划风险范围",
+                    "status": "attention",
+                    "severity": "warning",
+                    "message": f"风险项过多，另有 {omitted + 1} 项未逐项展示，请先精简或整理场景卡。",
+                    "expected": [],
+                    "evidence": [],
+                }
+            ]
+        return (
+            ContextLayer("story_guidance", content, self.tokenizer.count(content), items),
+            {
+                "inputChecks": input_checks,
+                "requirements": requirements,
+                "retrievalNodes": bounded_nodes,
+                "skillNodes": bounded_nodes,
+            },
         )
 
     async def _outgoing_relation_lines(
@@ -213,7 +579,13 @@ class ContextAssembler:
             )
         return by_entry
 
-    async def _build_layer1_resident(self, project_id: str, chapter_id: str) -> ContextLayer:
+    async def _build_layer1_resident(
+        self,
+        project_id: str,
+        chapter_id: str,
+        *,
+        story_guidance: ContextLayer,
+    ) -> ContextLayer:
         """
         Layer 1: 常驻设定
         - 全量加载 resident=True 的条目
@@ -238,6 +610,9 @@ class ContextAssembler:
         # 序列化为文本
         lines = []
         items = []
+        if story_guidance.content:
+            lines.append(f"# 作者规划的作品承诺与本章场景\n{story_guidance.content}")
+            items.extend(story_guidance.items)
         for entry in entries:
             text = f"## {entry.name} ({entry.kind})\n{entry.description}\n"
             if entry.attrs:

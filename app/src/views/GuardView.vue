@@ -23,6 +23,8 @@ const { toProject } = useProjectNavigation()
 const selectedId = ref<string | null>(null)
 const selectedTemporalClaimId = ref<number | null>(null)
 const selectedOffsetDays = ref(0)
+const scopedChapterId = computed(() => typeof route.query.chapter === 'string' ? route.query.chapter : null)
+const scopedChapter = computed(() => project.chapters.find((chapter) => chapter.id === scopedChapterId.value))
 
 onMounted(() => {
   shell.setCrumb('一致性守卫')
@@ -37,7 +39,9 @@ const tabs: { key: GuardKind | 'resolved'; label: string; note: string }[] = [
 
 /** 高严重度排前面，这是唯一的优先级信号——不引入黄绿蓝色阶 */
 const rows = computed<GuardIssue[]>(() =>
-  [...guard.visible].sort((a, b) => (a.severity === b.severity ? 0 : a.severity === 'high' ? -1 : 1))
+  guard.visible
+    .filter((issue) => !scopedChapterId.value || issue.chapterId === scopedChapterId.value)
+    .sort((a, b) => (a.severity === b.severity ? 0 : a.severity === 'high' ? -1 : 1))
 )
 
 const selected = computed(() => rows.value.find((i) => i.id === selectedId.value) ?? rows.value[0] ?? null)
@@ -100,6 +104,7 @@ const temporalValueValid = computed(() =>
 
 const guardGridRows = computed(() => [
   'auto',
+  scopedChapterId.value ? 'auto' : '',
   timelineStatus.value ? 'auto' : '',
   guard.temporalReviews.length ? 'auto' : '',
   'minmax(0, 1fr)'
@@ -177,8 +182,11 @@ function act(issue: GuardIssue, action: string, index: number) {
 }
 
 function openIssueChapter(issue: GuardIssue) {
+  const directChapter = issue.chapterId
+    ? project.chapters.find((item) => item.id === issue.chapterId)
+    : undefined
   const indexes = [...issue.chapterRef.matchAll(/\d+/g)].map((match) => Number(match[0]))
-  const chapter = [...indexes]
+  const chapter = directChapter ?? [...indexes]
     .reverse()
     .map((index) => project.chapters.find((item) => item.index === index))
     .find(Boolean)
@@ -187,6 +195,12 @@ function openIssueChapter(issue: GuardIssue) {
     path: toProject('write'),
     query: chapter ? { chapter: chapter.id } : undefined
   })
+}
+
+function clearChapterScope() {
+  const query = { ...route.query }
+  delete query.chapter
+  router.replace({ query })
 }
 </script>
 
@@ -245,6 +259,11 @@ function openIssueChapter(issue: GuardIssue) {
           </button>
         </div>
       </div>
+    </div>
+
+    <div v-if="scopedChapterId" class="guard-chapter-scope">
+      <span><strong>本章守卫</strong>{{ scopedChapter ? `第 ${scopedChapter.index} 章 · ${scopedChapter.title || '未命名'}` : '当前章节' }}</span>
+      <button class="wk-btn wk-btn-xs" type="button" @click="clearChapterScope">查看全书</button>
     </div>
 
     <div
@@ -476,6 +495,9 @@ function openIssueChapter(issue: GuardIssue) {
 </template>
 
 <style scoped>
+.guard-chapter-scope { min-height: 38px; display: flex; align-items: center; justify-content: space-between; gap: var(--u3); padding: 6px var(--u4); border-bottom: var(--hair) solid var(--line-strong); background: var(--panel); color: var(--ink-3); font-size: var(--fs-sm); }
+.guard-chapter-scope span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.guard-chapter-scope strong { margin-right: 8px; color: var(--alert-ink); }
 .temporal-review {
   border-bottom: var(--rule) solid var(--line-strong);
   background: var(--panel);

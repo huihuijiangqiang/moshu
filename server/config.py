@@ -60,9 +60,13 @@ class Settings(BaseSettings):
     wechat_pay_serial_no: Optional[str] = None
     wechat_pay_private_key_path: Optional[str] = None
     wechat_pay_api_v3_key: Optional[str] = None
+    wechat_pay_platform_certificates_dir: Optional[str] = None
+    wechat_pay_api_base_url: str = "https://api.mch.weixin.qq.com"
     alipay_app_id: Optional[str] = None
     alipay_private_key_path: Optional[str] = None
     alipay_alipay_public_key_path: Optional[str] = None
+    alipay_gateway_url: str = "https://openapi.alipay.com/gateway.do"
+    payment_request_timeout: float = 15.0
 
     # Consistency pipeline - 抽取/摘要/嵌入使用的网关与模型（不得在代码里硬编码）
     consistency_gateway_tier: str = "main"  # cheap, main, premium

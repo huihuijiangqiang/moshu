@@ -18,6 +18,7 @@ import { useShellStore } from '@/stores/shell'
 import { BodyConflictError, contentApi } from '@/api/content'
 import { GenerationError, generationDraftApi, streamChapter, streamInline } from '@/api/generation'
 import { ReviewConflictError, reviewApi } from '@/api/reviews'
+import { scenesApi, type ChapterScene } from '@/api/scenes'
 import type { GenerationControls, GenerationDraftDetail, GenerationDraftSummary, InlineGenerateOptions, ReviewAnchor, ReviewComment, ReviewRound, ReviewWorkspace, TextReplacementRun } from '@/types'
 
 defineOptions({ name: 'WorkspaceView' })
@@ -47,6 +48,7 @@ const reviewLoading = ref(false)
 const reviewBusy = ref(false)
 const reviewError = ref('')
 const mobileReadOnly = ref(false)
+const activeScene = ref<ChapterScene | null>(null)
 let abort: (() => void) | null = null
 let disposed = false
 let draftLoadSequence = 0
@@ -85,6 +87,7 @@ const {
 } = useAutosave(chapterId, html)
 
 const requestedChapterId = computed(() => typeof route.query.chapter === 'string' ? route.query.chapter : null)
+const requestedSceneId = computed(() => typeof route.query.scene === 'string' ? route.query.scene : null)
 const autoGenerateRequested = computed(() => route.query.autoGenerate === '1')
 const projectId = computed(() => store.project?.id)
 
@@ -113,8 +116,9 @@ function highlightSentenceParagraph(paragraphId: string) {
 
 // 切章或跨页打开指定章节：正文返回后再写入同一个编辑器实例。
 watch(
-  [() => store.activeId, () => store.chapters.length, requestedChapterId],
-  async ([activeId, , requestedId]) => {
+  [() => store.activeId, () => store.chapters.length, requestedChapterId, requestedSceneId],
+  async ([activeId, , requestedId, requestedScene]) => {
+    if (route.path !== toProject('write')) return
     if (suppressRouteCleanupWatch && !requestedId) return
     const id = requestedId && store.chapters.some((chapter) => chapter.id === requestedId)
       ? requestedId
@@ -122,11 +126,24 @@ watch(
     if (!id) return
     const sentenceTarget = requestedId === id ? sentenceRouteTarget() : null
     await store.openChapter(id)
-    if (disposed || store.activeId !== id) return
+    if (disposed || route.path !== toProject('write') || store.activeId !== id) return
+
+    if (requestedScene && requestedId === id) {
+      try {
+        const sceneCards = await scenesApi.list(id)
+        if (disposed || route.path !== toProject('write') || store.activeId !== id) return
+        activeScene.value = sceneCards.find((scene) => scene.id === requestedScene) ?? null
+        paneTab.value = 'body'
+      } catch {
+        activeScene.value = null
+      }
+    } else if (activeScene.value?.chapterId !== id) {
+      activeScene.value = null
+    }
 
     const content = store.chapters.find((chapter) => chapter.id === id)?.content ?? ''
     await prepareChapter(id, content)
-    if (disposed || store.activeId !== id) return
+    if (disposed || route.path !== toProject('write') || store.activeId !== id) return
     const currentEditor = editor.value
     if (!currentEditor || currentEditor.isDestroyed) return
     currentEditor.commands.setContent(content, { emitUpdate: false })
@@ -162,6 +179,7 @@ watch(
         && (store.chapters.find((chapter) => chapter.id === id)?.outline.length ?? 0) > 0
       const query = { ...route.query }
       delete query.chapter
+      delete query.scene
       delete query.paragraph
       delete query.start
       delete query.end
@@ -755,6 +773,19 @@ function editChapterPlan() {
   if (!store.active) return
   router.push({ path: toProject('outline'), query: { chapter: store.active.id } })
 }
+
+function openActiveScenePlan() {
+  if (!store.active || !activeScene.value) return
+  router.push({
+    path: toProject('outline'),
+    query: { chapter: store.active.id, mode: 'scenes', scene: activeScene.value.id }
+  })
+}
+
+function openActiveSceneGuard() {
+  if (!store.active) return
+  router.push({ path: toProject('guard'), query: { chapter: store.active.id } })
+}
 </script>
 
 <template>
@@ -819,6 +850,20 @@ function editChapterPlan() {
         <span><strong>手机只读</strong> 正文不会在小屏上被误改</span>
         <button type="button" @click="openPanel('right')">记一条灵感</button>
       </div>
+
+      <section v-if="activeScene" class="scene-context-strip" aria-label="当前场景卡片">
+        <span class="scene-context-index">场 {{ String(activeScene.order).padStart(2, '0') }}</span>
+        <div class="scene-context-main">
+          <strong>{{ activeScene.goal || '未填写场景目标' }}</strong>
+          <span>{{ activeScene.obstacle ? `阻力：${activeScene.obstacle}` : '阻力尚未补充' }}</span>
+        </div>
+        <div v-if="activeScene.turn" class="scene-context-turn"><span>转折</span><strong>{{ activeScene.turn }}</strong></div>
+        <div class="scene-context-actions">
+          <button class="wk-btn wk-btn-xs" type="button" @click="openActiveScenePlan"><AppIcon name="outline" />场景卡片</button>
+          <button class="wk-btn wk-btn-xs" type="button" @click="openActiveSceneGuard"><AppIcon name="guard" />本章守卫</button>
+          <button type="button" title="收起当前场景" aria-label="收起当前场景" @click="activeScene = null"><AppIcon name="close" :size="14" /></button>
+        </div>
+      </section>
 
       <div v-if="chapterActionError" class="workspace-action-error" role="alert" aria-live="polite">
         {{ chapterActionError }}
@@ -991,12 +1036,29 @@ function editChapterPlan() {
 }
 .paper-history-button:hover { color: var(--ink); background: var(--panel-sunken); border-color: var(--line); }
 .paper-history-button:focus-visible { outline: 2px solid var(--primary); outline-offset: 1px; }
+.scene-context-strip { min-width: 0; display: grid; grid-template-columns: auto minmax(180px, 1fr) minmax(140px, .7fr) auto; align-items: stretch; border-bottom: var(--hair) solid var(--line-strong); background: var(--panel); box-shadow: inset 3px 0 0 var(--alert); }
+.scene-context-index { display: grid; place-items: center; min-width: 58px; padding: 9px 10px; border-right: var(--hair) solid var(--line); color: var(--alert-ink); font: 700 10px/1 var(--font-mono); }
+.scene-context-main, .scene-context-turn { min-width: 0; display: grid; align-content: center; gap: 3px; padding: 8px 12px; border-right: var(--hair) solid var(--line); }
+.scene-context-main strong, .scene-context-turn strong { overflow: hidden; color: var(--ink); font-size: var(--fs-sm); text-overflow: ellipsis; white-space: nowrap; }
+.scene-context-main span, .scene-context-turn span { overflow: hidden; color: var(--ink-3); font-size: var(--fs-xs); text-overflow: ellipsis; white-space: nowrap; }
+.scene-context-turn span { color: var(--alert-ink); font: 700 9px/1.2 var(--font-mono); }
+.scene-context-actions { display: flex; align-items: center; gap: 5px; padding: 7px 9px; }
+.scene-context-actions > button:last-child { width: 26px; height: 26px; display: grid; place-items: center; padding: 0; border: 0; color: var(--ink-3); background: transparent; cursor: pointer; }
+.scene-context-actions > button:focus-visible { outline: 2px solid var(--primary); outline-offset: 1px; }
 .mobile-readonly-banner { min-height: 38px; display: flex; align-items: center; justify-content: space-between; gap: var(--u3); padding: 6px var(--u3); border-bottom: var(--hair) solid var(--primary-line); color: var(--ink-3); background: var(--primary-soft); font-size: var(--fs-xs); }
 .mobile-readonly-banner strong { margin-right: 5px; color: var(--primary); }
 .mobile-readonly-banner button { flex: none; min-height: 26px; padding: 0 8px; border: var(--hair) solid var(--primary); border-radius: 3px; color: var(--primary); background: transparent; font-size: var(--fs-xs); cursor: pointer; }
 .mobile-readonly-banner button:hover { color: var(--paper); background: var(--primary); }
 .workspace-action-error { display: flex; align-items: center; justify-content: space-between; gap: var(--u3); padding: 7px var(--u4); color: var(--alert-ink); background: var(--alert-soft); border-bottom: var(--hair) solid var(--alert-line); font-size: var(--fs-sm); line-height: 1.5; }
 .workspace-action-error button { flex: none; padding: 2px 6px; color: var(--alert-ink); background: transparent; border: var(--hair) solid var(--alert); border-radius: 3px; font-size: var(--fs-xs); cursor: pointer; }
+@media (max-width: 1100px) {
+  .scene-context-strip { grid-template-columns: auto minmax(0, 1fr) auto; }
+  .scene-context-turn { display: none; }
+}
+@media (max-width: 700px) {
+  .scene-context-strip { grid-template-columns: auto minmax(0, 1fr); }
+  .scene-context-actions { grid-column: 1 / -1; justify-content: flex-end; border-top: var(--hair) solid var(--line); }
+}
 :deep(.review-located-paragraph) {
   background: var(--alert-soft);
   box-shadow: -4px 0 0 var(--alert);
