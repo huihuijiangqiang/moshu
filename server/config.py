@@ -31,6 +31,10 @@ class Settings(BaseSettings):
     access_token_expire_minutes: int = 30
     refresh_token_expire_days: int = 30
 
+    # 首次部署引导：仅临时设置，完成首个管理员创建后应从运行环境移除。
+    # 不设置时不会开放 bootstrap API；普通注册流程不受影响。
+    bootstrap_token: Optional[str] = None
+
     # Model Gateway
     model_gateway_cheap_url: str
     model_gateway_cheap_key: str

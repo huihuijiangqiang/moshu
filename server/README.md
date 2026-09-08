@@ -125,6 +125,10 @@ docker compose run --rm migration
 docker compose up -d --build api worker dispatcher beat frontend
 ```
 
+首次部署空库时，可临时设置 `BOOTSTRAP_TOKEN` 并调用 `POST /auth/bootstrap` 创建唯一
+`super_admin`。该接口要求用户表为空，成功后应立即移除环境变量；令牌不会写入审计日志，
+已有用户的实例会返回 `BOOTSTRAP_ALREADY_COMPLETED`。
+
 ## 已实现
 
 ### 数据模型（61张表）

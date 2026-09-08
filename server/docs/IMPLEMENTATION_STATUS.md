@@ -411,6 +411,7 @@ PostgreSQL/pgvector 检索必须在真实部署上单独压测；该脚本只覆
 
 #### 认证 (`api/auth.py`)
 - ✅ `POST /auth/register` - 邮箱密码注册
+- ✅ `POST /auth/bootstrap` - 首次部署用一次性环境变量令牌创建唯一 `super_admin`；仅空用户表可用，成功后应移除令牌；令牌配置期间普通注册在空库会返回 `BOOTSTRAP_REQUIRED`
 - ✅ `POST /auth/login` - 邮箱密码登录
 - ✅ `POST /auth/refresh` - 持久 session 内轮换 refresh JWT，旧 token 重放返回 401
 - ✅ `POST /auth/logout` / `POST /auth/logout-all` - 吊销当前/全部会话，access token 即时失效

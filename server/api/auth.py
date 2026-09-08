@@ -1,5 +1,6 @@
 """Authentication endpoints and authorization dependencies."""
 
+import asyncio
 import base64
 import hashlib
 import hmac
@@ -11,11 +12,11 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from jose import JWTError, jwt
 from pydantic import BaseModel, Field, field_validator
-from sqlalchemy import select
+from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from config import settings
-from db.models_admin import AuthSession, SystemSetting
+from db.models_admin import AdminAuditLog, AuthSession, SystemSetting
 from db.models_core import Chapter, Project, User
 from db.models_org import ChapterAssignment, OrgMember
 from db.session import get_db
@@ -24,6 +25,10 @@ from services.usage import next_month_start
 router = APIRouter()
 security = HTTPBearer(auto_error=False)
 _PASSWORD_ITERATIONS = 210_000
+# SQLite has no transaction-level advisory lock.  This lock still makes the
+# bootstrap endpoint safe in the supported single-process SQLite deployment;
+# PostgreSQL uses pg_advisory_xact_lock below for multi-worker safety.
+_BOOTSTRAP_SQLITE_LOCK = asyncio.Lock()
 
 
 class UserOut(BaseModel):
@@ -47,6 +52,12 @@ class RegisterRequest(BaseModel):
         if "@" not in normalized:
             raise ValueError("email must contain @")
         return normalized
+
+
+class BootstrapRequest(RegisterRequest):
+    """Credentials for the one-time first administrator bootstrap."""
+
+    bootstrap_token: str = Field(min_length=16, max_length=512)
 
 
 class LoginRequest(BaseModel):
@@ -194,8 +205,8 @@ def _decode_token(token: str, expected_type: str) -> dict:
         raise _credentials_error() from error
 
 
-@router.post("/register", response_model=TokenResponse, status_code=201)
-async def register(request: RegisterRequest, db: AsyncSession = Depends(get_db)) -> TokenResponse:
+async def _register_user(request: RegisterRequest, db: AsyncSession) -> TokenResponse:
+    """Create a regular account and commit its session."""
     registration = await db.get(SystemSetting, "registration_enabled")
     if registration is not None and registration.value.get("enabled") is False:
         raise HTTPException(status_code=403, detail={"code": "REGISTRATION_DISABLED"})
@@ -224,6 +235,98 @@ async def register(request: RegisterRequest, db: AsyncSession = Depends(get_db))
     db.add(user)
     await db.flush()
     return await _token_response(user, db)
+
+
+async def _run_bootstrap_locked(db: AsyncSession, operation):
+    """Run an account-creation operation under the bootstrap serialization lock."""
+    dialect = db.get_bind().dialect.name
+    if dialect == "postgresql":
+        await db.execute(text("SELECT pg_advisory_xact_lock(hashtext('moshu:auth-bootstrap'))"))
+        try:
+            return await operation()
+        except Exception:
+            await db.rollback()
+            raise
+
+    async with _BOOTSTRAP_SQLITE_LOCK:
+        try:
+            return await operation()
+        except Exception:
+            await db.rollback()
+            raise
+
+
+@router.post("/register", response_model=TokenResponse, status_code=201)
+async def register(request: RegisterRequest, db: AsyncSession = Depends(get_db)) -> TokenResponse:
+    # Once a deployment exposes the bootstrap endpoint, ordinary registration
+    # cannot race it for the empty database.  After the first admin exists,
+    # registration continues under the same lock and retains its old policy.
+    if settings.bootstrap_token:
+        async def guarded_register() -> TokenResponse:
+            user_count = await db.scalar(select(func.count(User.id)))
+            if not user_count:
+                raise HTTPException(status_code=409, detail={"code": "BOOTSTRAP_REQUIRED"})
+            return await _register_user(request, db)
+
+        return await _run_bootstrap_locked(db, guarded_register)
+    return await _register_user(request, db)
+
+
+async def _bootstrap_user(request: BootstrapRequest, db: AsyncSession) -> TokenResponse:
+    """Create the first account while the caller holds the bootstrap lock."""
+    user_count = await db.scalar(select(func.count(User.id)))
+    if user_count:
+        raise HTTPException(status_code=409, detail={"code": "BOOTSTRAP_ALREADY_COMPLETED"})
+
+    user = User(
+        id=f"u_{secrets.token_hex(12)}",
+        name=request.name.strip(),
+        email=request.email,
+        password_hash=hash_password(request.password),
+        plan="studio",
+        system_role="super_admin",
+        is_active=True,
+        quota_remaining=0,
+        quota_total=0,
+        quota_resets_at=next_month_start(datetime.now(UTC)),
+    )
+    db.add(user)
+    await db.flush()
+    db.add(
+        AdminAuditLog(
+            # No authenticated actor exists during bootstrap.  Keep the
+            # nullable actor field empty and identify the bootstrap action in
+            # the immutable detail payload instead of attributing it to the
+            # account being created.
+            actor_id=None,
+            action="auth.bootstrap",
+            target_type="user",
+            target_id=user.id,
+            detail={"method": "environment_token", "system_role": "super_admin", "plan": "studio"},
+            created_at=datetime.now(UTC),
+        )
+    )
+    return await _token_response(user, db)
+
+
+@router.post("/bootstrap", response_model=TokenResponse, status_code=201)
+async def bootstrap(request: BootstrapRequest, db: AsyncSession = Depends(get_db)) -> TokenResponse:
+    """Atomically create the first system super administrator.
+
+    This endpoint is intentionally unavailable unless ``BOOTSTRAP_TOKEN`` is
+    configured in the process environment.  It never accepts an existing JWT;
+    after any user exists it permanently returns ``BOOTSTRAP_ALREADY_COMPLETED``.
+    Remove the environment variable after successful setup.
+    """
+    configured = settings.bootstrap_token
+    if not configured:
+        raise HTTPException(status_code=503, detail={"code": "BOOTSTRAP_NOT_CONFIGURED"})
+    if not hmac.compare_digest(request.bootstrap_token, configured):
+        raise HTTPException(status_code=401, detail={"code": "INVALID_BOOTSTRAP_TOKEN"})
+
+    # PostgreSQL's transaction-scoped advisory lock serializes all workers.
+    # SQLite is only used for local/single-process tests and development.
+    return await _run_bootstrap_locked(db, lambda: _bootstrap_user(request, db))
 
 
 @router.post("/login", response_model=TokenResponse)
