@@ -39,6 +39,7 @@ const emit = defineEmits<{
   downgradeGeneration: []
   stop: []
   insertDraft: [draft: GenerationDraftDetail]
+  continueDraft: [draft: GenerationDraftDetail]
   rejectDraft: [id: string]
   refreshDrafts: []
   refreshReviews: []
@@ -77,6 +78,7 @@ const previewOpen = ref(false)
 const previewLoading = ref(false)
 const previewError = ref('')
 const preview = ref<GenerationPreview | null>(null)
+const previewOptionsKey = ref('')
 const notes = ref<ProjectNote[]>([])
 const noteDraft = ref('')
 const notesLoading = ref(false)
@@ -182,39 +184,60 @@ watch(
   { immediate: true }
 )
 
-function requestGeneration() {
-  emit('generate', {
+function generationOptions(): GenerationControls {
+  return {
     targetWords: Math.max(200, Math.min(20000, targetWords.value || 3000)),
     model: model.value,
     useStyleProfile: true,
     dialogueDensity: 'high'
-  })
+  }
 }
 
-async function openPromptPreview() {
-  if (!project.activeId || previewLoading.value) return
+function generationOptionsKey(options = generationOptions()) {
+  return JSON.stringify({ chapterId: project.activeId, ...options })
+}
+
+const previewStale = computed(() => Boolean(preview.value && previewOptionsKey.value !== generationOptionsKey()))
+
+async function loadPromptPreview(showPanel: boolean): Promise<GenerationPreview | null> {
+  if (!project.activeId || previewLoading.value) return null
   const requestId = ++previewRequest
   const chapterId = project.activeId
-  previewOpen.value = true
+  const options = generationOptions()
+  const optionsKey = generationOptionsKey(options)
+  if (showPanel) previewOpen.value = true
   previewLoading.value = true
   previewError.value = ''
   try {
-    const result = await previewGeneration({
-      chapterId,
-      targetWords: Math.max(200, Math.min(20000, targetWords.value || 3000)),
-      model: model.value,
-      useStyleProfile: true,
-      dialogueDensity: 'high'
-    })
-    if (requestId === previewRequest) preview.value = result
+    const result = await previewGeneration({ chapterId, ...options })
+    if (requestId !== previewRequest || chapterId !== project.activeId || optionsKey !== generationOptionsKey()) return null
+    preview.value = result
+    previewOptionsKey.value = optionsKey
+    return result
   } catch (error) {
     if (requestId === previewRequest) {
       preview.value = null
       previewError.value = error instanceof Error ? error.message : '提示词预览加载失败'
+      previewOpen.value = true
     }
+    return null
   } finally {
     if (requestId === previewRequest) previewLoading.value = false
   }
+}
+
+async function requestGeneration() {
+  const result = await loadPromptPreview(false)
+  if (!result) return
+  if (result.preflight.blocking) {
+    previewOpen.value = true
+    return
+  }
+  emit('generate', generationOptions())
+}
+
+function openPromptPreview() {
+  void loadPromptPreview(true)
 }
 
 function closePromptPreview() {
@@ -326,6 +349,7 @@ watch(() => project.activeId, () => {
   referenceStatesLoading.value = false
   previewOpen.value = false
   preview.value = null
+  previewOptionsKey.value = ''
   previewError.value = ''
   previewLoading.value = false
 })
@@ -467,14 +491,39 @@ function forwardReviewDecision(round: ReviewRound, decision: 'approved' | 'chang
       </div>
 
       <p v-if="previewLoading" class="prompt-preview-state">正在装配本章设定，不会调用模型或扣除积分…</p>
-      <p v-else-if="previewError" class="prompt-preview-state prompt-preview-error">{{ previewError }}</p>
+      <div v-else-if="previewError" class="prompt-preview-state prompt-preview-error" role="alert">
+        <p>{{ previewError }}</p>
+        <button class="wk-btn wk-btn-xs" type="button" @click="openPromptPreview">重新检查</button>
+      </div>
       <template v-else-if="preview">
+        <div v-if="previewStale" class="prompt-preview-stale" role="status">
+          <span>生成参数已变化，这份提示词不再对应当前设置。</span>
+          <button class="wk-btn wk-btn-xs" type="button" @click="openPromptPreview">按当前参数刷新</button>
+        </div>
         <div class="prompt-preview-summary">
           <span>{{ preview.chapterTitle }}</span>
           <span>{{ preview.model.id }} · {{ preview.targetWords }} 字</span>
           <span>{{ preview.provider.source === 'user' ? '自带模型' : '平台模型' }}</span>
           <span>{{ preview.tokenBudget.prompt.toLocaleString() }} tokens</span>
         </div>
+
+        <section class="prompt-preview-section" aria-labelledby="preflight-title">
+          <div class="wk-label" id="preflight-title">生成前检查</div>
+          <p
+            class="prompt-preview-note"
+            :class="preview.preflight.blocking ? 'prompt-preview-warning' : ''"
+          >
+            {{ preview.preflight.blocking ? '提示词超过硬预算，当前请求不应直接生成。' : preview.preflight.warningCount ? `有 ${preview.preflight.warningCount} 项规划需要作者复核。` : '预算、规划和索引检查通过。' }}
+          </p>
+          <details v-if="preview.preflight.checks.length" class="prompt-layer">
+            <summary>查看检查项</summary>
+            <ul class="prompt-preview-checks">
+              <li v-for="check in preview.preflight.checks" :key="check.id">
+                <strong>{{ check.id }}</strong><span>{{ check.message }}</span>
+              </li>
+            </ul>
+          </details>
+        </section>
 
         <section class="prompt-preview-section">
           <div class="wk-label">已加载技能 · {{ preview.skills.length }}</div>
@@ -535,8 +584,9 @@ function forwardReviewDecision(round: ReviewRound, decision: 'approved' | 'chang
           class="wk-btn wk-btn-block"
           type="button"
           data-primary="true"
+          :disabled="previewLoading"
           @click="requestGeneration"
-        >按章纲生成整章</button>
+        >{{ previewLoading ? '正在检查本章…' : '按章纲生成整章' }}</button>
         <button
           v-if="!props.generating"
           class="wk-btn wk-btn-block"
@@ -728,6 +778,13 @@ function forwardReviewDecision(round: ReviewRound, decision: 'approved' | 'chang
         <p v-else-if="selectedDraft.status === 'streaming'" class="draft-warning">候选仍在写入，完成或停止后才能处理。</p>
         <p v-if="draftDetailError" class="draft-warning" role="alert">{{ draftDetailError }}</p>
         <div class="draft-actions">
+          <button
+            v-if="selectedDraft.status === 'failed'"
+            class="wk-btn wk-btn-xs"
+            type="button"
+            :disabled="draftReviewBusy || props.generating"
+            @click="emit('continueDraft', selectedDraft)"
+          >从末尾继续</button>
           <button class="wk-btn wk-btn-xs" type="button" :disabled="selectedDraft.status === 'streaming'" @click="rejectSelected">舍弃</button>
           <button
             class="wk-btn wk-btn-xs"
@@ -878,6 +935,7 @@ function forwardReviewDecision(round: ReviewRound, decision: 'approved' | 'chang
 .prompt-preview-head h2 { margin: 3px 0 0; color: var(--ink); font-family: var(--font-prose); font-size: 20px; font-weight: 600; }
 .prompt-preview-close { width: 26px; height: 26px; padding: 0; color: var(--ink-3); background: transparent; border: 0; font-size: 20px; line-height: 1; cursor: pointer; }
 .prompt-preview-close:hover { color: var(--ink); }
+.prompt-preview-stale { display: flex; align-items: center; justify-content: space-between; gap: var(--u2); margin: var(--u3) 0; padding: var(--u2); color: var(--alert-ink); background: var(--alert-soft); border-left: 2px solid var(--alert); font-size: var(--fs-xs); line-height: 1.6; }
 .prompt-preview-summary { display: flex; flex-wrap: wrap; gap: 6px 12px; margin: var(--u3) 0; color: var(--ink-3); font: var(--fs-xs)/1.5 var(--font-mono); }
 .prompt-preview-summary span:first-child { color: var(--ink); font-family: var(--font-prose); font-size: var(--fs); }
 .prompt-preview-section { padding: var(--u3) 0; border-top: var(--hair) solid var(--line); }
@@ -886,6 +944,9 @@ function forwardReviewDecision(round: ReviewRound, decision: 'approved' | 'chang
 .prompt-skill small { color: var(--ink-4); }
 .prompt-preview-note { margin: var(--u2) 0 0; color: var(--ink-3); font-size: var(--fs-xs); line-height: 1.6; }
 .prompt-preview-warning { color: var(--alert-ink); }
+.prompt-preview-checks { display: grid; gap: 6px; margin: 8px 0 0; padding-left: 18px; color: var(--ink-3); font-size: var(--fs-xs); line-height: 1.55; }
+.prompt-preview-checks li { padding-left: 2px; }
+.prompt-preview-checks strong { display: block; color: var(--ink-2); font-family: var(--font-mono); font-size: 10px; font-weight: 500; }
 .prompt-preview-metric { color: var(--ink-3); font: 10px var(--font-mono); }
 .prompt-layer, .prompt-message { margin-top: 5px; background: var(--panel); border: var(--hair) solid var(--line); }
 .prompt-layer summary, .prompt-message summary { display: flex; justify-content: space-between; gap: var(--u2); padding: 7px 8px; color: var(--ink-2); font-size: var(--fs-xs); cursor: pointer; list-style: none; }
@@ -894,6 +955,7 @@ function forwardReviewDecision(round: ReviewRound, decision: 'approved' | 'chang
 .prompt-layer pre, .prompt-message pre { max-height: 220px; overflow: auto; margin: 0; padding: 8px; color: var(--ink-2); border-top: var(--hair) solid var(--line); font: 11px/1.7 var(--font-mono); white-space: pre-wrap; overflow-wrap: anywhere; }
 .prompt-preview-state { margin: var(--u4) 0; color: var(--ink-3); font-size: var(--fs-sm); line-height: 1.7; }
 .prompt-preview-error { color: var(--alert-ink); }
+.prompt-preview-error p { margin: 0 0 var(--u2); }
 .prompt-preview:focus-within { outline: 2px solid var(--primary-line); outline-offset: -2px; }
 .draft-refresh {
   display: grid;

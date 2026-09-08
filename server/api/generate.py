@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import uuid
 from datetime import UTC, datetime
@@ -19,7 +20,7 @@ from api.auth import (
     verify_chapter_assignment,
     verify_project_permission,
 )
-from db.models_core import Chapter, Project, User
+from db.models_core import Chapter, ChapterBody, Project, User
 from db.models_usage import GenerationDraft, GenerationRun
 from db.session import get_db
 from memory.assembler import ContextAssembler
@@ -88,6 +89,18 @@ class DraftReviewUpdateRequest(BaseModel):
     segment_ids: list[str] = Field(alias="segmentIds", min_length=1, max_length=500)
     decision: Literal["pending", "accepted", "rejected"]
     base_version: int = Field(alias="baseVersion", ge=0)
+
+
+class DraftContinueRequest(BaseModel):
+    """Options for continuing a failed candidate from its last checkpoint."""
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    target_words: int = Field(alias="targetWords", ge=200, le=20000)
+    model: Literal["basic", "advanced"] = "basic"
+    use_style_profile: bool = Field(True, alias="useStyleProfile")
+    dialogue_density: Literal["low", "mid", "high"] = Field("mid", alias="dialogueDensity")
+    instruction: str = Field("", max_length=2000)
 
 
 def get_generation_gateway() -> GenerationGateway:
@@ -171,6 +184,20 @@ async def _prepare_preview(
     return await _prepare(preview_request, user, db)
 
 
+def _enforce_generation_preflight(package: PromptPackage) -> None:
+    """Reject requests that cannot fit the hard context budget."""
+    preflight = package.preflight if isinstance(package.preflight, dict) else {}
+    if preflight.get("blocking"):
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "code": "GENERATION_PREFLIGHT_BLOCKED",
+                "message": "当前上下文超过生成预算，请先压缩设定或更新索引。",
+                "preflight": preflight,
+            },
+        )
+
+
 def _preview_payload(package: PromptPackage) -> dict:
     layers = [
         package.context.layer1_resident,
@@ -203,6 +230,7 @@ def _preview_payload(package: PromptPackage) -> dict:
         ],
         "scene": package.skills.scene,
         "coverage": package.coverage,
+        "preflight": package.preflight,
         "layers": [
             {
                 "key": layer.key,
@@ -223,6 +251,8 @@ def _generation_response(
     gateway: GenerationGateway,
     reservation: UsageReservation | None,
     request_summary: dict,
+    *,
+    initial_content: str = "",
 ) -> StreamingResponse:
     draft_id = uuid.uuid4().hex
 
@@ -232,6 +262,11 @@ def _generation_response(
         finalized = False
         generated_length = 0
         checkpoint_length = 0
+        source_body = await db.scalar(select(ChapterBody).where(ChapterBody.chapter_id == package.chapter.id))
+        draft_summary = dict(request_summary)
+        # ``0`` is the immutable empty-body revision. It lets continuation
+        # detect a body created after the candidate started.
+        draft_summary.setdefault("sourceBodyRev", source_body.rev if source_body is not None else 0)
         draft = GenerationDraft(
             id=draft_id,
             user_id=user.id,
@@ -239,9 +274,9 @@ def _generation_response(
             chapter_id=package.chapter.id,
             kind="chapter" if package.task == "chapter" else "inline",
             status="streaming",
-            content_text="",
-            generated_words=0,
-            request_summary=request_summary,
+            content_text=initial_content,
+            generated_words=count_generated_words(initial_content),
+            request_summary=draft_summary,
         )
         db.add(draft)
         try:
@@ -266,8 +301,9 @@ def _generation_response(
             failed_draft = await db.get(GenerationDraft, draft_id)
             if failed_draft is None:
                 return
-            prose = "".join(chunks)
-            if prose and failed_draft.run_id is None:
+            generated_prose = "".join(chunks)
+            prose = _merge_continuation_content(initial_content, generated_prose)
+            if generated_prose and failed_draft.run_id is None:
                 cached = usage.get("prompt_tokens_details") or {}
                 run = GenerationRun(
                     id=uuid.uuid4().hex,
@@ -278,8 +314,8 @@ def _generation_response(
                     model_tier=package.model_tier,
                     prompt_tokens=int(usage.get("prompt_tokens") or package.prompt_tokens),
                     cached_tokens=int(cached.get("cached_tokens") or 0),
-                    completion_tokens=int(usage.get("completion_tokens") or tokenizer.count(prose)),
-                    generated_words=count_generated_words(prose),
+                    completion_tokens=int(usage.get("completion_tokens") or tokenizer.count(generated_prose)),
+                    generated_words=count_generated_words(generated_prose),
                     accepted_words=0,
                     layer_report={
                         **package.layer_report,
@@ -308,6 +344,7 @@ def _generation_response(
                 "model": package.model_id,
                 "provider": package.route.source,
                 "coverage": package.coverage,
+                "preflight": package.preflight,
             }
         )
         try:
@@ -317,7 +354,7 @@ def _generation_response(
                     generated_length += len(event.text)
                     yield _sse({"type": "chunk", "text": event.text})
                     if generated_length - checkpoint_length >= 1000:
-                        prose = "".join(chunks)
+                        prose = _merge_continuation_content(initial_content, "".join(chunks))
                         draft.content_text = prose
                         draft.generated_words = count_generated_words(prose)
                         await db.commit()
@@ -325,8 +362,9 @@ def _generation_response(
                 elif event.usage:
                     usage = event.usage
 
-            prose = "".join(chunks)
-            completion_tokens = int(usage.get("completion_tokens") or tokenizer.count(prose))
+            generated_prose = "".join(chunks)
+            prose = _merge_continuation_content(initial_content, generated_prose)
+            completion_tokens = int(usage.get("completion_tokens") or tokenizer.count(generated_prose))
             prompt_tokens = int(usage.get("prompt_tokens") or package.prompt_tokens)
             cached = usage.get("prompt_tokens_details") or {}
             run = GenerationRun(
@@ -339,7 +377,7 @@ def _generation_response(
                 prompt_tokens=prompt_tokens,
                 cached_tokens=int(cached.get("cached_tokens") or 0),
                 completion_tokens=completion_tokens,
-                generated_words=count_generated_words(prose),
+                generated_words=count_generated_words(generated_prose),
                 accepted_words=0,
                 layer_report={
                     **package.layer_report,
@@ -354,7 +392,7 @@ def _generation_response(
             draft.run_id = run.id
             draft.status = "ready"
             draft.content_text = prose
-            draft.generated_words = run.generated_words
+            draft.generated_words = count_generated_words(prose)
             if reservation is not None:
                 charged = await settle_generation(
                     db,
@@ -499,6 +537,7 @@ async def generate_chapter(
     gateway: GenerationGateway = Depends(get_generation_gateway),
 ):
     package = await _prepare(request, user, db)
+    _enforce_generation_preflight(package)
     reservation = await _reserve(package, request, user, db)
     return _generation_response(package, user, db, gateway, reservation, _request_summary(request))
 
@@ -511,6 +550,7 @@ async def generate_inline(
     gateway: GenerationGateway = Depends(get_generation_gateway),
 ):
     package = await _prepare(request, user, db)
+    _enforce_generation_preflight(package)
     reservation = await _reserve(package, request, user, db)
     return _generation_response(package, user, db, gateway, reservation, _request_summary(request))
 
@@ -637,6 +677,111 @@ async def _load_draft(draft_id: str, user: User, db: AsyncSession, *, lock: bool
         raise HTTPException(status_code=404, detail="Chapter not found")
     await verify_chapter_assignment(chapter, user, db)
     return draft
+
+
+def _continuation_tail(content: str, *, max_chars: int = 12000) -> str:
+    """Keep complete paragraphs only so a resumed request has a stable seam."""
+    paragraphs = [
+        item.strip()
+        for item in content.replace("\r\n", "\n").replace("\r", "\n").split("\n")
+        if item.strip()
+    ]
+    selected: list[str] = []
+    size = 0
+    for paragraph in reversed(paragraphs):
+        if selected and size + len(paragraph) + 1 > max_chars:
+            break
+        selected.append(paragraph)
+        size += len(paragraph) + 1
+    return "\n".join(reversed(selected))
+
+
+def _merge_continuation_content(prefix: str, generated: str) -> str:
+    """Join a persisted candidate prefix with new output at a paragraph boundary."""
+    if not prefix:
+        return generated
+    if not generated:
+        return prefix
+    return f"{prefix.rstrip()}\n{generated.lstrip()}"
+
+
+@router.post("/drafts/{draft_id}/continue")
+async def continue_draft(
+    draft_id: str,
+    request: DraftContinueRequest,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+    gateway: GenerationGateway = Depends(get_generation_gateway),
+):
+    """Resume a failed draft without replacing the canonical chapter body."""
+    draft = await _load_draft(draft_id, user, db)
+    if draft.status != "failed" or not (draft.content_text or "").strip():
+        raise HTTPException(
+            status_code=409,
+            detail={"code": "DRAFT_NOT_CONTINUABLE", "message": "只有包含已保存内容的中断候选可以继续生成。"},
+        )
+    body = await db.scalar(select(ChapterBody).where(ChapterBody.chapter_id == draft.chapter_id))
+    metadata = draft.request_summary if isinstance(draft.request_summary, dict) else {}
+    source_body_rev = metadata.get("sourceBodyRev")
+    source_changed = (
+        isinstance(source_body_rev, int)
+        and (
+            (source_body_rev == 0 and body is not None)
+            or (source_body_rev > 0 and (body is None or body.rev != source_body_rev))
+        )
+    )
+    if source_changed:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "DRAFT_SOURCE_STALE",
+                "message": "正文在候选中断后已经发生变化，请重新生成或先处理当前正文版本。",
+                "sourceBodyRev": source_body_rev,
+                "currentBodyRev": body.rev if body is not None else 0,
+            },
+        )
+    tail = _continuation_tail(draft.content_text)
+    if not tail:
+        raise HTTPException(status_code=409, detail={"code": "DRAFT_NOT_CONTINUABLE"})
+    source_hash = hashlib.sha256(draft.content_text.encode("utf-8")).hexdigest()
+    continuation_instruction = (
+        "这是一次从中断候选继续的请求。以下内容是候选末尾已经生成的完整段落。"
+        "只从最后一句之后继续，绝不要复述、改写或重新输出这些段落；保持人物、时间、事实和语气连续。"
+    )
+    if request.instruction.strip():
+        continuation_instruction += f"\n作者补充要求：{request.instruction.strip()}"
+    inline = InlineGenerationRequest(
+        chapterId=draft.chapter_id,
+        targetWords=request.target_words,
+        model=request.model,
+        useStyleProfile=request.use_style_profile,
+        dialogueDensity=request.dialogue_density,
+        action="续写",
+        selectedText="",
+        nearbyText=tail,
+        instruction=continuation_instruction,
+    )
+    package = await _prepare(inline, user, db)
+    _enforce_generation_preflight(package)
+    reservation = await _reserve(package, inline, user, db)
+    summary = _request_summary(inline)
+    summary.update(
+        {
+            "continuationOfDraftId": draft.id,
+            "continuationSourceHash": source_hash,
+            "continuationTailChars": len(tail),
+            "sourceBodyRev": body.rev if body is not None else 0,
+        }
+    )
+    return _generation_response(
+        package,
+        user,
+        db,
+        gateway,
+        reservation,
+        summary,
+        initial_content=draft.content_text,
+    )
 
 
 @router.get("/drafts")

@@ -9,8 +9,9 @@ embedding 列是 TEXT，`<=>` 运算符不存在。真正的距离计算、排�
 import pytest
 from sqlalchemy import select
 
+from db.models_chapter_chunks import ChapterChunk
 from db.models_codex import CodexAlias, CodexEntry
-from db.models_core import Project, User
+from db.models_core import Chapter, ChapterBody, Project, User
 from services.retrieval import ConsistencyRetrieval
 from tests.integration.conftest import requires_postgres
 
@@ -70,6 +71,19 @@ async def seeded(pg_session):
             target_words_daily=3000,
         )
     )
+    await pg_session.flush()
+    pg_session.add(
+        Chapter(
+            id="ch_pg",
+            project_id="proj_pg",
+            title="向量章节",
+            idx=1024,
+            words=10,
+            outline=[],
+        )
+    )
+    await pg_session.flush()
+    pg_session.add(ChapterBody(chapter_id="ch_pg", content_html="<p>当前版本</p>", content_json={}, rev=2))
     await pg_session.flush()
 
     entries = [
@@ -254,6 +268,51 @@ async def test_l3_excludes_pending_entries_by_default(seeded_with_pending):
     )
 
     assert "cx_pending" not in [row["entry_id"] for row in results]
+
+
+async def test_chapter_chunk_retrieval_excludes_historical_body_revisions(seeded):
+    """Historical vectors remain stored but the ChapterBody.rev join hides them."""
+    seeded.add_all(
+        [
+            ChapterChunk(
+                id="chunk_old",
+                project_id="proj_pg",
+                chapter_id="ch_pg",
+                body_rev=1,
+                chunk_index=0,
+                paragraph_start=0,
+                paragraph_end=0,
+                paragraph_ids=["old"],
+                content_text="旧版本伏笔",
+                content_hash="old-hash",
+                embedding=unit_vector(0),
+                embedding_text_hash="old-hash",
+                status="ready",
+            ),
+            ChapterChunk(
+                id="chunk_current",
+                project_id="proj_pg",
+                chapter_id="ch_pg",
+                body_rev=2,
+                chunk_index=0,
+                paragraph_start=0,
+                paragraph_end=0,
+                paragraph_ids=["current"],
+                content_text="当前版本事实",
+                content_hash="current-hash",
+                embedding=unit_vector(0),
+                embedding_text_hash="current-hash",
+                status="ready",
+            ),
+        ]
+    )
+    await seeded.commit()
+    retrieval = ConsistencyRetrieval(StubEmbeddingProvider({"查询": unit_vector(0)}))
+    results = await retrieval.retrieve_chapter_chunks_l3(
+        seeded, "proj_pg", "查询", top_k=10, threshold=0.0, chapter_ids=["ch_pg"]
+    )
+    assert [row["chunk_id"] for row in results] == ["chunk_current"]
+    assert results[0]["body_rev"] == 2
 
 
 async def test_l3_includes_pending_entries_when_asked_explicitly(seeded_with_pending):

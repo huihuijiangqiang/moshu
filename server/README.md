@@ -22,7 +22,7 @@ server/
 │   ├── projects.py   # 项目管理
 │   ├── chapters.py   # 章节读写（含乐观锁）
 │   └── ...
-├── db/               # 数据模型（60张表）
+├── db/               # 数据模型（61张表）
 │   ├── models_core.py    # 骨架 7张
 │   ├── models_codex.py   # 设定库 5张
 │   ├── models_guard.py   # 守卫 2张
@@ -117,7 +117,7 @@ uvicorn main:app --reload --host 0.0.0.0 --port 8000
 PostgreSQL、Redis 与 Alembic head，全部通过时返回 200，否则返回 503 和逐项状态。
 响应包含 `BUILD_REVISION`，用于判断正在运行的实例是否与待验收提交一致。
 
-当前 migration head 为 `033_payment_provider_workflow`。更新代码后建议显式执行 migration
+当前 migration head 为 `034_chapter_chunks`。更新代码后建议显式执行 migration
 容器，再重建 API 和 worker，避免复用旧的已完成 migration 容器：
 
 ```bash
@@ -127,7 +127,7 @@ docker compose up -d --build api worker dispatcher beat frontend
 
 ## 已实现
 
-### 数据模型（60张表）
+### 数据模型（61张表）
 - ✅ 核心 7张：users, projects, volumes, chapters, chapter_bodies, chapter_versions, project_notes
 - ✅ 设定库 5张：codex_entries, codex_aliases, codex_refs, codex_relations, codex_state_changes
 - ✅ Embedding 运维 1张：codex_embedding_jobs
@@ -195,7 +195,7 @@ docker compose up -d --build api worker dispatcher beat frontend
 session、管理员设置与审计、项目/工作室 RBAC、设定库 CRUD 与 embedding 回填、
 持续章纲、版本化正文保存、四层上下文、SSE 生成、导出备份、用量结算、Guard
 扫描与 LLM 仲裁、平台后台模型用量台账、移动端只读与私有速记均已接通。后端单元/功能
-测试为 1297 passed，另有 37 个需要真实 PostgreSQL/pgvector 的集成测试按条件跳过；前端测试为 151 passed。
+测试为 1425 passed，另有 38 个需要真实 PostgreSQL/pgvector 的集成测试按条件跳过；前端测试为 166 passed。
 
 仍需在生产数据上继续验证的事项：
 

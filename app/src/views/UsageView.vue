@@ -10,21 +10,35 @@ const usage = useUsageStore()
 const products = ref<BillingProduct[]>([])
 const billingStatus = ref<BillingStatus | null>(null)
 const billingLoading = ref(false)
+const billingLoadError = ref('')
 const orders = ref<BillingOrder[]>([])
 const activeOrder = ref<BillingOrder | null>(null)
 const checkoutQr = ref('')
 const billingBusy = ref('')
 const billingError = ref('')
 
+async function loadBilling() {
+  billingLoading.value = true
+  billingLoadError.value = ''
+  const [productResult, statusResult, orderResult] = await Promise.allSettled([
+    billingApi.products(), billingApi.status(), billingApi.orders()
+  ])
+  if (productResult.status === 'fulfilled') products.value = productResult.value
+  if (statusResult.status === 'fulfilled') billingStatus.value = statusResult.value
+  if (orderResult.status === 'fulfilled') orders.value = orderResult.value
+  const failed = [productResult, statusResult, orderResult].filter((result) => result.status === 'rejected')
+  if (failed.length) {
+    billingLoadError.value = failed.length === 3
+      ? '支付商品、渠道状态和订单暂时无法读取。'
+      : '部分支付信息暂时无法读取。'
+  }
+  billingLoading.value = false
+}
+
 onMounted(() => {
   shell.setCrumb('用量与计费')
   void usage.load(true).catch(() => undefined)
-  billingLoading.value = true
-  void Promise.all([billingApi.products(), billingApi.status(), billingApi.orders()]).then(([availableProducts, status, recentOrders]) => {
-    products.value = availableProducts
-    billingStatus.value = status
-    orders.value = recentOrders
-  }).catch(() => undefined).finally(() => { billingLoading.value = false })
+  void loadBilling()
 })
 
 const data = computed(() => usage.summary)
@@ -35,6 +49,17 @@ const remainingPct = computed(() => {
 const maxDaily = computed(() => Math.max(1, ...(data.value?.daily.map((item) => item.credits) ?? [1])))
 const configuredProviders = computed(() => (['wechat', 'alipay'] as const).filter((provider) => billingStatus.value?.providers[provider].configured))
 const recentOrders = computed(() => orders.value.slice(0, 5))
+
+function providerStateLabel(state: string, configured: boolean) {
+  if (configured || state === 'ready') return '已就绪'
+  return ({
+    credentials_required: '待配置商户凭证',
+    invalid_configuration: '商户配置无效',
+    invalid_credentials: '商户凭证无效',
+    unavailable: '渠道暂不可用',
+    disabled: '渠道已停用'
+  } as Record<string, string>)[state] ?? '未就绪'
+}
 
 function orderStatus(status: BillingOrder['status']) {
   return ({ pending: '待支付', paid: '已到账', cancelled: '已关闭', failed: '失败', refund_pending: '退款处理中', refunded: '已退款', partially_refunded: '部分退款' })[status]
@@ -186,7 +211,11 @@ function resetDate(value: string | null) {
           <section class="recharge-section">
             <div class="section-line"><h2>充值积分</h2><span>人民币 / 一次性</span></div>
             <div v-if="billingLoading" class="billing-note">正在读取商品…</div>
-            <template v-else-if="products.length">
+            <div v-if="!billingLoading && billingLoadError" class="billing-load-error" role="alert">
+              <span>{{ billingLoadError }}</span>
+              <button class="wk-btn wk-btn-xs" type="button" @click="loadBilling">重试</button>
+            </div>
+            <template v-if="!billingLoading && products.length">
               <div v-for="product in products" :key="product.id" class="product-row">
                 <div><strong>{{ product.name }}</strong><small>{{ product.credits.toLocaleString() }} 积分</small></div>
                 <div class="product-purchase">
@@ -203,7 +232,12 @@ function resetDate(value: string | null) {
               </div>
               <p class="billing-note">支付渠道：{{ billingStatus?.providers.wechat.configured ? '微信支付' : '' }}{{ billingStatus?.providers.wechat.configured && billingStatus?.providers.alipay.configured ? '、' : '' }}{{ billingStatus?.providers.alipay.configured ? '支付宝' : '' }}{{ !billingStatus?.providers.wechat.configured && !billingStatus?.providers.alipay.configured ? '待管理员配置' : '' }}</p>
             </template>
-            <p v-else class="billing-note">充值商品尚未发布。管理员配置微信支付或支付宝后，这里会显示可购买的积分包。</p>
+            <p v-else-if="!billingLoading" class="billing-note">充值商品尚未发布。管理员配置微信支付或支付宝后，这里会显示可购买的积分包。</p>
+            <div v-if="billingStatus" class="billing-provider-list" aria-label="支付渠道状态">
+              <span v-for="provider in (['wechat', 'alipay'] as const)" :key="provider" :data-ready="billingStatus.providers[provider].configured">
+                {{ providerLabel(provider) }}：{{ providerStateLabel(billingStatus.providers[provider].state, billingStatus.providers[provider].configured) }}
+              </span>
+            </div>
             <p v-if="billingError" class="billing-error" role="alert">{{ billingError }}</p>
             <div v-if="recentOrders.length" class="order-history">
               <div class="section-line"><h2>最近订单</h2><span>{{ recentOrders.length }} 笔</span></div>
@@ -302,6 +336,9 @@ function resetDate(value: string | null) {
 .product-purchase { display: flex; align-items: center; justify-content: flex-end; gap: 6px; flex-wrap: wrap; }
 .product-purchase b { margin-right: 4px; }
 .billing-note { margin: 12px 0 0; color: var(--ink-3); font-size: 11px; line-height: 1.6; }
+.billing-load-error { margin: 12px 0 0; display: flex; align-items: center; justify-content: space-between; gap: 12px; color: var(--alert-ink); font-size: 11px; line-height: 1.6; }
+.billing-provider-list { display: flex; flex-wrap: wrap; gap: 6px 14px; margin-top: 10px; color: var(--ink-3); font-size: 11px; }
+.billing-provider-list span[data-ready="true"] { color: var(--ink-2); }
 .billing-error { margin: 12px 0 0; color: var(--alert-ink); font-size: 11px; line-height: 1.6; }
 .order-history { margin-top: 28px; }
 .order-row { min-height: 58px; display: grid; grid-template-columns: minmax(100px, 1fr) auto auto; align-items: center; gap: 10px; border-bottom: var(--hair) solid var(--line); }

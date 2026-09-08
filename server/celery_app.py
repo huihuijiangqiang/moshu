@@ -36,6 +36,7 @@ celery_app.conf.update(
         "consistency.rescan_temporal_dependents": {"queue": "consistency"},
         "consistency.arbitrate_issues": {"queue": "consistency"},
         "codex.backfill_embeddings": {"queue": "consistency"},
+        "codex.backfill_chapter_chunks": {"queue": "consistency"},
         "codex.recover_stale_embedding_jobs": {"queue": "outbox"},
     },
     beat_schedule={

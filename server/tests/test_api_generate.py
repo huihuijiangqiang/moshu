@@ -1,9 +1,10 @@
 import json
+from types import SimpleNamespace
 
 from sqlalchemy import select
 
 from api.generate import get_generation_gateway
-from db.models_core import User
+from db.models_core import ChapterBody, User
 from db.models_positioning import ProjectPositioning
 from db.models_scene_cards import ChapterScene
 from db.models_usage import GenerationDraft, GenerationRun, UsageLog
@@ -601,6 +602,127 @@ async def test_partial_provider_failure_keeps_recoverable_candidate(
     )
     assert accepted.status_code == 200
     assert accepted.json()["content"] == draft.content_text
+
+
+async def test_failed_draft_can_continue_from_tail_without_replacing_body(
+    app_client,
+    async_db_session,
+    seed_project,
+    auth_headers,
+):
+    await seed_project(user_id="continue_writer", project_id="continue_novel", chapter_ids=("continue_ch",))
+    async_db_session.add(
+        ChapterBody(
+            chapter_id="continue_ch",
+            content_html="<p>正文原有内容。</p>",
+            content_json={"type": "doc", "content": []},
+            rev=1,
+        )
+    )
+    draft = GenerationDraft(
+        id="draft_continue",
+        user_id="continue_writer",
+        project_id="continue_novel",
+        chapter_id="continue_ch",
+        kind="chapter",
+        status="failed",
+        content_text="第一段已经完成。\n最后一段停在这里。",
+        generated_words=20,
+        request_summary={"sourceBodyRev": 1},
+        error_code="stream_interrupted",
+    )
+    async_db_session.add(draft)
+    await async_db_session.commit()
+
+    fake = FakeGenerationGateway()
+    app.dependency_overrides[get_generation_gateway] = lambda: fake
+    try:
+        response = await app_client.post(
+            "/generate/drafts/draft_continue/continue",
+            headers=auth_headers("continue_writer"),
+            json={"targetWords": 800, "model": "basic"},
+        )
+    finally:
+        app.dependency_overrides.pop(get_generation_gateway, None)
+
+    assert response.status_code == 200
+    events = parse_sse(response.text)
+    assert events[-2]["type"] == "done"
+    generated = (await async_db_session.execute(
+        select(GenerationDraft).where(GenerationDraft.id != "draft_continue")
+    )).scalar_one()
+    assert generated.request_summary["continuationOfDraftId"] == "draft_continue"
+    assert generated.request_summary["continuationTailChars"] > 0
+    assert generated.content_text == (
+        "第一段已经完成。\n最后一段停在这里。\n沈禾推开粮铺的门。周掌柜抬眼看她。"
+    )
+    continuation_run = await async_db_session.get(GenerationRun, generated.run_id)
+    assert continuation_run is not None
+    assert generated.generated_words > continuation_run.generated_words
+    assert "最后一段停在这里。" in fake.packages[0].messages[1]["content"]
+    assert "绝不要复述" in fake.packages[0].messages[1]["content"]
+
+
+async def test_generation_blocks_when_preflight_exceeds_hard_budget(
+    app_client, seed_project, auth_headers, monkeypatch
+):
+    await seed_project(user_id="preflight_writer", project_id="preflight_novel", chapter_ids=("preflight_ch",))
+    import api.generate as generate_api
+
+    monkeypatch.setattr(
+        generate_api,
+        "_prepare",
+        lambda *args, **kwargs: _async_value(
+            SimpleNamespace(preflight={"blocking": True, "promptTokens": 26000, "budget": 25000})
+        ),
+    )
+    response = await app_client.post(
+        "/generate/chapter",
+        headers=auth_headers("preflight_writer"),
+        json={"chapterId": "preflight_ch", "targetWords": 1200, "model": "basic"},
+    )
+    assert response.status_code == 422
+    assert response.json()["detail"]["code"] == "GENERATION_PREFLIGHT_BLOCKED"
+
+
+async def test_continuation_detects_body_created_after_candidate_started(
+    app_client, async_db_session, seed_project, auth_headers
+):
+    await seed_project(user_id="empty_body_writer", project_id="empty_body_novel", chapter_ids=("empty_body_ch",))
+    async_db_session.add(
+        ChapterBody(
+            chapter_id="empty_body_ch",
+            content_html="<p>后来才保存的正文。</p>",
+            content_json={"type": "doc", "content": []},
+            rev=1,
+        )
+    )
+    async_db_session.add(
+        GenerationDraft(
+            id="draft_empty_body",
+            user_id="empty_body_writer",
+            project_id="empty_body_novel",
+            chapter_id="empty_body_ch",
+            kind="chapter",
+            status="failed",
+            content_text="候选已经写了一段。",
+            generated_words=8,
+            request_summary={"sourceBodyRev": 0},
+            error_code="stream_interrupted",
+        )
+    )
+    await async_db_session.commit()
+    response = await app_client.post(
+        "/generate/drafts/draft_empty_body/continue",
+        headers=auth_headers("empty_body_writer"),
+        json={"targetWords": 800, "model": "basic"},
+    )
+    assert response.status_code == 409
+    assert response.json()["detail"]["code"] == "DRAFT_SOURCE_STALE"
+
+
+async def _async_value(value):
+    return value
 
 
 async def test_draft_review_persists_paragraph_decisions_and_accepts_only_selected_text(

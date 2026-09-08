@@ -605,6 +605,14 @@ export interface GenerationMeta {
   model: string
   provider?: 'platform' | 'user'
   coverage?: GenerationCoverageReport
+  preflight?: {
+    status: 'ready' | 'attention' | 'blocked'
+    blocking: boolean
+    promptTokens: number
+    budget: number
+    warningCount: number
+    checks: Array<{ id: string; status: string; message: string }>
+  }
 }
 
 export type GenerationDraftStatus = 'streaming' | 'ready' | 'failed' | 'accepted' | 'rejected'
@@ -639,6 +647,10 @@ export interface GenerationDraftSummary {
     targetWords?: number
     useStyleProfile?: boolean
     dialogueDensity?: GenerateOptions['dialogueDensity']
+    continuationOfDraftId?: string
+    continuationSourceHash?: string
+    continuationTailChars?: number
+    sourceBodyRev?: number | null
   }
   errorCode: string | null
   createdAt: string

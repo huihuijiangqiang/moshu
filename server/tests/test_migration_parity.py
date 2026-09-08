@@ -127,6 +127,7 @@ def test_expected_core_tables_are_present(migration_metadata):
         "chapters",
         "chapter_bodies",
         "chapter_versions",
+        "chapter_chunks",
         "text_replacement_runs",
         "codex_entries",
         "codex_aliases",

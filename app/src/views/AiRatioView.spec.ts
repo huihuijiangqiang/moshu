@@ -85,4 +85,34 @@ describe('AiRatioView sentence proofing', () => {
     expect(wrapper.text()).toContain('本章没有命中当前自然化规则')
     wrapper.unmount()
   })
+
+  it('reloads the active chapter after accepting a naturalization candidate', async () => {
+    const run: Awaited<ReturnType<typeof naturalizationApi.scan>> = {
+      id: 'run-natural-1', userId: 'u1', projectId: 'p1', chapterId: 'ch1', sourceBodyRev: 1,
+      sourceContentHash: 'hash', scope: 'chapter', mode: 'rules', status: 'ready', styleProfileId: null,
+      promptVersion: 'v1', model: 'gpt-5.6-sol', findingCount: 1, acceptedCount: 0, errorCode: null,
+      createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(), findings: [{
+        id: 'finding-1', runId: 'run-natural-1', paragraphId: 'p-risk', start: 0, end: 8,
+        originalText: '值得注意的是', candidateText: '雨丝落下来', sourceTextHash: 'hash', ruleIds: ['template.transition'],
+        reasons: ['模板化衔接'], lockedFacts: {}, validation: {}, status: 'pending', revision: 1
+      }]
+    }
+    const updated = structuredClone(run)
+    updated.findings[0]!.status = 'accepted'
+    updated.acceptedCount = 1
+    const scan = vi.spyOn(naturalizationApi, 'scan').mockResolvedValue(run)
+    const accept = vi.spyOn(naturalizationApi, 'accept').mockResolvedValue(updated)
+    const { wrapper } = await mountView()
+    const store = useProjectStore()
+    vi.spyOn(store, 'reloadReplacedChapters').mockResolvedValue()
+    await wrapper.get('.naturalization-heading button').trigger('click')
+    await flushPromises()
+    await wrapper.get('.naturalization-actions button[data-primary="true"]').trigger('click')
+    await flushPromises()
+
+    expect(scan).toHaveBeenCalled()
+    expect(accept).toHaveBeenCalledWith('run-natural-1', 'finding-1')
+    expect(wrapper.text()).toContain('候选已采纳，正文版本和来源记录已更新')
+    wrapper.unmount()
+  })
 })

@@ -17,6 +17,14 @@ export interface GenerationPreview {
     context: number
     trimmedLayers: string[]
   }
+  preflight: {
+    status: 'ready' | 'attention' | 'blocked'
+    blocking: boolean
+    promptTokens: number
+    budget: number
+    warningCount: number
+    checks: Array<{ id: string; status: string; message: string }>
+  }
   skills: Array<{ id: string; version: string; category: string; priority: number }>
   scene: string
   coverage: GenerationCoverageReport
@@ -58,6 +66,7 @@ export async function previewGeneration(opts: GenerateOptions | InlineGenerateOp
       model: { id: 'mock', tier: opts.model },
       provider: { source: 'platform', configId: null },
       tokenBudget: { total: 25000, prompt: 0, context: 0, trimmedLayers: [] },
+      preflight: { status: 'ready', blocking: false, promptTokens: 0, budget: 25000, warningCount: 0, checks: [] },
       skills: [],
       scene: 'general',
       coverage: {
@@ -114,6 +123,17 @@ export const generationDraftApi = {
 
   async reject(id: string): Promise<void> {
     await requestResponse(`/generate/drafts/${encodeURIComponent(id)}`, { method: 'DELETE' })
+  },
+
+  continue(id: string, options: {
+    targetWords: number
+    model?: GenerateOptions['model']
+    useStyleProfile?: boolean
+    dialogueDensity?: GenerateOptions['dialogueDensity']
+    instruction?: string
+  }, handlers: StreamHandlers): () => void {
+    if (USE_MOCK) throw new GenerationError('continuation_not_available', '当前演示数据没有可继续的候选')
+    return startStream(`/generate/drafts/${encodeURIComponent(id)}/continue`, options as GenerateOptions, handlers)
   }
 }
 

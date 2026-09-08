@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
 import { adminApi, type AdminOverview, type AdminSettings, type AdminUser, type PlatformUsage } from '@/api/admin'
-import type { BillingProduct } from '@/api/billing'
+import { billingApi, type BillingProduct, type BillingStatus } from '@/api/billing'
 import { getSessionUser } from '@/api/session'
 import { useShellStore } from '@/stores/shell'
 
@@ -11,10 +11,14 @@ const users = ref<AdminUser[]>([])
 const settings = ref<AdminSettings | null>(null)
 const costs = ref<PlatformUsage | null>(null)
 const products = ref<BillingProduct[]>([])
+const billingStatus = ref<BillingStatus | null>(null)
+const billingStatusLoading = ref(false)
+const billingStatusError = ref('')
 const tab = ref<'users' | 'costs' | 'billing' | 'settings'>('users')
 const search = ref('')
 const loading = ref(true)
 const message = ref('')
+const loadError = ref('')
 const currentUser = getSessionUser()
 const productDraft = ref({ code: '', name: '', amount_minor: 0, credits: 0, description: '' })
 const canPromote = computed(() => currentUser?.system_role === 'super_admin')
@@ -34,15 +38,39 @@ const tokenSegments = computed(() => {
 async function load() {
   loading.value = true
   message.value = ''
+  loadError.value = ''
   try {
     ;[overview.value, users.value, settings.value, costs.value, products.value] = await Promise.all([
       adminApi.overview(), adminApi.users(search.value), adminApi.settings(), adminApi.platformUsage(), adminApi.billingProducts()
     ])
   } catch (error) {
-    message.value = error instanceof Error ? error.message : '管理数据加载失败'
+    loadError.value = error instanceof Error ? error.message : '管理数据加载失败'
   } finally {
     loading.value = false
   }
+}
+
+async function loadBillingStatus() {
+  billingStatusLoading.value = true
+  billingStatusError.value = ''
+  try {
+    billingStatus.value = await billingApi.status()
+  } catch (error) {
+    billingStatusError.value = error instanceof Error ? error.message : '支付渠道状态读取失败'
+  } finally {
+    billingStatusLoading.value = false
+  }
+}
+
+function providerStateLabel(state: string, configured: boolean) {
+  if (configured || state === 'ready') return '已就绪'
+  return ({
+    credentials_required: '待配置商户凭证',
+    invalid_configuration: '商户配置无效',
+    invalid_credentials: '商户凭证无效',
+    unavailable: '渠道暂不可用',
+    disabled: '渠道已停用'
+  } as Record<string, string>)[state] ?? '未就绪'
 }
 
 async function createProduct() {
@@ -116,6 +144,7 @@ async function saveSettings() {
 onMounted(() => {
   shell.setCrumb('系统管理')
   void load()
+  void loadBillingStatus()
 })
 </script>
 
@@ -137,6 +166,11 @@ onMounted(() => {
       <button type="button" :aria-selected="tab === 'billing'" @click="tab = 'billing'">收费商品</button>
       <button type="button" :aria-selected="tab === 'settings'" @click="tab = 'settings'">运行配置</button>
       <span v-if="message" class="admin-message">{{ message }}</span>
+    </div>
+
+    <div v-if="loadError" class="admin-load-error" role="alert">
+      <span>管理数据读取失败：{{ loadError }}</span>
+      <button class="wk-btn wk-btn-xs" type="button" @click="load">重试</button>
     </div>
 
     <main v-if="!loading && tab === 'users'" class="admin-content">
@@ -236,7 +270,18 @@ onMounted(() => {
     <main v-else-if="!loading && tab === 'billing'" class="admin-content admin-billing">
       <section class="billing-intro">
         <div><span class="eyebrow">MAINLAND PAYMENTS</span><h2>充值商品</h2><p>商品只定义金额与权益。微信支付、支付宝的商户密钥和回调验签由服务端环境配置，未配置时不会接受到账回调。</p></div>
-        <div class="billing-provider-state"><span>微信支付 / 支付宝</span><strong>待配置商户凭证</strong></div>
+        <div class="billing-provider-state">
+          <span>支付渠道状态</span>
+          <strong v-if="billingStatusLoading">正在读取…</strong>
+          <strong v-else-if="billingStatusError" class="provider-error">读取失败</strong>
+          <div v-else-if="billingStatus" class="provider-status-list">
+            <span v-for="provider in (['wechat', 'alipay'] as const)" :key="provider">
+              {{ provider === 'wechat' ? '微信支付' : '支付宝' }}：{{ providerStateLabel(billingStatus.providers[provider].state, billingStatus.providers[provider].configured) }}
+            </span>
+          </div>
+          <strong v-else>未知</strong>
+          <button v-if="billingStatusError" class="wk-btn wk-btn-xs" type="button" @click="loadBillingStatus">重试</button>
+        </div>
       </section>
       <section class="billing-create">
         <h2>发布一次性积分包</h2>
@@ -298,6 +343,7 @@ onMounted(() => {
 .admin-tabs button { padding: 0 14px; border: 0; border-bottom: 2px solid transparent; background: transparent; color: var(--ink-3); cursor: pointer; }
 .admin-tabs button[aria-selected="true"] { border-bottom-color: var(--primary); color: var(--ink); font-weight: 700; }
 .admin-message { margin-left: auto; align-self: center; color: var(--ink-2); font-size: var(--fs-sm); }
+.admin-load-error { margin: 18px 28px 0; padding: 10px 12px; display: flex; align-items: center; justify-content: space-between; gap: 12px; border-left: 3px solid var(--alert-ink); background: var(--paper); color: var(--alert-ink); font-size: var(--fs-sm); }
 .admin-content { padding: 26px 28px 48px; }
 .admin-search { width: min(460px, 100%); display: grid; grid-template-columns: 1fr auto; gap: 8px; margin-bottom: 18px; }
 .admin-search input, .admin-table input, select { min-width: 0; height: 34px; border: var(--hair) solid var(--line-strong); padding: 0 9px; background: var(--paper); color: var(--ink); }
@@ -324,7 +370,9 @@ onMounted(() => {
 .eyebrow { color: var(--ink-3); font: 700 10px/1 var(--font-mono); }
 .billing-provider-state { min-width: 190px; align-self: end; padding-left: 20px; border-left: var(--hair) solid var(--line-strong); }
 .billing-provider-state span, .billing-provider-state strong { display: block; }
-.billing-provider-state span { color: var(--ink-3); font-size: 12px; }.billing-provider-state strong { margin-top: 7px; color: var(--alert-ink); font-size: 13px; }
+.billing-provider-state > span { color: var(--ink-3); font-size: 12px; }.billing-provider-state strong { margin-top: 7px; color: var(--alert-ink); font-size: 13px; }
+.provider-status-list { margin-top: 7px; display: grid; gap: 4px; color: var(--ink-2); font: 11px/1.4 var(--font-mono); }
+.provider-error { margin-bottom: 8px; }
 .billing-form { display: grid; grid-template-columns: repeat(4, minmax(120px, 1fr)); gap: 12px; align-items: end; }
 .billing-form label { display: grid; gap: 6px; color: var(--ink-3); font-size: 12px; }
 .billing-form input { height: 34px; min-width: 0; border: var(--hair) solid var(--line-strong); padding: 0 9px; background: var(--paper); color: var(--ink); }

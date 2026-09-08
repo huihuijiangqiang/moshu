@@ -85,4 +85,24 @@ describe('usage payment workflow', () => {
     expect(document.body.textContent).toContain('已到账')
     wrapper.unmount()
   })
+
+  it('shows a retry action and keeps channel status visible when billing data partially fails', async () => {
+    billing.products.mockRejectedValueOnce(new Error('商品服务不可用'))
+    const wrapper = mount(UsageView, { attachTo: document.body, global: { plugins: [createPinia()] } })
+    await flushPromises()
+
+    expect(wrapper.find('.billing-load-error').text()).toContain('部分支付信息暂时无法读取')
+    expect(wrapper.find('.billing-provider-list').text()).toContain('微信支付：已就绪')
+    expect(wrapper.find('.billing-provider-list').text()).toContain('支付宝：待配置商户凭证')
+
+    billing.products.mockResolvedValueOnce([{
+      id: 'prd-1', code: 'starter', name: '入门积分包', description: null, plan: null,
+      currency: 'CNY', amount_minor: 990, credits: 1000, billing_interval: 'one_time',
+      is_active: true, sort_order: 1
+    }])
+    await wrapper.find('.billing-load-error button').trigger('click')
+    await flushPromises()
+    expect(wrapper.find('.billing-load-error').exists()).toBe(false)
+    wrapper.unmount()
+  })
 })

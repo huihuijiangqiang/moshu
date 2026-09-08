@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import AiSidePanel from './AiSidePanel.vue'
 import { contentApi } from '@/api/content'
 import { generationDraftApi } from '@/api/generation'
+import * as generationApi from '@/api/generation'
 import { useCodexStore } from '@/stores/codex'
 import { useProjectStore } from '@/stores/project'
 import type { CodexStateHistoryItem, GenerationDraftDetail, GenerationDraftSummary, ProjectNote } from '@/types'
@@ -129,6 +130,49 @@ describe('writing reference side panel', () => {
     expect(wrapper.get('[role="region"]').text()).toContain('本次提示词')
     expect(wrapper.get('[role="region"]').text()).toContain('模拟模式不会调用模型')
     expect(wrapper.emitted('generate')).toBeUndefined()
+
+    await wrapper.get('input[type="number"]').setValue('4500')
+    expect(wrapper.get('[role="region"]').text()).toContain('生成参数已变化')
+    wrapper.unmount()
+  })
+
+  it('blocks generation when the preflight reports a hard failure', async () => {
+    const basePreview = await generationApi.previewGeneration({
+      chapterId: 'ch87', targetWords: 3000, model: 'basic', useStyleProfile: true, dialogueDensity: 'high'
+    })
+    vi.spyOn(generationApi, 'previewGeneration').mockResolvedValue({
+      ...basePreview,
+      preflight: {
+        ...basePreview.preflight,
+        status: 'blocked',
+        blocking: true,
+        warningCount: 1,
+        checks: [{ id: 'token_budget', status: 'blocked', message: '提示词超过模型硬预算。' }]
+      }
+    })
+    const pinia = createPinia()
+    setActivePinia(pinia)
+    const router = createRouter({
+      history: createMemoryHistory(),
+      routes: [{ path: '/projects/:projectId/write', component: { template: '<div />' } }]
+    })
+    await router.push('/projects/p1/write')
+    await router.isReady()
+    await Promise.all([useProjectStore().load('p1'), useCodexStore().load('p1')])
+    vi.spyOn(contentApi, 'getContextLayers').mockResolvedValue([])
+    const wrapper = mount(AiSidePanel, {
+      attachTo: document.body,
+      props: { drafts: [], draftsLoading: false },
+      global: { plugins: [pinia, router] }
+    })
+    await flushPromises()
+
+    await wrapper.get('button[data-primary="true"]').trigger('click')
+    await flushPromises()
+
+    expect(wrapper.emitted('generate')).toBeUndefined()
+    expect(wrapper.get('[role="region"]').text()).toContain('提示词超过硬预算')
+    expect(wrapper.get('[role="region"]').text()).toContain('提示词超过模型硬预算')
     wrapper.unmount()
   })
 

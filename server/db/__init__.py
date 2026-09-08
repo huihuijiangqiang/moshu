@@ -22,6 +22,7 @@ from db.models_consistency_extended import (
     StoryEvent,
 )
 from db.models_core import Chapter, ChapterBody, ChapterVersion, Project, ProjectNote, User, Volume
+from db.models_chapter_chunks import ChapterChunk
 from db.models_editing import TextReplacementRun
 from db.models_embedding import CodexEmbeddingJob
 from db.models_guard import Foreshadow, GuardIssue
@@ -63,6 +64,7 @@ __all__ = [
     "Chapter",
     "ChapterBody",
     "ChapterVersion",
+    "ChapterChunk",
     "TextReplacementRun",
     # Consistency persistence
     "ChapterOutlineState",

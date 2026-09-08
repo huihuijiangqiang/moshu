@@ -79,6 +79,9 @@ export const useProjectStore = defineStore('project', () => {
     })
     await refreshStructure()
     if (activeId.value && affected.has(activeId.value)) await openChapter(activeId.value)
+    if (typeof window !== 'undefined') {
+      window.dispatchEvent(new CustomEvent('moshu:chapter-replaced', { detail: { chapterIds: [...affected] } }))
+    }
   }
 
   function setWords(id: string, words: number) {

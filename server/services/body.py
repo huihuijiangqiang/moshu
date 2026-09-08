@@ -12,6 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from db.models_codex import CodexEntry, CodexRef
 from db.models_core import Chapter, ChapterBody, ChapterVersion
 from db.models_writing import ProjectDailyWriting
+from services.chapter_chunks import replace_chapter_chunks
 from services.idempotency import IdempotencyService
 from services.outbox import OutboxService
 from services.provenance import sync_accepted_words
@@ -384,6 +385,18 @@ async def save_chapter_body(
                     )
                     db.add(ref)
 
+    # 12. Rebuild the versioned semantic chunk set in the same transaction as
+    # the canonical body. Embeddings are intentionally deferred; a worker can
+    # backfill pending rows without delaying or rolling back the author's save.
+    await replace_chapter_chunks(
+        db,
+        chapter_id=chapter_id,
+        project_id=chapter.project_id,
+        body_rev=new_rev,
+        content_html=content_html,
+        content_json=content_json,
+    )
+
     # Recalculate the north-star metric from server-verified generation fingerprints.
     await sync_accepted_words(
         db,
@@ -392,7 +405,7 @@ async def save_chapter_body(
         content_json=content_json,
     )
 
-    # 12. 写 transactional outbox
+    # 13. 写 transactional outbox
     await OutboxService.enqueue(
         db,
         topic="chapter.body_saved",
@@ -406,6 +419,17 @@ async def save_chapter_body(
             "trigger": trigger,
         },
     )
+    await OutboxService.enqueue(
+        db,
+        topic="chapter.chunk_embedding_requested",
+        aggregate_id=chapter_id,
+        aggregate_rev=new_rev,
+        payload={
+            "project_id": chapter.project_id,
+            "chapter_id": chapter_id,
+            "body_rev": new_rev,
+        },
+    )
 
     await db.flush()
 
@@ -416,7 +440,7 @@ async def save_chapter_body(
         "consistency_status": "queued",
     }
 
-    # 13. 完成幂等记录
+    # 14. 完成幂等记录
     if idempotency_key and owner_token:
         await IdempotencyService.complete(
             db,

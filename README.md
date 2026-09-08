@@ -16,7 +16,7 @@
 - **漫剧分镜**：在独立改编版本中管理集、场景、镜头和人物视觉档案，镜头可维护景别、运镜、动作、对白、旁白与画面提示词。
 - **长文本基础设施**：PostgreSQL/pgvector 负责持久化与检索，Redis/Celery 承担异步分析和生成任务；正文按确定性分块覆盖全文，摘要、设定和向量检索分层装配。
 
-当前仓库包含 Vue 3 写作前端、FastAPI API、PostgreSQL/pgvector、Redis 与 Celery 异步任务，以及架构、计费和实现文档。后端当前 migration head 为 `033_payment_provider_workflow`。
+当前仓库包含 Vue 3 写作前端、FastAPI API、PostgreSQL/pgvector、Redis 与 Celery 异步任务，以及架构、计费和实现文档。后端当前 migration head 为 `034_chapter_chunks`。
 
 ### 长篇一致性保障
 
@@ -235,7 +235,7 @@ MOSHU_REDIS_DATA_DIR=<redis-data-directory>
 镜头和视觉档案持久化到 PostgreSQL，并按作品权限限制查看、编辑分镜和维护视觉档案。
 当前阶段不包含实际视频、配音、字幕时间轴或合成任务；图片生成仍属于待接入能力。
 
-最近一次后端回归记录：`1406 passed, 37 skipped`；本轮前端回归为 `160 passed`。后端被跳过的
+最近一次后端回归记录：`1425 passed, 38 skipped`；本轮前端回归为 `166 passed`。后端被跳过的
 测试需要显式配置真实 PostgreSQL/pgvector 集成环境；测试正文、模型 key、`.env` 和 Docker
 数据卷均不提交 Git。
 

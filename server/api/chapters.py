@@ -1,6 +1,7 @@
 """
 章节 API - 使用真实的 body save service
 """
+import httpx
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, status
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select
@@ -28,7 +29,10 @@ from services.character_tracking import (
     PovRevisionConflictError,
     update_chapter_pov,
 )
+from services.chapter_chunks import count_current_chapter_chunks, embed_pending_chapter_chunks
+from services.embedding import EmbeddingProviderError, GatewayEmbeddingProvider
 from services.idempotency import IdempotencyConflictError
+from services.retrieval import ConsistencyRetrieval
 
 router = APIRouter()
 
@@ -120,6 +124,26 @@ class ChapterPovResponse(BaseModel):
     chapter_id: str
     entry_id: str | None
     revision: int
+
+
+class ChapterChunkSearchResponse(BaseModel):
+    chunk_id: str
+    chapter_id: str
+    body_rev: int
+    chunk_index: int
+    paragraph_start: int
+    paragraph_end: int
+    paragraph_ids: list[str]
+    content_text: str
+    distance: float
+    similarity: float
+
+
+class ChapterChunkReindexResponse(BaseModel):
+    chapter_id: str
+    body_rev: int
+    embedded: int
+    counts: dict[str, int]
 
 
 def _document_excerpt(content_json: dict, limit: int = 140) -> str:
@@ -329,6 +353,57 @@ async def get_chapter_version(
         **summary.model_dump(),
         content_html=version.content_html,
         content_json=version.content_json,
+    )
+
+
+@router.get("/{chapter_id}/chunks/search", response_model=list[ChapterChunkSearchResponse])
+async def search_chapter_chunks(
+    chapter_id: str,
+    query: str = Query(..., min_length=1, max_length=2000),
+    top_k: int = Query(default=8, ge=1, le=50),
+    threshold: float = Query(default=0.55, ge=0.0, le=1.0),
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> list[ChapterChunkSearchResponse]:
+    """Search semantic chunks for one chapter's current body revision."""
+    chapter = await _active_chapter(chapter_id, db)
+    await verify_project_permission(chapter.project_id, ProjectPermission.VIEW, user, db)
+    retrieval = ConsistencyRetrieval(embedding_provider=GatewayEmbeddingProvider())
+    try:
+        rows = await retrieval.retrieve_chapter_chunks_l3(
+            db,
+            chapter.project_id,
+            query,
+            top_k=top_k,
+            threshold=threshold,
+            chapter_ids=[chapter_id],
+        )
+    except (EmbeddingProviderError, httpx.HTTPError, ValueError) as error:
+        raise HTTPException(status_code=503, detail="chapter chunk retrieval unavailable") from error
+    return [ChapterChunkSearchResponse(**row) for row in rows]
+
+
+@router.post("/{chapter_id}/chunks/reindex", response_model=ChapterChunkReindexResponse)
+async def reindex_chapter_chunks(
+    chapter_id: str,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> ChapterChunkReindexResponse:
+    """Embed pending chunks for the current body revision on explicit request."""
+    chapter = await _active_chapter(chapter_id, db)
+    await verify_project_permission(chapter.project_id, ProjectPermission.EDIT_BODY, user, db)
+    body_rev = int(await db.scalar(select(ChapterBody.rev).where(ChapterBody.chapter_id == chapter_id)) or 0)
+    try:
+        embedded = await embed_pending_chapter_chunks(
+            db, GatewayEmbeddingProvider(), project_id=chapter.project_id, chapter_id=chapter_id
+        )
+    except (EmbeddingProviderError, httpx.HTTPError, ValueError) as error:
+        await db.rollback()
+        raise HTTPException(status_code=503, detail="chapter chunk embedding unavailable") from error
+    counts = await count_current_chapter_chunks(db, chapter_id=chapter_id, body_rev=body_rev)
+    await db.commit()
+    return ChapterChunkReindexResponse(
+        chapter_id=chapter_id, body_rev=body_rev, embedded=embedded, counts=counts
     )
 
 

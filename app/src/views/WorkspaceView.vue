@@ -272,6 +272,34 @@ async function createChapter() {
   }
 }
 
+async function handleChapterReplaced(event: Event) {
+  const detail = (event as CustomEvent<{ chapterIds?: string[] }>).detail
+  const id = store.activeId
+  if (!id || !detail?.chapterIds?.includes(id)) return
+  const chapter = store.chapters.find((item) => item.id === id)
+  if (!chapter || chapter.content === undefined || chapter.rev === undefined) return
+  const serverContent = chapter.content
+  // Keep unsaved local prose visible and turn the external replacement into the
+  // same explicit conflict flow used by another browser tab.
+  if (saveState.value === 'dirty' || saveState.value === 'saving' || saveState.value === 'conflict') {
+    await recordConflict({
+      chapterId: id,
+      serverContentHtml: serverContent,
+      serverRev: chapter.rev,
+      clientContentHtml: html.value
+    })
+    chapterActionError.value = '自然化候选已更新云端正文；本地未保存修改仍在，请处理版本冲突。'
+    return
+  }
+  const currentEditor = editor.value
+  if (!currentEditor || currentEditor.isDestroyed) return
+  currentEditor.commands.setContent(serverContent, { emitUpdate: false })
+  html.value = serverContent
+  markClean(id, serverContent)
+  syncReviewAnchor()
+  chapterActionError.value = '正文已同步自然化修改，版本已更新。'
+}
+
 function handleWorkspaceShortcut(event: KeyboardEvent) {
   if (!mobileReadOnly.value && (event.ctrlKey || event.metaKey) && event.shiftKey && event.key.toLowerCase() === 'f') {
     event.preventDefault()
@@ -284,6 +312,7 @@ onMounted(() => {
   syncViewport()
   window.addEventListener('resize', syncViewport)
   window.addEventListener('moshu:draft-action', handleDraftAction as EventListener)
+  window.addEventListener('moshu:chapter-replaced', handleChapterReplaced)
   window.addEventListener('keydown', handleWorkspaceShortcut)
   editor.value?.on('selectionUpdate', syncReviewAnchor)
 })
@@ -298,6 +327,7 @@ onBeforeUnmount(() => {
   editor.value?.off('selectionUpdate', syncReviewAnchor)
   window.removeEventListener('resize', syncViewport)
   window.removeEventListener('moshu:draft-action', handleDraftAction as EventListener)
+  window.removeEventListener('moshu:chapter-replaced', handleChapterReplaced)
   window.removeEventListener('keydown', handleWorkspaceShortcut)
 })
 
@@ -635,6 +665,52 @@ async function rejectGenerationDraft(id: string) {
     await loadGenerationDrafts()
   } catch (error) {
     generationError.value = error instanceof Error ? error.message : '候选草稿舍弃失败'
+  }
+}
+
+function continueGenerationDraft(draft: GenerationDraftDetail) {
+  if (!editor.value || draft.chapterId !== store.activeId || !draft.content || generating.value || mobileReadOnly.value) return
+  generationError.value = ''
+  generationErrorCode.value = ''
+  generating.value = true
+  paneTab.value = 'body'
+  try {
+    const stop = generationDraftApi.continue(
+      draft.id,
+      { targetWords: 800, model: 'basic', useStyleProfile: true, dialogueDensity: 'mid' },
+      {
+        onChunk: (text) => editor.value?.commands.appendDraftText(text),
+        onMeta: attachDraftIdentity,
+        onDone: (result) => {
+          if (typeof result?.runId === 'string') editor.value?.commands.setDraftRunId(result.runId)
+          if (typeof result?.draftId === 'string') editor.value?.commands.setDraftCandidateId(result.draftId)
+          editor.value?.commands.setDraftStatus('pending')
+          generating.value = false
+          abort = null
+          void loadGenerationDrafts()
+        },
+        onError: (error) => {
+          const failure = describeGenerationError(error, '续写失败，请重试')
+          generationError.value = failure.message
+          generationErrorCode.value = failure.code
+          editor.value?.commands.setDraftStatus('pending')
+          generating.value = false
+          abort = null
+          void loadGenerationDrafts()
+        }
+      }
+    )
+    editor.value.chain().focus('end').insertAiDraft().run()
+    editor.value.commands.appendDraftText(`${draft.content.trimEnd()}\n`)
+    abort = stop
+  } catch (error) {
+    const failure = describeGenerationError(error, '续写失败，请重试')
+    generationError.value = failure.message
+    generationErrorCode.value = failure.code
+    editor.value?.commands.setDraftStatus('pending')
+    generating.value = false
+    abort = null
+    void loadGenerationDrafts()
   }
 }
 
@@ -980,6 +1056,7 @@ function openActiveSceneGuard() {
         @downgrade-generation="downgradeGeneration"
         @stop="stop"
         @insert-draft="insertGenerationDraft"
+        @continue-draft="continueGenerationDraft"
         @reject-draft="rejectGenerationDraft"
         @refresh-drafts="loadGenerationDrafts"
         @refresh-reviews="loadReviews"

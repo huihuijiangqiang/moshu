@@ -54,6 +54,7 @@ class PromptPackage:
     target_words: int
     task: str
     coverage: dict[str, Any]
+    preflight: dict[str, Any] = field(default_factory=dict)
 
     @property
     def model_tier(self) -> str:
@@ -83,6 +84,7 @@ class PromptPackage:
             "skills": self.skills.ids,
             "scene": self.skills.scene,
             "coverage": self.coverage,
+            "preflight": self.preflight,
         }
 
 
@@ -234,6 +236,36 @@ class GenerationService:
             f"章节：第{chapter.idx}章 {chapter.title}\n\n"
             f"{context_text}\n\n# 本章章纲\n{outline_text}\n\n# 当前指令\n{current_instruction}"
         )
+        prompt_tokens = tokenizer.count(
+            "\n".join(
+                [
+                    *[message for message in system_parts],
+                    user_prompt,
+                ]
+            )
+        )
+        input_checks = context.guidance.get("inputChecks", [])
+        warning_count = sum(
+            1
+            for check in input_checks
+            if isinstance(check, dict) and check.get("status") == "attention"
+        )
+        preflight = {
+            "status": "blocked" if prompt_tokens > ContextAssembler.BUDGET_TOTAL else ("attention" if warning_count else "ready"),
+            "blocking": prompt_tokens > ContextAssembler.BUDGET_TOTAL,
+            "promptTokens": prompt_tokens,
+            "budget": ContextAssembler.BUDGET_TOTAL,
+            "warningCount": warning_count,
+            "checks": [
+                {
+                    "id": str(check.get("id")),
+                    "status": str(check.get("status", "attention")),
+                    "message": str(check.get("message", "")),
+                }
+                for check in input_checks
+                if isinstance(check, dict)
+            ],
+        }
         tier = "premium" if model == "advanced" else settings.generation_gateway_tier
         resolved_route = route or GenerationRoute(
             source="platform",
@@ -255,6 +287,7 @@ class GenerationService:
             target_words=target_words,
             task=task,
             coverage=coverage,
+            preflight=preflight,
         )
 
     async def _style_prompt(self, project: Project, enabled: bool) -> str:

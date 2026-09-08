@@ -148,7 +148,7 @@ class ContextAssembler:
         layer2 = await self._build_layer2_retrieved(project_id, chapter_id, retrieval_nodes)
 
         # Layer 3: 前情摘要（本卷章摘要 + 更早的卷摘要）
-        layer3 = await self._build_layer3_summary(project_id, chapter_id)
+        layer3 = await self._build_layer3_summary(project_id, chapter_id, retrieval_nodes)
 
         # Layer 4: 相邻原文（前2章，从章末往前截取）
         layer4 = await self._build_layer4_adjacent(chapter_id)
@@ -807,7 +807,12 @@ class ContextAssembler:
         content = "\n\n".join(lines)
         return ContextLayer("retrieved", content, self.tokenizer.count(content), items)
 
-    async def _build_layer3_summary(self, project_id: str, chapter_id: str) -> ContextLayer:
+    async def _build_layer3_summary(
+        self,
+        project_id: str,
+        chapter_id: str,
+        retrieval_nodes: Optional[list[str]] = None,
+    ) -> ContextLayer:
         """
         Layer 3: 前情摘要
         - 当前卷的已有章节摘要（200字/章）
@@ -850,6 +855,38 @@ class ContextAssembler:
             .order_by(Chapter.idx)
         )
         previous = list(chapters_result.scalars().all())
+        if self.retrieval is not None and retrieval_nodes:
+            bind = self.db.get_bind()
+            if bind is not None and bind.dialect.name == "postgresql" and previous:
+                query_text = "\n".join(node.strip() for node in retrieval_nodes if node.strip())
+                if query_text:
+                    try:
+                        semantic = await self.retrieval.retrieve_chapter_chunks_l3(
+                            self.db,
+                            project_id,
+                            query_text,
+                            top_k=6,
+                            threshold=0.58,
+                            chapter_ids=[chapter.id for chapter in previous],
+                        )
+                        chapter_labels = {chapter.id: f"第{chapter.idx}章" for chapter in previous}
+                        for row in semantic:
+                            label = chapter_labels.get(row["chapter_id"], "前文")
+                            lines.append(f"## 正文远距证据 · {label}\n{row['content_text']}")
+                            items.append(
+                                {
+                                    "id": f"chunk:{row['chunk_id']}",
+                                    "name": f"{label} 正文分块",
+                                    "kind": "chapter_chunk",
+                                    "chapterId": row["chapter_id"],
+                                    "bodyRev": row["body_rev"],
+                                    "similarity": row["similarity"],
+                                }
+                            )
+                    except Exception:
+                        # Index failures must never block generation; summaries and
+                        # adjacent text remain the safe fallback.
+                        pass
         # Current-volume chapter summaries carry recent causal state.  Without a volume,
         # retain the latest 20 to keep the layer bounded before exact token trimming.
         same_volume = [chapter for chapter in previous if chapter.volume_id == current.volume_id]

@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from config import settings
 from db.models_embedding import CodexEmbeddingJob
+from services.chapter_chunks import embed_pending_chapter_chunks, mark_chapter_chunks_failed
 from services.codex import count_stale_entries
 from services.codex_embedding import embed_missing_codex_entries
 from services.embedding import EmbeddingProviderError, GatewayEmbeddingProvider
@@ -115,6 +116,75 @@ async def _persist_embedding_usage(
         return
 
 
+async def _backfill_chapter_chunks_async(
+    project_id: str,
+    chapter_id: str,
+    body_rev: int,
+    batch_size: int,
+    *,
+    task_id: str | None = None,
+    exhausted: bool = False,
+) -> dict:
+    async with AsyncSessionLocal() as db:
+        provider = GatewayEmbeddingProvider()
+        try:
+            embedded = await embed_pending_chapter_chunks(
+                db,
+                provider,
+                project_id=project_id,
+                chapter_id=chapter_id,
+                body_rev=body_rev,
+                batch_size=batch_size,
+            )
+            await db.commit()
+            await _persist_embedding_usage(project_id, provider, task_id)
+            return {
+                "status": "success",
+                "project_id": project_id,
+                "chapter_id": chapter_id,
+                "body_rev": body_rev,
+                "embedded_count": embedded,
+            }
+        except Exception as error:
+            await db.rollback()
+            if exhausted or not isinstance(error, RETRYABLE_ERRORS):
+                await mark_chapter_chunks_failed(
+                    db,
+                    project_id=project_id,
+                    chapter_id=chapter_id,
+                    body_rev=body_rev,
+                    error=error,
+                )
+                await db.commit()
+            await _persist_embedding_usage(project_id, provider, task_id)
+            raise
+
+
+@shared_task(
+    bind=True,
+    name="codex.backfill_chapter_chunks",
+    autoretry_for=RETRYABLE_ERRORS,
+    max_retries=5,
+    retry_backoff=True,
+    retry_backoff_max=600,
+    retry_jitter=True,
+)
+def backfill_chapter_chunks_task(
+    self, project_id: str, chapter_id: str, body_rev: int, batch_size: int = 32
+):
+    """Embed only the current revision's pending body chunks."""
+    return run_async(
+        _backfill_chapter_chunks_async(
+            project_id,
+            chapter_id,
+            body_rev,
+            batch_size,
+            task_id=getattr(self.request, "id", None),
+            exhausted=int(getattr(self.request, "retries", 0)) >= self.max_retries,
+        )
+    )
+
+
 @shared_task(
     bind=True,
     name="codex.backfill_embeddings",
@@ -198,5 +268,6 @@ def recover_stale_embedding_jobs():
 __all__ = [
     "RETRYABLE_ERRORS",
     "backfill_codex_embeddings_task",
+    "backfill_chapter_chunks_task",
     "recover_stale_embedding_jobs",
 ]

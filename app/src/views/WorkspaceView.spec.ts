@@ -7,8 +7,9 @@ import { contentApi } from '@/api/content'
 import { useCodexStore } from '@/stores/codex'
 import { useProjectStore } from '@/stores/project'
 import { useShellStore } from '@/stores/shell'
-import { streamChapter } from '@/api/generation'
+import { GenerationError, generationDraftApi, streamChapter } from '@/api/generation'
 import { scenesApi, type ChapterScene } from '@/api/scenes'
+import type { GenerationDraftDetail, GenerationDraftSummary } from '@/types'
 
 vi.mock('@/api/generation', async () => {
   const actual = await vi.importActual<typeof import('@/api/generation')>('@/api/generation')
@@ -182,6 +183,95 @@ describe('mobile writing workspace', () => {
     await flushPromises()
     expect(router.currentRoute.value.path).toBe('/projects/p1/guard')
     expect(router.currentRoute.value.query).toMatchObject({ chapter: 'ch89' })
+    wrapper.unmount()
+  })
+
+  it('applies an external naturalization replacement immediately when the editor is clean', async () => {
+    Object.defineProperty(window, 'innerWidth', { configurable: true, value: 1200 })
+    const pinia = createPinia()
+    setActivePinia(pinia)
+    const router = createRouter({
+      history: createMemoryHistory(),
+      routes: [{ path: '/projects/:projectId/write', component: WorkspaceView }]
+    })
+    await router.push('/projects/p1/write?chapter=ch87')
+    await router.isReady()
+    const store = useProjectStore()
+    await store.load('p1')
+    const chapterStructure = store.chapters.find((item) => item.id === 'ch87')
+    if (!chapterStructure) throw new Error('chapter not found')
+    vi.spyOn(contentApi, 'getChapter').mockResolvedValue({
+      ...chapterStructure,
+      content: '<p>沈砚正在检查旧伤。</p>',
+      rev: 1
+    })
+    store.activeId = 'ch87'
+    await store.openChapter('ch87')
+    vi.spyOn(contentApi, 'getContextLayers').mockResolvedValue([])
+    vi.spyOn(contentApi, 'listProjectNotes').mockResolvedValue([])
+    const wrapper = mount(WorkspaceView, { attachTo: document.body, global: { plugins: [pinia, router] } })
+    await vi.waitFor(() => expect(wrapper.get('.ProseMirror').text()).toContain('沈砚'), { timeout: 3000 })
+    const chapter = store.chapters.find((item) => item.id === 'ch87')
+    if (!chapter) throw new Error('chapter not found')
+    chapter.content = '<p>自然化后的正文</p>'
+    chapter.rev = (chapter.rev ?? 0) + 1
+    window.dispatchEvent(new CustomEvent('moshu:chapter-replaced', { detail: { chapterIds: ['ch87'] } }))
+    await vi.waitFor(() => expect(wrapper.get('.ProseMirror').text()).toContain('自然化后的正文'))
+    expect(wrapper.text()).toContain('正文已同步自然化修改')
+    wrapper.unmount()
+  })
+
+  it('recovers when continuing a failed draft is rejected before streaming starts', async () => {
+    Object.defineProperty(window, 'innerWidth', { configurable: true, value: 1280 })
+    const pinia = createPinia()
+    setActivePinia(pinia)
+    const router = createRouter({
+      history: createMemoryHistory(),
+      routes: [{ path: '/projects/:projectId/write', component: WorkspaceView }]
+    })
+    await router.push('/projects/p1/write')
+    await router.isReady()
+    const store = useProjectStore()
+    await Promise.all([store.load('p1'), useCodexStore().load('p1')])
+    const chapterId = store.activeId
+    if (!chapterId) throw new Error('active chapter not found')
+    const summary: GenerationDraftSummary = {
+      id: 'draft-interrupted', runId: 'run-interrupted', projectId: 'p1', chapterId, kind: 'chapter',
+      status: 'failed', generatedWords: 320, excerpt: '雨声压住了院外的脚步。', requestSummary: {},
+      errorCode: 'network_error', createdAt: '2026-09-08T10:00:00Z', updatedAt: '2026-09-08T10:01:00Z',
+      acceptedAt: null, reviewVersion: 0, review: { total: 1, pending: 1, accepted: 0, rejected: 0 }
+    }
+    const detail: GenerationDraftDetail = {
+      ...summary,
+      content: '雨声压住了院外的脚步。',
+      segments: [{ id: 'segment-1', text: '雨声压住了院外的脚步。', decision: 'pending' }]
+    }
+    vi.spyOn(contentApi, 'getContextLayers').mockResolvedValue([])
+    vi.spyOn(contentApi, 'listProjectNotes').mockResolvedValue([])
+    vi.spyOn(generationDraftApi, 'list').mockResolvedValue([summary])
+    vi.spyOn(generationDraftApi, 'get').mockResolvedValue(detail)
+    const continuation = vi.spyOn(generationDraftApi, 'continue').mockImplementation(() => {
+      throw new GenerationError('continuation_not_available', '当前候选已经无法继续，请重新生成')
+    })
+
+    const wrapper = mount(WorkspaceView, { attachTo: document.body, global: { plugins: [pinia, router] } })
+    await flushPromises()
+    const draftsTab = wrapper.findAll('.wk-tab').find((button) => button.text().includes('候选'))
+    if (!draftsTab) throw new Error('draft tab not found')
+    await draftsTab.trigger('click')
+    await wrapper.get('.draft-row').trigger('click')
+    await flushPromises()
+    const continueButton = wrapper.findAll('.draft-actions button').find((button) => button.text() === '从末尾继续')
+    if (!continueButton) throw new Error('continue button not found')
+    await continueButton.trigger('click')
+    await flushPromises()
+
+    expect(continuation).toHaveBeenCalledWith('draft-interrupted', expect.any(Object), expect.any(Object))
+    expect(continueButton.attributes('disabled')).toBeUndefined()
+    const aiTab = wrapper.findAll('.wk-tab').find((button) => button.text() === 'AI')
+    if (!aiTab) throw new Error('AI tab not found')
+    await aiTab.trigger('click')
+    expect(wrapper.get('.generation-recovery').text()).toContain('当前候选已经无法继续，请重新生成')
     wrapper.unmount()
   })
 })

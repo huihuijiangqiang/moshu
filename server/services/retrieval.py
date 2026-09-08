@@ -22,9 +22,11 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from db.models_codex import CodexAlias, CodexEntry, resolve_codex_statuses
+from db.models_chapter_chunks import ChapterChunk
 from db.models_consistency_extended import DocumentSummary
 from db.models_core import Chapter
 from services.providers import EmbeddingProvider
+from services.chapter_chunks import current_chunk_query
 
 
 class ConsistencyRetrieval:
@@ -236,6 +238,61 @@ class ConsistencyRetrieval:
             })
 
         return results
+
+    async def retrieve_chapter_chunks_l3(
+        self,
+        db: AsyncSession,
+        project_id: str,
+        query_text: str,
+        *,
+        top_k: int = 8,
+        threshold: float = 0.55,
+        chapter_ids: Optional[list[str]] = None,
+    ) -> list[dict]:
+        """Semantic retrieval over current, ready chapter-body chunks.
+
+        The join against ``chapter_bodies`` is deliberate: rows for historical
+        body revisions remain for audit purposes, but can never be returned after
+        the chapter head advances.
+        """
+        from sqlalchemy import text
+
+        if top_k <= 0:
+            raise ValueError("top_k must be positive")
+        if not 0.0 <= threshold <= 1.0:
+            raise ValueError("threshold must be between 0 and 1")
+        if not query_text or not query_text.strip():
+            return []
+        query_embedding = await self.embedding_provider.embed_text(query_text)
+        distance = ChapterChunk.embedding.cosine_distance(query_embedding)
+        stmt = current_chunk_query(project_id=project_id, chapter_ids=chapter_ids).with_only_columns(
+            ChapterChunk.id,
+            ChapterChunk.chapter_id,
+            ChapterChunk.body_rev,
+            ChapterChunk.chunk_index,
+            ChapterChunk.paragraph_start,
+            ChapterChunk.paragraph_end,
+            ChapterChunk.paragraph_ids,
+            ChapterChunk.content_text,
+            distance.label("distance"),
+        )
+        stmt = stmt.where(distance <= 1.0 - threshold)
+        result = await db.execute(stmt.order_by(text("distance")).limit(top_k))
+        return [
+            {
+                "chunk_id": row.id,
+                "chapter_id": row.chapter_id,
+                "body_rev": row.body_rev,
+                "chunk_index": row.chunk_index,
+                "paragraph_start": row.paragraph_start,
+                "paragraph_end": row.paragraph_end,
+                "paragraph_ids": row.paragraph_ids or [],
+                "content_text": row.content_text,
+                "distance": float(row.distance),
+                "similarity": 1.0 - float(row.distance),
+            }
+            for row in result
+        ]
 
     @staticmethod
     def _cosine_similarity(a: list[float], b: list[float]) -> float:
