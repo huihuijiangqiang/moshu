@@ -94,6 +94,27 @@ class OutboxService:
         return existing
 
     @staticmethod
+    async def requeue_terminal(db: AsyncSession, event: OutboxEvent) -> bool:
+        """Re-arm one unique event after its prior delivery reached a terminal state.
+
+        Pending/dispatching events are deliberately left untouched, so repeated
+        HTTP requests cannot publish concurrent duplicate work for the same
+        aggregate revision.
+        """
+        if event.status not in {"sent", "failed", "dead_letter"}:
+            return False
+        event.status = "pending"
+        event.attempts = 0
+        event.available_at = datetime.now(timezone.utc)
+        event.lease_owner = None
+        event.lease_token = None
+        event.lease_until = None
+        event.sent_at = None
+        event.last_error = None
+        await db.flush()
+        return True
+
+    @staticmethod
     async def lease_batch(
         db: AsyncSession,
         owner_id: str,

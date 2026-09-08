@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, onUnmounted, ref } from 'vue'
 import QRCode from 'qrcode'
 import { billingApi, type BillingOrder, type BillingProduct, type BillingStatus } from '@/api/billing'
 import { useShellStore } from '@/stores/shell'
@@ -16,6 +16,44 @@ const activeOrder = ref<BillingOrder | null>(null)
 const checkoutQr = ref('')
 const billingBusy = ref('')
 const billingError = ref('')
+let paymentPollTimer: ReturnType<typeof setTimeout> | null = null
+const PAYMENT_POLL_MS = 4000
+
+function stopPaymentPolling() {
+  if (paymentPollTimer !== null) clearTimeout(paymentPollTimer)
+  paymentPollTimer = null
+}
+
+function schedulePaymentPolling() {
+  stopPaymentPolling()
+  if (activeOrder.value?.status !== 'pending') return
+  paymentPollTimer = setTimeout(() => { void pollActiveOrder() }, PAYMENT_POLL_MS)
+}
+
+function applyUpdatedOrder(updated: BillingOrder) {
+  orders.value = orders.value.map((item) => item.id === updated.id ? updated : item)
+  if (activeOrder.value?.id === updated.id) activeOrder.value = updated
+  if (updated.status !== 'pending') stopPaymentPolling()
+}
+
+async function pollActiveOrder() {
+  paymentPollTimer = null
+  const order = activeOrder.value
+  if (!order || order.status !== 'pending') return
+  if (document.visibilityState === 'hidden' || billingBusy.value) {
+    schedulePaymentPolling()
+    return
+  }
+  try {
+    const updated = await billingApi.syncOrder(order.id)
+    applyUpdatedOrder(updated)
+    if (updated.status === 'paid') await usage.load(true)
+  } catch {
+    // 自动查单失败不打断扫码；保留手动查询入口并在下一周期重试。
+  } finally {
+    if (activeOrder.value?.status === 'pending') schedulePaymentPolling()
+  }
+}
 
 async function loadBilling() {
   billingLoading.value = true
@@ -83,6 +121,7 @@ async function buy(product: BillingProduct, provider: BillingOrder['provider']) 
     checkoutQr.value = result.payment.checkout_url
       ? await QRCode.toDataURL(result.payment.checkout_url, { width: 240, margin: 1, errorCorrectionLevel: 'M' })
       : ''
+    schedulePaymentPolling()
   } catch {
     billingError.value = '支付订单创建失败，请确认渠道配置后重试。'
   } finally {
@@ -99,8 +138,7 @@ async function updateOrder(order: BillingOrder, action: 'sync' | 'close' | 'refu
       : action === 'close'
         ? await billingApi.closeOrder(order.id)
         : await billingApi.refundOrder(order.id, '用户从用量页申请退款')
-    orders.value = orders.value.map((item) => item.id === updated.id ? updated : item)
-    if (activeOrder.value?.id === updated.id) activeOrder.value = updated
+    applyUpdatedOrder(updated)
     if (updated.status === 'paid' || updated.status === 'refunded' || updated.status === 'partially_refunded') {
       await usage.load(true)
     }
@@ -112,9 +150,12 @@ async function updateOrder(order: BillingOrder, action: 'sync' | 'close' | 'refu
 }
 
 function closeCheckout() {
+  stopPaymentPolling()
   activeOrder.value = null
   checkoutQr.value = ''
 }
+
+onUnmounted(stopPaymentPolling)
 
 function shortDate(value: string) {
   const date = new Date(`${value}T00:00:00`)

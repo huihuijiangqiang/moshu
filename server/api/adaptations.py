@@ -2,14 +2,16 @@
 
 当前只管理结构化稿件和人物视觉约束，不启动图片/视频生成任务。
 """
+from typing import Literal
 from uuid import uuid4
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from db import Adaptation, Episode, Scene, Shot, VisualProfile
+from db import Adaptation, Chapter, CodexEntry, Episode, Scene, Shot, VisualProfile
 from db.session import get_db
 from api.auth import ProjectPermission, get_current_user, verify_project_permission
 from db.models_core import User
@@ -23,8 +25,8 @@ def new_id(prefix: str) -> str:
 
 class AdaptationCreate(BaseModel):
     title: str = Field(min_length=1, max_length=200)
-    format: str = "comic_drama"
-    aspect_ratio: str = "9:16"
+    format: Literal["comic_drama"] = "comic_drama"
+    aspect_ratio: Literal["9:16", "16:9"] = "9:16"
     style_profile: dict = Field(default_factory=dict)
 
 
@@ -38,8 +40,15 @@ class AdaptationOut(AdaptationCreate):
 class EpisodeCreate(BaseModel):
     number: int = Field(ge=1)
     title: str = Field(min_length=1, max_length=200)
-    source_chapter_ids: list[str] = Field(default_factory=list)
+    source_chapter_ids: list[str] = Field(min_length=1, max_length=100)
     target_duration: int = Field(default=90, ge=1, le=1800)
+
+
+class EpisodePatch(BaseModel):
+    title: str | None = Field(default=None, min_length=1, max_length=200)
+    source_chapter_ids: list[str] | None = Field(default=None, min_length=1, max_length=100)
+    target_duration: int | None = Field(default=None, ge=1, le=1800)
+    status: Literal["draft", "in_review", "approved"] | None = None
 
 
 class EpisodeOut(EpisodeCreate):
@@ -54,8 +63,16 @@ class SceneCreate(BaseModel):
     purpose: str = ""
     location_entry_id: str | None = None
     time_anchor: str = ""
-    character_entry_ids: list[str] = Field(default_factory=list)
+    character_entry_ids: list[str] = Field(default_factory=list, max_length=50)
     summary: str = ""
+
+
+class ScenePatch(BaseModel):
+    purpose: str | None = Field(default=None, max_length=200)
+    location_entry_id: str | None = None
+    time_anchor: str | None = Field(default=None, max_length=100)
+    character_entry_ids: list[str] | None = Field(default=None, max_length=50)
+    summary: str | None = None
 
 
 class SceneOut(SceneCreate):
@@ -66,7 +83,7 @@ class SceneOut(SceneCreate):
 
 class ShotCreate(BaseModel):
     order: int = Field(default=1, ge=1)
-    shot_type: str = "medium"
+    shot_type: Literal["wide", "medium", "close", "detail", "overhead"] = "medium"
     camera: str = "static"
     duration_target: int = Field(default=4, ge=1, le=120)
     action: str = ""
@@ -78,7 +95,7 @@ class ShotCreate(BaseModel):
 
 class ShotPatch(BaseModel):
     order: int | None = Field(default=None, ge=1)
-    shot_type: str | None = None
+    shot_type: Literal["wide", "medium", "close", "detail", "overhead"] | None = None
     camera: str | None = None
     duration_target: int | None = Field(default=None, ge=1, le=120)
     action: str | None = None
@@ -86,7 +103,7 @@ class ShotPatch(BaseModel):
     narration: str | None = None
     visual_prompt: str | None = None
     reference_asset_ids: list[str] | None = None
-    status: str | None = None
+    status: Literal["draft", "approved"] | None = None
 
 
 class ShotOut(ShotCreate):
@@ -165,6 +182,72 @@ async def require_scene(
     return item
 
 
+def unique_ids(values: list[str]) -> list[str]:
+    return list(dict.fromkeys(value for value in values if value))
+
+
+async def validate_chapter_ids(project_id: str, chapter_ids: list[str], db: AsyncSession) -> list[str]:
+    ids = unique_ids(chapter_ids)
+    if not ids:
+        return []
+    result = await db.execute(
+        select(Chapter.id).where(
+            Chapter.project_id == project_id,
+            Chapter.id.in_(ids),
+            Chapter.deleted_at.is_(None),
+        )
+    )
+    found = set(result.scalars().all())
+    missing = [item_id for item_id in ids if item_id not in found]
+    if missing:
+        raise HTTPException(status_code=422, detail={"code": "invalid_source_chapters", "ids": missing})
+    return ids
+
+
+async def validate_scene_references(
+    project_id: str,
+    location_entry_id: str | None,
+    character_entry_ids: list[str],
+    db: AsyncSession,
+) -> tuple[str | None, list[str]]:
+    character_ids = unique_ids(character_entry_ids)
+    requested = unique_ids([*(character_ids), *([location_entry_id] if location_entry_id else [])])
+    if not requested:
+        return location_entry_id, character_ids
+    result = await db.execute(
+        select(CodexEntry.id, CodexEntry.kind).where(
+            CodexEntry.project_id == project_id,
+            CodexEntry.id.in_(requested),
+            CodexEntry.status == "confirmed",
+        )
+    )
+    entries = dict(result.all())
+    invalid = [item_id for item_id in requested if item_id not in entries]
+    if invalid:
+        raise HTTPException(status_code=422, detail={"code": "invalid_scene_references", "ids": invalid})
+    if location_entry_id and entries[location_entry_id] != "location":
+        raise HTTPException(status_code=422, detail={"code": "scene_location_must_be_location"})
+    wrong_characters = [item_id for item_id in character_ids if entries[item_id] != "character"]
+    if wrong_characters:
+        raise HTTPException(
+            status_code=422,
+            detail={"code": "scene_characters_must_be_characters", "ids": wrong_characters},
+        )
+    return location_entry_id, character_ids
+
+
+async def validate_visual_profile_entry(project_id: str, codex_entry_id: str, db: AsyncSession) -> None:
+    kind = await db.scalar(
+        select(CodexEntry.kind).where(
+            CodexEntry.id == codex_entry_id,
+            CodexEntry.project_id == project_id,
+            CodexEntry.status == "confirmed",
+        )
+    )
+    if kind != "character":
+        raise HTTPException(status_code=422, detail={"code": "visual_profile_requires_character"})
+
+
 @router.get("/projects/{project_id}/adaptations", response_model=list[AdaptationOut])
 async def list_adaptations(
     project_id: str,
@@ -205,9 +288,34 @@ async def create_episode(
     db: AsyncSession = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
-    await require_adaptation(adaptation_id, db, user, ProjectPermission.MANAGE_OUTLINE)
-    item = Episode(id=new_id("ep"), adaptation_id=adaptation_id, **payload.model_dump())
+    adaptation = await require_adaptation(adaptation_id, db, user, ProjectPermission.MANAGE_OUTLINE)
+    data = payload.model_dump()
+    data["source_chapter_ids"] = await validate_chapter_ids(
+        adaptation.project_id, payload.source_chapter_ids, db
+    )
+    item = Episode(id=new_id("ep"), adaptation_id=adaptation_id, **data)
     db.add(item)
+    await db.commit()
+    await db.refresh(item)
+    return item
+
+
+@router.patch("/episodes/{episode_id}", response_model=EpisodeOut)
+async def update_episode(
+    episode_id: str,
+    payload: EpisodePatch,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    item = await require_episode(episode_id, db, user, ProjectPermission.MANAGE_OUTLINE)
+    adaptation = await db.get(Adaptation, item.adaptation_id)
+    data = payload.model_dump(exclude_unset=True)
+    if "source_chapter_ids" in data:
+        data["source_chapter_ids"] = await validate_chapter_ids(
+            adaptation.project_id, data["source_chapter_ids"], db
+        )
+    for key, value in data.items():
+        setattr(item, key, value)
     await db.commit()
     await db.refresh(item)
     return item
@@ -227,9 +335,42 @@ async def create_scene(
     db: AsyncSession = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
-    await require_episode(episode_id, db, user, ProjectPermission.MANAGE_OUTLINE)
-    item = Scene(id=new_id("scn"), episode_id=episode_id, **payload.model_dump())
+    episode = await require_episode(episode_id, db, user, ProjectPermission.MANAGE_OUTLINE)
+    adaptation = await db.get(Adaptation, episode.adaptation_id)
+    data = payload.model_dump()
+    data["location_entry_id"], data["character_entry_ids"] = await validate_scene_references(
+        adaptation.project_id,
+        payload.location_entry_id,
+        payload.character_entry_ids,
+        db,
+    )
+    item = Scene(id=new_id("scn"), episode_id=episode_id, **data)
     db.add(item)
+    await db.commit()
+    await db.refresh(item)
+    return item
+
+
+@router.patch("/scenes/{scene_id}", response_model=SceneOut)
+async def update_scene(
+    scene_id: str,
+    payload: ScenePatch,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    item = await require_scene(scene_id, db, user, ProjectPermission.MANAGE_OUTLINE)
+    episode = await db.get(Episode, item.episode_id)
+    adaptation = await db.get(Adaptation, episode.adaptation_id)
+    data = payload.model_dump(exclude_unset=True)
+    if "location_entry_id" in data or "character_entry_ids" in data:
+        data["location_entry_id"], data["character_entry_ids"] = await validate_scene_references(
+            adaptation.project_id,
+            data.get("location_entry_id", item.location_entry_id),
+            data.get("character_entry_ids", item.character_entry_ids),
+            db,
+        )
+    for key, value in data.items():
+        setattr(item, key, value)
     await db.commit()
     await db.refresh(item)
     return item
@@ -298,10 +439,23 @@ async def create_visual_profile(
     db: AsyncSession = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
-    await require_adaptation(adaptation_id, db, user, ProjectPermission.MANAGE_CODEX)
+    adaptation = await require_adaptation(adaptation_id, db, user, ProjectPermission.MANAGE_CODEX)
+    await validate_visual_profile_entry(adaptation.project_id, payload.codex_entry_id, db)
+    existing = await db.scalar(
+        select(VisualProfile.id).where(
+            VisualProfile.adaptation_id == adaptation_id,
+            VisualProfile.codex_entry_id == payload.codex_entry_id,
+        )
+    )
+    if existing:
+        raise HTTPException(status_code=409, detail={"code": "visual_profile_already_exists"})
     item = VisualProfile(id=new_id("vp"), adaptation_id=adaptation_id, **payload.model_dump())
     db.add(item)
-    await db.commit()
+    try:
+        await db.commit()
+    except IntegrityError as caught:
+        await db.rollback()
+        raise HTTPException(status_code=409, detail={"code": "visual_profile_already_exists"}) from caught
     await db.refresh(item)
     return item
 

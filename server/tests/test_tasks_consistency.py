@@ -2747,6 +2747,38 @@ async def test_dispatch_outbox_pins_chunk_embedding_to_saved_revision(
     assert sent == [(71, "lease-71")]
 
 
+async def test_dispatch_outbox_routes_forced_project_chunk_reindex(
+    use_test_session, monkeypatch
+):
+    event = SimpleNamespace(
+        id=72,
+        topic="chapter.chunk_reindex_requested",
+        payload={"project_id": "project-1", "chapter_id": "chapter-1", "body_rev": 10},
+        lease_token="lease-72",
+    )
+    dispatched = []
+
+    async def fake_lease_batch(db, owner_id, batch_size, lease_duration_seconds):
+        return [event]
+
+    async def fake_mark_sent(db, event_id, lease_token):
+        return True
+
+    class FakeTask:
+        @staticmethod
+        def delay(*args):
+            dispatched.append(args)
+
+    import tasks.codex as codex_tasks
+
+    monkeypatch.setattr(tasks.OutboxService, "lease_batch", fake_lease_batch)
+    monkeypatch.setattr(tasks.OutboxService, "mark_sent", fake_mark_sent)
+    monkeypatch.setattr(codex_tasks, "backfill_chapter_chunks_task", FakeTask())
+    result = await tasks._dispatch_outbox_async("dispatcher-reindex", 20)
+    assert result["dispatched"] == 1
+    assert dispatched == [("project-1", "chapter-1", 10, True)]
+
+
 async def test_temporal_dependent_rescan_runs_rules_without_resetting_pipeline(
     use_test_session, pipeline_setup, monkeypatch
 ):

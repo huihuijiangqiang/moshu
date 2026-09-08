@@ -38,6 +38,7 @@ const pendingOrder: BillingOrder = {
 
 describe('usage payment workflow', () => {
   beforeEach(() => {
+    vi.useRealTimers()
     vi.clearAllMocks()
     setActivePinia(createPinia())
     usage.summary.mockResolvedValue(summary)
@@ -104,5 +105,26 @@ describe('usage payment workflow', () => {
     await flushPromises()
     expect(wrapper.find('.billing-load-error').exists()).toBe(false)
     wrapper.unmount()
+  })
+
+  it('polls a pending checkout and stops after payment arrives', async () => {
+    vi.useFakeTimers()
+    const wrapper = mount(UsageView, { attachTo: document.body, global: { plugins: [createPinia()] } })
+    await flushPromises()
+
+    const wechat = wrapper.findAll('button').find((button) => button.text() === '微信支付')
+    await wechat!.trigger('click')
+    await flushPromises()
+    expect(billing.syncOrder).not.toHaveBeenCalled()
+
+    await vi.advanceTimersByTimeAsync(4000)
+    await flushPromises()
+    expect(billing.syncOrder).toHaveBeenCalledTimes(1)
+    expect(document.body.textContent).toContain('已到账')
+
+    await vi.advanceTimersByTimeAsync(8000)
+    expect(billing.syncOrder).toHaveBeenCalledTimes(1)
+    wrapper.unmount()
+    vi.useRealTimers()
   })
 })

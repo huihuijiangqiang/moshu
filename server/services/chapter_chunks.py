@@ -5,9 +5,10 @@ from __future__ import annotations
 import hashlib
 import secrets
 from collections.abc import Iterable
+from dataclasses import dataclass
 from typing import Optional
 
-from sqlalchemy import select, update
+from sqlalchemy import case, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from config import settings
@@ -15,6 +16,150 @@ from db.models_chapter_chunks import ChapterChunk
 from db.models_core import Chapter, ChapterBody
 from services.chunking import TextChunk, chunk_html
 from services.providers import EmbeddingProvider
+
+
+@dataclass(frozen=True)
+class ProjectChunkIndexStatus:
+    project_id: str
+    chapter_count: int
+    indexed_chapter_count: int
+    total: int
+    ready: int
+    pending: int
+    failed: int
+    stale: int
+
+
+async def project_chunk_index_status(
+    db: AsyncSession, *, project_id: str
+) -> ProjectChunkIndexStatus:
+    """Aggregate chunk health while treating every non-head row as stale."""
+    chapter_count = int(
+        await db.scalar(
+            select(func.count(Chapter.id))
+            .join(ChapterBody, ChapterBody.chapter_id == Chapter.id)
+            .where(Chapter.project_id == project_id, Chapter.deleted_at.is_(None))
+        )
+        or 0
+    )
+    current = ChapterChunk.body_rev == ChapterBody.rev
+    active = (
+        select(
+            func.count(ChapterChunk.id),
+            func.coalesce(func.sum(case((current & (ChapterChunk.status == "ready"), 1), else_=0)), 0),
+            func.coalesce(func.sum(case((current & (ChapterChunk.status == "pending"), 1), else_=0)), 0),
+            func.coalesce(func.sum(case((current & (ChapterChunk.status == "failed"), 1), else_=0)), 0),
+            func.coalesce(
+                func.sum(case((or_(~current, ChapterChunk.status == "stale"), 1), else_=0)),
+                0,
+            ),
+        )
+        .select_from(ChapterChunk)
+        .join(Chapter, Chapter.id == ChapterChunk.chapter_id)
+        .join(ChapterBody, ChapterBody.chapter_id == ChapterChunk.chapter_id)
+        .where(
+            ChapterChunk.project_id == project_id,
+            Chapter.project_id == project_id,
+            Chapter.deleted_at.is_(None),
+        )
+    )
+    row = (await db.execute(active)).one()
+    ready_chapters = (
+        select(ChapterChunk.chapter_id)
+        .join(Chapter, Chapter.id == ChapterChunk.chapter_id)
+        .join(ChapterBody, ChapterBody.chapter_id == ChapterChunk.chapter_id)
+        .where(
+            ChapterChunk.project_id == project_id,
+            Chapter.project_id == project_id,
+            Chapter.deleted_at.is_(None),
+            ChapterChunk.body_rev == ChapterBody.rev,
+            ChapterChunk.status != "stale",
+        )
+        .group_by(ChapterChunk.chapter_id)
+        .having(func.count(ChapterChunk.id) > 0)
+        .having(
+            func.sum(
+                case(
+                    (
+                        (ChapterChunk.status != "ready")
+                        | ChapterChunk.embedding.is_(None),
+                        1,
+                    ),
+                    else_=0,
+                )
+            )
+            == 0
+        )
+        .subquery()
+    )
+    indexed_chapter_count = int(
+        await db.scalar(select(func.count()).select_from(ready_chapters)) or 0
+    )
+    return ProjectChunkIndexStatus(
+        project_id=project_id,
+        chapter_count=chapter_count,
+        indexed_chapter_count=indexed_chapter_count,
+        total=int(row[0] or 0),
+        ready=int(row[1] or 0),
+        pending=int(row[2] or 0),
+        failed=int(row[3] or 0),
+        stale=int(row[4] or 0),
+    )
+
+
+async def project_body_revisions(db: AsyncSession, *, project_id: str) -> list[tuple[str, int]]:
+    """Return active chapter heads in stable order for batch outbox scheduling."""
+    result = await db.execute(
+        select(Chapter.id, ChapterBody.rev)
+        .join(ChapterBody, ChapterBody.chapter_id == Chapter.id)
+        .where(Chapter.project_id == project_id, Chapter.deleted_at.is_(None))
+        .order_by(Chapter.idx, Chapter.id)
+    )
+    return [(str(chapter_id), int(body_rev)) for chapter_id, body_rev in result.all()]
+
+
+async def current_chunk_states_by_chapter(
+    db: AsyncSession, *, project_id: str
+) -> dict[tuple[str, int], set[str]]:
+    """Return only head-revision states; historical rows cannot affect scheduling."""
+    result = await db.execute(
+        select(ChapterChunk.chapter_id, ChapterChunk.body_rev, ChapterChunk.status)
+        .join(Chapter, Chapter.id == ChapterChunk.chapter_id)
+        .join(ChapterBody, ChapterBody.chapter_id == ChapterChunk.chapter_id)
+        .where(
+            ChapterChunk.project_id == project_id,
+            Chapter.project_id == project_id,
+            Chapter.deleted_at.is_(None),
+            ChapterChunk.body_rev == ChapterBody.rev,
+            ChapterChunk.status != "stale",
+        )
+    )
+    states: dict[tuple[str, int], set[str]] = {}
+    for chapter_id, body_rev, status in result.all():
+        states.setdefault((str(chapter_id), int(body_rev)), set()).add(str(status))
+    return states
+
+
+async def mark_current_chapter_chunks_for_reindex(
+    db: AsyncSession, *, project_id: str, chapter_id: str, body_rev: int
+) -> int:
+    """Invalidate current vectors in the same transaction that queues rebuild work."""
+    result = await db.execute(
+        update(ChapterChunk)
+        .where(
+            ChapterChunk.project_id == project_id,
+            ChapterChunk.chapter_id == chapter_id,
+            ChapterChunk.body_rev == body_rev,
+            ChapterChunk.status != "stale",
+        )
+        .values(
+            status="pending",
+            embedding=None,
+            embedding_text_hash=None,
+            error_detail=None,
+        )
+    )
+    return int(result.rowcount or 0)
 
 
 def _content_hash(text: str) -> str:
@@ -259,9 +404,14 @@ def current_chunk_query(*, project_id: str, chapter_ids: Optional[Iterable[str]]
 
 
 __all__ = [
+    "ProjectChunkIndexStatus",
+    "current_chunk_states_by_chapter",
     "current_chunk_query",
     "embed_pending_chapter_chunks",
     "mark_chapter_chunks_failed",
+    "mark_current_chapter_chunks_for_reindex",
+    "project_body_revisions",
+    "project_chunk_index_status",
     "count_current_chapter_chunks",
     "replace_chapter_chunks",
 ]

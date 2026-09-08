@@ -75,6 +75,19 @@ class _OpRecorder:
             sa.CheckConstraint(condition, name=constraint_name, **kw)
         )
 
+    def create_unique_constraint(
+        self,
+        constraint_name: str,
+        table_name: str,
+        columns: list[str],
+        **kw: Any,
+    ) -> None:
+        kw.pop("schema", None)
+        table = self.metadata.tables[table_name]
+        table.append_constraint(
+            sa.UniqueConstraint(*columns, name=constraint_name, **kw)
+        )
+
     def drop_constraint(
         self,
         constraint_name: str,

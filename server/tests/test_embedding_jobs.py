@@ -3,12 +3,14 @@ from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 
 import pytest
+from sqlalchemy import select
 
 from db.models_embedding import CodexEmbeddingJob
 from db.models_chapter_chunks import ChapterChunk
 from db.models_core import ChapterBody
 from services.codex import create_entry
 from services.embedding import EmbeddingProviderError
+from services.providers import MockEmbeddingProvider
 
 
 def test_dispatch_uses_configured_celery_app(monkeypatch):
@@ -203,6 +205,68 @@ async def test_terminal_chapter_chunk_embedding_failure_is_visible(
     row = await async_db_session.get(ChapterChunk, "chunk")
     assert row.status == "failed"
     assert row.error_detail == "gateway unavailable"
+
+
+async def test_chapter_chunk_worker_builds_missing_current_revision(
+    async_db_session, seed_project, monkeypatch
+):
+    from tasks import codex as codex_tasks
+
+    @contextlib.asynccontextmanager
+    async def session_factory():
+        yield async_db_session
+
+    await seed_project(user_id="writer", project_id="novel", chapter_ids=("chapter",))
+    async_db_session.add(
+        ChapterBody(
+            chapter_id="chapter",
+            content_html="<p>她在田边整理秧苗。</p>",
+            content_json={
+                "type": "doc",
+                "content": [
+                    {
+                        "type": "paragraph",
+                        "attrs": {"pid": "p1"},
+                        "content": [{"type": "text", "text": "她在田边整理秧苗。"}],
+                    }
+                ],
+            },
+            rev=4,
+        )
+    )
+    await async_db_session.commit()
+    monkeypatch.setattr(codex_tasks, "AsyncSessionLocal", session_factory)
+    monkeypatch.setattr(codex_tasks, "GatewayEmbeddingProvider", MockEmbeddingProvider)
+
+    result = await codex_tasks._backfill_chapter_chunks_async("novel", "chapter", 4, 32)
+    rows = list((await async_db_session.execute(select(ChapterChunk))).scalars())
+    assert result["status"] == "success"
+    assert result["embedded_count"] == 1
+    assert len(rows) == 1
+    assert rows[0].body_rev == 4
+    assert rows[0].status == "ready"
+
+
+async def test_chapter_chunk_worker_ignores_superseded_outbox_revision(
+    async_db_session, seed_project, monkeypatch
+):
+    from tasks import codex as codex_tasks
+
+    @contextlib.asynccontextmanager
+    async def session_factory():
+        yield async_db_session
+
+    await seed_project(user_id="writer", project_id="novel", chapter_ids=("chapter",))
+    async_db_session.add(
+        ChapterBody(chapter_id="chapter", content_html="<p>新版</p>", content_json={}, rev=5)
+    )
+    await async_db_session.commit()
+    monkeypatch.setattr(codex_tasks, "AsyncSessionLocal", session_factory)
+    monkeypatch.setattr(codex_tasks, "GatewayEmbeddingProvider", MockEmbeddingProvider)
+
+    result = await codex_tasks._backfill_chapter_chunks_async("novel", "chapter", 4, 32, force=True)
+    assert result["status"] == "stale"
+    assert list((await async_db_session.execute(select(ChapterChunk))).scalars()) == []
 
 
 async def test_queue_dispatch_failure_becomes_visible_dead_letter(

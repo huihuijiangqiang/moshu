@@ -1051,6 +1051,17 @@ async def _dispatch_outbox_async(task_id: str, batch_size: int):
                     )
                     await OutboxService.mark_sent(db, event.id, event.lease_token)
                     dispatched += 1
+                elif event.topic == "chapter.chunk_reindex_requested":
+                    from tasks.codex import backfill_chapter_chunks_task
+
+                    backfill_chapter_chunks_task.delay(
+                        event.payload["project_id"],
+                        event.payload["chapter_id"],
+                        int(event.payload["body_rev"]),
+                        True,
+                    )
+                    await OutboxService.mark_sent(db, event.id, event.lease_token)
+                    dispatched += 1
                 elif event.topic == "consistency.manual_scan":
                     dispatch_run_pipeline(int(event.payload["run_id"]))
                     await OutboxService.mark_sent(db, event.id, event.lease_token)

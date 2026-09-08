@@ -5,7 +5,7 @@
 """
 from typing import Optional
 
-from sqlalchemy import Boolean, ForeignKey, Integer, String, Text
+from sqlalchemy import Boolean, ForeignKey, Index, Integer, String, Text
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -95,6 +95,9 @@ class VisualProfile(Base, TimestampMixin):
     """Codex 条目的视觉档案，确保同一人物跨镜头使用同一套约束。"""
 
     __tablename__ = "adaptation_visual_profiles"
+    __table_args__ = (
+        Index("uq_adaptation_visual_profile_entry", "adaptation_id", "codex_entry_id", unique=True),
+    )
 
     id: Mapped[str] = mapped_column(String(32), primary_key=True)
     adaptation_id: Mapped[str] = mapped_column(

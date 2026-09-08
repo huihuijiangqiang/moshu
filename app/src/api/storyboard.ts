@@ -85,33 +85,58 @@ function shotFromDto(row: ShotDto): StoryboardShot {
   }
 }
 
+function sceneFromDto(row: SceneDto, shots: StoryboardShot[] = []): StoryboardScene {
+  return {
+    id: row.id,
+    episodeId: row.episode_id,
+    order: row.order,
+    purpose: row.purpose,
+    locationEntryId: row.location_entry_id ?? undefined,
+    timeAnchor: row.time_anchor,
+    characterEntryIds: row.character_entry_ids,
+    summary: row.summary,
+    shots
+  }
+}
+
+function episodeFromDto(row: EpisodeDto, scenes: StoryboardScene[] = []): StoryboardEpisode {
+  return {
+    id: row.id,
+    adaptationId: row.adaptation_id,
+    number: row.number,
+    title: row.title,
+    sourceChapterIds: row.source_chapter_ids,
+    targetDuration: row.target_duration,
+    status: row.status,
+    scenes
+  }
+}
+
+function visualProfileFromDto(row: VisualProfileDto): VisualProfile {
+  return {
+    id: row.id,
+    adaptationId: row.adaptation_id,
+    codexEntryId: row.codex_entry_id,
+    displayName: row.display_name,
+    style: row.style,
+    appearance: row.appearance,
+    costume: row.costume,
+    palette: row.palette,
+    referenceAssetIds: row.reference_asset_ids,
+    version: row.version,
+    locked: row.locked,
+    notes: row.notes
+  }
+}
+
 async function loadScene(scene: SceneDto): Promise<StoryboardScene> {
   const shots = await request<ShotDto[]>(`/scenes/${scene.id}/shots`)
-  return {
-    id: scene.id,
-    episodeId: scene.episode_id,
-    order: scene.order,
-    purpose: scene.purpose,
-    locationEntryId: scene.location_entry_id ?? undefined,
-    timeAnchor: scene.time_anchor,
-    characterEntryIds: scene.character_entry_ids,
-    summary: scene.summary,
-    shots: shots.map(shotFromDto)
-  }
+  return sceneFromDto(scene, shots.map(shotFromDto))
 }
 
 async function loadEpisode(episode: EpisodeDto): Promise<StoryboardEpisode> {
   const scenes = await request<SceneDto[]>(`/episodes/${episode.id}/scenes`)
-  return {
-    id: episode.id,
-    adaptationId: episode.adaptation_id,
-    number: episode.number,
-    title: episode.title,
-    sourceChapterIds: episode.source_chapter_ids,
-    targetDuration: episode.target_duration,
-    status: episode.status,
-    scenes: await Promise.all(scenes.map(loadScene))
-  }
+  return episodeFromDto(episode, await Promise.all(scenes.map(loadScene)))
 }
 
 function adaptationFromDto(row: AdaptationDto, episodes: StoryboardEpisode[], visualProfiles: VisualProfile[]): StoryboardAdaptation {
@@ -150,20 +175,7 @@ export const storyboardApi = {
     return adaptationFromDto(
       adaptation,
       episodes,
-      profileRows.map((row) => ({
-        id: row.id,
-        adaptationId: row.adaptation_id,
-        codexEntryId: row.codex_entry_id,
-        displayName: row.display_name,
-        style: row.style,
-        appearance: row.appearance,
-        costume: row.costume,
-        palette: row.palette,
-        referenceAssetIds: row.reference_asset_ids,
-        version: row.version,
-        locked: row.locked,
-        notes: row.notes
-      }))
+      profileRows.map(visualProfileFromDto)
     )
   },
 
@@ -178,16 +190,16 @@ export const storyboardApi = {
         target_duration: input.targetDuration
       })
     })
-    return {
-      id: row.id,
-      adaptationId: row.adaptation_id,
-      number: row.number,
-      title: row.title,
-      sourceChapterIds: row.source_chapter_ids,
-      targetDuration: row.target_duration,
-      status: row.status,
-      scenes: []
-    }
+    return episodeFromDto(row)
+  },
+
+  async updateStoryboardEpisode(_projectId: string, episodeId: string, patch: Partial<StoryboardEpisode>): Promise<StoryboardEpisode> {
+    const body: Record<string, unknown> = {}
+    if (patch.title !== undefined) body.title = patch.title
+    if (patch.sourceChapterIds !== undefined) body.source_chapter_ids = patch.sourceChapterIds
+    if (patch.targetDuration !== undefined) body.target_duration = patch.targetDuration
+    if (patch.status !== undefined) body.status = patch.status
+    return episodeFromDto(await request<EpisodeDto>(`/episodes/${episodeId}`, { method: 'PATCH', body: JSON.stringify(body) }))
   },
 
   async createStoryboardScene(_projectId: string, episodeId: string, input: Pick<StoryboardScene, 'purpose' | 'summary' | 'timeAnchor' | 'locationEntryId' | 'characterEntryIds'>): Promise<StoryboardScene> {
@@ -203,7 +215,17 @@ export const storyboardApi = {
         character_entry_ids: input.characterEntryIds
       })
     })
-    return { id: row.id, episodeId: row.episode_id, order: row.order, purpose: row.purpose, locationEntryId: row.location_entry_id ?? undefined, timeAnchor: row.time_anchor, characterEntryIds: row.character_entry_ids, summary: row.summary, shots: [] }
+    return sceneFromDto(row)
+  },
+
+  async updateStoryboardScene(_projectId: string, sceneId: string, patch: Partial<StoryboardScene>): Promise<StoryboardScene> {
+    const body: Record<string, unknown> = {}
+    if (patch.purpose !== undefined) body.purpose = patch.purpose
+    if (patch.summary !== undefined) body.summary = patch.summary
+    if (patch.timeAnchor !== undefined) body.time_anchor = patch.timeAnchor
+    if (patch.locationEntryId !== undefined) body.location_entry_id = patch.locationEntryId || null
+    if (patch.characterEntryIds !== undefined) body.character_entry_ids = patch.characterEntryIds
+    return sceneFromDto(await request<SceneDto>(`/scenes/${sceneId}`, { method: 'PATCH', body: JSON.stringify(body) }))
   },
 
   async createStoryboardShot(_projectId: string, sceneId: string, input: Partial<StoryboardShot>): Promise<StoryboardShot> {
@@ -251,19 +273,24 @@ export const storyboardApi = {
     if (patch.notes !== undefined) body.notes = patch.notes
     if (patch.locked !== undefined) body.locked = patch.locked
     const row = await request<VisualProfileDto>(`/visual-profiles/${profileId}`, { method: 'PATCH', body: JSON.stringify(body) })
-    return {
-      id: row.id,
-      adaptationId: row.adaptation_id,
-      codexEntryId: row.codex_entry_id,
-      displayName: row.display_name,
-      style: row.style,
-      appearance: row.appearance,
-      costume: row.costume,
-      palette: row.palette,
-      referenceAssetIds: row.reference_asset_ids,
-      version: row.version,
-      locked: row.locked,
-      notes: row.notes
-    }
+    return visualProfileFromDto(row)
+  },
+
+  async createVisualProfile(projectId: string, input: Pick<VisualProfile, 'codexEntryId' | 'displayName'> & Partial<VisualProfile>): Promise<VisualProfile> {
+    const adaptation = await this.getStoryboard(projectId)
+    const row = await request<VisualProfileDto>(`/adaptations/${adaptation.id}/visual-profiles`, {
+      method: 'POST',
+      body: JSON.stringify({
+        codex_entry_id: input.codexEntryId,
+        display_name: input.displayName,
+        style: input.style ?? '',
+        appearance: input.appearance ?? '',
+        costume: input.costume ?? '',
+        palette: input.palette ?? [],
+        reference_asset_ids: input.referenceAssetIds ?? [],
+        notes: input.notes ?? ''
+      })
+    })
+    return visualProfileFromDto(row)
   }
 }

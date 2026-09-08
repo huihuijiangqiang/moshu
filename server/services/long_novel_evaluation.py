@@ -156,7 +156,7 @@ def evaluate_long_novel(
         raise LongNovelEvaluationError("checkpoint.chapters must be a list")
 
     chapters: list[dict[str, Any]] = []
-    hashes_ok = 0
+    hashes_verified = hashes_missing = hashes_mismatched = 0
     summaries = claims = embeddings = 0
     for raw in raw_chapters:
         if not isinstance(raw, dict) or not isinstance(raw.get("number"), int) or not isinstance(raw.get("file"), str):
@@ -167,8 +167,12 @@ def evaluate_long_novel(
         text = chapter_path.read_text(encoding="utf-8")
         digest = hashlib.sha256(text.encode("utf-8")).hexdigest()
         expected_digest = raw.get("sha256")
-        if not expected_digest or expected_digest == digest:
-            hashes_ok += 1
+        if not isinstance(expected_digest, str) or not expected_digest.strip():
+            hashes_missing += 1
+        elif expected_digest == digest:
+            hashes_verified += 1
+        else:
+            hashes_mismatched += 1
         number = raw["number"]
         summary_file = root / "analysis" / f"{number:02d}-summary.txt"
         claims_file = root / "analysis" / f"{number:02d}-claims.json"
@@ -195,7 +199,9 @@ def evaluate_long_novel(
             "target_characters": target_chars,
             "chapter_completion_ratio": _ratio(completed, planned),
             "target_reached": visible_chars >= target_chars and completed >= planned,
-            "hashes_verified": hashes_ok,
+            "hashes_verified": hashes_verified,
+            "hashes_missing": hashes_missing,
+            "hashes_mismatched": hashes_mismatched,
         },
         "pipeline_coverage": {
             "summaries": {"covered": summaries, "ratio": _ratio(summaries, coverage_denominator)},

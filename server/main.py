@@ -24,6 +24,7 @@ from api import (
     auth,
     billing,
     chapters,
+    chapter_chunks,
     codex,
     consistency,
     deconstruct,
@@ -150,6 +151,7 @@ app.include_router(auth.router, prefix="/auth", tags=["认证"])
 app.include_router(exports.router, prefix="/projects", tags=["导出与备份"])
 app.include_router(projects.router, prefix="/projects", tags=["项目"])
 app.include_router(chapters.router, prefix="/chapters", tags=["章节"])
+app.include_router(chapter_chunks.router, prefix="/projects", tags=["正文索引"])
 app.include_router(outlines.router, prefix="/chapters", tags=["章纲"])
 app.include_router(consistency.router, prefix="/consistency", tags=["一致性"])
 app.include_router(deconstruct.router, prefix="/analysis", tags=["拆书分析"])

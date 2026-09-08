@@ -34,7 +34,8 @@ def test_reports_coverage_usage_and_explicitly_unavailable_gold_metrics(tmp_path
     assert report["completion"] == pytest.approx({
         "planned_chapters": 2, "completed_chapters": 2,
         "visible_non_whitespace_characters": 40, "target_characters": 10,
-        "chapter_completion_ratio": 1, "target_reached": True, "hashes_verified": 2,
+        "chapter_completion_ratio": 1, "target_reached": True,
+        "hashes_verified": 2, "hashes_missing": 0, "hashes_mismatched": 0,
     })
     assert report["pipeline_coverage"]["embeddings"]["ratio"] == 1
     assert report["retrieval"]["status"] == "unavailable"
@@ -71,3 +72,18 @@ def test_rejects_chapter_paths_outside_private_run(tmp_path):
     )
     with pytest.raises(LongNovelEvaluationError, match="outside output directory"):
         evaluate_long_novel(tmp_path)
+
+
+def test_reports_missing_and_mismatched_hashes_without_calling_them_verified(tmp_path):
+    _write_run(tmp_path)
+    checkpoint_path = tmp_path / "checkpoint.json"
+    checkpoint = json.loads(checkpoint_path.read_text(encoding="utf-8"))
+    checkpoint["chapters"][0].pop("sha256")
+    checkpoint["chapters"][1]["sha256"] = "0" * 64
+    checkpoint_path.write_text(json.dumps(checkpoint, ensure_ascii=False), encoding="utf-8")
+
+    completion = evaluate_long_novel(tmp_path, target_chars=10)["completion"]
+
+    assert completion["hashes_verified"] == 0
+    assert completion["hashes_missing"] == 1
+    assert completion["hashes_mismatched"] == 1

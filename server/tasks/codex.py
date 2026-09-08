@@ -5,12 +5,18 @@ from datetime import UTC, datetime, timedelta
 
 import httpx
 from celery import shared_task
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from config import settings
+from db.models_chapter_chunks import ChapterChunk
+from db.models_core import Chapter, ChapterBody
 from db.models_embedding import CodexEmbeddingJob
-from services.chapter_chunks import embed_pending_chapter_chunks, mark_chapter_chunks_failed
+from services.chapter_chunks import (
+    embed_pending_chapter_chunks,
+    mark_chapter_chunks_failed,
+    replace_chapter_chunks,
+)
 from services.codex import count_stale_entries
 from services.codex_embedding import embed_missing_codex_entries
 from services.embedding import EmbeddingProviderError, GatewayEmbeddingProvider
@@ -124,10 +130,58 @@ async def _backfill_chapter_chunks_async(
     *,
     task_id: str | None = None,
     exhausted: bool = False,
+    force: bool = False,
 ) -> dict:
     async with AsyncSessionLocal() as db:
         provider = GatewayEmbeddingProvider()
         try:
+            body = await db.scalar(
+                select(ChapterBody)
+                .join(Chapter, Chapter.id == ChapterBody.chapter_id)
+                .where(
+                    ChapterBody.chapter_id == chapter_id,
+                    ChapterBody.rev == body_rev,
+                    Chapter.project_id == project_id,
+                    Chapter.deleted_at.is_(None),
+                )
+            )
+            if body is None:
+                return {
+                    "status": "stale",
+                    "project_id": project_id,
+                    "chapter_id": chapter_id,
+                    "body_rev": body_rev,
+                    "embedded_count": 0,
+                }
+            current_count = int(
+                await db.scalar(
+                    select(func.count(ChapterChunk.id)).where(
+                        ChapterChunk.project_id == project_id,
+                        ChapterChunk.chapter_id == chapter_id,
+                        ChapterChunk.body_rev == body_rev,
+                        ChapterChunk.status != "stale",
+                    )
+                )
+                or 0
+            )
+            if current_count == 0 or force:
+                rows = await replace_chapter_chunks(
+                    db,
+                    project_id=project_id,
+                    chapter_id=chapter_id,
+                    body_rev=body_rev,
+                    content_html=body.content_html,
+                    content_json=body.content_json,
+                )
+                if force:
+                    for row in rows:
+                        row.embedding = None
+                        row.embedding_text_hash = None
+                        row.status = "pending"
+                        row.error_detail = None
+                # Persist local indexing before calling the external provider;
+                # terminal gateway failures can then mark these rows as failed.
+                await db.commit()
             embedded = await embed_pending_chapter_chunks(
                 db,
                 provider,
@@ -170,7 +224,12 @@ async def _backfill_chapter_chunks_async(
     retry_jitter=True,
 )
 def backfill_chapter_chunks_task(
-    self, project_id: str, chapter_id: str, body_rev: int, batch_size: int = 32
+    self,
+    project_id: str,
+    chapter_id: str,
+    body_rev: int,
+    force: bool = False,
+    batch_size: int = 32,
 ):
     """Embed only the current revision's pending body chunks."""
     return run_async(
@@ -181,6 +240,7 @@ def backfill_chapter_chunks_task(
             batch_size,
             task_id=getattr(self.request, "id", None),
             exhausted=int(getattr(self.request, "retries", 0)) >= self.max_retries,
+            force=force,
         )
     )
 

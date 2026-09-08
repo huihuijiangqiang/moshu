@@ -6,11 +6,11 @@
 所有声明基于实际代码与测试结果，不夸大、不省略已知缺口。
 
 **关键事实**：
-- ✅ 61 张表完整 Alembic 覆盖，增量迁移已到 `034_chapter_chunks`
-- ✅ 1425 个单元/功能测试通过，38 个需要真实外部依赖的集成测试按条件跳过（SQLite in-memory，受控 embedding/LLM provider）
-- ✅ 前端 166 个测试、TypeScript 类型检查和生产构建通过
+- ✅ 61 张表完整 Alembic 覆盖，增量迁移已到 `035_adaptation_refs`
+- ✅ 1438 个单元/功能测试通过，38 个需要真实外部依赖的集成测试按条件跳过（SQLite in-memory，受控 embedding/LLM provider）
+- ✅ 前端 170 个测试、TypeScript 类型检查和生产构建通过
 - ✅ 前端生产与开发依赖均通过 `npm audit`，当前为 0 个已知漏洞（2026-09-07）
-- ✅ 38 个集成测试已在 Docker 真实 PostgreSQL + pgvector 环境通过（`034_chapter_chunks`，2026-09-08）
+- ✅ 38 个集成测试已在 Docker 真实 PostgreSQL + pgvector 环境通过（`034_chapter_chunks`，2026-09-08）；`035_adaptation_refs` 已在审核数据库执行并核验唯一索引
 - ✅ 已完成真实账号认证、作品创建、作品归档、分卷与章节增删改排、回收站和章纲编辑闭环
 - ✅ 大纲页支持卷排序、同卷章节排序与跨卷拖放；键盘/按钮排序保留为无障碍回退
 - ✅ P1 拆书分析支持 TXT/Markdown/DOCX/EPUB，内存解析章节结构、节奏节点和爽点分布；不落库、不调用模型、不扣作者积分
@@ -46,7 +46,8 @@
 - ✅ 七类确定性规则已由真实 `RuleScanner` 跑过 280 正例、140 hard negatives、20 easy negatives，
   recall / 证据定位 / hard-negative precision 均为 100%
 - ⚠️ 上述结构化评测不覆盖正文抽取和 LLM 仲裁的真实盲评质量，不能据此宣称全链路生产就绪
-- ✅ 2026-09-08 Docker Compose 真实验收：PostgreSQL/Redis/API/frontend/worker/dispatcher/beat 全部运行，迁移 head 为 `034_chapter_chunks`；数据卷使用 Compose 配置的相对路径或部署环境显式配置，不绑定开发机盘符
+- ✅ 2026-09-08 Docker Compose 真实验收：PostgreSQL/Redis/API/frontend/worker/dispatcher/beat 全部运行，迁移 head 为 `035_adaptation_refs`；数据卷使用 Compose 配置的相对路径或部署环境显式配置，不绑定开发机盘符
+- ✅ `035_adaptation_refs` 在审核数据库执行前检查历史重复，当前重复数为 0；唯一索引已核验
 
 ### 性能基准（可重复）
 
@@ -174,9 +175,9 @@ PostgreSQL/pgvector 检索必须在真实部署上单独压测；该脚本只覆
   `002_embedding_halfvec_2048.py` 清理旧向量并迁移到 HALFVEC(2048)，以
   `halfvec_cosine_ops` 重建 HNSW 索引；upgrade/downgrade 均会要求重新回填向量
 - ✅ `alembic upgrade head --sql` 与 `alembic downgrade head:-1 --sql` 语法验证通过
-- ✅ 迁移契约的 500 项检查通过；代码已将 head 推进到 `034_chapter_chunks`，覆盖新增表、唯一约束、
+- ✅ 迁移契约的 500 项检查通过；代码已将 head 推进到 `035_adaptation_refs`，覆盖新增表、唯一约束、
   CHECK 约束和时间戳非空契约
-- ✅ `034_chapter_chunks` 已在 Docker PostgreSQL 审核数据库原地执行，`chapter_chunks` 表与 Alembic head 已核验
+- ✅ `034_chapter_chunks` 已在 Docker PostgreSQL 审核数据库原地执行，`chapter_chunks` 表与 Alembic head 已核验；`035_adaptation_refs` 已在本轮发布时执行
 
 ---
 
@@ -351,6 +352,8 @@ PostgreSQL/pgvector 检索必须在真实部署上单独压测；该脚本只覆
 - ✅ 仅召回当前 `ChapterBody.rev` 的已就绪向量，过滤空 chunk、删除章节和跨作品数据
 - ✅ embedding 网关失败不阻塞正文保存，进入待回填状态并通过 outbox 异步补齐
 - ✅ 支持按章节显式重建索引，重建不会改写正文或正文版本历史
+- ✅ 项目级索引健康聚合：只把当前正文版本全部 chunk 均为 ready 且有向量的章节计为 indexed，历史版本统一计为 stale
+- ✅ 项目级批量重建通过 transactional outbox 异步排队，重复请求幂等，终态事件可重新入队，worker 会拒绝过期正文版本
 
 #### 导出与备份 (`services/exporting.py`)
 - ✅ 服务端全量读取章节正文，不依赖前端是否打开过章节
@@ -532,6 +535,10 @@ PostgreSQL/pgvector 检索必须在真实部署上单独压测；该脚本只覆
 - ✅ `GET /codex/{project_id}/embedding-status` - 持久查询索引健康度与 dead letter
 - ✅ `POST /codex/{project_id}/embedding-backfill` - 幂等入队或重新执行耗尽任务
 
+#### 正文索引运维 (`api/chapter_chunks.py`)
+- ✅ `GET /projects/{project_id}/chapter-chunks/status` - 当前版本 chunk 的 ready/pending/failed/stale 计数、章节索引完成度和排队数
+- ✅ `POST /projects/{project_id}/chapter-chunks/reindex` - 以项目管理权限批量排队当前正文版本重建；不会在请求内调用 embedding
+
 #### 一致性状态 (`api/consistency.py`, prefix `/consistency`)
 - ✅ `GET /consistency/status/{chapter_id}/{body_rev}` - 章节版本一致性状态（三阶段）
 - ✅ `POST /consistency/scan` - 触发手工一致性扫描
@@ -582,16 +589,16 @@ PostgreSQL/pgvector 检索必须在真实部署上单独压测；该脚本只覆
 
 ### 5. 测试覆盖
 
-#### 单元测试（1425 passed，SQLite in-memory，受控 providers）
+#### 单元测试（1438 passed，SQLite in-memory，受控 providers）
 
-**全量测试结果**：1425 passed, 38 skipped（未设置集成测试 URL 时）；前端 166 passed
+**全量测试结果**：1438 passed, 38 skipped（未设置集成测试 URL 时）；前端 170 passed
 
 #### 前端依赖安全审计
 
 - ✅ `vitest` 已升级至 4.1.11，修复测试服务任意文件读取与执行风险
 - ✅ `happy-dom` 已升级至 20.14.0，修复 VM context escape 与跨源凭据泄露风险
 - ✅ `npm audit --omit=dev` 与完整 `npm audit` 均为 0 个已知漏洞
-- ✅ 作品定位、场景卡片、自然化审查和充值订单交互实现后 166 个前端测试、TypeScript 类型检查和 Vite 生产构建全部通过
+- ✅ 作品定位、场景卡片、自然化审查、充值订单自动查单和漫剧静态编辑实现后 170 个前端测试、TypeScript 类型检查和 Vite 生产构建全部通过
 
 主要测试覆盖（不逐文件列举测试数量，以实际 pytest 结果为准）：
 - ✅ Codex 设定库：页面与 API 完整 CRUD、关系增改删与双向投影、引用删除保护、原子别名替换、可检索文本判据、两段式事务、deferred 降级、httpx 错误重试
@@ -633,6 +640,7 @@ PostgreSQL/pgvector 检索必须在真实部署上单独压测；该脚本只覆
 
 #### 集成测试（38 tests，真实 PostgreSQL + pgvector）
 - ✅ Docker PostgreSQL + pgvector 环境已执行 38 个测试并全部通过（`034_chapter_chunks`，2026-09-08）
+- ⚠️ 项目级批量重建本轮已通过 SQLite 定向契约测试，尚未使用真实 embedding 网关完成端到端吞吐验收
 - ✅ 覆盖当前正文版本 chunk 检索，确认旧版本向量不能召回
 - 覆盖内容：
   - 部分唯一索引（`postgresql_where`）的并发 upsert 去重
@@ -974,9 +982,9 @@ cd server
 - `server/tasks/consistency.py` - 一致性任务
 - `server/tasks/codex.py` - Codex 回填任务
 
-### 测试（1425 passed；另有 38 个真实 PostgreSQL 测试通过）
-- `server/tests/` - 单元/功能测试（1425 passed）
-- `app/src/**/*.spec.ts` - 前端测试（156 passed）
+### 测试（1438 passed；另有 38 个真实 PostgreSQL 测试通过）
+- `server/tests/` - 单元/功能测试（1438 passed）
+- `app/src/**/*.spec.ts` - 前端测试（170 passed）
 - `server/tests/integration/` - 集成测试（38 passed，需设置真实 PostgreSQL URL）
 
 ### 文档（1 个文件）
@@ -986,10 +994,10 @@ cd server
 
 ## 总结
 
-墨枢一致性后端已完成核心数据模型、服务层、API 端点和异步任务定义，1425 个单元/功能
+墨枢一致性后端已完成核心数据模型、服务层、API 端点和异步任务定义，1438 个单元/功能
 测试在 SQLite in-memory + 受控 providers 环境下通过，另有 38 个集成测试在真实
 PostgreSQL + pgvector 环境通过。真实认证、可吊销会话、管理员、工作室 RBAC、作品创建、
-作品归档、分卷与章节生命周期、虚拟化章节导航、写作台新建章节、作品定位、章纲、场景卡片、章节 POV、人物出场轨迹、逐章设定状态沿革、可编辑设定关系、资料与正文并排、故事/章节双序时间板、作者人工计划事件、正文版本历史与恢复、AI 多候选草稿及逐段审阅、自然化审查、移动端只读与私有速记、全书查找替换、章节审稿与段落批注、工作室章节任务与产量看板、全量导出、非覆盖备份恢复、风格指纹、AI 来源账本、拆书分析、作者生成用量与平台模型成本台账已经接通，前端 156 个测试与生产构建通过。
+作品归档、分卷与章节生命周期、虚拟化章节导航、写作台新建章节、作品定位、章纲、场景卡片、章节 POV、人物出场轨迹、逐章设定状态沿革、可编辑设定关系、资料与正文并排、故事/章节双序时间板、作者人工计划事件、正文版本历史与恢复、AI 多候选草稿及逐段审阅、自然化审查、移动端只读与私有速记、全书查找替换、章节审稿与段落批注、工作室章节任务与产量看板、全量导出、非覆盖备份恢复、风格指纹、AI 来源账本、拆书分析、作者生成用量与平台模型成本台账已经接通，前端 170 个测试与生产构建通过。
 
 **关键限制**：
 1. 七条确定性规则的 280/140 结构化评测门禁、模糊区间人工确认和多剧情线时间板已完成，但真实正文盲评仍需补充

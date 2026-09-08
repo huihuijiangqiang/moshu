@@ -710,12 +710,28 @@ export const mockApi = {
     return structuredClone(episode)
   },
 
+  async updateStoryboardEpisode(projectId: string, episodeId: string, patch: Partial<StoryboardEpisode>): Promise<StoryboardEpisode> {
+    await delay(80)
+    const episode = storyboardFor(projectId).episodes.find((item) => item.id === episodeId)
+    if (!episode) throw new Error('episode_not_found')
+    Object.assign(episode, patch)
+    return structuredClone(episode)
+  },
+
   async createStoryboardScene(projectId: string, episodeId: string, input: Pick<StoryboardScene, 'purpose' | 'summary' | 'timeAnchor' | 'locationEntryId' | 'characterEntryIds'>): Promise<StoryboardScene> {
     await delay(100)
     const episode = storyboardFor(projectId).episodes.find((item) => item.id === episodeId)
     if (!episode) throw new Error('episode_not_found')
     const scene: StoryboardScene = { id: `${projectId}-scene-${Date.now().toString(36)}`, episodeId, order: episode.scenes.length + 1, purpose: input.purpose, summary: input.summary, timeAnchor: input.timeAnchor, locationEntryId: input.locationEntryId, characterEntryIds: [...input.characterEntryIds], shots: [] }
     episode.scenes.push(scene)
+    return structuredClone(scene)
+  },
+
+  async updateStoryboardScene(projectId: string, sceneId: string, patch: Partial<StoryboardScene>): Promise<StoryboardScene> {
+    await delay(80)
+    const scene = storyboardFor(projectId).episodes.flatMap((episode) => episode.scenes).find((item) => item.id === sceneId)
+    if (!scene) throw new Error('scene_not_found')
+    Object.assign(scene, patch)
     return structuredClone(scene)
   },
 
@@ -741,6 +757,28 @@ export const mockApi = {
     const profile = storyboardFor(projectId).visualProfiles.find((item) => item.id === profileId)
     if (!profile) throw new Error('visual_profile_not_found')
     Object.assign(profile, patch, { version: profile.version + 1 })
+    return structuredClone(profile)
+  },
+
+  async createVisualProfile(projectId: string, input: Pick<VisualProfile, 'codexEntryId' | 'displayName'> & Partial<VisualProfile>): Promise<VisualProfile> {
+    await delay(80)
+    const adaptation = storyboardFor(projectId)
+    if (adaptation.visualProfiles.some((item) => item.codexEntryId === input.codexEntryId)) throw new Error('visual_profile_already_exists')
+    const profile: VisualProfile = {
+      id: `${projectId}-vp-${Date.now().toString(36)}`,
+      adaptationId: adaptation.id,
+      codexEntryId: input.codexEntryId,
+      displayName: input.displayName,
+      style: input.style ?? '',
+      appearance: input.appearance ?? '',
+      costume: input.costume ?? '',
+      palette: input.palette ?? [],
+      referenceAssetIds: input.referenceAssetIds ?? [],
+      version: 1,
+      locked: false,
+      notes: input.notes ?? ''
+    }
+    adaptation.visualProfiles.push(profile)
     return structuredClone(profile)
   },
 

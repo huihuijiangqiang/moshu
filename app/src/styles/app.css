@@ -137,13 +137,15 @@ button { font: inherit; color: inherit; }
 }
 
 /* 漫剧工作台：像一张导演桌，而不是视频生成器。胶片序列是唯一的视觉重心。 */
-.storyboard-view { height: 100%; min-height: 0; display: grid; grid-template-rows: auto minmax(0, 1fr); background: var(--canvas); color: var(--ink); }
+.storyboard-view { height: 100%; min-height: 0; display: grid; grid-template-rows: auto auto minmax(0, 1fr); background: var(--canvas); color: var(--ink); }
 .storyboard-head { min-height: 86px; display: flex; align-items: center; justify-content: space-between; gap: var(--u5); padding: 18px 24px; border-bottom: var(--hair) solid var(--line-strong); background: var(--paper); }
 .storyboard-head h1 { margin: 4px 0 3px; font-family: var(--font-prose); font-size: 24px; font-weight: 600; }
 .storyboard-head p { margin: 0; color: var(--ink-3); font-size: var(--fs-sm); }
 .storyboard-head-meta { display: flex; align-items: center; gap: 16px; color: var(--ink-3); font-family: var(--font-mono); font-size: 11px; white-space: nowrap; }
 .storyboard-ratio { padding: 4px 7px; border: 1px solid var(--primary-line); color: var(--primary); background: var(--primary-soft); font-weight: 700; }
 .storyboard-saved { min-width: 48px; color: var(--success); text-align: right; }
+.storyboard-error { min-height: 34px; display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 7px 16px; color: var(--alert-ink); border-bottom: 1px solid var(--alert-line); background: var(--alert-soft); font-size: 11px; line-height: 1.55; }
+.storyboard-error button { flex: none; display: grid; place-items: center; width: 24px; height: 24px; padding: 0; color: inherit; border: 0; background: transparent; cursor: pointer; }
 .storyboard-layout { min-height: 0; display: grid; grid-template-columns: 270px minmax(420px, 1fr) 286px; overflow: hidden; }
 .storyboard-outline, .storyboard-inspector { min-width: 0; min-height: 0; display: flex; flex-direction: column; background: var(--panel); }
 .storyboard-outline { border-right: var(--hair) solid var(--line-strong); }
@@ -175,6 +177,20 @@ button { font: inherit; color: inherit; }
 .storyboard-canvas-head h2 { max-width: 700px; margin: 4px 0 5px; font-family: var(--font-prose); font-size: 21px; font-weight: 600; }
 .storyboard-canvas-head p { max-width: 680px; margin: 0; color: var(--ink-3); font-size: var(--fs-sm); line-height: 1.6; }
 .storyboard-canvas-head .wk-btn { flex: none; margin-top: 9px; }
+.storyboard-canvas-actions { flex: none; display: flex; align-items: center; gap: 6px; }
+.storyboard-scene-editor { display: grid; gap: 12px; margin: 16px 24px; padding: 14px; border: 1px solid var(--line-strong); border-left: 3px solid var(--primary); background: var(--panel); }
+.scene-editor-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding-bottom: 9px; border-bottom: 1px solid var(--line); }
+.scene-editor-heading strong { font-size: 13px; }
+.scene-editor-heading button { display: grid; place-items: center; width: 24px; height: 24px; padding: 0; color: var(--ink-3); border: 0; background: transparent; cursor: pointer; }
+.storyboard-scene-editor > label, .scene-editor-columns label { display: grid; gap: 5px; color: var(--ink-3); font-size: 10px; font-weight: 700; }
+.storyboard-scene-editor input, .storyboard-scene-editor textarea, .storyboard-scene-editor select, .storyboard-dialog input, .storyboard-dialog textarea, .storyboard-dialog select { width: 100%; min-width: 0; padding: 8px 9px; color: var(--ink); border: 1px solid var(--line-strong); border-radius: 2px; background: var(--paper); font: 400 12px/1.55 inherit; resize: vertical; }
+.scene-editor-columns { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 12px; }
+.storyboard-scene-editor fieldset, .episode-chapters { min-width: 0; margin: 0; padding: 10px; border: 1px solid var(--line); }
+.storyboard-scene-editor legend, .episode-chapters legend { padding: 0 5px; color: var(--ink-3); font-size: 10px; font-weight: 700; }
+.scene-character-option { display: inline-flex; align-items: center; gap: 6px; margin: 3px 12px 3px 0; color: var(--ink-2); font-size: 11px; }
+.scene-character-option input, .episode-chapters input { width: auto; }
+.storyboard-scene-editor fieldset p { margin: 0; color: var(--ink-4); font-size: 11px; }
+.scene-editor-actions { display: flex; justify-content: flex-end; gap: 7px; }
 .storyboard-filmstrip { display: flex; align-items: flex-start; gap: 12px; min-height: 242px; padding: 24px; overflow-x: auto; border-bottom: var(--hair) solid var(--line-strong); background: #e9edef; }
 .storyboard-filmstrip[data-empty='true'] { align-items: center; }
 .storyboard-shot { flex: 0 0 166px; min-width: 0; cursor: pointer; }
@@ -216,6 +232,7 @@ button { font: inherit; color: inherit; }
 .visual-profile-fields input:disabled, .visual-profile-fields textarea:disabled { color: var(--ink-2); opacity: 1; background: var(--panel-sunken); }
 .profile-edit { width: 100%; padding: 8px 0; border: 1px solid var(--line); color: var(--primary); background: transparent; font-size: 11px; cursor: pointer; }
 .profile-edit:hover { background: var(--primary-soft); }
+.profile-create { display: inline-flex; align-items: center; gap: 5px; margin: 10px 14px 0; padding: 7px 0; color: var(--primary); border: 0; background: transparent; font-size: 11px; cursor: pointer; }
 .visual-profile-note { margin: 12px 0 0; padding: 9px; color: var(--ink-3); background: var(--panel-sunken); font-size: 10px; line-height: 1.6; }
 .storyboard-binding { margin: 20px 14px 0; padding: 13px 0; border-top: var(--hair) solid var(--line-strong); }
 .binding-row { display: flex; justify-content: space-between; gap: 10px; padding: 9px 0; border-bottom: var(--hair) solid var(--line); font-size: 11px; }
@@ -226,6 +243,18 @@ button { font: inherit; color: inherit; }
 .storyboard-no-video strong { display: block; margin-top: 4px; color: var(--ink-2); font-size: 12px; }
 .storyboard-no-video p { margin: 5px 0 0; color: var(--ink-3); font-size: 10px; line-height: 1.55; }
 .inspector-empty { padding-inline: 14px; }
+.inspector-empty strong { display: block; margin-bottom: 5px; color: var(--ink-2); }
+.inspector-empty p { margin: 0 0 10px; }
+.storyboard-dialog-backdrop { position: fixed; inset: 0; z-index: var(--z-float); display: grid; place-items: center; padding: 20px; background: rgb(24 34 35 / 40%); }
+.storyboard-dialog { width: min(100%, 520px); max-height: min(760px, calc(100vh - 40px)); display: grid; gap: 13px; overflow-y: auto; padding: 18px; color: var(--ink); border: 1px solid var(--line-strong); background: var(--paper); box-shadow: 0 24px 70px rgb(24 34 35 / 24%); }
+.storyboard-dialog > header { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; padding-bottom: 11px; border-bottom: 1px solid var(--line); }
+.storyboard-dialog h2 { margin: 4px 0 0; font-family: var(--font-prose); font-size: 21px; font-weight: 600; }
+.storyboard-dialog > header button { display: grid; place-items: center; width: 26px; height: 26px; padding: 0; color: var(--ink-3); border: 0; background: transparent; cursor: pointer; }
+.storyboard-dialog > label { display: grid; gap: 5px; color: var(--ink-3); font-size: 10px; font-weight: 700; }
+.episode-chapters { max-height: 260px; overflow-y: auto; }
+.episode-chapters label { display: flex; align-items: center; gap: 8px; padding: 6px 3px; color: var(--ink-2); font-size: 11px; }
+.episode-chapters p, .dialog-hint { margin: 0; color: var(--ink-4); font-size: 10px; line-height: 1.6; }
+.storyboard-dialog footer { display: flex; justify-content: flex-end; gap: 7px; padding-top: 5px; }
 
 /* 时间线：把 Guard 的冲突落到可编辑事实，而不是不可操作的提示条。 */
 .timeline-view { height: 100%; min-height: 0; display: grid; grid-template-rows: auto minmax(0, 1fr); background: var(--canvas); color: var(--ink); }
@@ -285,4 +314,4 @@ button { font: inherit; color: inherit; }
 .workspace-history-empty { color: var(--ink-3); font-size: 12px; line-height: 1.7; }
 @media (max-width: 1120px) { .storyboard-layout { grid-template-columns: 236px minmax(390px, 1fr) 250px; } .storyboard-head { padding-inline: 16px; } .storyboard-canvas-head, .storyboard-shot-editor { margin-left: 16px; margin-right: 16px; } .storyboard-canvas-head { padding-inline: 0; } .storyboard-filmstrip { padding-inline: 16px; } }
 @media (max-width: 860px) { .storyboard-layout { grid-template-columns: 220px minmax(0, 1fr); overflow: auto; } .storyboard-inspector { grid-column: 1 / -1; min-height: 440px; border-top: var(--hair) solid var(--line-strong); border-left: 0; } .storyboard-inspector-intro, .visual-profile, .storyboard-binding, .storyboard-no-video { max-width: 520px; } .storyboard-no-video { margin-top: 18px; } }
-@media (max-width: 640px) { .storyboard-head { display: block; padding: 15px; } .storyboard-head-meta { margin-top: 11px; gap: 11px; } .storyboard-layout { display: block; overflow-y: auto; } .storyboard-outline { min-height: 270px; max-height: 350px; border-right: 0; border-bottom: var(--hair) solid var(--line-strong); } .storyboard-canvas { min-height: 620px; } .storyboard-canvas-head { padding: 15px; } .storyboard-canvas-head .wk-btn { padding-inline: 9px; font-size: 0; } .storyboard-canvas-head .wk-btn svg { margin: 0; } .storyboard-filmstrip { padding: 16px; } .storyboard-shot-editor { margin: 0 15px 20px; } .storyboard-editor-grid { grid-template-columns: minmax(0, 1fr); } .storyboard-editor-grid .editor-wide { grid-column: auto; } }
+@media (max-width: 640px) { .storyboard-head { display: block; padding: 15px; } .storyboard-head-meta { margin-top: 11px; gap: 11px; } .storyboard-layout { display: block; overflow-y: auto; } .storyboard-outline { min-height: 270px; max-height: 350px; border-right: 0; border-bottom: var(--hair) solid var(--line-strong); } .storyboard-canvas { min-height: 620px; } .storyboard-canvas-head { display: grid; padding: 15px; } .storyboard-canvas-actions { justify-content: flex-end; } .storyboard-scene-editor { margin: 12px 15px; } .scene-editor-columns { grid-template-columns: minmax(0, 1fr); } .storyboard-filmstrip { padding: 16px; } .storyboard-shot-editor { margin: 0 15px 20px; } .storyboard-editor-grid { grid-template-columns: minmax(0, 1fr); } .storyboard-editor-grid .editor-wide { grid-column: auto; } .storyboard-dialog-backdrop { padding: 10px; } }
