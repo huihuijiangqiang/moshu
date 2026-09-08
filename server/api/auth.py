@@ -171,15 +171,24 @@ def _user_out(user: User) -> UserOut:
 
 
 def _session_out(session: AuthSession, current_session_id: str | None, now: datetime) -> AuthSessionOut:
+    created_at = session.created_at
+    if created_at.tzinfo is None:
+        created_at = created_at.replace(tzinfo=UTC)
+    last_used_at = session.last_used_at
+    if last_used_at.tzinfo is None:
+        last_used_at = last_used_at.replace(tzinfo=UTC)
     expires_at = session.expires_at
     if expires_at.tzinfo is None:
         expires_at = expires_at.replace(tzinfo=UTC)
+    revoked_at = session.revoked_at
+    if revoked_at is not None and revoked_at.tzinfo is None:
+        revoked_at = revoked_at.replace(tzinfo=UTC)
     return AuthSessionOut(
         id=session.id,
-        created_at=session.created_at,
-        last_used_at=session.last_used_at,
+        created_at=created_at,
+        last_used_at=last_used_at,
         expires_at=expires_at,
-        revoked_at=session.revoked_at,
+        revoked_at=revoked_at,
         current=session.id == current_session_id,
         active=session.revoked_at is None and expires_at > now,
     )
