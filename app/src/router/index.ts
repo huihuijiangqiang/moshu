@@ -20,6 +20,9 @@ export const router = createRouter({
     { path: '/projects/:projectId/export', name: 'export', component: () => import('@/views/ExportView.vue'), meta: { scope: 'project', section: 'export' } },
     { path: '/projects/:projectId/access', name: 'access', component: () => import('@/views/AccessView.vue'), meta: { scope: 'project', section: 'access' } },
     { path: '/usage', name: 'usage', component: () => import('@/views/UsageView.vue') },
+    { path: '/tasks', name: 'tasks', component: () => import('@/views/TasksView.vue') },
+    { path: '/account/security', name: 'account-security', component: () => import('@/views/AccountSecurityView.vue') },
+    { path: '/password-reset', name: 'password-reset', component: () => import('@/views/PasswordResetView.vue'), meta: { bare: true } },
     { path: '/agent', name: 'agent', component: () => import('@/views/AgentView.vue') },
     { path: '/teams', name: 'teams', component: () => import('@/views/TeamView.vue') },
     { path: '/model-settings', name: 'model-settings', component: () => import('@/views/ModelSettingsView.vue') },
@@ -43,7 +46,7 @@ export const router = createRouter({
 
 export function authGuard(to: RouteLocationNormalized, useMock = USE_MOCK) {
   if (useMock) return true
-  if (to.name !== 'login' && !hasSession()) {
+  if (to.name !== 'login' && to.name !== 'password-reset' && !hasSession()) {
     return { name: 'login', query: { redirect: to.fullPath } }
   }
   if (to.name === 'login' && hasSession()) return { name: 'shelf' }

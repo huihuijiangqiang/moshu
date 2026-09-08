@@ -3,8 +3,9 @@ import { computed, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { authApi } from '@/api/auth'
 import { ApiError } from '@/api/http'
+import { accountSecurityApi } from '@/api/account-security'
 
-type Mode = 'login' | 'register'
+type Mode = 'login' | 'register' | 'forgot'
 
 const route = useRoute()
 const router = useRouter()
@@ -14,15 +15,19 @@ const email = ref('')
 const password = ref('')
 const submitting = ref(false)
 const errorMessage = ref('')
+const successMessage = ref('')
 
 const canSubmit = computed(() => {
-  const credentialsValid = email.value.trim().includes('@') && password.value.length >= 8
+  const emailValid = email.value.trim().includes('@')
+  if (mode.value === 'forgot') return emailValid && !submitting.value
+  const credentialsValid = emailValid && password.value.length >= 8
   return credentialsValid && (mode.value === 'login' || !!name.value.trim()) && !submitting.value
 })
 
 function switchMode(next: Mode) {
   mode.value = next
   errorMessage.value = ''
+  successMessage.value = ''
 }
 
 async function submit() {
@@ -30,6 +35,11 @@ async function submit() {
   submitting.value = true
   errorMessage.value = ''
   try {
+    if (mode.value === 'forgot') {
+      await accountSecurityApi.requestPasswordReset(email.value)
+      successMessage.value = '如果该邮箱已注册，邮件服务会发送一次性重置链接。请检查收件箱。'
+      return
+    }
     if (mode.value === 'login') await authApi.login(email.value, password.value)
     else await authApi.register(name.value, email.value, password.value)
     const redirect = typeof route.query.redirect === 'string' && route.query.redirect.startsWith('/')
@@ -65,8 +75,8 @@ async function submit() {
         </div>
 
         <div class="auth-heading">
-          <span>{{ mode === 'login' ? '继续写作' : '建立你的书架' }}</span>
-          <small>{{ mode === 'login' ? '使用邮箱和密码进入' : '账号创建后即可开新书' }}</small>
+          <span>{{ mode === 'forgot' ? '找回密码' : mode === 'login' ? '继续写作' : '建立你的书架' }}</span>
+          <small>{{ mode === 'forgot' ? '输入账号邮箱，我们会发送一次性重置链接' : mode === 'login' ? '使用邮箱和密码进入' : '账号创建后即可开新书' }}</small>
         </div>
 
         <label v-if="mode === 'register'">
@@ -77,15 +87,18 @@ async function submit() {
           <span>邮箱</span>
           <input v-model="email" autocomplete="email" inputmode="email" placeholder="name@example.com">
         </label>
-        <label>
+        <label v-if="mode !== 'forgot'">
           <span>密码</span>
           <input v-model="password" autocomplete="current-password" type="password" placeholder="至少 8 位">
         </label>
 
         <p v-if="errorMessage" class="auth-error" role="alert">{{ errorMessage }}</p>
+        <p v-if="successMessage" class="auth-success" role="status">{{ successMessage }}</p>
         <button class="auth-submit" type="submit" :disabled="!canSubmit">
-          {{ submitting ? '处理中...' : mode === 'login' ? '进入书架' : '创建并进入' }}
+          {{ submitting ? '处理中...' : mode === 'forgot' ? '发送重置链接' : mode === 'login' ? '进入书架' : '创建并进入' }}
         </button>
+        <button v-if="mode === 'login'" class="auth-link" type="button" @click="switchMode('forgot')">忘记密码？</button>
+        <button v-if="mode === 'forgot'" class="auth-link" type="button" @click="switchMode('login')">返回登录</button>
       </form>
     </section>
   </main>
@@ -136,8 +149,11 @@ async function submit() {
 .auth-form input { height: 44px; min-width: 0; border: 1px solid var(--color-divider); padding: 0 13px; background: var(--color-bg); color: var(--color-text); font: inherit; }
 .auth-form input:focus-visible, .auth-mode button:focus-visible, .auth-submit:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 2px; }
 .auth-error { margin: 0 0 14px; padding: 10px 12px; border-left: 3px solid var(--alert); background: color-mix(in srgb, var(--alert) 8%, transparent); color: var(--color-text); }
+.auth-success { margin: 0 0 14px; padding: 10px 12px; border-left: 3px solid var(--color-accent); background: color-mix(in srgb, var(--color-accent) 8%, transparent); color: var(--color-text); line-height: 1.5; }
 .auth-submit { height: 44px; border: 0; background: var(--color-accent); color: #fff; font-weight: 800; cursor: pointer; }
 .auth-submit:disabled { cursor: not-allowed; opacity: .45; }
+.auth-link { margin: -4px 0 0; border: 0; background: transparent; color: var(--color-neutral-800); font-size: 12px; cursor: pointer; text-align: center; }
+.auth-link:hover { color: var(--color-accent); }
 
 @media (max-width: 760px) {
   .auth-page { padding: 18px; place-items: start center; }

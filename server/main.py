@@ -40,6 +40,7 @@ from api import (
     scenes,
     styles,
     text_replacement,
+    tasks,
     tools,
     usage,
 )
@@ -171,3 +172,4 @@ app.include_router(tools.router, prefix="/projects", tags=["写作工具"])
 app.include_router(reviews.router, prefix="/reviews", tags=["章节审稿"])
 app.include_router(scenes.router, tags=["场景卡片"])
 app.include_router(agent.router, prefix="/agent", tags=["AI 助手"])
+app.include_router(tasks.router, prefix="/tasks", tags=["任务中心"])

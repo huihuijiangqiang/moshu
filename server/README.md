@@ -117,7 +117,7 @@ uvicorn main:app --reload --host 0.0.0.0 --port 8000
 PostgreSQL、Redis 与 Alembic head，全部通过时返回 200，否则返回 503 和逐项状态。
 响应包含 `BUILD_REVISION`，用于判断正在运行的实例是否与待验收提交一致。
 
-当前 migration head 为 `035_adaptation_refs`。更新代码后建议显式执行 migration
+当前 migration head 为 `036_password_reset_tokens`。更新代码后建议显式执行 migration
 容器，再重建 API 和 worker，避免复用旧的已完成 migration 容器：
 
 ```bash
@@ -199,7 +199,7 @@ docker compose up -d --build api worker dispatcher beat frontend
 session、管理员设置与审计、项目/工作室 RBAC、设定库 CRUD 与 embedding 回填、
 持续章纲、版本化正文保存、四层上下文、SSE 生成、导出备份、用量结算、Guard
 扫描与 LLM 仲裁、平台后台模型用量台账、移动端只读与私有速记均已接通。后端单元/功能
-测试为 1438 passed，另有 38 个需要真实 PostgreSQL/pgvector 的集成测试按条件跳过；前端测试为 170 passed。
+测试为 1455 passed，另有 38 个需要真实 PostgreSQL/pgvector 的集成测试按条件跳过；前端测试为 172 passed。
 
 仍需在生产数据上继续验证的事项：
 

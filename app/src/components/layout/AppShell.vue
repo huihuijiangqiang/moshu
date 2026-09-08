@@ -49,8 +49,10 @@ const rail = computed<RailEntry[]>(() => {
     entries.push({ to: '/deconstruct', icon: 'outline', label: '拆书分析', shortLabel: '拆书' })
     entries.push({ to: '/teams', icon: 'team', label: orgs.teamLabel, shortLabel: '团队' })
     entries.push({ to: '/usage', icon: 'usage', label: '用量与计费', shortLabel: '用量' })
+    entries.push({ to: '/tasks', icon: 'history', label: '任务中心', shortLabel: '任务' })
     entries.push({ to: '/agent', icon: 'agent', label: 'AI 助手 · 受控任务', shortLabel: '助手' })
     entries.push({ to: '/model-settings', icon: 'key', label: '我的模型服务', shortLabel: '模型' })
+    entries.push({ to: '/account/security', icon: 'key', label: '账户安全', shortLabel: '安全' })
     if (isSystemAdmin) entries.push({ to: '/admin', icon: 'guard', label: '系统管理', shortLabel: '系统' })
     return entries
   }
@@ -72,8 +74,10 @@ const railFoot = computed<RailEntry[]>(() => projectId.value ? [
   { to: projectPath(projectId.value, 'export'), icon: 'export', label: '导出', shortLabel: '导出' },
   { to: projectPath(projectId.value, 'access'), icon: 'team', label: orgs.teamLabel, shortLabel: '团队' },
   { to: '/usage', icon: 'usage', label: '用量与计费', shortLabel: '用量' },
+  { to: '/tasks', icon: 'history', label: '任务中心', shortLabel: '任务' },
   { to: '/agent', icon: 'agent', label: 'AI 助手 · 受控任务', shortLabel: '助手' },
   { to: '/model-settings', icon: 'key', label: '我的模型服务', shortLabel: '模型' },
+  { to: '/account/security', icon: 'key', label: '账户安全', shortLabel: '安全' },
   ...(isSystemAdmin ? [{ to: '/admin', icon: 'guard' as IconName, label: '系统管理', shortLabel: '系统' }] : [])
 ] : [])
 
@@ -156,7 +160,7 @@ async function signOut() {
 
     <div class="shell-main" :data-library="library" :data-project="inProject">
       <header v-if="!library" class="topbar">
-        <span class="topbar-title">{{ inProject ? (project.project?.title ?? '加载作品…') : '账户与用量' }}</span>
+        <span class="topbar-title">{{ inProject ? (project.project?.title ?? '加载作品…') : route.name === 'tasks' ? '任务中心' : '账户与用量' }}</span>
         <template v-if="shell.crumb">
           <span class="topbar-sep" />
           <span class="topbar-crumb">{{ shell.crumb }}</span>

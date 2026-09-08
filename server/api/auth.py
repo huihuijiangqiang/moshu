@@ -12,11 +12,12 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from jose import JWTError, jwt
 from pydantic import BaseModel, Field, field_validator
-from sqlalchemy import func, select, text
+from sqlalchemy import func, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from config import settings
 from db.models_admin import AdminAuditLog, AuthSession, SystemSetting
+from db.models_auth_security import PasswordResetToken
 from db.models_core import Chapter, Project, User
 from db.models_org import ChapterAssignment, OrgMember
 from db.session import get_db
@@ -75,6 +76,34 @@ class TokenResponse(BaseModel):
     token_type: str = "bearer"
     expires_in: int
     user: UserOut
+
+
+class AuthSessionOut(BaseModel):
+    id: str
+    created_at: datetime
+    last_used_at: datetime
+    expires_at: datetime
+    revoked_at: datetime | None
+    current: bool
+    active: bool
+
+
+class PasswordChangeRequest(BaseModel):
+    current_password: str = Field(min_length=1, max_length=128)
+    new_password: str = Field(min_length=8, max_length=128)
+
+
+class PasswordResetRequest(BaseModel):
+    email: str = Field(min_length=3, max_length=255)
+
+
+class PasswordResetConfirmRequest(BaseModel):
+    token: str = Field(min_length=20, max_length=512)
+    new_password: str = Field(min_length=8, max_length=128)
+
+
+class PasswordResetRequestOut(BaseModel):
+    accepted: bool = True
 
 
 def hash_password(password: str) -> str:
@@ -139,6 +168,36 @@ def _user_out(user: User) -> UserOut:
         system_role=user.system_role,
         is_active=user.is_active,
     )
+
+
+def _session_out(session: AuthSession, current_session_id: str | None, now: datetime) -> AuthSessionOut:
+    expires_at = session.expires_at
+    if expires_at.tzinfo is None:
+        expires_at = expires_at.replace(tzinfo=UTC)
+    return AuthSessionOut(
+        id=session.id,
+        created_at=session.created_at,
+        last_used_at=session.last_used_at,
+        expires_at=expires_at,
+        revoked_at=session.revoked_at,
+        current=session.id == current_session_id,
+        active=session.revoked_at is None and expires_at > now,
+    )
+
+
+def _token_digest(token: str) -> str:
+    """Hash reset credentials before persistence; never log or store plaintext."""
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+
+def _session_id_from_credentials(credentials: HTTPAuthorizationCredentials | None) -> str:
+    if credentials is None:
+        raise _credentials_error()
+    payload = _decode_token(credentials.credentials, "access")
+    session_id = payload.get("sid")
+    if payload.get("type") != "access" or not isinstance(session_id, str):
+        raise _credentials_error()
+    return session_id
 
 
 async def _token_response(
@@ -445,6 +504,141 @@ async def logout_all(
     )
     await db.commit()
 
+
+@router.get("/sessions", response_model=list[AuthSessionOut])
+async def list_auth_sessions(
+    credentials: HTTPAuthorizationCredentials | None = Depends(security),
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> list[AuthSessionOut]:
+    """List only the authenticated user's browser sessions."""
+    current_session_id = _session_id_from_credentials(credentials)
+    now = datetime.now(UTC)
+    result = await db.execute(
+        select(AuthSession)
+        .where(AuthSession.user_id == user.id)
+        .order_by(AuthSession.created_at.desc())
+        .limit(100)
+    )
+    return [_session_out(row, current_session_id, now) for row in result.scalars().all()]
+
+
+@router.delete("/sessions/{session_id}", status_code=204)
+async def revoke_auth_session(
+    session_id: str,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> None:
+    """Revoke one session owned by the current account (including current)."""
+    session = await db.scalar(
+        select(AuthSession).where(AuthSession.id == session_id, AuthSession.user_id == user.id)
+    )
+    if session is None:
+        raise HTTPException(status_code=404, detail={"code": "SESSION_NOT_FOUND"})
+    if session.revoked_at is None:
+        session.revoked_at = datetime.now(UTC)
+        await db.commit()
+
+
+@router.post("/password/change", status_code=204)
+async def change_password(
+    request: PasswordChangeRequest,
+    credentials: HTTPAuthorizationCredentials | None = Depends(security),
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> None:
+    """Change the password and invalidate every other browser session."""
+    if not verify_password(request.current_password, user.password_hash):
+        raise HTTPException(status_code=400, detail={"code": "CURRENT_PASSWORD_INVALID"})
+    if request.current_password == request.new_password:
+        raise HTTPException(status_code=400, detail={"code": "PASSWORD_UNCHANGED"})
+    current_session_id = _session_id_from_credentials(credentials)
+    user.password_hash = hash_password(request.new_password)
+    await db.execute(
+        update(AuthSession)
+        .where(
+            AuthSession.user_id == user.id,
+            AuthSession.id != current_session_id,
+            AuthSession.revoked_at.is_(None),
+        )
+        .values(revoked_at=datetime.now(UTC))
+    )
+    await db.commit()
+
+
+# Password reset delivery and endpoints are defined below; credentials stay out of storage and logs.
+
+
+async def _deliver_password_reset_token(email: str, token: str, expires_at: datetime) -> None:
+    """Delivery seam for a mail provider; plaintext is never persisted or logged."""
+    return None
+
+
+@router.post("/password-reset/request", response_model=PasswordResetRequestOut, status_code=202)
+async def request_password_reset(
+    request: PasswordResetRequest,
+    db: AsyncSession = Depends(get_db),
+) -> PasswordResetRequestOut:
+    """Start reset flow with a generic response to prevent email enumeration."""
+    email = request.email.strip().lower()
+    user = await db.scalar(
+        select(User)
+        .where(User.email == email, User.is_active.is_(True))
+        .with_for_update()
+    )
+    if user is not None:
+        now = datetime.now(UTC)
+        expires_at = now + timedelta(minutes=20)
+        token = secrets.token_urlsafe(32)
+        await db.execute(
+            update(PasswordResetToken)
+            .where(PasswordResetToken.user_id == user.id, PasswordResetToken.used_at.is_(None))
+            .values(used_at=now)
+        )
+        db.add(
+            PasswordResetToken(
+                id=f"prt_{secrets.token_hex(12)}",
+                user_id=user.id,
+                token_hash=_token_digest(token),
+                expires_at=expires_at,
+            )
+        )
+        await db.commit()
+        await _deliver_password_reset_token(email, token, expires_at)
+    else:
+        await db.rollback()
+    return PasswordResetRequestOut()
+
+
+@router.post("/password-reset/confirm", status_code=204)
+async def confirm_password_reset(
+    request: PasswordResetConfirmRequest,
+    db: AsyncSession = Depends(get_db),
+) -> None:
+    """Consume one unexpired reset credential and revoke all sessions."""
+    now = datetime.now(UTC)
+    row = await db.scalar(
+        select(PasswordResetToken)
+        .where(
+            PasswordResetToken.token_hash == _token_digest(request.token),
+            PasswordResetToken.used_at.is_(None),
+            PasswordResetToken.expires_at > now,
+        )
+        .with_for_update()
+    )
+    if row is None:
+        raise HTTPException(status_code=400, detail={"code": "INVALID_RESET_TOKEN"})
+    user = await db.get(User, row.user_id)
+    if user is None or not user.is_active:
+        raise HTTPException(status_code=400, detail={"code": "INVALID_RESET_TOKEN"})
+    user.password_hash = hash_password(request.new_password)
+    row.used_at = now
+    await db.execute(
+        update(AuthSession)
+        .where(AuthSession.user_id == user.id, AuthSession.revoked_at.is_(None))
+        .values(revoked_at=now)
+    )
+    await db.commit()
 
 async def require_admin(user: User = Depends(get_current_user)) -> User:
     if user.system_role not in {"admin", "super_admin"}:

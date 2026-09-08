@@ -4,6 +4,7 @@
 
 from db.base import Base, TimestampMixin
 from db.models_admin import AdminAuditLog, AuthSession, SystemSetting
+from db.models_auth_security import PasswordResetToken
 from db.models_agent import AgentAction, AgentMessage, AgentSession
 from db.models_codex import CodexAlias, CodexEntry, CodexRef, CodexRelation, CodexStateChange
 from db.models_consistency import (
@@ -53,6 +54,7 @@ __all__ = [
     "AuthSession",
     "SystemSetting",
     "AdminAuditLog",
+    "PasswordResetToken",
     "AgentSession",
     "AgentMessage",
     "AgentAction",
