@@ -3,6 +3,7 @@ import { createPinia, setActivePinia } from 'pinia'
 import { createMemoryHistory, createRouter } from 'vue-router'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { provenanceApi, type ProvenanceReport } from '@/api/provenance'
+import { naturalizationApi } from '@/api/naturalization'
 import { useProjectStore } from '@/stores/project'
 import AiRatioView from './AiRatioView.vue'
 
@@ -28,7 +29,7 @@ async function mountView() {
   store.loadedProjectId = 'p1'
   store.chapters = [{
     id: 'ch1', volumeId: 'v1', index: 1, title: '雨夜', words: 28, status: 'drafting',
-    outline: [], outlineNote: ''
+    outline: [], outlineNote: '', content: '<p>正文</p>', rev: 1
   }]
   store.activeId = 'ch1'
   const router = createRouter({
@@ -70,6 +71,18 @@ describe('AiRatioView sentence proofing', () => {
     expect(router.currentRoute.value.query).toMatchObject({
       chapter: 'ch1', paragraph: 'p-risk', start: '0', end: '22', ...(rewrite ? { rewrite } : {})
     })
+    wrapper.unmount()
+  })
+
+  it('starts an author-reviewed naturalization scan without rewriting the chapter', async () => {
+    const scan = vi.spyOn(naturalizationApi, 'scan')
+    const { wrapper } = await mountView()
+    await wrapper.get('.naturalization-heading button').trigger('click')
+    await new Promise((resolve) => setTimeout(resolve, 80))
+    await flushPromises()
+
+    expect(scan).toHaveBeenCalledWith('p1', expect.objectContaining({ chapterId: 'ch1', mode: 'rules' }))
+    expect(wrapper.text()).toContain('本章没有命中当前自然化规则')
     wrapper.unmount()
   })
 })

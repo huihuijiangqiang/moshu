@@ -17,7 +17,7 @@ from api.auth import (
     verify_project_access,
     verify_project_permission,
 )
-from db import Chapter, Project, ProjectNote, Volume
+from db import Chapter, Project, ProjectNote, ProjectPositioning, ProjectPositioningRevision, Volume
 from db.models_codex import CodexEntry
 from db.models_consistency import ChapterOutlineState
 from db.models_core import User
@@ -46,6 +46,29 @@ class VolumeOut(BaseModel):
     idx: int
     summary: str | None
 
+
+class ProjectPositioningOut(BaseModel):
+    """Platform promise card and its optimistic-lock revision."""
+
+    id: str
+    project_id: str
+    platform: Literal["fanqie", "qimao", "qidian", "general"]
+    title_candidates: list[str]
+    selling_point: str
+    synopsis: str
+    tags: list[str]
+    protagonist_dilemma: str
+    first_payoff: str
+    long_term_arc: str
+    revision: int
+    status: Literal["draft", "active", "archived"]
+    created_at: str
+    updated_at: str
+
+
+class ProjectPositioningRevisionOut(ProjectPositioningOut):
+    pass
+
 class ProjectOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -62,6 +85,8 @@ class ProjectOut(BaseModel):
     story_settings: dict
     created_at: str
     volumes: list[VolumeOut]
+    target_platform: Literal["fanqie", "qimao", "qidian", "general"] = "general"
+    positioning: ProjectPositioningOut | None = None
 
 class ChapterListItem(BaseModel):
     """章节列表项 - 不含正文"""
@@ -127,6 +152,7 @@ class ProjectCreate(BaseModel):
     tags: list[str] = Field(default_factory=list, max_length=20)
     volumes: list[VolumeCreate] = Field(default_factory=list, max_length=20)
     chapters: list[WizardChapterPlan] = Field(default_factory=list, max_length=10)
+    target_platform: Literal["fanqie", "qimao", "qidian", "general"] = "general"
 
 
 class WizardPlanRequest(BaseModel):
@@ -147,6 +173,25 @@ class ProjectPatch(BaseModel):
     genre: str | None = Field(default=None, max_length=100)
     status: Literal["ongoing", "finished", "archived"] | None = None
     target_words_daily: int | None = Field(default=None, ge=100, le=100_000)
+
+
+class ProjectPositioningPatch(BaseModel):
+    """Partial update; omitted fields remain unchanged."""
+
+    expected_revision: int = Field(ge=0)
+    platform: Literal["fanqie", "qimao", "qidian", "general"] | None = None
+    title_candidates: list[str] | None = Field(default=None, max_length=20)
+    selling_point: str | None = Field(default=None, max_length=20_000)
+    synopsis: str | None = Field(default=None, max_length=50_000)
+    tags: list[str] | None = Field(default=None, max_length=30)
+    protagonist_dilemma: str | None = Field(default=None, max_length=20_000)
+    first_payoff: str | None = Field(default=None, max_length=20_000)
+    long_term_arc: str | None = Field(default=None, max_length=20_000)
+    status: Literal["draft", "active", "archived"] | None = None
+
+
+class ProjectPositioningRestoreRequest(BaseModel):
+    expected_revision: int = Field(ge=0)
 
 
 class VolumePatch(BaseModel):
@@ -301,6 +346,32 @@ def _chapter_list_item(chapter: Chapter, state: ChapterOutlineState | None = Non
     )
 
 
+def _positioning_out(positioning: ProjectPositioning | ProjectPositioningRevision) -> ProjectPositioningOut:
+    """Serialize current or historical positioning without exposing ORM state."""
+    return ProjectPositioningOut(
+        id=positioning.id,
+        project_id=positioning.project_id,
+        platform=positioning.platform,
+        title_candidates=list(positioning.title_candidates or []),
+        selling_point=positioning.selling_point,
+        synopsis=positioning.synopsis,
+        tags=list(positioning.tags or []),
+        protagonist_dilemma=positioning.protagonist_dilemma,
+        first_payoff=positioning.first_payoff,
+        long_term_arc=positioning.long_term_arc,
+        revision=positioning.revision,
+        status=positioning.status,
+        created_at=positioning.created_at.isoformat(),
+        updated_at=(positioning.updated_at.isoformat() if hasattr(positioning, "updated_at") else positioning.created_at.isoformat()),
+    )
+
+
+async def _project_positioning(db: AsyncSession, project_id: str) -> ProjectPositioning | None:
+    return await db.scalar(
+        select(ProjectPositioning).where(ProjectPositioning.project_id == project_id)
+    )
+
+
 async def _project_out(db: AsyncSession, project: Project) -> ProjectOut:
     volumes_result = await db.execute(
         select(Volume)
@@ -313,6 +384,7 @@ async def _project_out(db: AsyncSession, project: Project) -> ProjectOut:
             ProjectDailyWriting.day == datetime.now(UTC).date(),
         )
     )
+    positioning = await _project_positioning(db, project.id)
     return ProjectOut(
         id=project.id,
         org_id=project.org_id,
@@ -330,6 +402,8 @@ async def _project_out(db: AsyncSession, project: Project) -> ProjectOut:
             VolumeOut(id=volume.id, title=volume.title, idx=volume.idx, summary=volume.summary)
             for volume in volumes_result.scalars().all()
         ],
+        target_platform=positioning.platform if positioning else "general",
+        positioning=_positioning_out(positioning) if positioning else None,
     )
 
 
@@ -496,6 +570,18 @@ async def create_project(
     )
     db.add(project)
     await db.flush()
+    db.add(
+        ProjectPositioning(
+            id=f"pp_{secrets.token_hex(12)}",
+            project_id=project.id,
+            platform=request.target_platform,
+            synopsis=request.synopsis.strip(),
+            tags=[tag.strip() for tag in request.tags if tag.strip()],
+            protagonist_dilemma=request.inspiration.strip(),
+            selling_point=request.core_hook.strip(),
+        )
+    )
+    await db.flush()
 
     volume_drafts = request.volumes or [VolumeCreate(title="第一卷 · 开篇")]
     volumes: list[Volume] = []
@@ -575,6 +661,224 @@ async def get_project(
     对应前端 mock: getProject
     """
     return await _project_out(db, project)
+
+
+def _positioning_text(value: str | None) -> str:
+    return (value or "").strip()
+
+
+def _positioning_list(values: list[str] | None) -> list[str]:
+    return [value.strip() for value in (values or []) if value.strip()]
+
+
+def _positioning_snapshot(positioning: ProjectPositioning) -> ProjectPositioningRevision:
+    return ProjectPositioningRevision(
+        id=f"ppr_{secrets.token_hex(12)}",
+        positioning_id=positioning.id,
+        project_id=positioning.project_id,
+        revision=positioning.revision,
+        platform=positioning.platform,
+        title_candidates=list(positioning.title_candidates or []),
+        selling_point=positioning.selling_point,
+        synopsis=positioning.synopsis,
+        tags=list(positioning.tags or []),
+        protagonist_dilemma=positioning.protagonist_dilemma,
+        first_payoff=positioning.first_payoff,
+        long_term_arc=positioning.long_term_arc,
+        status=positioning.status,
+    )
+
+
+async def _locked_positioning(
+    db: AsyncSession, project_id: str, expected_revision: int | None = None
+) -> ProjectPositioning:
+    positioning = await db.scalar(
+        select(ProjectPositioning)
+        .where(ProjectPositioning.project_id == project_id)
+        .with_for_update()
+    )
+    if positioning is None:
+        # Projects created before migration 029 have no card.  Create a blank
+        # revision-zero card on their first write, preserving compatibility.
+        if expected_revision not in (None, 0):
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "code": "PROJECT_POSITIONING_REVISION_CONFLICT",
+                    "current_revision": 0,
+                },
+            )
+        positioning = ProjectPositioning(
+            id=f"pp_{secrets.token_hex(12)}",
+            project_id=project_id,
+            platform="general",
+            title_candidates=[],
+            selling_point="",
+            synopsis="",
+            tags=[],
+            protagonist_dilemma="",
+            first_payoff="",
+            long_term_arc="",
+            revision=0,
+            status="draft",
+        )
+        db.add(positioning)
+        await db.flush()
+    if expected_revision is not None and positioning.revision != expected_revision:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "PROJECT_POSITIONING_REVISION_CONFLICT",
+                "current_revision": positioning.revision,
+            },
+        )
+    return positioning
+
+
+@router.get("/{project_id}/positioning", response_model=ProjectPositioningOut)
+async def get_project_positioning(
+    project_id: str,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> ProjectPositioningOut:
+    await verify_project_permission(project_id, ProjectPermission.VIEW, user, db)
+    positioning = await _project_positioning(db, project_id)
+    if positioning is None:
+        # Do not mutate on a read; callers can create the first card via PUT.
+        now = datetime.now(UTC)
+        return ProjectPositioningOut(
+            id="",
+            project_id=project_id,
+            platform="general",
+            title_candidates=[],
+            selling_point="",
+            synopsis="",
+            tags=[],
+            protagonist_dilemma="",
+            first_payoff="",
+            long_term_arc="",
+            revision=0,
+            status="draft",
+            created_at=now.isoformat(),
+            updated_at=now.isoformat(),
+        )
+    return _positioning_out(positioning)
+
+
+@router.put("/{project_id}/positioning", response_model=ProjectPositioningOut)
+async def update_project_positioning(
+    project_id: str,
+    request: ProjectPositioningPatch,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> ProjectPositioningOut:
+    await verify_project_permission(project_id, ProjectPermission.MANAGE_PROJECT, user, db)
+    positioning = await _locked_positioning(db, project_id, request.expected_revision)
+    changes = request.model_dump(exclude_unset=True, exclude={"expected_revision"})
+    if not changes:
+        raise HTTPException(status_code=422, detail={"code": "POSITIONING_UPDATE_EMPTY"})
+    if "title_candidates" in changes:
+        positioning.title_candidates = _positioning_list(changes["title_candidates"])
+    if "tags" in changes:
+        positioning.tags = _positioning_list(changes["tags"])
+    for field in (
+        "selling_point",
+        "synopsis",
+        "protagonist_dilemma",
+        "first_payoff",
+        "long_term_arc",
+    ):
+        if field in changes:
+            setattr(positioning, field, _positioning_text(changes[field]))
+    for field in ("platform", "status"):
+        if field in changes:
+            setattr(positioning, field, changes[field])
+    positioning.revision += 1
+    await db.flush()
+    db.add(_positioning_snapshot(positioning))
+    await db.flush()
+    await db.refresh(positioning)
+    response = _positioning_out(positioning)
+    await db.commit()
+    return response
+
+
+@router.get("/{project_id}/positioning/revisions", response_model=list[ProjectPositioningRevisionOut])
+async def list_project_positioning_revisions(
+    project_id: str,
+    limit: int = Query(default=50, ge=1, le=200),
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> list[ProjectPositioningRevisionOut]:
+    await verify_project_permission(project_id, ProjectPermission.VIEW, user, db)
+    rows = (
+        await db.execute(
+            select(ProjectPositioningRevision)
+            .where(ProjectPositioningRevision.project_id == project_id)
+            .order_by(ProjectPositioningRevision.revision.desc())
+            .limit(limit)
+        )
+    ).scalars().all()
+    return [ProjectPositioningRevisionOut(**_positioning_out(row).model_dump()) for row in rows]
+
+
+@router.get("/{project_id}/positioning/revisions/{revision}", response_model=ProjectPositioningRevisionOut)
+async def get_project_positioning_revision(
+    project_id: str,
+    revision: int,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> ProjectPositioningRevisionOut:
+    await verify_project_permission(project_id, ProjectPermission.VIEW, user, db)
+    row = await db.scalar(
+        select(ProjectPositioningRevision).where(
+            ProjectPositioningRevision.project_id == project_id,
+            ProjectPositioningRevision.revision == revision,
+        )
+    )
+    if row is None:
+        raise HTTPException(status_code=404, detail={"code": "PROJECT_POSITIONING_REVISION_NOT_FOUND"})
+    return ProjectPositioningRevisionOut(**_positioning_out(row).model_dump())
+
+
+@router.post(
+    "/{project_id}/positioning/revisions/{revision}/restore",
+    response_model=ProjectPositioningOut,
+)
+async def restore_project_positioning_revision(
+    project_id: str,
+    revision: int,
+    request: ProjectPositioningRestoreRequest,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> ProjectPositioningOut:
+    await verify_project_permission(project_id, ProjectPermission.MANAGE_PROJECT, user, db)
+    positioning = await _locked_positioning(db, project_id, request.expected_revision)
+    snapshot = await db.scalar(
+        select(ProjectPositioningRevision).where(
+            ProjectPositioningRevision.project_id == project_id,
+            ProjectPositioningRevision.revision == revision,
+        )
+    )
+    if snapshot is None:
+        raise HTTPException(status_code=404, detail={"code": "PROJECT_POSITIONING_REVISION_NOT_FOUND"})
+    positioning.platform = snapshot.platform
+    positioning.title_candidates = list(snapshot.title_candidates or [])
+    positioning.selling_point = snapshot.selling_point
+    positioning.synopsis = snapshot.synopsis
+    positioning.tags = list(snapshot.tags or [])
+    positioning.protagonist_dilemma = snapshot.protagonist_dilemma
+    positioning.first_payoff = snapshot.first_payoff
+    positioning.long_term_arc = snapshot.long_term_arc
+    positioning.status = snapshot.status
+    positioning.revision += 1
+    await db.flush()
+    db.add(_positioning_snapshot(positioning))
+    await db.flush()
+    await db.refresh(positioning)
+    response = _positioning_out(positioning)
+    await db.commit()
+    return response
 
 
 @router.get("/{project_id}/writing-progress", response_model=list[WritingProgressDayOut])

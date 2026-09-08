@@ -5,6 +5,7 @@ import { projectPath } from '@/router/project-route'
 import { contentApi } from '@/api/content'
 import { shelfApi } from '@/api/shelf'
 import { planWizard, type WizardPlan } from '@/api/wizard'
+import type { TargetPlatform } from '@/api/positioning'
 
 type Audience = 'male' | 'female' | 'general'
 
@@ -43,6 +44,7 @@ const step = ref(1)
 const highestStep = ref(1)
 const inspiration = ref('')
 const audience = ref<Audience>('male')
+const targetPlatform = ref<TargetPlatform>('general')
 const genreGroupId = ref('fantasy')
 const genreId = ref('')
 const tagIds = ref<string[]>([])
@@ -151,6 +153,13 @@ const templates: Choice[] = [
   { id: 'mystery', label: '谜团追索', note: '答案不断改写问题，真相分层揭露', cue: '强悬念' },
   { id: 'reversal', label: '身份翻转', note: '隐藏身份持续改变人物关系和选择', cue: '强反转' },
   { id: 'ensemble', label: '群像经营', note: '多人物目标交叉，靠关系变化推动剧情', cue: '强关系' }
+]
+
+const platformOptions: Array<{ id: TargetPlatform; label: string; note: string }> = [
+  { id: 'fanqie', label: '番茄小说', note: '开篇抓人，节奏清晰，卖点前置' },
+  { id: 'qimao', label: '七猫小说', note: '冲突密度高，追读与爽点明确' },
+  { id: 'qidian', label: '起点读书', note: '世界观扎实，成长线和长期回报' },
+  { id: 'general', label: '暂不设定', note: '先打磨故事，再决定发布平台' }
 ]
 
 const leadVariants = [
@@ -315,6 +324,7 @@ function resetDraft() {
   highestStep.value = 1
   inspiration.value = ''
   audience.value = 'male'
+  targetPlatform.value = 'general'
   genreGroupId.value = 'fantasy'
   genreId.value = ''
   tagIds.value = []
@@ -350,7 +360,8 @@ async function createProject() {
       chapters: chapters.value.map((chapter) => ({
         title: chapter.title,
         outline: chapter.outline.split(/\n+/).map((beat) => beat.trim()).filter(Boolean)
-      }))
+      })),
+      targetPlatform: targetPlatform.value
     })
     localStorage.removeItem(DRAFT_KEY)
     let firstChapterId: string | undefined
@@ -380,6 +391,7 @@ onMounted(() => {
     highestStep.value = Math.min(4, Math.max(step.value, Number(draft.highestStep) || 1))
     inspiration.value = typeof draft.inspiration === 'string' ? draft.inspiration : ''
     audience.value = ['male', 'female', 'general'].includes(draft.audience) ? draft.audience : 'male'
+    targetPlatform.value = ['fanqie', 'qimao', 'qidian', 'general'].includes(draft.targetPlatform) ? draft.targetPlatform : 'general'
     const legacyGenres: Record<string, [string, string]> = {
       fantasy: ['fantasy', 'oriental-fantasy'],
       urban: ['urban', 'urban-superpower'],
@@ -421,6 +433,7 @@ watch(
     highestStep: highestStep.value,
     inspiration: inspiration.value,
     audience: audience.value,
+    targetPlatform: targetPlatform.value,
     genreGroupId: genreGroupId.value,
     genreId: genreId.value,
     tagIds: tagIds.value,
@@ -502,6 +515,16 @@ watch(
               <input v-model="audience" type="radio" name="audience" :value="item[0]">
               <span>{{ item[1] }}</span>
             </label>
+          </fieldset>
+
+          <fieldset class="wizard-choice-group wizard-platform-picker">
+            <legend>目标平台 <small>用于校准简介、卖点和开篇节奏，可随时调整</small></legend>
+            <div class="wizard-platform-grid">
+              <label v-for="item in platformOptions" :key="item.id" :data-selected="targetPlatform === item.id">
+                <input v-model="targetPlatform" type="radio" name="target-platform" :value="item.id">
+                <strong>{{ item.label }}</strong><span>{{ item.note }}</span>
+              </label>
+            </div>
           </fieldset>
 
           <fieldset class="wizard-choice-group wizard-genre-picker">
@@ -622,6 +645,7 @@ watch(
           <dl>
             <div><dt>读者方向</dt><dd>{{ audienceLabel }}</dd></div>
             <div><dt>题材</dt><dd>{{ selectedGenre?.label }}</dd></div>
+            <div><dt>目标平台</dt><dd>{{ platformOptions.find((item) => item.id === targetPlatform)?.label }}</dd></div>
             <div><dt>故事模板</dt><dd>{{ selectedTemplate?.label }}</dd></div>
             <div><dt>卷数</dt><dd>{{ volumes.length }} 卷</dd></div>
           </dl>
@@ -729,6 +753,14 @@ watch(
 .wizard-genre-grid:empty { display: none; }
 .wizard-genre-grid label { position: relative; min-height: 68px; display: grid; align-content: start; gap: 4px; padding: 11px var(--u3); border: var(--hair) solid var(--line-strong); border-radius: 4px; background: var(--panel); cursor: pointer; }
 .wizard-genre-grid label[data-selected='true'] { border-color: var(--primary); background: var(--primary-soft); box-shadow: inset 3px 0 0 var(--primary); }
+.wizard-platform-picker legend { display: flex; align-items: baseline; gap: var(--u2); }
+.wizard-platform-picker legend small { color: var(--ink-4); font-weight: 400; }
+.wizard-platform-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; }
+.wizard-platform-grid label { min-height: 76px; display: grid; align-content: start; gap: 5px; padding: 11px var(--u3); border: var(--hair) solid var(--line-strong); border-radius: 4px; background: var(--panel); cursor: pointer; }
+.wizard-platform-grid label[data-selected='true'] { border-color: var(--primary); background: var(--primary-soft); box-shadow: inset 3px 0 0 var(--primary); }
+.wizard-platform-grid input { position: absolute; opacity: 0; pointer-events: none; }
+.wizard-platform-grid strong { font-size: var(--fs-sm); }
+.wizard-platform-grid span { color: var(--ink-3); font-size: var(--fs-xs); line-height: 1.45; }
 .wizard-genre-grid input, .wizard-template-list input { position: absolute; opacity: 0; pointer-events: none; }
 .wizard-genre-grid strong { font-size: var(--fs); }
 .wizard-genre-grid span { color: var(--ink-3); font-size: var(--fs-sm); }
@@ -785,7 +817,7 @@ watch(
 .wizard-guidance article::before { content: attr(data-index); position: absolute; top: var(--u4); left: 0; color: var(--ink-4); font-family: var(--font-mono); font-size: var(--fs-xs); }
 .wizard-guidance strong { font-size: var(--fs-sm); }
 .wizard-guidance p { margin: 6px 0 0; color: var(--ink-3); font-size: var(--fs-sm); line-height: 1.65; }
-.wizard-review dl { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); margin: 0; border-block: var(--hair) solid var(--line-strong); }
+.wizard-review dl { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); margin: 0; border-block: var(--hair) solid var(--line-strong); }
 .wizard-review dl > div { padding: var(--u3); border-left: var(--hair) solid var(--line); }
 .wizard-review dl > div:first-child { border-left: 0; padding-left: 0; }
 .wizard-review dt { color: var(--ink-4); font-size: var(--fs-xs); }
@@ -814,6 +846,7 @@ watch(
   .wizard-genre-tabs { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); }
   .wizard-genre-tabs button { padding-inline: var(--u2); }
   .wizard-genre-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .wizard-platform-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .wizard-custom-genre { grid-template-columns: minmax(0, 1fr) auto; }
   .wizard-custom-genre > span { grid-column: 1 / -1; }
   .wizard-template-list label { grid-template-columns: minmax(0, 1fr); gap: 4px; padding-block: var(--u3); }

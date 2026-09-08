@@ -55,6 +55,17 @@ def _node_text(node: dict) -> str:
 
 
 @dataclass(frozen=True)
+class SentenceRisk:
+    """A stable, explainable signal used by naturalization review."""
+
+    rule_id: str
+    category: str
+    label: str
+    score: int
+    confidence: float
+
+
+@dataclass(frozen=True)
 class ProvenanceParagraph:
     paragraph_id: str
     text: str
@@ -73,6 +84,7 @@ class SuspectedSentence:
     source: str
     score: int
     reasons: tuple[str, ...]
+    risks: tuple[SentenceRisk, ...] = ()
 
 
 def detect_suspected_sentences(paragraphs: list[ProvenanceParagraph]) -> list[SuspectedSentence]:
@@ -86,25 +98,61 @@ def detect_suspected_sentences(paragraphs: list[ProvenanceParagraph]) -> list[Su
                 continue
             start = match.start() + len(raw) - len(raw.lstrip())
             reasons: list[str] = []
+            risks: list[SentenceRisk] = []
             score = 0
             transitions = [phrase for phrase in _TEMPLATE_TRANSITIONS if phrase in sentence]
             if transitions:
                 reasons.append(f"模板化衔接：{'、'.join(transitions[:2])}")
                 score += 3
+                risks.append(SentenceRisk(
+                    rule_id="template.transition",
+                    category="surface",
+                    label="模板化衔接",
+                    score=3,
+                    confidence=0.86,
+                ))
             if len(sentence) >= 80 and sum(sentence.count(mark) for mark in "，、,") >= 4:
                 reasons.append("单句过长且逗号层级密集")
                 score += 2
+                risks.append(SentenceRisk(
+                    rule_id="rhythm.comma-density",
+                    category="rhythm",
+                    label="单句过长且逗号层级密集",
+                    score=2,
+                    confidence=0.72,
+                ))
             softener_count = sum(sentence.count(word) for word in _SOFTENERS)
             if softener_count >= 3:
                 reasons.append("模糊修饰词重复")
                 score += 2
+                risks.append(SentenceRisk(
+                    rule_id="surface.repeated-softeners",
+                    category="surface",
+                    label="模糊修饰词重复",
+                    score=2,
+                    confidence=0.78,
+                ))
             adverb_count = sum(sentence.count(word) for word in _ACTION_ADVERBS)
             if adverb_count >= 3:
                 reasons.append("动作副词堆叠")
                 score += 2
+                risks.append(SentenceRisk(
+                    rule_id="surface.action-adverb-stack",
+                    category="surface",
+                    label="动作副词堆叠",
+                    score=2,
+                    confidence=0.74,
+                ))
             if _PARALLEL_RE.search(sentence):
                 reasons.append("成套并列句式")
                 score += 2
+                risks.append(SentenceRisk(
+                    rule_id="rhythm.parallel-structure",
+                    category="rhythm",
+                    label="成套并列句式",
+                    score=2,
+                    confidence=0.69,
+                ))
             if score < 2:
                 continue
             end = start + len(sentence)
@@ -118,6 +166,7 @@ def detect_suspected_sentences(paragraphs: list[ProvenanceParagraph]) -> list[Su
                     source=paragraph.source,
                     score=min(100, 35 + score * 12),
                     reasons=tuple(reasons),
+                    risks=tuple(risks),
                 )
             )
     return findings

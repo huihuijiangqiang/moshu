@@ -19,6 +19,15 @@ export interface SuspectedSentence {
   source: ProvenanceSource
   score: number
   reasons: string[]
+  riskRules?: SentenceRiskRule[]
+}
+
+export interface SentenceRiskRule {
+  id: string
+  category: string
+  label: string
+  score: number
+  confidence: number
 }
 
 export interface ProvenanceReport {
@@ -55,6 +64,13 @@ export interface ProvenanceDto {
     source: ProvenanceSource
     score: number
     reasons: string[]
+    risk_rules?: Array<{
+      id: string
+      category: string
+      label: string
+      score: number
+      confidence: number
+    }>
   }>
   sentence_risk_version: string
   sentence_risk_disclaimer: string
@@ -82,7 +98,8 @@ export function mapProvenanceDto(dto: ProvenanceDto): ProvenanceReport {
       end: item.end,
       source: item.source,
       score: item.score,
-      reasons: item.reasons
+      reasons: item.reasons,
+      riskRules: (item.risk_rules ?? []).map((rule) => ({ ...rule }))
     })),
     sentenceRiskVersion: dto.sentence_risk_version,
     sentenceRiskDisclaimer: dto.sentence_risk_disclaimer

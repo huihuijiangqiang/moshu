@@ -6,9 +6,9 @@
 所有声明基于实际代码与测试结果，不夸大、不省略已知缺口。
 
 **关键事实**：
-- ✅ 43 张表完整 Alembic baseline，增量迁移已到 `027_chapter_temporal_anchor`
-- ✅ 1297 个单元/功能测试通过，37 个需要真实外部依赖的集成测试按条件跳过（SQLite in-memory，mock embedding/LLM）
-- ✅ 前端 151 个测试、TypeScript 类型检查和生产构建通过
+- ✅ 60 张表完整 Alembic 覆盖，增量迁移已到 `032_timestamp_nullability`
+- ✅ 1390 个单元/功能测试通过，37 个需要真实外部依赖的集成测试按条件跳过（SQLite in-memory，受控 embedding/LLM provider）
+- ✅ 前端 156 个测试、TypeScript 类型检查和生产构建通过
 - ✅ 前端生产与开发依赖均通过 `npm audit`，当前为 0 个已知漏洞（2026-09-07）
 - ✅ 37 个集成测试已在 Docker 真实 PostgreSQL + pgvector 环境通过（2026-09-07）
 - ✅ 已完成真实账号认证、作品创建、作品归档、分卷与章节增删改排、回收站和章纲编辑闭环
@@ -21,6 +21,8 @@
 - ✅ 自动事实抽取、摘要、冲突复核和 embedding 已进入统一平台成本台账，不扣作者积分
 - ✅ 风格档已接通用户隔离 CRUD、真实六维抽取、作品绑定、生成提示与用量结算
 - ✅ AI 来源账本已接通真实生成 run、段落指纹校验、编辑分类、采纳字数回写和可定位的疑似模板句式校样
+- ✅ 自然化审查支持按章或选区扫描、原文/候选对比、逐条采纳拒绝、版本过期保护和来源回写；定位为作者校订工具，不作为 AIGC 鉴定结论
+- ✅ 作品定位支持目标平台、核心卖点、首个兑现点与长线承诺的持续编辑、版本快照和恢复；章纲下可维护独立场景卡片
 - ✅ AI 生成候选独立持久化，成功、中断和失败输出均可在刷新后恢复，并支持逐段/整批接受拒绝与一次撤销
 - ✅ 全书查找替换支持本章/本卷/全书范围、逐处预览确认、设定名风险提示、原子提交和整批撤销
 - ✅ Docker Compose 已接通 migration、API、前端、PostgreSQL、Redis、Celery worker/dispatcher/beat 与 transactional outbox
@@ -41,7 +43,7 @@
 - ✅ 七类确定性规则已由真实 `RuleScanner` 跑过 280 正例、140 hard negatives、20 easy negatives，
   recall / 证据定位 / hard-negative precision 均为 100%
 - ⚠️ 上述结构化评测不覆盖正文抽取和 LLM 仲裁的真实盲评质量，不能据此宣称全链路生产就绪
-- ✅ 2026-09-07 Docker Compose 真实验收：PostgreSQL/Redis/API/frontend/worker/dispatcher/beat 全部运行，`/health/ready` 返回 200，迁移 head 为 `027_chapter_temporal_anchor`；数据卷使用 Compose 配置的相对路径或部署环境显式配置，不绑定开发机盘符
+- ✅ 2026-09-08 Docker Compose 真实验收：PostgreSQL/Redis/API/frontend/worker/dispatcher/beat 全部运行，迁移 head 为 `032_timestamp_nullability`；数据卷使用 Compose 配置的相对路径或部署环境显式配置，不绑定开发机盘符
 
 ### 性能基准（可重复）
 
@@ -70,7 +72,7 @@ PostgreSQL/pgvector 检索必须在真实部署上单独压测；该脚本只覆
 
 ## 已完成模块
 
-### 1. 数据模型（43 张表，100% Alembic 覆盖）
+### 1. 数据模型（60 张表，100% Alembic 覆盖）
 
 #### 核心骨架 (7 张)
 - `users` - 用户账号
@@ -156,14 +158,19 @@ PostgreSQL/pgvector 检索必须在真实部署上单独压测；该脚本只覆
 #### 写作进度 (1 张)
 - `project_daily_writing` - 按章节与日期累计净新增字数，用于作品库与写作台日更统计
 
+#### 作品定位、场景与自然化审查 (5 张)
+- `project_positionings` / `project_positioning_revisions` - 当前作品承诺与不可变定位版本
+- `chapter_scenes` - 不覆盖章纲的章节场景卡片、排序和正文版本边界
+- `naturalization_runs` / `naturalization_findings` - 自然化扫描批次、候选及作者处置状态
+
 **Alembic 与 pgvector 状态**：
 - ✅ **代码与迁移已实现**：`001_initial.py` 建立 baseline，
   `002_embedding_halfvec_2048.py` 清理旧向量并迁移到 HALFVEC(2048)，以
   `halfvec_cosine_ops` 重建 HNSW 索引；upgrade/downgrade 均会要求重新回填向量
 - ✅ `alembic upgrade head --sql` 与 `alembic downgrade head:-1 --sql` 语法验证通过
-- ✅ 37 个集成测试已在 Docker 真实 PostgreSQL + pgvector 运行通过；覆盖 `019_chapter_pov` 至
-  `027_chapter_temporal_anchor` 的真实 schema、pgvector、唯一约束、upsert、GIN 索引和 CHECK 约束；
-  `/health/ready` 已确认 Alembic head 为 `027_chapter_temporal_anchor`
+- ✅ 迁移契约的 500 项检查通过；Docker 真实 PostgreSQL + pgvector 已从
+  `027_chapter_temporal_anchor` 升级到 `032_timestamp_nullability`，覆盖新增表、唯一约束、
+  CHECK 约束和时间戳非空契约
 
 ---
 
@@ -373,6 +380,12 @@ PostgreSQL/pgvector 检索必须在真实部署上单独压测；该脚本只覆
 - ✅ 每条校样结果带稳定段落 ID 和字符范围，可跳回写作台选中原句或进入现有候选草稿重写流程
 - ⚠️ 句式校样只提示表达风险，不是 AIGC 检测器，也不作为任何平台鉴定结论
 
+#### 自然化审查 (`services/naturalization.py`)
+- ✅ 可扫描整章或指定段落，规则使用稳定 ID，候选保留原文位置、原因和建议文本
+- ✅ 采纳前校验正文版本、正文哈希、段落 ID 与原文哈希，过期候选不会覆盖新正文
+- ✅ 逐条采纳复用正文保存、版本历史、outbox 与 provenance 管道，并重新定位其余待处理候选
+- ✅ 跨样式范围无法无损同步 HTML/JSON 时拒绝自动采纳，避免破坏正文格式和设定引用
+
 ---
 
 ### 3. API 端点（全部需认证 + 项目权限）
@@ -438,6 +451,11 @@ PostgreSQL/pgvector 检索必须在真实部署上单独压测；该脚本只覆
 - ✅ `DELETE /projects/{id}/notes/{note_id}` - 仅速记所有者可删除；速记不进入生成上下文
 - ✅ 移动端写作台正文强制只读，隐藏生成、恢复、全书替换等写操作，只保留阅读和持久化速记
 
+#### 作品定位 (`api/projects.py`)
+- ✅ `GET/PUT /projects/{id}/positioning` - 持续维护平台、书名候选、卖点、简介、标签与创作承诺
+- ✅ 定位历史列表、版本详情和恢复接口；当前记录使用乐观锁，历史快照不可变
+- ✅ 目标平台和题材模板在开书向导可选，创建后仍可在大纲页修改，不被一次性向导锁死
+
 #### 章节 (`api/chapters.py`)
 - ✅ `GET /chapters/{id}` - 章节详情（含正文 + rev）
 - ✅ `GET /chapters/{id}/versions` - 轻量版本元数据列表（默认最近 50 条，不返回完整正文）
@@ -458,6 +476,16 @@ PostgreSQL/pgvector 检索必须在真实部署上单独压测；该脚本只覆
 - ✅ `PUT /chapters/{id}/outline` - 保存章纲（独立乐观锁）
 - ✅ `GET /chapters/{id}/outline/revisions` - 章纲历史
 - ✅ `POST /chapters/{id}/body-revision/resolve` - 确认正文调整状态
+
+#### 场景卡片 (`api/scenes.py`)
+- ✅ 场景新建、编辑、排序和归档，维护 POV、地点、目标、阻力、转折、信息增量、情绪变化与钩子
+- ✅ 不覆盖旧章纲；已有正文时要求作者明确正文处理策略，并绑定章纲/正文版本边界
+- ✅ POV 与地点只能引用同作品、类型匹配且已确认的设定条目
+
+#### 自然化审查 (`api/naturalization.py`)
+- ✅ 扫描本章或指定段落，返回带定位和原因的独立候选，不直接重写正文
+- ✅ 候选支持逐条采纳或拒绝；采纳后写入新正文版本、来源记录和 outbox 事件
+- ✅ 前端在 AI 来源页提供原文/候选对照和处置入口，不提供全书一键改写
 
 #### 设定库 (`api/codex.py`)
 - ✅ `POST /codex/{project_id}/entries` - 创建条目
@@ -517,16 +545,16 @@ PostgreSQL/pgvector 检索必须在真实部署上单独压测；该脚本只覆
 
 ### 5. 测试覆盖
 
-#### 单元测试（1218 passed，SQLite in-memory，mock providers）
+#### 单元测试（1390 passed，SQLite in-memory，受控 providers）
 
-**全量测试结果**：1218 passed, 37 skipped（未设置集成测试 URL 时）；前端 151 passed
+**全量测试结果**：1390 passed, 37 skipped（未设置集成测试 URL 时）；前端 156 passed
 
 #### 前端依赖安全审计
 
 - ✅ `vitest` 已升级至 4.1.11，修复测试服务任意文件读取与执行风险
 - ✅ `happy-dom` 已升级至 20.14.0，修复 VM context escape 与跨源凭据泄露风险
 - ✅ `npm audit --omit=dev` 与完整 `npm audit` 均为 0 个已知漏洞
-- ✅ 升级及候选审阅实现后 151 个前端测试、TypeScript 类型检查和 Vite 生产构建全部通过
+- ✅ 作品定位、场景卡片和自然化审查实现后 156 个前端测试、TypeScript 类型检查和 Vite 生产构建全部通过
 
 主要测试覆盖（不逐文件列举测试数量，以实际 pytest 结果为准）：
 - ✅ Codex 设定库：页面与 API 完整 CRUD、关系增改删与双向投影、引用删除保护、原子别名替换、可检索文本判据、两段式事务、deferred 降级、httpx 错误重试
@@ -536,7 +564,7 @@ PostgreSQL/pgvector 检索必须在真实部署上单独压测；该脚本只覆
 - ✅ 一致性服务：Claim fingerprint、规则逻辑、hard negative 案例
 - ✅ RuleScanner：七类规则检测、timeline-aware 跳过、stale 标记、fingerprint 去重
 - ✅ 认证授权：JWT 解码、项目权限、Idempotency-Key 必需性
-- ✅ Alembic 迁移：43 张表、pgvector extension、部分唯一索引、downgrade 完整性
+- ✅ Alembic 迁移：60 张表、pgvector extension、部分唯一索引、downgrade 完整性和 500 项迁移契约检查
 - ✅ 移动端与速记：390px 正文只读、危险写操作隐藏、用户/作品隔离、章节锚点校验、本人速记备份与恢复重映射
 - ✅ 时间锚点：ISO-8601、确定性相对时长、跨章事件引用、源锚点与事件标签原文校验
 - ✅ 增量影响集：新旧实体重绑定、未解析主体、谓词族闭包、全项目安全降级与扫描遥测
@@ -546,6 +574,7 @@ PostgreSQL/pgvector 检索必须在真实部署上单独压测；该脚本只覆
 - ✅ 风格档跨租户隔离、默认唯一、抽取成功/失败、失败退款、owner 绑定、删除自动解绑与提示隐私
 - ✅ AI 来源：真实 run/段落指纹校验、编辑后分类、重复与跨章节伪造防护、采纳字数回落
 - ✅ 句式校样：规则原因、段落/字符定位、Unicode 偏移换算、定位与候选重写路由
+- ✅ 作品定位、场景卡片和自然化审查：项目隔离、乐观锁、不可变版本、正文边界、过期拒绝与来源回写
 - ✅ **持久失败契约测试**：`test_documentation_reflects_persistent_dead_letter_visibility`
   守住 embedding 重试耗尽后仍可查询、可重试的任务契约
 
@@ -902,9 +931,9 @@ cd server
 - `server/tasks/consistency.py` - 一致性任务
 - `server/tasks/codex.py` - Codex 回填任务
 
-### 测试（1218 passed；另有 37 个真实 PostgreSQL 测试通过）
-- `server/tests/` - 单元/功能测试（1218 passed）
-- `app/src/**/*.spec.ts` - 前端测试（151 passed）
+### 测试（1390 passed；另有 37 个真实 PostgreSQL 测试通过）
+- `server/tests/` - 单元/功能测试（1390 passed）
+- `app/src/**/*.spec.ts` - 前端测试（156 passed）
 - `server/tests/integration/` - 集成测试（37 passed，需设置真实 PostgreSQL URL）
 
 ### 文档（1 个文件）
@@ -914,10 +943,10 @@ cd server
 
 ## 总结
 
-墨枢一致性后端已完成核心数据模型、服务层、API 端点和异步任务定义，1218 个单元/功能
-测试在 SQLite in-memory + mock providers 环境下通过，另有 37 个集成测试在真实
+墨枢一致性后端已完成核心数据模型、服务层、API 端点和异步任务定义，1390 个单元/功能
+测试在 SQLite in-memory + 受控 providers 环境下通过，另有 37 个集成测试在真实
 PostgreSQL + pgvector 环境通过。真实认证、可吊销会话、管理员、工作室 RBAC、作品创建、
-作品归档、分卷与章节生命周期、虚拟化章节导航、写作台新建章节、章纲、章节 POV、人物出场轨迹、逐章设定状态沿革、可编辑设定关系、资料与正文并排、故事/章节双序时间板、作者人工计划事件、正文版本历史与恢复、AI 多候选草稿及逐段审阅、移动端只读与私有速记、全书查找替换、章节审稿与段落批注、工作室章节任务与产量看板、全量导出、非覆盖备份恢复、风格指纹、AI 来源账本、可定位句式校样、拆书分析、作者生成用量与平台模型成本台账已经接通，前端 151 个测试与生产构建通过。
+作品归档、分卷与章节生命周期、虚拟化章节导航、写作台新建章节、作品定位、章纲、场景卡片、章节 POV、人物出场轨迹、逐章设定状态沿革、可编辑设定关系、资料与正文并排、故事/章节双序时间板、作者人工计划事件、正文版本历史与恢复、AI 多候选草稿及逐段审阅、自然化审查、移动端只读与私有速记、全书查找替换、章节审稿与段落批注、工作室章节任务与产量看板、全量导出、非覆盖备份恢复、风格指纹、AI 来源账本、拆书分析、作者生成用量与平台模型成本台账已经接通，前端 156 个测试与生产构建通过。
 
 **关键限制**：
 1. 七条确定性规则的 280/140 结构化评测门禁、模糊区间人工确认和多剧情线时间板已完成，但真实正文盲评仍需补充

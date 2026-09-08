@@ -5,6 +5,8 @@ import { useProjectStore } from '@/stores/project'
 import { useCodexStore } from '@/stores/codex'
 import { useShellStore } from '@/stores/shell'
 import type { Chapter, ProjectTrash } from '@/types'
+import { scenesApi, type ChapterScene, type SceneBodyPolicy, type ScenePatch } from '@/api/scenes'
+import { positioningApi, type PositioningPatch, type ProjectPositioning, type TargetPlatform } from '@/api/positioning'
 import { useProjectNavigation } from '@/composables/use-project-navigation'
 import AppIcon from '@/components/ui/AppIcon.vue'
 
@@ -21,6 +23,7 @@ const codex = useCodexStore()
 const shell = useShellStore()
 const { toProject } = useProjectNavigation()
 const view = ref<'grid' | 'list'>('grid')
+const outlineMode = ref<'positioning' | 'chapters' | 'scenes'>('chapters')
 const selectedVolumeId = ref<string | null>(null)
 const selectedId = ref<string | null>(null)
 const drafts = ref<Record<string, PlanDraft>>({})
@@ -43,6 +46,27 @@ const draggingVolumeId = ref<string | null>(null)
 const dragOverVolumeId = ref<string | null>(null)
 const draggingChapterId = ref<string | null>(null)
 const dragOverChapterId = ref<string | null>(null)
+const scenes = ref<ChapterScene[]>([])
+const scenesLoading = ref(false)
+const scenesError = ref('')
+const selectedSceneId = ref<string | null>(null)
+const sceneDraft = ref<(ScenePatch & { id?: string }) | null>(null)
+const sceneSaving = ref(false)
+const sceneNotice = ref('')
+const sceneBodyPolicy = ref<SceneBodyPolicy>('plan_only')
+let sceneLoadSequence = 0
+const positioning = ref<ProjectPositioning | null>(null)
+const positioningDraft = ref<Omit<PositioningPatch, 'expectedRevision'>>({})
+const positioningSaving = ref(false)
+const positioningNotice = ref('')
+const positioningError = ref('')
+
+const platformOptions: Array<{ id: TargetPlatform; label: string; note: string }> = [
+  { id: 'fanqie', label: '番茄小说', note: '快进入冲突，前段连续兑现' },
+  { id: 'qimao', label: '七猫小说', note: '类型清晰，稳定推进核心期待' },
+  { id: 'qidian', label: '起点中文网', note: '世界规则清楚，长线成长可追踪' },
+  { id: 'general', label: '暂不设定', note: '先按通用长篇逻辑规划' }
+]
 
 onMounted(() => shell.setCrumb('大纲'))
 
@@ -55,6 +79,9 @@ const selected = computed<Chapter | null>(
 const currentDraft = computed(() => selected.value ? drafts.value[selected.value.id] ?? null : null)
 const confirmedCharacters = computed(() => codex.entries
   .filter((entry) => entry.kind === 'character' && entry.status === 'confirmed')
+  .sort((a, b) => a.name.localeCompare(b.name, 'zh-CN')))
+const confirmedPlaces = computed(() => codex.entries
+  .filter((entry) => entry.kind === 'place' && entry.status === 'confirmed')
   .sort((a, b) => a.name.localeCompare(b.name, 'zh-CN')))
 const isDirty = computed(() => {
   const chapter = selected.value
@@ -78,9 +105,163 @@ watch(selected, (chapter) => {
   if (chapter && !drafts.value[chapter.id]) drafts.value[chapter.id] = draftFrom(chapter)
 }, { immediate: true })
 
-watch(() => store.loadedProjectId, (projectId) => {
-  if (projectId) void codex.load(projectId)
+watch(selected, (chapter) => {
+  if (outlineMode.value === 'scenes' && chapter) void loadScenes(chapter)
 }, { immediate: true })
+
+watch(outlineMode, (mode) => {
+  if (mode === 'scenes' && selected.value) void loadScenes(selected.value)
+})
+
+async function loadScenes(chapter: Chapter) {
+  const sequence = ++sceneLoadSequence
+  scenesLoading.value = true
+  scenesError.value = ''
+  try {
+    await store.openChapter(chapter.id)
+    const loaded = await scenesApi.list(chapter.id)
+    if (sequence !== sceneLoadSequence || selected.value?.id !== chapter.id) return
+    scenes.value = loaded
+    selectedSceneId.value = scenes.value[0]?.id ?? null
+    const selectedScene = scenes.value[0]
+    sceneDraft.value = selectedScene ? sceneFrom(selectedScene) : null
+  } catch {
+    if (sequence === sceneLoadSequence) scenesError.value = '场景卡片加载失败，请重试。'
+  } finally {
+    if (sequence === sceneLoadSequence) scenesLoading.value = false
+  }
+}
+
+function sceneFrom(scene: ChapterScene): ScenePatch & { id: string } {
+  return { id: scene.id, povEntryId: scene.povEntryId, locationEntryId: scene.locationEntryId, goal: scene.goal, obstacle: scene.obstacle, turn: scene.turn, infoGain: scene.infoGain, emotionShift: scene.emotionShift, hook: scene.hook, status: scene.status }
+}
+
+function selectScene(scene: ChapterScene) {
+  selectedSceneId.value = scene.id
+  sceneDraft.value = sceneFrom(scene)
+  sceneNotice.value = ''
+}
+
+function newScene() {
+  selectedSceneId.value = null
+  sceneDraft.value = { goal: '', obstacle: '', turn: '', infoGain: '', emotionShift: '', hook: '', status: 'planning' }
+  sceneNotice.value = ''
+}
+
+function scenePayload(draft: ScenePatch & { id?: string }): ScenePatch {
+  const { id: _id, ...payload } = draft
+  return payload
+}
+
+async function saveScene() {
+  const chapter = selected.value
+  const draft = sceneDraft.value
+  if (!chapter || !draft || sceneSaving.value) return
+  sceneSaving.value = true
+  scenesError.value = ''
+  try {
+    if (chapter.words > 0 && !sceneBodyPolicy.value) throw new Error('body_policy_required')
+    const base = { baseOutlineRev: chapter.outlineRevision ?? 0, baseBodyRev: chapter.rev ?? 0, bodyPolicy: sceneBodyPolicy.value }
+    const current = draft.id ? scenes.value.find((item) => item.id === draft.id) : undefined
+    const result = current
+      ? await scenesApi.update(current.id, { ...scenePayload(draft), expectedRev: current.rev, ...base })
+      : await scenesApi.create(chapter.id, { ...scenePayload(draft), order: scenes.value.length + 1, ...base })
+    const index = scenes.value.findIndex((item) => item.id === result.id)
+    if (index >= 0) scenes.value[index] = result
+    else scenes.value.push(result)
+    selectScene(result)
+    sceneNotice.value = chapter.words > 0 && sceneBodyPolicy.value === 'mark_body_for_revision' ? '场景已保存，正文已标记为待调整' : '场景卡片已保存'
+  } catch (error) {
+    scenesError.value = error instanceof Error && error.message === 'body_policy_required' ? '本章已有正文，请先选择正文策略。' : '场景卡片没有保存，请重试。'
+  } finally {
+    sceneSaving.value = false
+  }
+}
+
+async function reorderScene(index: number, offset: number) {
+  const chapter = selected.value
+  const target = index + offset
+  if (!chapter || target < 0 || target >= scenes.value.length || structureBusy.value) return
+  const ids = scenes.value.map((scene) => scene.id)
+  const [moved] = ids.splice(index, 1)
+  if (!moved) return
+  ids.splice(target, 0, moved)
+  structureBusy.value = true
+  try {
+    scenes.value = await scenesApi.reorder(chapter.id, ids, chapter.outlineRevision ?? 0, chapter.rev ?? 0, sceneBodyPolicy.value)
+    sceneNotice.value = '场景顺序已更新'
+  } catch { scenesError.value = '场景顺序没有更新，请重试。' } finally { structureBusy.value = false }
+}
+
+async function archiveSelectedScene() {
+  const chapter = selected.value
+  const current = selectedSceneId.value ? scenes.value.find((scene) => scene.id === selectedSceneId.value) : undefined
+  if (!chapter || !current || !window.confirm('将这张场景卡片归档？')) return
+  try {
+    await scenesApi.archive(current, chapter.outlineRevision ?? 0, chapter.rev ?? 0, sceneBodyPolicy.value)
+    scenes.value = scenes.value.filter((scene) => scene.id !== current.id)
+    selectedSceneId.value = scenes.value[0]?.id ?? null
+    sceneDraft.value = scenes.value[0] ? sceneFrom(scenes.value[0]) : null
+  } catch { scenesError.value = '场景卡片没有归档，请重试。' }
+}
+
+watch(() => store.loadedProjectId, (projectId) => {
+  if (projectId) {
+    void codex.load(projectId)
+    void loadPositioning(projectId)
+  }
+}, { immediate: true })
+
+function positioningFrom(card: ProjectPositioning): Omit<PositioningPatch, 'expectedRevision'> {
+  return {
+    platform: card.platform,
+    titleCandidates: [...card.titleCandidates],
+    sellingPoint: card.sellingPoint,
+    synopsis: card.synopsis,
+    tags: [...card.tags],
+    protagonistDilemma: card.protagonistDilemma,
+    firstPayoff: card.firstPayoff,
+    longTermArc: card.longTermArc,
+    status: card.status
+  }
+}
+
+async function loadPositioning(projectId: string) {
+  positioningError.value = ''
+  try {
+    const card = await positioningApi.get(projectId)
+    if (store.loadedProjectId !== projectId || !card) return
+    positioning.value = card
+    positioningDraft.value = positioningFrom(card)
+  } catch {
+    positioningError.value = '作品定位没有载入，请重试。'
+  }
+}
+
+async function savePositioning() {
+  const projectId = store.loadedProjectId
+  if (!projectId || !positioning.value || positioningSaving.value) return
+  positioningSaving.value = true
+  positioningError.value = ''
+  positioningNotice.value = ''
+  try {
+    const card = await positioningApi.update(projectId, {
+      expectedRevision: positioning.value.revision,
+      ...positioningDraft.value
+    })
+    positioning.value = card
+    positioningDraft.value = positioningFrom(card)
+    if (store.project) {
+      store.project.positioning = card
+      store.project.targetPlatform = card.platform
+    }
+    positioningNotice.value = `作品定位已保存为第 ${card.revision} 版`
+  } catch {
+    positioningError.value = '作品定位没有保存，可能已在其他位置更新，请重新载入。'
+  } finally {
+    positioningSaving.value = false
+  }
+}
 
 watch(
   [() => route.query.chapter, () => store.chapters.length, () => store.project?.id],
@@ -524,17 +705,21 @@ async function removeTrashItem(kind: 'volumes' | 'chapters', id: string, title: 
     <Teleport defer to="#topbar-actions">
       <button
         v-for="v in (['grid', 'list'] as const)"
+        v-show="outlineMode === 'chapters'"
         :key="v"
         class="topbar-btn"
         type="button"
         :data-primary="view === v"
         @click="view = v"
       >{{ v === 'grid' ? '网格' : '列表' }}</button>
+      <button class="topbar-btn" type="button" :data-primary="outlineMode === 'chapters'" @click="outlineMode = 'chapters'">章纲</button>
+      <button class="topbar-btn" type="button" :data-primary="outlineMode === 'scenes'" @click="outlineMode = 'scenes'">场景卡片</button>
+      <button class="topbar-btn" type="button" :data-primary="outlineMode === 'positioning'" @click="outlineMode = 'positioning'">作品定位</button>
       <button class="topbar-btn" type="button" @click="openVolumeEditor('create')"><AppIcon name="plus" />新建卷</button>
       <button class="topbar-btn" type="button" @click="showTrash"><AppIcon name="trash" />回收站</button>
     </Teleport>
 
-    <section class="rule-b outline-structure">
+    <section v-if="outlineMode !== 'positioning'" class="rule-b outline-structure">
       <div class="kicker" :style="{ marginBottom: '16px' }">分卷结构</div>
       <div class="outline-volume-track" :style="{ gridTemplateColumns: `repeat(${Math.max(store.byVolume.length, 1)}, minmax(190px, 1fr))` }">
         <div
@@ -569,7 +754,7 @@ async function removeTrashItem(kind: 'volumes' | 'chapters', id: string, title: 
     </section>
 
     <div class="app-body outline-workspace">
-      <main class="pane" :style="{ padding: '24px', background: 'var(--color-neutral-100)' }">
+      <main v-if="outlineMode === 'chapters'" class="pane" :style="{ padding: '24px', background: 'var(--color-neutral-100)' }">
         <div class="kicker" :style="{ marginBottom: '16px' }">
           第{{ currentVolume?.volume.index }}卷 · {{ currentVolume?.volume.title }} · {{ currentVolume?.chapters.length }} 章
         </div>
@@ -653,7 +838,47 @@ async function removeTrashItem(kind: 'volumes' | 'chapters', id: string, title: 
         </div>
       </main>
 
-      <aside class="pane pane-right outline-editor">
+      <main v-else-if="outlineMode === 'scenes'" class="pane scene-workbench">
+        <header class="scene-workbench-head">
+          <div><span class="kicker">第 {{ String(selected?.index ?? 0).padStart(3, '0') }} 章</span><h2>场景推进链</h2><p>把本章拆成可调整的目标、阻力和转折，章纲仍会独立保留。</p></div>
+          <button class="wk-btn" type="button" @click="newScene"><AppIcon name="plus" />新增场景</button>
+        </header>
+        <p v-if="scenesLoading" class="scene-empty" role="status">正在载入场景卡片…</p>
+        <p v-else-if="scenesError" class="scene-error" role="alert">{{ scenesError }}</p>
+        <div v-else-if="scenes.length" class="scene-card-list">
+          <article v-for="(scene, index) in scenes" :key="scene.id" :data-active="scene.id === selectedSceneId" @click="selectScene(scene)">
+            <header><span>{{ String(index + 1).padStart(2, '0') }}</span><strong>{{ scene.goal || '未填写场景目标' }}</strong><small>{{ scene.status === 'ready' ? '可写' : scene.status === 'written' ? '已成文' : scene.status === 'needs_revision' ? '待调整' : '规划中' }}</small></header>
+            <p>{{ scene.obstacle || '补充阻力，让这一场不只是顺利完成任务。' }}</p>
+            <footer><span>{{ scene.turn ? `转折 · ${scene.turn}` : '尚无转折' }}</span><div><button type="button" title="上移场景" :disabled="index === 0" @click.stop="reorderScene(index, -1)"><AppIcon name="chevron" class="is-up" /></button><button type="button" title="下移场景" :disabled="index === scenes.length - 1" @click.stop="reorderScene(index, 1)"><AppIcon name="chevron" class="is-down" /></button></div></footer>
+          </article>
+        </div>
+        <div v-else class="scene-empty"><strong>这章还没有场景卡片</strong><p>先建立第一场，明确人物此刻要什么，以及什么在挡路。</p><button class="wk-btn" data-primary="true" type="button" @click="newScene"><AppIcon name="plus" />建立第一场</button></div>
+      </main>
+
+      <main v-else class="pane positioning-workbench">
+        <header class="positioning-head">
+          <div><span class="kicker">PLATFORM PROMISE</span><h2>作品承诺</h2><p>这里记录读者点进来以后会持续得到什么。它约束简介、开篇和长线推进，但不会锁死具体剧情。</p></div>
+          <span v-if="positioning">第 {{ positioning.revision }} 版</span>
+        </header>
+        <div class="positioning-platforms" role="radiogroup" aria-label="目标平台">
+          <label v-for="item in platformOptions" :key="item.id" :data-selected="positioningDraft.platform === item.id">
+            <input v-model="positioningDraft.platform" type="radio" name="positioning-platform" :value="item.id">
+            <strong>{{ item.label }}</strong><span>{{ item.note }}</span>
+          </label>
+        </div>
+        <div class="positioning-grid">
+          <label><span>书名候选 <small>每行一个</small></span><textarea :value="positioningDraft.titleCandidates?.join('\n') ?? ''" rows="5" placeholder="先保留 3—5 个可比较的书名" @input="positioningDraft.titleCandidates = ($event.target as HTMLTextAreaElement).value.split('\n').map((item) => item.trim()).filter(Boolean)"></textarea></label>
+          <label><span>一句核心卖点</span><textarea v-model="positioningDraft.sellingPoint" rows="5" placeholder="主角凭什么、在什么困境里、给读者什么独特体验"></textarea></label>
+          <label class="positioning-wide"><span>对外简介</span><textarea v-model="positioningDraft.synopsis" rows="6" placeholder="用人物处境、触发事件和未解问题建立阅读期待"></textarea></label>
+          <label><span>主角困境</span><textarea v-model="positioningDraft.protagonistDilemma" rows="5" placeholder="外部目标与内部缺陷如何互相卡住"></textarea></label>
+          <label><span>首个兑现点</span><textarea v-model="positioningDraft.firstPayoff" rows="5" placeholder="前期最早在哪个事件兑现核心卖点"></textarea></label>
+          <label class="positioning-wide"><span>长线承诺</span><textarea v-model="positioningDraft.longTermArc" rows="5" placeholder="中后期持续升级的目标、关系或秩序变化"></textarea></label>
+        </div>
+        <p v-if="positioningError" class="positioning-message is-error" role="alert">{{ positioningError }}</p>
+        <p v-else-if="positioningNotice" class="positioning-message" role="status">{{ positioningNotice }}</p>
+      </main>
+
+      <aside v-if="outlineMode === 'chapters'" class="pane pane-right outline-editor">
         <template v-if="selected && currentDraft">
           <div class="outline-editor-kicker">
             <span>第 {{ String(selected.index).padStart(3, '0') }} 章 · 章纲</span>
@@ -740,6 +965,35 @@ async function removeTrashItem(kind: 'volumes' | 'chapters', id: string, title: 
           </button>
         </template>
       </aside>
+      <aside v-else-if="outlineMode === 'scenes'" class="pane pane-right scene-editor">
+        <template v-if="selected && sceneDraft">
+          <header><span>{{ sceneDraft.id ? '编辑场景' : '新建场景' }}</span><button v-if="sceneDraft.id" type="button" title="归档场景" @click="archiveSelectedScene"><AppIcon name="trash" /></button></header>
+          <div class="scene-editor-pair"><label><span>叙事视角</span><select v-model="sceneDraft.povEntryId"><option :value="undefined">沿用章节</option><option v-for="character in confirmedCharacters" :key="character.id" :value="character.id">{{ character.name }}</option></select></label><label><span>发生地点</span><select v-model="sceneDraft.locationEntryId"><option :value="undefined">未指定</option><option v-for="place in confirmedPlaces" :key="place.id" :value="place.id">{{ place.name }}</option></select></label></div>
+          <label><span>人物目标</span><textarea v-model="sceneDraft.goal" rows="3" placeholder="这场结束前，人物想得到什么"></textarea></label>
+          <label><span>阻力</span><textarea v-model="sceneDraft.obstacle" rows="3" placeholder="谁或什么让目标无法顺利达成"></textarea></label>
+          <label><span>局面转折</span><textarea v-model="sceneDraft.turn" rows="3" placeholder="哪一刻改变了场景走向"></textarea></label>
+          <div class="scene-editor-pair"><label><span>信息增量</span><textarea v-model="sceneDraft.infoGain" rows="3" placeholder="读者新知道了什么"></textarea></label><label><span>情绪变化</span><textarea v-model="sceneDraft.emotionShift" rows="3" placeholder="人物情绪如何位移"></textarea></label></div>
+          <label><span>离场钩子</span><textarea v-model="sceneDraft.hook" rows="3" placeholder="用什么问题或行动牵引下一场"></textarea></label>
+          <label><span>状态</span><select v-model="sceneDraft.status"><option value="planning">规划中</option><option value="ready">可写</option><option value="written">已成文</option><option value="needs_revision">待调整</option></select></label>
+          <fieldset v-if="selected.words > 0" class="scene-body-policy"><legend>本章已有正文</legend><label><input v-model="sceneBodyPolicy" type="radio" value="plan_only">只调整计划</label><label><input v-model="sceneBodyPolicy" type="radio" value="mark_body_for_revision">同时标记正文待调整</label></fieldset>
+          <p v-if="sceneNotice" class="scene-notice" role="status">{{ sceneNotice }}</p>
+          <p v-if="scenesError" class="scene-error" role="alert">{{ scenesError }}</p>
+          <button class="wk-btn scene-save" data-primary="true" type="button" :disabled="sceneSaving" @click="saveScene">{{ sceneSaving ? '保存中…' : '保存场景卡片' }}</button>
+        </template>
+        <div v-else class="scene-editor-empty"><strong>选择或新建一张场景卡片</strong><p>章节仍可只使用原有章纲；场景卡片适合精细控制节奏。</p></div>
+      </aside>
+      <aside v-else class="pane pane-right positioning-aside">
+        <span class="kicker">兑现检查</span>
+        <h3>{{ positioningDraft.titleCandidates?.[0] || store.project?.title || '未命名作品' }}</h3>
+        <dl>
+          <div><dt>目标平台</dt><dd>{{ platformOptions.find((item) => item.id === positioningDraft.platform)?.label ?? '暂不设定' }}</dd></div>
+          <div><dt>核心卖点</dt><dd>{{ positioningDraft.sellingPoint || '待补充' }}</dd></div>
+          <div><dt>首个兑现</dt><dd>{{ positioningDraft.firstPayoff || '待补充' }}</dd></div>
+          <div><dt>长线承诺</dt><dd>{{ positioningDraft.longTermArc || '待补充' }}</dd></div>
+        </dl>
+        <p>修改定位不会自动改写现有章纲或正文。需要调整时，再到章纲或场景卡片逐项处理。</p>
+        <button class="wk-btn positioning-save" data-primary="true" type="button" :disabled="positioningSaving || !positioning" @click="savePositioning">{{ positioningSaving ? '保存中…' : '保存作品定位' }}</button>
+      </aside>
     </div>
 
     <div v-if="volumeEditor" class="outline-dialog-backdrop" @click.self="volumeEditor = null">
@@ -794,6 +1048,69 @@ async function removeTrashItem(kind: 'volumes' | 'chapters', id: string, title: 
 .outline-structure > p { margin: 11px 0 0; color: var(--ink-2); line-height: 1.55; font-size: var(--fs-sm); }
 .outline-structure > .outline-structure-error { color: var(--alert-ink); font-weight: 700; }
 .outline-workspace { min-height: 0; grid-template-columns: minmax(0, 1fr) 390px; }
+.positioning-workbench { min-width: 0; overflow: auto; padding: 30px 34px 48px; background: var(--panel-sunken); }
+.positioning-head { display: flex; align-items: flex-end; justify-content: space-between; gap: var(--u4); padding-bottom: 18px; border-bottom: 2px solid var(--ink); }
+.positioning-head h2 { margin: 6px 0; font: 700 24px/1.2 var(--font-prose); letter-spacing: 0; }
+.positioning-head p { max-width: 680px; margin: 0; color: var(--ink-3); font-size: var(--fs-sm); line-height: 1.65; }
+.positioning-head > span { flex: none; color: var(--ink-4); font: var(--fs-xs)/1 var(--font-mono); }
+.positioning-platforms { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; margin: 22px 0; }
+.positioning-platforms label { position: relative; min-height: 82px; display: grid; align-content: start; gap: 5px; padding: 12px; border: var(--hair) solid var(--line-strong); border-left: 3px solid transparent; background: var(--paper); cursor: pointer; }
+.positioning-platforms label[data-selected='true'] { border-left-color: var(--primary); background: var(--primary-soft); }
+.positioning-platforms input { position: absolute; opacity: 0; pointer-events: none; }
+.positioning-platforms strong { font-size: var(--fs-sm); }
+.positioning-platforms span { color: var(--ink-3); font-size: var(--fs-xs); line-height: 1.45; }
+.positioning-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
+.positioning-grid label { display: grid; gap: 7px; color: var(--ink-3); font-size: var(--fs-xs); font-weight: 700; }
+.positioning-grid label > span { display: flex; justify-content: space-between; }
+.positioning-grid label small { color: var(--ink-4); font-weight: 400; }
+.positioning-grid textarea { width: 100%; min-height: 108px; padding: 10px 12px; resize: vertical; border: var(--hair) solid var(--line-strong); border-radius: 3px; background: var(--paper); color: var(--ink); font: 14px/1.65 var(--font-prose); }
+.positioning-grid .positioning-wide { grid-column: 1 / -1; }
+.positioning-message { margin: 14px 0 0; color: var(--primary); font-size: var(--fs-sm); }
+.positioning-message.is-error { color: var(--alert-ink); }
+.positioning-aside { overflow: auto; padding: 28px 24px; }
+.positioning-aside h3 { margin: 10px 0 22px; font: 700 22px/1.35 var(--font-prose); letter-spacing: 0; }
+.positioning-aside dl { margin: 0; border-top: var(--hair) solid var(--line-strong); }
+.positioning-aside dl div { padding: 14px 0; border-bottom: var(--hair) solid var(--line); }
+.positioning-aside dt { margin-bottom: 5px; color: var(--ink-4); font-size: var(--fs-xs); }
+.positioning-aside dd { margin: 0; color: var(--ink-2); font-size: var(--fs-sm); line-height: 1.6; white-space: pre-wrap; }
+.positioning-aside > p { margin: 20px 0; color: var(--ink-3); font-size: var(--fs-sm); line-height: 1.65; }
+.positioning-save { width: 100%; justify-content: center; }
+.scene-workbench { min-width: 0; overflow: auto; padding: 28px; background: var(--panel-sunken); }
+.scene-workbench-head { display: flex; align-items: flex-start; justify-content: space-between; gap: var(--u4); margin-bottom: 22px; padding-bottom: 18px; border-bottom: var(--hair) solid var(--line-strong); }
+.scene-workbench-head h2 { margin: 5px 0 6px; font-family: var(--font-prose); font-size: 23px; font-weight: 600; letter-spacing: 0; }
+.scene-workbench-head p { margin: 0; color: var(--ink-3); font-size: var(--fs-sm); line-height: 1.6; }
+.scene-card-list { display: grid; gap: 10px; }
+.scene-card-list article { min-width: 0; padding: 15px 16px; border: var(--hair) solid var(--line-strong); border-left: 3px solid transparent; border-radius: 4px; background: var(--paper); cursor: pointer; }
+.scene-card-list article[data-active='true'] { border-left-color: var(--primary); background: var(--primary-soft); }
+.scene-card-list article > header { display: grid; grid-template-columns: 26px minmax(0, 1fr) auto; align-items: center; gap: var(--u2); }
+.scene-card-list article > header span { color: var(--ink-4); font-family: var(--font-mono); font-size: var(--fs-xs); }
+.scene-card-list article > header strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.scene-card-list article > header small { color: var(--primary); font-size: var(--fs-xs); font-weight: 700; }
+.scene-card-list article > p { margin: 9px 0; color: var(--ink-3); line-height: 1.6; }
+.scene-card-list article > footer { display: flex; align-items: center; justify-content: space-between; gap: var(--u2); color: var(--ink-4); font-size: var(--fs-xs); }
+.scene-card-list article > footer > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.scene-card-list article > footer div { display: flex; flex: none; }
+.scene-card-list article > footer button, .scene-editor > header button { width: 28px; height: 28px; display: grid; place-items: center; border: 0; background: transparent; color: var(--ink-3); cursor: pointer; }
+.scene-card-list .is-up { transform: rotate(-90deg); }
+.scene-card-list .is-down { transform: rotate(90deg); }
+.scene-card-list button:disabled { opacity: .25; cursor: default; }
+.scene-empty { margin: 38px auto; max-width: 440px; text-align: center; color: var(--ink-3); }
+.scene-empty strong { color: var(--ink); }
+.scene-empty p { line-height: 1.65; }
+.scene-error { color: var(--alert-ink); font-size: var(--fs-sm); }
+.scene-editor { min-width: 0; overflow: auto; padding: 22px 20px; }
+.scene-editor > header { min-height: 38px; display: flex; align-items: center; justify-content: space-between; margin-bottom: var(--u3); border-bottom: var(--hair) solid var(--line-strong); color: var(--ink-3); font-size: var(--fs-xs); font-weight: 700; }
+.scene-editor > label, .scene-editor-pair label { display: grid; gap: 6px; margin-bottom: var(--u3); color: var(--ink-3); font-size: var(--fs-xs); font-weight: 700; }
+.scene-editor textarea, .scene-editor select { width: 100%; border: var(--hair) solid var(--line-strong); border-radius: 3px; background: var(--paper); color: var(--ink); font: inherit; }
+.scene-editor textarea { min-height: 65px; padding: 8px 10px; resize: vertical; line-height: 1.55; }
+.scene-editor select { height: 36px; padding-inline: 9px; }
+.scene-editor-pair { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+.scene-body-policy { display: grid; gap: 8px; margin: var(--u4) 0; padding: var(--u3); border: var(--hair) solid var(--line-strong); }
+.scene-body-policy legend { color: var(--alert-ink); font-size: var(--fs-xs); font-weight: 700; }
+.scene-body-policy label { display: flex; align-items: center; gap: 7px; color: var(--ink-2); font-size: var(--fs-sm); }
+.scene-notice { color: var(--primary); font-size: var(--fs-sm); }
+.scene-save { width: 100%; justify-content: center; }
+.scene-editor-empty { margin-top: 34px; color: var(--ink-3); font-size: var(--fs-sm); line-height: 1.65; text-align: center; }
 .outline-chapter-cell { position: relative; }
 .outline-revision-flag { margin-top: 7px; color: var(--alert-ink); font-size: var(--fs-xs); font-weight: 700; }
 .outline-pov-flag { margin-top: 5px; overflow: hidden; color: var(--primary); font-size: var(--fs-xs); font-weight: 700; text-overflow: ellipsis; white-space: nowrap; }
@@ -896,10 +1213,23 @@ async function removeTrashItem(kind: 'volumes' | 'chapters', id: string, title: 
   .outline-structure { padding: 18px 16px; }
   .outline-workspace { grid-template-columns: minmax(0, 1fr); overflow: auto; }
   .outline-editor { min-height: 520px; border-top: var(--hair) solid var(--line-strong); border-left: 0; }
+  .scene-editor { min-height: 520px; border-top: var(--hair) solid var(--line-strong); border-left: 0; }
+  .scene-workbench { min-height: 480px; padding: 20px 16px; }
+  .positioning-aside { min-height: 420px; border-top: var(--hair) solid var(--line-strong); border-left: 0; }
+  .positioning-platforms { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .outline-dialog-backdrop { padding: 0; place-items: end stretch; }
   .outline-dialog { width: 100%; border-radius: 0; }
   .outline-dialog footer { align-items: flex-start; flex-direction: column; }
   .outline-dialog footer > div { align-self: stretch; }
   .outline-dialog footer .wk-btn { flex: 1; }
+}
+
+@media (max-width: 560px) {
+  .scene-workbench-head { align-items: stretch; flex-direction: column; }
+  .scene-editor-pair { grid-template-columns: minmax(0, 1fr); }
+  .positioning-workbench { padding: 22px 16px 36px; }
+  .positioning-head { align-items: flex-start; flex-direction: column; }
+  .positioning-grid { grid-template-columns: minmax(0, 1fr); }
+  .positioning-grid .positioning-wide { grid-column: auto; }
 }
 </style>

@@ -27,6 +27,7 @@ from db.models_embedding import CodexEmbeddingJob
 from db.models_guard import Foreshadow, GuardIssue
 from db.models_model_config import UserModelConfig
 from db.models_org import ChapterAssignment, Org, OrgMember
+from db.models_positioning import ProjectPositioning, ProjectPositioningRevision
 from db.models_review import ChapterReviewRound, ReviewComment
 from db.models_timeline import TimelineEntry
 from db.models_usage import (
@@ -42,6 +43,8 @@ from db.models_usage import (
 )
 from db.models_writing import ProjectDailyWriting
 from db.models_adaptation import Adaptation, Episode, Scene, Shot, VisualProfile
+from db.models_scene_cards import ChapterScene
+from db.models_naturalization import NaturalizationFinding, NaturalizationRun
 
 __all__ = [
     "Base",
@@ -100,6 +103,8 @@ __all__ = [
     "Org",
     "OrgMember",
     "ChapterAssignment",
+    "ProjectPositioning",
+    "ProjectPositioningRevision",
     "ChapterReviewRound",
     "ReviewComment",
     "UserModelConfig",
@@ -108,4 +113,7 @@ __all__ = [
     "Scene",
     "Shot",
     "VisualProfile",
+    "ChapterScene",
+    "NaturalizationRun",
+    "NaturalizationFinding",
 ]

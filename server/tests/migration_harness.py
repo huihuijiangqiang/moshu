@@ -112,9 +112,12 @@ class _OpRecorder:
                 return
 
     def alter_column(self, table_name: str, column_name: str, **kw: Any) -> None:
+        column = self.metadata.tables[table_name].columns[column_name]
         type_ = kw.get("type_")
         if type_ is not None:
-            self.metadata.tables[table_name].columns[column_name].type = type_
+            column.type = type_
+        if "nullable" in kw:
+            column.nullable = kw["nullable"]
 
     def execute(self, sql: Any, **kw: Any) -> None:
         self.executed_sql.append(str(sql))

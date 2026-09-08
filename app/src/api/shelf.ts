@@ -15,6 +15,7 @@ export interface CreateBookInput {
   tags: string[]
   volumes: Array<{ title: string; summary: string }>
   chapters?: Array<{ title: string; outline: string[] }>
+  targetPlatform?: 'fanqie' | 'qimao' | 'qidian' | 'general'
 }
 
 export interface UpdateBookInput {
@@ -101,7 +102,8 @@ const realShelfApi = {
         template: input.template,
         tags: input.tags,
         volumes: input.volumes,
-        chapters: input.chapters ?? []
+        chapters: input.chapters ?? [],
+        target_platform: input.targetPlatform ?? 'general'
       })
     })
     return {

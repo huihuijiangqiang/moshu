@@ -9,16 +9,19 @@
 ## 核心能力
 
 - **写作台**：章节正文、章纲、AI 草稿、风格档和上下文预算在同一工作区协同。
+- **结构规划**：在开书和持续创作阶段维护目标平台、核心卖点、长期承诺与章节场景卡片，不把定位和章纲锁死在一次性向导里。
 - **作品记忆**：人物、地点、势力、物品、伏笔和时间线按作品隔离，支持持续修改。
 - **一致性守卫**：展示冲突两端的证据，支持回到正文处理，不让模型静默改写作者设定。
+- **自然化审查**：按章或选区提示模板化衔接、句式节奏和修饰堆叠风险，候选修改必须由作者逐条确认并保留来源记录。
 - **漫剧分镜**：在独立改编版本中管理集、场景、镜头和人物视觉档案，镜头可维护景别、运镜、动作、对白、旁白与画面提示词。
 - **长文本基础设施**：PostgreSQL/pgvector 负责持久化与检索，Redis/Celery 承担异步分析和生成任务；正文按确定性分块覆盖全文，摘要、设定和向量检索分层装配。
 
-当前仓库包含 Vue 3 写作前端、FastAPI API、PostgreSQL/pgvector、Redis 与 Celery 异步任务，以及架构、计费和实现文档。后端当前 migration head 为 `028_adaptation_storyboard`。
+当前仓库包含 Vue 3 写作前端、FastAPI API、PostgreSQL/pgvector、Redis 与 Celery 异步任务，以及架构、计费和实现文档。后端当前 migration head 为 `032_timestamp_nullability`。
 
 ### 长篇一致性保障
 
 - 章节可保存作者确认的结构化时间范围，生成时同时注入本章和上一章时间锚点，减少日期回退。
+- 作品定位保存目标平台、核心卖点、主角困境、首个兑现点和长线承诺的不可变版本，章节场景卡片把 POV、地点、目标、阻力、转折和钩子绑定到具体章节。
 - AI 输出先进入候选草稿；上游 SSE 未收到完整结束标记时，草稿会标记为 `failed`，返回 `STREAM_INTERRUPTED`，不会进入正文。
 - Guard 优先使用确定性规则，对抽取器提供的结构化账目执行现金/库存、计件工资和资源数量校验；LLM 只负责抽取和补充软性问题，不负责最终算术结论。
 - 设定库使用 PostgreSQL/pgvector 检索，四层上下文预算上限为 25k token，正文、摘要、常驻设定和相关条目分层进入生成提示。
@@ -206,17 +209,17 @@ MOSHU_REDIS_DATA_DIR=<redis-data-directory>
 | 全局 | `/` | 浏览、筛选和进入作品，不承载单部作品数据 |
 | 全局 | `/projects/new` | 创建作品，确认骨架后进入该作品写作台 |
 | 全局 | `/usage` | 账户套餐、积分与模型用量 |
-| 项目 | `/projects/:projectId/outline` | 卷纲、章纲、时间线与节奏规划 |
+| 项目 | `/projects/:projectId/outline` | 卷纲、章纲、场景卡片、作品定位与节奏规划 |
 | 项目 | `/projects/:projectId/timeline` | 可编辑故事事实、时间锚点和 Guard 冲突落点 |
 | 项目 | `/projects/:projectId/codex` | 当前作品的人物、地点、势力、物品和伏笔设定 |
 | 项目 | `/projects/:projectId/storyboard` | 漫剧改编版本、人物视觉档案、场景与静态分镜稿（暂不生成视频） |
 | 项目 | `/projects/:projectId/write` | 章节选择、正文编辑、AI 生成和引用设定 |
 | 项目 | `/projects/:projectId/guard` | 当前作品的一致性、伏笔和待确认设定处置 |
 | 项目 | `/projects/:projectId/style` | 为当前作品选择或管理作者风格档 |
-| 项目 | `/projects/:projectId/ai-ratio` | 按本章或全书复核文字来源与疑似 AI 句式 |
+| 项目 | `/projects/:projectId/ai-ratio` | 按本章或全书复核文字来源，并逐条处理自然化审查建议 |
 | 项目 | `/projects/:projectId/export` | 导出当前作品正文、设定、大纲和自查报告 |
 
-主要创作流程是：创建或选择作品 → 梳理大纲与设定 → 写作 → 一致性与 AI 痕迹复核 → 导出。写作、大纲和设定允许反复往返；守卫问题必须能跳回对应正文或时间线。账户用量不属于任何作品。
+主要创作流程是：创建或选择作品 → 明确作品定位 → 梳理大纲、场景与设定 → 写作 → 一致性与自然化审查 → 导出。定位、写作、大纲和设定允许反复往返；守卫问题必须能跳回对应正文或时间线。账户用量不属于任何作品。
 
 当前实现状态与后端验收记录见 `server/docs/IMPLEMENTATION_STATUS.md`；架构约束见 `docs/architecture/`。
 
@@ -224,7 +227,7 @@ MOSHU_REDIS_DATA_DIR=<redis-data-directory>
 镜头和视觉档案持久化到 PostgreSQL，并按作品权限限制查看、编辑分镜和维护视觉档案。
 当前阶段不包含实际视频、配音、字幕时间轴或合成任务；图片生成仍属于待接入能力。
 
-最近一次后端回归记录：`1297 passed, 37 skipped`；本轮前端回归为 `153 passed`。后端被跳过的
+最近一次后端回归记录：`1390 passed, 37 skipped`；本轮前端回归为 `156 passed`。后端被跳过的
 测试需要显式配置真实 PostgreSQL/pgvector 集成环境；测试正文、模型 key、`.env` 和 Docker
 数据卷均不提交 Git。
 

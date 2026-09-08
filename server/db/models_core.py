@@ -12,6 +12,7 @@ from db.base import Base, TimestampMixin
 
 if TYPE_CHECKING:
     from db.models_codex import CodexEntry
+    from db.models_positioning import ProjectPositioning
 
 
 class User(Base, TimestampMixin):
@@ -71,6 +72,9 @@ class Project(Base, TimestampMixin):
     volumes: Mapped[list["Volume"]] = relationship(back_populates="project", cascade="all, delete-orphan")
     chapters: Mapped[list["Chapter"]] = relationship(back_populates="project", cascade="all, delete-orphan")
     codex_entries: Mapped[list["CodexEntry"]] = relationship(back_populates="project", cascade="all, delete-orphan")
+    positioning: Mapped[Optional["ProjectPositioning"]] = relationship(
+        back_populates="project", uselist=False, cascade="all, delete-orphan"
+    )
 
 
 class ProjectNote(Base, TimestampMixin):

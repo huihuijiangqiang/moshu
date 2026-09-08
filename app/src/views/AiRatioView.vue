@@ -7,6 +7,11 @@ import {
   type ProvenanceSource,
   type SuspectedSentence
 } from '@/api/provenance'
+import {
+  naturalizationApi,
+  type NaturalizationFinding,
+  type NaturalizationRun
+} from '@/api/naturalization'
 import AppIcon from '@/components/ui/AppIcon.vue'
 import { projectPath } from '@/router/project-route'
 import { useProjectStore } from '@/stores/project'
@@ -20,6 +25,10 @@ const report = ref<ProvenanceReport | null>(null)
 const scope = ref<'chapter' | 'book'>('chapter')
 const loading = ref(false)
 const error = ref('')
+const naturalizationRun = ref<NaturalizationRun | null>(null)
+const naturalizationBusy = ref(false)
+const naturalizationError = ref('')
+const naturalizationNotice = ref('')
 let requestSerial = 0
 
 const projectId = computed(() => String(route.params.projectId ?? store.loadedProjectId ?? ''))
@@ -31,9 +40,7 @@ const sourceLabel: Record<ProvenanceSource, string> = {
   human: '手写'
 }
 
-watch(
-  [projectId, () => store.activeId, scope],
-  async ([nextProjectId, chapterId, nextScope]) => {
+async function loadReport(nextProjectId = projectId.value, chapterId = store.activeId, nextScope = scope.value) {
     shell.setCrumb('AI 来源')
     if (!nextProjectId || (nextScope === 'chapter' && !chapterId)) {
       report.value = null
@@ -53,6 +60,15 @@ watch(
     } finally {
       if (serial === requestSerial) loading.value = false
     }
+}
+
+watch(
+  [projectId, () => store.activeId, scope],
+  ([nextProjectId, chapterId, nextScope]) => {
+    naturalizationRun.value = null
+    naturalizationError.value = ''
+    naturalizationNotice.value = ''
+    void loadReport(nextProjectId, chapterId, nextScope)
   },
   { immediate: true }
 )
@@ -83,6 +99,61 @@ function openSentence(item: SuspectedSentence, rewrite = false) {
       ...(rewrite ? { rewrite: '1' } : {})
     }
   })
+}
+
+async function scanNaturalization() {
+  if (!projectId.value || !store.activeId || naturalizationBusy.value) return
+  naturalizationBusy.value = true
+  naturalizationError.value = ''
+  naturalizationNotice.value = ''
+  try {
+    await store.openChapter(store.activeId)
+    naturalizationRun.value = await naturalizationApi.scan(projectId.value, {
+      chapterId: store.activeId,
+      sourceBodyRev: store.active?.rev ?? 0,
+      scope: 'chapter',
+      mode: 'rules'
+    })
+    naturalizationNotice.value = naturalizationRun.value.findingCount
+      ? `找到 ${naturalizationRun.value.findingCount} 处可复核表达`
+      : '本章没有命中当前自然化规则'
+  } catch (caught) {
+    naturalizationError.value = caught instanceof Error ? caught.message : '自然化扫描失败'
+  } finally {
+    naturalizationBusy.value = false
+  }
+}
+
+async function acceptNaturalization(finding: NaturalizationFinding) {
+  if (!naturalizationRun.value || naturalizationBusy.value) return
+  naturalizationBusy.value = true
+  naturalizationError.value = ''
+  try {
+    naturalizationRun.value = await naturalizationApi.accept(naturalizationRun.value.id, finding.id)
+    if (store.activeId) await store.reloadReplacedChapters([store.activeId])
+    await loadReport()
+    naturalizationNotice.value = '候选已采纳，正文版本和来源记录已更新'
+  } catch (caught) {
+    naturalizationError.value = caught instanceof Error ? caught.message : '候选采纳失败，正文可能已变化'
+  } finally {
+    naturalizationBusy.value = false
+  }
+}
+
+async function rejectNaturalization(finding: NaturalizationFinding) {
+  if (!naturalizationRun.value || naturalizationBusy.value) return
+  naturalizationBusy.value = true
+  naturalizationError.value = ''
+  try {
+    const rejected = await naturalizationApi.reject(naturalizationRun.value.id, finding.id)
+    const current = naturalizationRun.value.findings.find((item) => item.id === rejected.id)
+    if (current) current.status = rejected.status
+    naturalizationNotice.value = '候选已拒绝，正文没有变化'
+  } catch (caught) {
+    naturalizationError.value = caught instanceof Error ? caught.message : '候选拒绝失败'
+  } finally {
+    naturalizationBusy.value = false
+  }
 }
 </script>
 
@@ -159,6 +230,38 @@ function openSentence(item: SuspectedSentence, rewrite = false) {
         <div v-else class="proof-empty">本章没有命中当前规则。仍建议按平台要求和作者判断人工复核。</div>
       </section>
 
+      <section v-if="scope === 'chapter'" class="naturalization-panel" aria-labelledby="naturalization-title">
+        <div class="naturalization-heading">
+          <div>
+            <span class="wk-label">NATURALIZATION REVIEW</span>
+            <h2 id="naturalization-title">自然化审查</h2>
+            <p>只针对可解释的表达风险生成候选。人物、时间、数字、关系和事件结果必须由作者确认。</p>
+          </div>
+          <button class="wk-btn" data-primary="true" type="button" :disabled="naturalizationBusy || !store.activeId" @click="scanNaturalization">
+            <AppIcon name="search" :size="13" />{{ naturalizationBusy ? '处理中…' : '扫描本章' }}
+          </button>
+        </div>
+        <div v-if="naturalizationError" class="naturalization-message is-error">{{ naturalizationError }}</div>
+        <div v-else-if="naturalizationNotice" class="naturalization-message">{{ naturalizationNotice }}</div>
+        <div v-if="naturalizationRun?.findings.length" class="naturalization-list">
+          <article v-for="finding in naturalizationRun.findings" :key="finding.id" :data-status="finding.status">
+            <div class="naturalization-meta">
+              <span>{{ finding.status === 'pending' ? '待复核' : finding.status === 'accepted' ? '已采纳' : finding.status === 'rejected' ? '已拒绝' : '已失效' }}</span>
+              <small>{{ finding.reasons.join(' · ') }}</small>
+            </div>
+            <div class="naturalization-diff">
+              <div><label>原文</label><p>{{ finding.originalText }}</p></div>
+              <div><label>候选</label><p>{{ finding.candidateText }}</p></div>
+            </div>
+            <div v-if="finding.status === 'pending'" class="naturalization-actions">
+              <button class="wk-btn wk-btn-xs" type="button" :disabled="naturalizationBusy" @click="rejectNaturalization(finding)">保留原文</button>
+              <button class="wk-btn wk-btn-xs" data-primary="true" type="button" :disabled="naturalizationBusy" @click="acceptNaturalization(finding)">采纳候选</button>
+            </div>
+          </article>
+        </div>
+        <div v-else-if="naturalizationRun" class="naturalization-empty">{{ naturalizationRun.status === 'stale' ? '正文已变化，这次扫描已失效，请重新扫描。' : '没有待审候选。' }}</div>
+      </section>
+
       <section v-if="scope === 'chapter'" class="paragraph-ledger">
         <div class="ledger-heading">
           <select aria-label="选择章节" :value="store.activeId ?? ''" @change="selectChapter">
@@ -221,6 +324,22 @@ function openSentence(item: SuspectedSentence, rewrite = false) {
 .proof-copy p { margin: 0; font: 15px/1.8 var(--font-prose); }
 .proof-actions { display: flex; gap: 6px; }
 .proof-empty { padding: 26px 0; border-bottom: 1px solid var(--line); color: var(--ink-3); }
+.naturalization-panel { margin: 24px 34px 0; max-width: 1120px; border-top: 2px solid var(--ink); }
+.naturalization-heading { display: flex; align-items: end; justify-content: space-between; gap: 24px; padding: 24px 0 16px; border-bottom: 1px solid var(--line); }
+.naturalization-heading h2 { margin: 6px 0 6px; font: 700 20px/1.2 var(--font-prose); letter-spacing: 0; }
+.naturalization-heading p { margin: 0; color: var(--ink-3); font-size: var(--fs-sm); line-height: 1.65; }
+.naturalization-message { padding: 12px 0; color: var(--ink-2); font-size: 12px; }
+.naturalization-message.is-error { color: var(--alert-ink); }
+.naturalization-list article { display: grid; grid-template-columns: 116px minmax(0, 1fr) auto; gap: 18px; align-items: start; padding: 17px 0; border-bottom: 1px solid var(--line); }
+.naturalization-meta { display: flex; flex-direction: column; gap: 4px; font-size: 12px; font-weight: 700; }
+.naturalization-meta small { color: var(--ink-3); font-size: 11px; line-height: 1.5; font-weight: 400; }
+.naturalization-diff { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+.naturalization-diff > div { padding: 11px 13px; background: var(--paper); border: 1px solid var(--line); }
+.naturalization-diff label { display: block; margin-bottom: 6px; color: var(--ink-3); font-size: 11px; }
+.naturalization-diff p { margin: 0; font: 14px/1.75 var(--font-prose); white-space: pre-wrap; }
+.naturalization-actions { display: flex; gap: 6px; }
+.naturalization-list article[data-status='accepted'], .naturalization-list article[data-status='rejected'], .naturalization-list article[data-status='stale'] { opacity: .62; }
+.naturalization-empty { padding: 22px 0; color: var(--ink-3); font-size: 13px; }
 .paragraph-ledger { padding: 38px 34px 56px; max-width: 1040px; }
 .ledger-heading { display: flex; align-items: baseline; justify-content: space-between; gap: 18px; padding-bottom: 16px; border-bottom: 1px solid var(--line-strong); }
 .ledger-heading select { min-width: 260px; max-width: 60%; height: 32px; border: 1px solid var(--line-strong); background: var(--paper); color: var(--ink); padding: 0 30px 0 10px; font-family: var(--font-prose); font-size: 14px; }
@@ -248,6 +367,10 @@ button:focus-visible, select:focus-visible { outline: 2px solid var(--accent); o
   .source-summary article:last-child { border-bottom: 0; }
   .source-summary strong { font-size: 27px; }
   .risk-proof, .paragraph-ledger { padding-inline: 20px; }
+  .naturalization-panel { margin-inline: 20px; }
+  .naturalization-heading { align-items: flex-start; flex-direction: column; }
+  .naturalization-list article { grid-template-columns: 1fr; gap: 10px; }
+  .naturalization-diff { grid-template-columns: 1fr; }
   .proof-list article { grid-template-columns: 48px minmax(0, 1fr); }
   .proof-actions { grid-column: 2; }
   .ledger-heading { align-items: flex-start; flex-direction: column; gap: 5px; }

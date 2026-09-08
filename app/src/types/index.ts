@@ -344,6 +344,25 @@ export interface ProjectPatch {
   dailyGoal?: number
 }
 
+export type ProjectTargetPlatform = 'fanqie' | 'qimao' | 'qidian' | 'general'
+
+export interface ProjectPositioningSummary {
+  id: string
+  projectId: string
+  platform: ProjectTargetPlatform
+  titleCandidates: string[]
+  sellingPoint: string
+  synopsis: string
+  tags: string[]
+  protagonistDilemma: string
+  firstPayoff: string
+  longTermArc: string
+  revision: number
+  status: 'draft' | 'active' | 'archived'
+  createdAt: string
+  updatedAt: string
+}
+
 export interface Project {
   id: string
   orgId?: string | null
@@ -357,6 +376,8 @@ export interface Project {
   dailyGoal: number
   dailyWords: number
   styleProfile: string | null
+  targetPlatform?: ProjectTargetPlatform
+  positioning?: ProjectPositioningSummary | null
 }
 
 export interface WritingProgressDay {

@@ -97,6 +97,16 @@ async def provenance_report(
             "source": item.source,
             "score": item.score,
             "reasons": list(item.reasons),
+            "risk_rules": [
+                {
+                    "id": risk.rule_id,
+                    "category": risk.category,
+                    "label": risk.label,
+                    "score": risk.score,
+                    "confidence": risk.confidence,
+                }
+                for risk in item.risks
+            ],
         }
         for item in suspected
     ]

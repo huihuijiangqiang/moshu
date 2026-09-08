@@ -164,4 +164,48 @@ describe('continuous outline editing', () => {
     expect(v2Chapters.indexOf('ch85')).toBe(v2Chapters.indexOf('ch86') + 1)
     wrapper.unmount()
   })
+
+  it('creates and edits scene cards without replacing the chapter outline', async () => {
+    const { wrapper, store } = await mountOutline()
+    const outlineBefore = [...(store.chapters.find((chapter) => chapter.id === 'ch89')?.outline ?? [])]
+    await wrapper.get('[data-chapter-id="ch89"]').trigger('click')
+    const sceneMode = Array.from(document.querySelectorAll<HTMLButtonElement>('#topbar-actions button'))
+      .find((button) => button.textContent?.trim() === '场景卡片')
+    sceneMode?.click()
+    await new Promise((resolve) => setTimeout(resolve, 520))
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('场景推进链')
+    await buttonByText(wrapper, '建立第一场')?.trigger('click')
+    await wrapper.get('textarea[placeholder="这场结束前，人物想得到什么"]').setValue('在天亮前拿到出城文书')
+    await wrapper.get('textarea[placeholder="谁或什么让目标无法顺利达成"]').setValue('城门校尉认出了伪造的印泥')
+    await wrapper.get('textarea[placeholder="哪一刻改变了场景走向"]').setValue('校尉主动提出交换条件')
+    await buttonByText(wrapper, '保存场景卡片')?.trigger('click')
+    await waitForSave()
+
+    expect(wrapper.text()).toContain('在天亮前拿到出城文书')
+    expect(wrapper.text()).toContain('场景卡片已保存')
+    expect(store.chapters.find((chapter) => chapter.id === 'ch89')?.outline).toEqual(outlineBefore)
+    wrapper.unmount()
+  })
+
+  it('keeps the platform promise editable outside the creation wizard', async () => {
+    const { wrapper, store } = await mountOutline()
+    const positioningMode = Array.from(document.querySelectorAll<HTMLButtonElement>('#topbar-actions button'))
+      .find((button) => button.textContent?.trim() === '作品定位')
+    positioningMode?.click()
+    await new Promise((resolve) => setTimeout(resolve, 100))
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('作品承诺')
+    await wrapper.get('textarea[placeholder="主角凭什么、在什么困境里、给读者什么独特体验"]').setValue('她要在荒年里把一座空村重新养活。')
+    await wrapper.get('textarea[placeholder="前期最早在哪个事件兑现核心卖点"]').setValue('第一口水井出水。')
+    expect(wrapper.get('.positioning-save').attributes('disabled')).toBeUndefined()
+    await wrapper.get('.positioning-save').trigger('click')
+    await waitForSave()
+
+    expect(wrapper.text()).toContain('作品定位已保存为第 1 版')
+    expect(store.project?.positioning?.sellingPoint).toContain('空村重新养活')
+    wrapper.unmount()
+  })
 })

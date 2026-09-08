@@ -12,6 +12,12 @@ interface ProjectDto {
   today_words: number
   style_profile_id: string | null
   volumes: Array<{ id: string; title: string; idx: number; summary?: string | null }>
+  target_platform?: 'fanqie' | 'qimao' | 'qidian' | 'general'
+  positioning?: {
+    id: string; project_id: string; platform: 'fanqie' | 'qimao' | 'qidian' | 'general'; title_candidates: string[]
+    selling_point: string; synopsis: string; tags: string[]; protagonist_dilemma: string; first_payoff: string; long_term_arc: string
+    revision: number; status: 'draft' | 'active' | 'archived'; created_at: string; updated_at: string
+  } | null
 }
 
 interface WritingProgressDayDto {
@@ -715,7 +721,15 @@ function projectFromDto(dto: ProjectDto): Project {
       index: index + 1,
       title: volume.title,
       summary: volume.summary ?? undefined
-    }))
+    })),
+    targetPlatform: dto.target_platform ?? 'general',
+    positioning: dto.positioning ? {
+      id: dto.positioning.id, projectId: dto.positioning.project_id, platform: dto.positioning.platform,
+      titleCandidates: dto.positioning.title_candidates ?? [], sellingPoint: dto.positioning.selling_point ?? '', synopsis: dto.positioning.synopsis ?? '',
+      tags: dto.positioning.tags ?? [], protagonistDilemma: dto.positioning.protagonist_dilemma ?? '', firstPayoff: dto.positioning.first_payoff ?? '',
+      longTermArc: dto.positioning.long_term_arc ?? '', revision: dto.positioning.revision, status: dto.positioning.status,
+      createdAt: dto.positioning.created_at, updatedAt: dto.positioning.updated_at
+    } : null
   }
 }
 

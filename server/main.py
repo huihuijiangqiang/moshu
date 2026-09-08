@@ -30,11 +30,13 @@ from api import (
     exports,
     generate,
     model_configs,
+    naturalization,
     orgs,
     outlines,
     projects,
     provenance,
     reviews,
+    scenes,
     styles,
     text_replacement,
     tools,
@@ -161,7 +163,9 @@ app.include_router(usage.router, prefix="/usage", tags=["用量"])
 app.include_router(billing.router, prefix="/billing", tags=["收费与积分"])
 app.include_router(styles.router, tags=["风格档"])
 app.include_router(provenance.router, tags=["AI 来源"])
+app.include_router(naturalization.router, tags=["自然化审查"])
 app.include_router(text_replacement.router, prefix="/projects", tags=["全书校订"])
 app.include_router(tools.router, prefix="/projects", tags=["写作工具"])
 app.include_router(reviews.router, prefix="/reviews", tags=["章节审稿"])
+app.include_router(scenes.router, tags=["场景卡片"])
 app.include_router(agent.router, prefix="/agent", tags=["AI 助手"])
