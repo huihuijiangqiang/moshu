@@ -44,6 +44,15 @@
 - 想从头体验时，先创建一部新作品；想快速查看完整流程，可以直接打开作品库中的示例作品。
 - 正式写作前建议先完成作品定位、至少一卷章纲和主要人物设定，再开始连续生成章节。
 
+### Cloudflare 自动部署
+
+仓库已配置 GitHub Actions：推送 `main` 中的 `app/` 改动后，会自动构建并通过 Wrangler 发布到 Cloudflare Workers 静态资产。首次启用时，在 GitHub 仓库的 **Settings → Secrets and variables → Actions** 添加：
+
+- `CLOUDFLARE_API_TOKEN`：具备 Workers Scripts 编辑权限的 API Token。
+- `CLOUDFLARE_ACCOUNT_ID`：Cloudflare 账户 ID。
+
+工作流文件为 `.github/workflows/cloudflare-preview.yml`，Worker 名称和静态资源目录由 `app/wrangler.jsonc` 管理。该预览构建只包含前端资源；真实生成仍需把 `VITE_API_BASE` 指向可从浏览器访问的 API 地址，并在后端部署机配置模型网关、数据库和 Redis 凭据。
+
 ## 功能概览
 
 - **写作台**：章节正文、章纲、AI 草稿和作者风格集中在一个工作区。
