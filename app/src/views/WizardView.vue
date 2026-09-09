@@ -510,7 +510,10 @@ watch(
 <template>
   <div class="wizard-page">
     <header class="wizard-header">
-      <button class="wizard-brand" type="button" @click="router.push('/')">墨枢 · 开新书</button>
+      <button class="wizard-brand" type="button" @click="router.push('/')">
+        <img src="/brand/moshu-icon.svg" alt="" />
+        <span>墨枢 · 开新书</span>
+      </button>
       <span>草稿已自动保留</span>
       <button class="wk-btn wk-btn-xs" type="button" @click="resetDraft">重新开始</button>
     </header>
@@ -757,7 +760,8 @@ watch(
 <style scoped>
 .wizard-page { height: 100%; display: grid; grid-template-rows: 52px auto minmax(0, 1fr); overflow: hidden; color: var(--ink); background: var(--canvas); }
 .wizard-header { display: flex; align-items: center; gap: var(--u3); padding: 0 var(--u4); border-bottom: var(--hair) solid var(--line-strong); background: var(--chrome-bg); color: var(--chrome-ink-dim); font-size: var(--fs-sm); }
-.wizard-brand { margin-right: auto; border: 0; background: none; color: var(--chrome-ink); font-weight: 700; cursor: pointer; }
+.wizard-brand { display: inline-flex; align-items: center; gap: 8px; margin-right: auto; border: 0; background: none; color: var(--chrome-ink); font-weight: 700; cursor: pointer; }
+.wizard-brand img { width: 24px; height: 24px; display: block; border-radius: 6px; }
 .wizard-steps { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); border-bottom: var(--hair) solid var(--line-strong); background: var(--line); gap: var(--hair); }
 .wizard-steps button { min-width: 0; min-height: 72px; display: grid; grid-template-columns: 34px minmax(0, 1fr); align-items: center; gap: var(--u3); padding: var(--u3) var(--u4); border: 0; text-align: left; background: var(--panel-sunken); cursor: pointer; }
 .wizard-steps button[aria-current='step'] { background: var(--paper); box-shadow: inset 0 -3px 0 var(--primary); }

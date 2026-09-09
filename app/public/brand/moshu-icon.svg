@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-labelledby="title desc">
+  <title id="title">墨枢</title>
+  <desc id="desc">一本书的两页围绕金色中轴展开</desc>
+  <rect width="64" height="64" rx="14" fill="#163b3a"/>
+  <path d="M15 17h12c3.866 0 7 3.134 7 7v25c-2.047-2.035-4.683-3.05-7.907-3.05H15z" fill="#f5f2e9"/>
+  <path d="M49 17H37c-3.866 0-7 3.134-7 7v25c2.047-2.035 4.683-3.05 7.907-3.05H49z" fill="#e8eee8"/>
+  <path d="M32 13v39" stroke="#d3a84b" stroke-width="3" stroke-linecap="round"/>
+  <path d="M20 23h8M20 29h8M36 23h8M36 29h8" stroke="#9aaba2" stroke-width="1.5" stroke-linecap="round" opacity=".8"/>
+</svg>

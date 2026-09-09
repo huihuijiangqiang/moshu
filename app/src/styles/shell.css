@@ -45,13 +45,12 @@ body { font-family: var(--font-ui); font-size: var(--fs); }
 .rail-mark {
   display: grid;
   place-items: center;
-  font-family: var(--font-prose);
-  font-size: 25px;
-  font-weight: 700;
-  letter-spacing: 0;
   color: var(--chrome-ink-strong);
   border-bottom: var(--hair) solid transparent;
 }
+.rail-mark img { width: 36px; height: 36px; display: block; }
+.app-header-brand { display: inline-flex; align-items: center; gap: 8px; }
+.app-header-brand img { width: 24px; height: 24px; display: block; border-radius: 6px; }
 .rail-nav { display: grid; align-content: start; gap: 3px; padding: var(--u2) 6px; }
 .rail-foot { display: grid; gap: 3px; padding: var(--u2) 6px; border-top: var(--hair) solid var(--chrome-line); }
 

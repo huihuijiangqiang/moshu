@@ -20,7 +20,7 @@ onUnmounted(() => window.removeEventListener('scroll', syncScroll))
   <main class="landing">
     <header class="landing-nav" :data-scrolled="scrolled" :data-open="menuOpen">
       <RouterLink class="brand" to="/" aria-label="墨枢首页" @click="menuOpen = false">
-        <span class="brand-mark">墨</span>
+        <span class="brand-mark"><img src="/brand/moshu-icon.svg" alt="" /></span>
         <span class="brand-copy"><strong>墨枢</strong><small>MOSHU</small></span>
       </RouterLink>
       <button class="menu-toggle" type="button" :aria-expanded="menuOpen" aria-label="打开导航" @click="menuOpen = !menuOpen">
@@ -151,7 +151,7 @@ onUnmounted(() => window.removeEventListener('scroll', syncScroll))
     </section>
 
     <footer class="landing-footer">
-      <RouterLink class="footer-brand" to="/"><span>墨</span><strong>墨枢 MOSHU</strong></RouterLink>
+      <RouterLink class="footer-brand" to="/"><span><img src="/brand/moshu-icon.svg" alt="" /></span><strong>墨枢 MOSHU</strong></RouterLink>
       <p>AI 长篇小说创作工作台</p>
       <nav aria-label="页脚导航"><RouterLink to="/workspace">工作台</RouterLink><a :href="githubUrl" target="_blank" rel="noreferrer">GitHub</a><a href="#capabilities">核心能力</a></nav>
       <small>© {{ new Date().getFullYear() }} Moshu. Open source on GitHub.</small>
@@ -186,7 +186,8 @@ onUnmounted(() => window.removeEventListener('scroll', syncScroll))
 }
 .landing-nav[data-scrolled="true"] { background: rgba(255,255,255,.92); box-shadow: 0 14px 40px rgba(14,41,40,.14); }
 .brand { display: flex; align-items: center; gap: 10px; min-width: 130px; }
-.brand-mark { width: 36px; height: 36px; display: grid; place-items: center; border-radius: 4px; color: #fff; background: var(--land-teal); font: 700 20px/1 var(--font-prose); }
+.brand-mark { width: 36px; height: 36px; display: grid; place-items: center; overflow: hidden; border-radius: 8px; }
+.brand-mark img { width: 100%; height: 100%; display: block; }
 .brand-copy { display: grid; line-height: 1; }
 .brand-copy strong { font-size: 16px; }
 .brand-copy small { margin-top: 5px; color: #697674; font-size: 8px; letter-spacing: .18em; }
@@ -283,7 +284,8 @@ onUnmounted(() => window.removeEventListener('scroll', syncScroll))
 .text-link { padding-bottom: 3px; border-bottom: 1px solid rgba(255,255,255,.4); color: #fff !important; font-size: 12px; }
 .landing-footer { display: grid; grid-template-columns: 1fr auto; gap: 22px; align-items: center; padding: 48px max(28px,calc((100vw - 1180px)/2)); color: #70807d; background: #f7f9f8; font-size: 11px; }
 .footer-brand { display: flex; align-items: center; gap: 10px; color: var(--land-ink) !important; }
-.footer-brand span { width: 30px; height: 30px; display: grid; place-items: center; border: 1px solid var(--land-teal); font: 16px/1 var(--font-prose); }
+.footer-brand span { width: 30px; height: 30px; display: block; overflow: hidden; border: 1px solid var(--land-teal); border-radius: 7px; }
+.footer-brand img { width: 100%; height: 100%; display: block; }
 .landing-footer p,.landing-footer small { margin: 0; }.landing-footer nav { display: flex; gap: 24px; color: var(--land-ink); }.landing-footer small { text-align: right; }
 @media (max-width:980px) {
   .landing-menu { gap: 18px; }.landing-menu > a:not(.nav-workspace) { display: none; }

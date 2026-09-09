@@ -61,7 +61,7 @@ async function submit() {
     <section class="auth-frame">
       <div class="auth-intro">
         <div>
-          <div class="auth-brand">墨枢</div>
+          <div class="auth-brand"><img src="/brand/moshu-icon.svg" alt="" /><span>墨枢</span></div>
           <p class="auth-folio">MANUSCRIPT / 001</p>
           <h1>把故事写长，<br>也把前因后果留住。</h1>
         </div>
@@ -133,7 +133,8 @@ async function submit() {
   background-size: 100% 34px;
 }
 
-.auth-brand { font-size: 19px; font-weight: 800; letter-spacing: 0; }
+.auth-brand { display: inline-flex; align-items: center; gap: 9px; font-size: 19px; font-weight: 800; letter-spacing: 0; }
+.auth-brand img { width: 32px; height: 32px; display: block; border-radius: 8px; }
 .auth-folio { margin: 70px 0 16px; font-size: 11px; font-family: var(--font-mono); color: var(--color-neutral-800); }
 .auth-intro h1 { margin: 0; max-width: 12ch; font-size: 38px; line-height: 1.34; letter-spacing: 0; }
 .auth-note { margin: 0; font-size: 14px; color: var(--color-neutral-800); }

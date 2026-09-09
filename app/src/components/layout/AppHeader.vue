@@ -27,8 +27,9 @@ const saveLabel = computed(() => {
 <template>
   <header class="row-between rule-b" :style="{ height: 'var(--app-header-h)', padding: '0 18px', flex: 'none' }">
     <div class="row" :style="{ gap: '22px' }">
-      <RouterLink to="/workspace" :style="{ fontWeight: 700, fontSize: '15px', letterSpacing: '0.06em', border: 0, color: 'var(--color-text)' }">
-        墨枢
+      <RouterLink to="/workspace" class="app-header-brand" :style="{ fontWeight: 700, fontSize: '15px', letterSpacing: '0.06em', border: 0, color: 'var(--color-text)' }">
+        <img src="/brand/moshu-icon.svg" alt="" />
+        <span>墨枢</span>
       </RouterLink>
       <span :style="{ width: '2px', height: '20px', background: 'var(--color-divider)' }" />
       <span :style="{ fontWeight: 700, fontSize: '13px' }">{{ store.project?.title ?? '加载中' }}</span>

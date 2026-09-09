@@ -117,7 +117,9 @@ async function signOut() {
 <template>
   <div class="shell">
     <nav class="rail" aria-label="主导航">
-      <RouterLink to="/workspace" class="rail-mark" :style="{ border: 0 }" aria-label="书架">墨</RouterLink>
+      <RouterLink to="/workspace" class="rail-mark" :style="{ border: 0 }" aria-label="书架">
+        <img src="/brand/moshu-icon.svg" alt="" />
+      </RouterLink>
 
       <div class="rail-nav">
         <button
