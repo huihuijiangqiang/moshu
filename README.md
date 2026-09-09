@@ -215,6 +215,27 @@ MOSHU_REDIS_DATA_DIR=<redis-data-directory>
 
 真实收款必须在仅部署机可见的 `server/.env` 中配置商户身份、私钥、公钥或平台证书，以及公网 HTTPS 回调地址。缺少或无法读取这些配置时，接口会返回 `credentials_required` 或 `invalid_configuration`，不会接受未验签回调。示例字段见 `server/.env.example`，任何真实密钥和证书都不得提交 Git。
 
+## 发布版本
+
+仓库提供 PowerShell 一键发布脚本：`scripts/release.ps1`。脚本只从已提交且已同步
+`main` 的 Git 历史生成源码归档，不会打包 `.env`、本机数据卷、测试正文或构建缓存。
+
+先预览发布清单：
+
+```powershell
+.\scripts\release.ps1 -Version v0.1.0-preview
+```
+
+确认无误后创建 GitHub tag、Release 并上传源码 ZIP：
+
+```powershell
+.\scripts\release.ps1 -Version v0.1.0-preview -Publish
+```
+
+发布脚本优先读取 `GITHUB_TOKEN`/`GH_TOKEN`，没有设置时复用 Git 凭据管理器中的 GitHub
+登录信息。`-NotesPath` 可指定自定义 Release notes，`-Draft` 可创建草稿，`-SkipAsset`
+可跳过 ZIP 上传。生成的本地归档位于 `.release-artifacts/`，不会提交 Git。
+
 ## 核心约束
 
 - 一章一文档，章节列表接口不返回正文。
