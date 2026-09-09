@@ -300,7 +300,7 @@ onUnmounted(() => window.removeEventListener('scroll', syncScroll))
   .landing-nav[data-open="true"] .landing-menu { display: grid; }.landing-menu > a:not(.nav-workspace) { min-height: 42px; display: flex; align-items: center; padding: 0 10px; border-bottom: 1px solid var(--land-line); }.nav-workspace { justify-content: space-between; margin-top: 6px; }
   .hero { padding: 94px 18px 34px; }.hero::before { right: 18px; width: 42%; height: 380px; }.hero-rule span:last-child { display: none; }
   .hero-copy { padding: 38px 0 42px; }.hero h1 { font-size: clamp(40px,12vw,58px); }.hero-lead { font-size: 16px; }
-  .hero-window { width: calc(100% + 42px); margin-left: -21px; border-radius: 0; }.hero-window img { min-height: 260px; object-fit: cover; object-position: 46% top; border-radius: 0; }
+  .hero-window { width: calc(100% + 42px); margin-left: -21px; border-radius: 0; }.hero-window img { width: 100%; height: auto; min-height: 0; object-fit: contain; object-position: center; border-radius: 0; }
   .glass-note { min-width: 140px; padding: 10px 12px; }.glass-note-context { top: 66px; right: 8px; }.glass-note-guard { right: 8px; bottom: -20px; }
   .hero-foot { flex-wrap: wrap; gap: 9px 18px; margin-top: 40px; }.hero-foot a { width: 100%; margin: 10px 0 0; }
   .workflow,.capability-band,.product-section,.adaptation { padding: 80px 20px; }
