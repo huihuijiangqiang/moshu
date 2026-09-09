@@ -1,6 +1,4 @@
 /* Modernist — design-system tokens and component classes. This file is the source of truth for the system's look; retune it here and see readme.md. */
-@import url('https://fonts.googleapis.com/css2?family=Archivo:wght@400;600;800&display=swap');
-
 :root {
   --color-bg: #f3f2f2;
   --color-surface: #eae9e9;
@@ -41,9 +39,10 @@
   --color-accent-2-800: #71261b;
   --color-accent-2-900: #471d16;
 
-  --font-heading: "Archivo", system-ui, sans-serif;
+  /* Named fonts are SIL Open Font License 1.1 fonts loaded by tokens.css. */
+  --font-heading: var(--font-ui);
   --font-heading-weight: 800;
-  --font-body: "Archivo", system-ui, sans-serif;
+  --font-body: var(--font-ui);
 
   --space-1: 4.0px;
   --space-2: 8.0px;
@@ -249,4 +248,3 @@ textarea.input { min-height: 90px; resize: vertical; }
 }
 .dialog-body { font-size: 14px; opacity: 0.85; }
 .dialog-actions { display: flex; justify-content: flex-end; gap: var(--space-2); margin-top: var(--space-2); }
-

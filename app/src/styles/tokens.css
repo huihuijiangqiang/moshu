@@ -49,13 +49,12 @@
   --on-alert: #ffffff;
 
   /* — 字体 —
-     Inter 在前：它没有中日韩字形，CJK 会自然落到思源黑体，
-     于是拉丁字母与数字用 Inter、汉字用思源黑体，字重与字宽能对上。
-     （旧版把 Archivo 放首位，宽度差太大，中英混排像两套字。） */
-  --font-ui: 'Inter', 'Source Han Sans SC', 'Noto Sans SC', 'PingFang SC',
-    'Hiragino Sans GB', 'Microsoft YaHei', sans-serif;
-  --font-prose: 'Source Han Serif SC', 'Noto Serif SC', 'Songti SC', 'SimSun', Georgia, serif;
-  --font-mono: 'JetBrains Mono', 'SF Mono', ui-monospace, monospace;
+     All named fonts below are distributed under the SIL Open Font License 1.1.
+     Generic families remain only as a last-resort fallback for missing glyphs. */
+  --font-ui: 'Inter', 'Noto Sans SC', sans-serif;
+  --font-prose: 'Noto Serif SC', serif;
+  --font-mono: 'JetBrains Mono', monospace;
+  --font-serif: var(--font-prose);
 
   /* — 密度 —
      13px 基准、26px 行高：一屏能放下 88 章而不用滚两次。 */

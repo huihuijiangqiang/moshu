@@ -59,7 +59,7 @@ async function submit() {
 <style scoped>
 .reset-page { min-height: 100%; display: grid; place-items: center; padding: 24px; background: var(--color-bg); color: var(--color-text); }
 .reset-form { width: min(440px, 100%); display: grid; gap: 16px; padding: 38px; border: 1px solid var(--color-divider); background: var(--color-neutral-100); }
-.eyebrow { color: var(--color-neutral-800); font: 10px/1 monospace; letter-spacing: .08em; }
+.eyebrow { color: var(--color-neutral-800); font: 10px/1 var(--font-mono); letter-spacing: .08em; }
 h1 { margin: 0; font-size: 26px; }
 .reset-form > p { margin: -5px 0 8px; color: var(--color-neutral-800); font-size: 12px; line-height: 1.6; }
 label { display: grid; gap: 7px; font-size: 12px; font-weight: 700; }

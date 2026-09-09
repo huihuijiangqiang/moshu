@@ -134,7 +134,7 @@ async function submit() {
 }
 
 .auth-brand { font-size: 19px; font-weight: 800; letter-spacing: 0; }
-.auth-folio { margin: 70px 0 16px; font-size: 11px; font-family: monospace; color: var(--color-neutral-800); }
+.auth-folio { margin: 70px 0 16px; font-size: 11px; font-family: var(--font-mono); color: var(--color-neutral-800); }
 .auth-intro h1 { margin: 0; max-width: 12ch; font-size: 38px; line-height: 1.34; letter-spacing: 0; }
 .auth-note { margin: 0; font-size: 14px; color: var(--color-neutral-800); }
 
