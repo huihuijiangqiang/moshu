@@ -46,6 +46,24 @@ def test_chapter_quality_blocks_formulaic_not_is_comparison():
     assert result["status"] == "blocked"
 
 
+def test_chapter_quality_blocks_bare_reverse_not_is_comparison():
+    text = '门外不是一辆，是两辆。\n' + '车夫把缰绳绕在木桩上，等着验货。\n' * 30
+    result = MODULE.chapter_quality(text, 1_000)
+    check = next(item for item in result["checks"] if item["id"] == "no_formulaic_comparison")
+    assert check["ok"] is False
+    assert "不是一辆，是" in check["matches"][0]
+    assert result["status"] == "blocked"
+
+
+def test_chapter_quality_blocks_negation_parade():
+    text = '没有船号全称，没有验收人，也没有村方印。\n' + '她把收条压在账册下，等着对方补齐。\n' * 30
+    result = MODULE.chapter_quality(text, 1_000)
+    check = next(item for item in result["checks"] if item["id"] == "no_negation_parade")
+    assert check["ok"] is False
+    assert "没有船号全称，没有" in check["matches"][0]
+    assert result["status"] == "blocked"
+
+
 def test_chapter_quality_blocks_em_dash_dialogue_shortcuts():
     text = "“你先听我——”\n" + "她把粮袋重新称量一遍，逐项记下经手人和斤两。\n" * 30
     result = MODULE.chapter_quality(text, 1_000)

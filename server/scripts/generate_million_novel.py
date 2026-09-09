@@ -51,7 +51,11 @@ META_PATTERN = re.compile(
 # catch the highest-confidence prompt-shaped leakage before a chapter can
 # enter the rolling canon.  The report keeps the matched text for review.
 NOT_IS_COMPARISON_PATTERN = re.compile(
-    r"(?:不是|并非|没有)[^。！？!?\n]{0,80}(?:，|,)[ \t]*(?:而是|只是|反倒是|却是)"
+    r"(?:不是|并非|没有)[^。！？!?\n]{0,80}(?:，|,)[ \t]*(?:而是|只是|反倒是|却是|是)"
+)
+NEGATION_PARADE_PATTERN = re.compile(
+    r"(?:没有|并没有|未曾|不曾)[^。！？!?\n]{1,32}(?:，|,|、|；|;)[ \t]*"
+    r"(?:(?:也|又|更)[ \t]*)?(?:没有|并没有|未曾|不曾)"
 )
 EM_DASH_PATTERN = re.compile(r"[—–]")
 
@@ -408,6 +412,10 @@ def chapter_quality(
         match.group(0)[:120]
         for match in NOT_IS_COMPARISON_PATTERN.finditer(text)
     ]
+    negation_matches = [
+        match.group(0)[:120]
+        for match in NEGATION_PARADE_PATTERN.finditer(text)
+    ]
     if formulaic_matches:
         checks.append(
             {
@@ -418,6 +426,13 @@ def chapter_quality(
         )
     else:
         checks.append({"id": "no_formulaic_comparison", "ok": True, "matches": []})
+    checks.append(
+        {
+            "id": "no_negation_parade",
+            "ok": not negation_matches,
+            "matches": negation_matches[:8],
+        }
+    )
 
     # A very low unique-sentence ratio is almost always an interrupted stream
     # or accidental repetition.  Keep this conservative so dialogue echoes
@@ -1127,7 +1142,7 @@ class LongNovelRun:
 只输出小说正文，不输出章节标题、说明、提纲、检查报告或 Markdown 围栏。
 执行契约：{json.dumps(outline, ensure_ascii=False)}
 当前权威状态：{compact_canon(self.checkpoint)}
-要求：深度限知贴近女主；用行动、账目、物价、生产工序和利益交换推动剧情；权谋必须体现各方目标、资源、错误情报和行动成本；每章形成状态变化，结尾落在具体动作、发现或决定上。不要总结升华，不用机械排比、万能微动作或“不是A而是B”句式。不得违背 hide 字段，不得新增改变全书走向的设定。{continuation}"""
+要求：深度限知贴近女主；用行动、账目、物价、生产工序和利益交换推动剧情；权谋必须体现各方目标、资源、错误情报和行动成本；每章形成状态变化，结尾落在具体动作、发现或决定上。不要总结升华，不用机械排比、万能微动作、“不是A而是B”或连续“没有A，没有B”句式。不得违背 hide 字段，不得新增改变全书走向的设定。{continuation}"""
         generated, usage = await self.client.complete(
             [
                 {"role": "system", "content": "你是经验丰富的中文女频长篇作者，严格执行章节契约，只写正文。"},
