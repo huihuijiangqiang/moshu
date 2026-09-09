@@ -45,7 +45,7 @@ DEFAULT_MAX_RETRIES = 3
 DEFAULT_RETRY_BACKOFF_SECONDS = 0.75
 META_PATTERN = re.compile(
     r"(?:作为(?:AI|人工智能)|以下是(?:本章|正文)|写作(?:说明|思路)|章节执行契约|"
-    r"ChapterExecutionContract|我无法完成)"
+    r"ChapterExecutionContract|我无法完成|(?:前一章|上一章|本章|下一章)(?:中|里|的)?)"
 )
 # These are deterministic writing-signal checks, not an AI detector.  They
 # catch the highest-confidence prompt-shaped leakage before a chapter can

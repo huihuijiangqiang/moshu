@@ -22,9 +22,11 @@ def test_checkpoint_covers_million_character_target():
 def test_chapter_quality_blocks_short_and_model_meta():
     short = MODULE.chapter_quality("太短了", 1_000)
     leaked = MODULE.chapter_quality("以下是本章正文。" + "正文" * 400, 800)
+    narrative_leak = MODULE.chapter_quality("前一章的痕迹已经说明有人来过。" + "正文" * 400, 800)
     assert short["status"] == "blocked"
     assert leaked["status"] == "blocked"
     assert next(item for item in leaked["checks"] if item["id"] == "no_model_meta")["ok"] is False
+    assert next(item for item in narrative_leak["checks"] if item["id"] == "no_model_meta")["ok"] is False
 
 
 def test_chapter_quality_accepts_substantial_prose():
