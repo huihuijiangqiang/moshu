@@ -262,7 +262,8 @@ async def test_assisted_scan_uses_style_profile_records_usage_and_never_writes_b
     assert profile.sample_text not in json.dumps(package.messages, ensure_ascii=False)
     assert "短句为主" in package.messages[1]["content"]
     assert original not in package.messages[0]["content"]
-    assert "UNTRUSTED_NOVEL_TEXT_" in package.messages[1]["content"]
+    assert "prompt-security-v1" in package.messages[0]["content"]
+    assert '<untrusted_data source="naturalization_items"' in package.messages[1]["content"]
 
     stored_body = await async_db_session.get(ChapterBody, "chapter")
     assert stored_body.rev == 1

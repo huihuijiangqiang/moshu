@@ -158,6 +158,8 @@ docker compose up -d --build api worker dispatcher beat frontend
   - 章节/行内生成均使用带鉴权的 SSE，可中断并返回 Skill 与四层 token 报告
   - 成功运行写入 `generation_runs`，上游错误通过结构化 SSE 返回且不改正文
   - SSE 未收到完整结束标记时返回 `STREAM_INTERRUPTED`，保留失败草稿供恢复，不会误标记为 ready
+  - 所有作者输入、RAG、章纲、元数据和风格档使用统一转义信任边界；小说中的指令式台词不会被删除，也不能伪造 system/developer 消息或闭合边界
+  - 规划助手不直接执行模型输出：只接受严格结构化白名单提案，作者批准时再次校验参数、作品范围和权限
 
 - ✅ **长篇时间与资源一致性** (`services/temporal_anchor.py`, `services/continuity_validation.py`)
   - 章纲可保存作者确认的 ISO-8601 时间范围，并将本章/上一章锚点注入生成上下文
@@ -200,7 +202,7 @@ docker compose up -d --build api worker dispatcher beat frontend
 session、管理员设置与审计、项目/工作室 RBAC、设定库 CRUD 与 embedding 回填、
 持续章纲、版本化正文保存、四层上下文、SSE 生成、导出备份、用量结算、Guard
 扫描与 LLM 仲裁、平台后台模型用量台账、移动端只读与私有速记均已接通。后端单元/功能
-测试为 1475 passed，另有 38 个需要真实 PostgreSQL/pgvector 的集成测试按条件跳过；前端测试为 174 passed。
+测试为 1481 passed，另有 38 个需要真实 PostgreSQL/pgvector 的集成测试按条件跳过；前端测试为 174 passed。
 
 仍需在生产数据上继续验证的事项：
 

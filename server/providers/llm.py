@@ -8,6 +8,7 @@ from typing import Any
 import httpx
 
 from config import settings
+from services.prompt_security import security_policy, untrusted_text_block
 
 
 class StructuredExtractionProvider:
@@ -51,7 +52,11 @@ class StructuredExtractionProvider:
                     "messages": [
                         {
                             "role": "system",
-                            "content": "You are a precise literary analysis assistant. Extract factual claims from narrative text.",
+                            "content": (
+                                security_policy("en")
+                                + "\n\nYou are a precise literary analysis assistant. "
+                                "Extract factual claims from narrative text and return JSON only."
+                            ),
                         },
                         {"role": "user", "content": prompt},
                     ],
@@ -83,9 +88,11 @@ class StructuredExtractionProvider:
         """
         Generate a concise summary of chapter content
         """
-        prompt = f"""Summarize the following chapter content in 2-3 sentences, focusing on key events, character actions, and plot progression:
-
-{content_html[:4000]}"""
+        prompt = (
+            "Summarize the following chapter content in 2-3 sentences, focusing on key events, "
+            "character actions, and plot progression:\n\n"
+            + untrusted_text_block("chapter_content", content_html[:4000])
+        )
 
         async with httpx.AsyncClient(timeout=self.timeout) as client:
             response = await client.post(
@@ -99,7 +106,7 @@ class StructuredExtractionProvider:
                     "messages": [
                         {
                             "role": "system",
-                            "content": "You are a concise summarization assistant.",
+                            "content": security_policy("en") + "\n\nYou are a concise summarization assistant.",
                         },
                         {"role": "user", "content": prompt},
                     ],
@@ -145,7 +152,7 @@ class StructuredExtractionProvider:
 Valid claim types: character_state, event, knowledge, relationship, location, item_state
 
 Chapter content:
-{content_html[:8000]}"""
+{untrusted_text_block("chapter_content", content_html[:8000])}"""
 
 
 class EmbeddingProvider:

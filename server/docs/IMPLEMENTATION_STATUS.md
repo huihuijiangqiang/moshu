@@ -7,7 +7,7 @@
 
 **关键事实**：
 - ✅ 62 张表完整 Alembic 覆盖，增量迁移已到 `037_model_context_budgets`
-- ✅ 1475 个单元/功能测试通过，38 个需要真实外部依赖的集成测试按条件跳过（SQLite in-memory，受控 embedding/LLM provider）
+- ✅ 1481 个单元/功能测试通过，38 个需要真实外部依赖的集成测试按条件跳过（SQLite in-memory，受控 embedding/LLM provider）
 - ✅ 前端 174 个测试、TypeScript 类型检查和生产构建通过
 - ✅ 前端生产与开发依赖均通过 `npm audit`，当前为 0 个已知漏洞（2026-09-07）
 - ✅ 38 个集成测试已在 Docker 真实 PostgreSQL + pgvector 环境通过；`037_model_context_budgets` 已完成迁移契约校验
@@ -256,6 +256,8 @@ PostgreSQL/pgvector 检索必须在真实部署上单独压测；该脚本只覆
 - ✅ 平台模型按 256k 窗口弹性装配，智能档按资料量扩展到 64k/128k/208k，快速/标准/深度档可人工选择；BYOK 明确保存窗口、输出和安全余量，未知模型保守降级
 - ✅ 人物、地点、物品、伏笔和场景使用结构化多查询，精确别名与向量召回共享总配额；未来章、近场重复、旧正文版本和陈旧摘要会在装配前排除
 - ✅ 历史正文和选区以不可信引用资料隔离，完整设定条目优先原子装配，正文只在段落、句子或 Unicode 字符边界裁剪
+- ✅ 正文、RAG、章纲、作品元数据、风格档、自然化材料和 Agent 历史统一经过 HTML 转义的数据边界；作者请求使用独立低优先级通道，伪造闭合标签与 system/developer 消息不能改变提示词层级
+- ✅ Agent 历史不再复用模型角色链；模型只能返回 Pydantic 严格白名单提案，未知字段/动作被拒绝，执行前仍需作者批准、参数校验与 RBAC 复查
 - ✅ 自带 API Key 使用 AES-GCM 加密并绑定用户/配置 ID，API、提示词预览、错误和对象 repr 均不返回明文；密钥轮换使用乐观锁
 - ✅ 自定义地址只接受无凭据/查询参数的公网 HTTPS，并在调用前复查 DNS 解析结果；生产部署仍需以网络出口策略防御 DNS rebinding
 
@@ -601,9 +603,9 @@ PostgreSQL/pgvector 检索必须在真实部署上单独压测；该脚本只覆
 
 ### 5. 测试覆盖
 
-#### 单元测试（1475 passed，SQLite in-memory，受控 providers）
+#### 单元测试（1481 passed，SQLite in-memory，受控 providers）
 
-**全量测试结果**：1475 passed, 38 skipped（未设置集成测试 URL 时）；前端 174 passed
+**全量测试结果**：1481 passed, 38 skipped（未设置集成测试 URL 时）；前端 174 passed
 
 #### 前端依赖安全审计
 
@@ -994,8 +996,8 @@ cd server
 - `server/tasks/consistency.py` - 一致性任务
 - `server/tasks/codex.py` - Codex 回填任务
 
-### 测试（1475 passed；另有 38 个真实 PostgreSQL 测试通过）
-- `server/tests/` - 单元/功能测试（1475 passed）
+### 测试（1481 passed；另有 38 个真实 PostgreSQL 测试通过）
+- `server/tests/` - 单元/功能测试（1481 passed）
 - `app/src/**/*.spec.ts` - 前端测试（174 passed）
 - `server/tests/integration/` - 集成测试（38 passed，需设置真实 PostgreSQL URL）
 
@@ -1006,7 +1008,7 @@ cd server
 
 ## 总结
 
-墨枢一致性后端已完成核心数据模型、服务层、API 端点和异步任务定义，1475 个单元/功能
+墨枢一致性后端已完成核心数据模型、服务层、API 端点和异步任务定义，1481 个单元/功能
 测试在 SQLite in-memory + 受控 providers 环境下通过，另有 38 个集成测试在真实
 PostgreSQL + pgvector 环境通过。真实认证、可吊销会话、管理员、工作室 RBAC、作品创建、
 作品归档、分卷与章节生命周期、虚拟化章节导航、写作台新建章节、作品定位、章纲、场景卡片、章节 POV、人物出场轨迹、逐章设定状态沿革、可编辑设定关系、资料与正文并排、故事/章节双序时间板、作者人工计划事件、正文版本历史与恢复、AI 多候选草稿及逐段审阅、自然化审查、移动端只读与私有速记、全书查找替换、章节审稿与段落批注、工作室章节任务与产量看板、全量导出、非覆盖备份恢复、风格指纹、AI 来源账本、拆书分析、作者生成用量与平台模型成本台账、任务中心、账号安全和弹性长篇上下文已经接通，前端 174 个测试与生产构建通过。
