@@ -1,0 +1,68 @@
+name: Windows Release Bundle
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  windows-bundle:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout tagged source
+        uses: actions/checkout@v4
+
+      - name: Set up .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Build launcher
+        run: dotnet publish launcher/Moshu.Launcher.csproj --configuration Release --runtime win-x64 --self-contained true --output "$env:RUNNER_TEMP\launcher"
+
+      - name: Assemble Windows bundle
+        id: bundle
+        shell: pwsh
+        run: |
+          $tag = $env:GITHUB_REF_NAME
+          $artifactDirectory = Join-Path $env:RUNNER_TEMP 'moshu-release'
+          $sourceArchive = Join-Path $artifactDirectory "moshu-$tag-source.zip"
+          $bundleDirectory = Join-Path $artifactDirectory 'bundle'
+          $bundleArchive = Join-Path $artifactDirectory "Moshu-$tag-windows.zip"
+          New-Item -ItemType Directory -Force -Path $artifactDirectory, $bundleDirectory | Out-Null
+          git archive --format=zip --prefix="moshu-$tag/" --output="$sourceArchive" $tag
+          Expand-Archive -LiteralPath $sourceArchive -DestinationPath $bundleDirectory
+          $bundleRoot = Join-Path $bundleDirectory "moshu-$tag"
+          Copy-Item "$env:RUNNER_TEMP\launcher\Moshu.exe" (Join-Path $bundleRoot 'Moshu.exe')
+          Compress-Archive -Path (Join-Path $bundleRoot '*') -DestinationPath $bundleArchive -CompressionLevel Optimal
+          $hash = (Get-FileHash -Algorithm SHA256 -LiteralPath $bundleArchive).Hash.ToLowerInvariant()
+          "$hash  $([IO.Path]::GetFileName($bundleArchive))" | Set-Content -Encoding ascii (Join-Path $artifactDirectory 'SHA256SUMS.txt')
+          "bundle=$bundleArchive" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          "checksums=$(Join-Path $artifactDirectory 'SHA256SUMS.txt')" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+
+      - name: Ensure GitHub Release exists
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $tag = $env:GITHUB_REF_NAME
+          for ($attempt = 0; $attempt -lt 24; $attempt++) {
+            gh release view $tag *> $null
+            if ($LASTEXITCODE -eq 0) { break }
+            Start-Sleep -Seconds 5
+          }
+          gh release view $tag *> $null
+          if ($LASTEXITCODE -ne 0) {
+            $pre = if ($tag.Contains('-')) { '--prerelease' } else { @() }
+            gh release create $tag --title "墨枢 $tag：长篇小说创作工作台" --generate-notes @pre
+          }
+
+      - name: Upload Windows bundle
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release upload $env:GITHUB_REF_NAME "${{ steps.bundle.outputs.bundle }}" "${{ steps.bundle.outputs.checksums }}" --clobber

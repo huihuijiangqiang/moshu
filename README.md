@@ -27,6 +27,7 @@
 - 设定库使用 PostgreSQL/pgvector 检索。平台模型默认按 256k 窗口计算，扣除实际输出预留与 16k 安全余量后，上下文材料最多使用 208k token；智能档按作品可用资料在 64k、128k、208k 间弹性扩展，快速、标准、深度档也可显式选择。
 - 检索按人物、地点、物品、伏笔和场景拆分意图，精确名称/别名与向量结果共用一个总配额；当前章、未来章、近场重复、旧正文 revision 和陈旧章节摘要不会进入远距证据。
 - 常驻设定、相关设定、摘要和最近正文按完整条目、段落或句子边界装配，空余预算可借给其他层；历史正文使用不可信引用边界，不能覆盖系统规则或作者当前指令。
+- 正文、RAG、章纲、作品元数据、风格档和对话历史统一放入转义后的低信任数据边界，伪造结束标签或 system/developer 消息不能提升优先级；规划助手只产出严格白名单提案，仍需参数校验、权限复查和作者逐项批准。
 - 生成候选附带非阻断的规划覆盖报告，区分“规划已进入提示词”和“候选中找到字面证据”；语义兑现仍由作者判断。
 - `server/scripts/evaluate_long_novel.py` 可读取不入库的私有长篇 checkpoint，统计完成度、摘要/事实/向量覆盖、表层声口漂移和 token；检索与冲突召回只在提供人工 gold 时计算。
 
@@ -236,6 +237,22 @@ MOSHU_REDIS_DATA_DIR=<redis-data-directory>
 登录信息。`-NotesPath` 可指定自定义 Release notes，`-Draft` 可创建草稿，`-SkipAsset`
 可跳过 ZIP 上传。生成的本地归档位于 `.release-artifacts/`，不会提交 Git。
 
+推送 `v*` 标签后，GitHub Actions 会在 Windows runner 上自动构建统一入口
+`Moshu.exe`，并上传 `Moshu-<版本>-windows.zip` 与 `SHA256SUMS.txt` 到同一个 Release。
+Windows 包包含当前源码和 Compose 配置；EXE 负责一键启动服务，不会携带模型密钥或用户数据。
+
+### Windows 启动器要求
+
+Windows 启动器需要先安装并运行 [Docker Desktop for Windows](https://www.docker.com/products/docker-desktop/)。
+Docker Desktop 提供运行 PostgreSQL、Redis、API、Worker 和前端所需的 Docker Engine；没有它，
+`Moshu.exe` 无法启动真实服务。首次运行会自动创建用户数据目录，默认位于当前用户的
+`LocalAppData\\Moshu\\data`，也可用 `--data-dir <目录>` 指定其他位置。
+
+双击 `Moshu.exe` 会检查 Docker Desktop、执行数据库迁移、启动 Compose、等待 API 就绪并打开
+`http://127.0.0.1:5180/`。停止服务可运行 `Moshu.exe --stop`。首次使用仍需在发布包的
+`server/.env` 中配置模型网关；启动器只会在缺失时从 `.env.example` 创建本地模板，并自动生成
+JWT 与凭据加密密钥。
+
 ## 核心约束
 
 - 一章一文档，章节列表接口不返回正文。
@@ -276,7 +293,7 @@ ready/pending/failed/stale 分块、已完成向量的章节数和排队数；
 `POST /projects/{project_id}/chapter-chunks/reindex` 以异步 outbox 方式批量重建当前正文版本。
 查看需要作品权限，批量重建需要项目管理权限；重建不会改写正文或正文版本历史。
 
-最近一次后端回归记录：`1475 passed, 38 skipped`；本轮前端回归为 `174 passed`。后端被跳过的
+最近一次后端回归记录：`1481 passed, 38 skipped`；本轮前端回归为 `174 passed`。后端被跳过的
 测试需要显式配置真实 PostgreSQL/pgvector 集成环境；测试正文、模型 key、`.env` 和 Docker
 数据卷均不提交 Git。
 
