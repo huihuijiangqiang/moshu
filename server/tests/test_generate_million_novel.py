@@ -1,0 +1,191 @@
+import importlib.util
+from pathlib import Path
+
+SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "generate_million_novel.py"
+SPEC = importlib.util.spec_from_file_location("generate_million_novel", SCRIPT)
+assert SPEC and SPEC.loader
+MODULE = importlib.util.module_from_spec(SPEC)
+SPEC.loader.exec_module(MODULE)
+
+
+def test_checkpoint_covers_million_character_target():
+    checkpoint = MODULE.new_checkpoint(
+        target_words=1_000_000,
+        chapter_words=3_200,
+        model="test-model",
+    )
+    assert checkpoint["schema_version"] == MODULE.CHECKPOINT_SCHEMA
+    assert checkpoint["chapter_count"] == 313
+    assert checkpoint["generated_words"] == 0
+
+
+def test_chapter_quality_blocks_short_and_model_meta():
+    short = MODULE.chapter_quality("太短了", 1_000)
+    leaked = MODULE.chapter_quality("以下是本章正文。" + "正文" * 400, 800)
+    assert short["status"] == "blocked"
+    assert leaked["status"] == "blocked"
+    assert next(item for item in leaked["checks"] if item["id"] == "no_model_meta")["ok"] is False
+
+
+def test_chapter_quality_accepts_substantial_prose():
+    text = "“先把粮账给我。”\n" + "\n".join(
+        f"她将晒干的菜叶分装入第{i}只筐，按斤记下盐钱和脚力。"
+        for i in range(45)
+    )
+    result = MODULE.chapter_quality(text, 1_000)
+    assert result["status"] == "ready"
+
+
+def test_chapter_quality_blocks_formulaic_not_is_comparison():
+    text = '她手里不是空账，而是四枚旧铜钱。\n' + '她把钱压在账册上，等着对方开口。\n' * 30
+    result = MODULE.chapter_quality(text, 1_000)
+    check = next(item for item in result["checks"] if item["id"] == "no_formulaic_comparison")
+    assert check["ok"] is False
+    assert result["status"] == "blocked"
+
+
+def test_chapter_quality_blocks_accidental_sentence_repetition():
+    sentence = "她把账册翻到最后一页，确认每一笔粮款。"
+    result = MODULE.chapter_quality((sentence + "\n") * 120, 1_000)
+    check = next(item for item in result["checks"] if item["id"] == "no_repeated_sentences")
+    assert check["ok"] is False
+    assert result["status"] == "blocked"
+
+
+def test_extract_json_object_tolerates_fences_and_prefix():
+    assert MODULE.extract_json_object('```json\n{"chapters": []}\n```') == {"chapters": []}
+    assert MODULE.extract_json_object('结果如下：\n{"title":"书名"}\n完成') == {"title": "书名"}
+
+
+def _valid_analysis():
+    return {
+        "summary": "沈砚秋核对船粮票据，留下可复核的差额证据。",
+        "character_updates": {
+            "沈砚秋": {
+                "state": "暂时掌握票据副本",
+                "knows": ["船脚存在差额"],
+                "does_not_know": ["赵七的去向"],
+                "public_goal": "保住村中粮种",
+                "hidden_goal": "追查旧账来源",
+            }
+        },
+        "faction_updates": {},
+        "new_facts": [],
+        "foreshadow_updates": [],
+        "timeline_events": [{"event": "船粮票据被公开复核"}],
+        "contract_checks": [{"item": "required_outcome", "ok": True, "evidence": "留下差额记录"}],
+        "quality": {"continuity": 8, "character": 8, "plot": 7, "prose": 7, "hook": 8},
+    }
+
+
+def test_validate_chapter_analysis_accepts_complete_state_delta():
+    value = _valid_analysis()
+    assert MODULE.validate_chapter_analysis(value) is value
+
+
+def test_validate_chapter_analysis_rejects_missing_or_malformed_state():
+    value = _valid_analysis()
+    value.pop("timeline_events")
+    try:
+        MODULE.validate_chapter_analysis(value)
+    except ValueError as exc:
+        assert "timeline_events" in str(exc)
+    else:
+        raise AssertionError("missing analysis fields must be rejected")
+
+    value = _valid_analysis()
+    value["character_updates"]["沈砚秋"]["knows"] = "船粮"
+    try:
+        MODULE.validate_chapter_analysis(value)
+    except ValueError as exc:
+        assert "knows" in str(exc)
+    else:
+        raise AssertionError("malformed cognition state must be rejected")
+
+
+def test_safe_filename_removes_windows_reserved_characters():
+    assert MODULE.safe_filename("账册:谁拿走了?/\\*") == "账册-谁拿走了----"
+
+
+def test_compact_canon_does_not_include_full_prose():
+    checkpoint = MODULE.new_checkpoint(target_words=1_000_000, chapter_words=3_200, model="m")
+    checkpoint["plan"] = {"fixed_facts": ["不能凭空暴富"]}
+    checkpoint["chapters"] = [{"number": 1, "status": "accepted", "summary": "女主核对粮账", "prose": "不应进入上下文"}]
+    packed = MODULE.compact_canon(checkpoint)
+    assert "女主核对粮账" in packed
+    assert "不应进入上下文" not in packed
+
+
+def test_apply_analysis_persists_new_facts_in_canon():
+    checkpoint = MODULE.new_checkpoint(target_words=1_000_000, chapter_words=3_200, model="m")
+    runner = MODULE.LongNovelRun(Path("."), None, checkpoint)
+    runner.apply_analysis(
+        {
+            "character_updates": {},
+            "faction_updates": {},
+            "new_facts": ["船粮票据存在一百二十文差额", {"fact": "县仓封门三日", "evidence": "皂役口谕"}],
+            "foreshadow_updates": [],
+            "timeline_events": [],
+        }
+    )
+    facts = checkpoint["canon"]["facts"]
+    assert len(facts) == 2
+    assert any(item["fact"] == "县仓封门三日" and item["evidence"] == "皂役口谕" for item in facts.values())
+
+
+def test_compact_canon_remains_valid_json_when_state_is_large():
+    checkpoint = MODULE.new_checkpoint(target_words=1_000_000, chapter_words=3_200, model="m")
+    checkpoint["canon"]["characters"] = {
+        f"人物{i}": {"state": "在青河村处理粮账" * 80, "knows": ["旧契" * 20]}
+        for i in range(100)
+    }
+    packed = MODULE.compact_canon(checkpoint, max_chars=1_200)
+    parsed = MODULE.json.loads(packed)
+    assert isinstance(parsed, dict)
+    assert len(packed) <= 1_200
+    assert "人物" in packed
+
+
+def test_chapter_quality_records_explainable_prose_metrics():
+    text = "“先记账。”\n她把麦粒倒进木斗，逐行核对重量。\n" * 20
+    result = MODULE.chapter_quality(text, 300, min_accept_ratio=0.5)
+    assert result["status"] == "ready"
+    assert result["metrics"]["paragraphs"] == 40
+    assert 0 < result["metrics"]["dialogue_ratio"] < 1
+    assert "unique_sentence_ratio" in result["metrics"]
+
+
+def test_retry_policy_only_retries_transient_statuses():
+    transient = MODULE.GatewayRequestError("busy", status_code=503)
+    client_error = MODULE.GatewayRequestError("bad request", status_code=400)
+    stream_error = MODULE.GatewayRequestError("stream interrupted")
+    assert transient.retryable is True
+    assert client_error.retryable is False
+    assert stream_error.retryable is True
+
+
+def test_run_lock_prevents_duplicate_processes(tmp_path):
+    first = MODULE.RunLock(tmp_path / "run.lock")
+    second = MODULE.RunLock(tmp_path / "run.lock")
+    first.acquire()
+    try:
+        try:
+            second.acquire()
+        except MODULE.RunAlreadyActiveError as exc:
+            assert "already active" in str(exc)
+        else:
+            raise AssertionError("a second process must not acquire the run lock")
+    finally:
+        first.release()
+    second.acquire()
+    second.release()
+
+
+def test_gateway_error_keeps_partial_diagnostics_without_secrets():
+    error = MODULE.GatewayRequestError(
+        "stream interrupted",
+        partial_text="已经生成的一段",
+        usage={"completion_tokens": 12},
+    )
+    assert error.partial_text == "已经生成的一段"
+    assert error.usage["completion_tokens"] == 12
