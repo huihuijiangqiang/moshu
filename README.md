@@ -71,13 +71,16 @@
 
 ## 技术实现
 
-当前仓库包含 Vue 3 写作前端、FastAPI API、PostgreSQL/pgvector、Redis 与 Celery 异步任务，以及架构、计费和实现文档。后端当前 migration head 为 `037_model_context_budgets`。
+当前仓库包含 Vue 3 写作前端、FastAPI API、PostgreSQL/pgvector、Redis 与 Celery 异步任务，以及架构、计费和实现文档。后端当前 migration head 为 `039_long_generation_hardening`。
 
 ### 长篇一致性保障
 
 - 章节可保存作者确认的结构化时间范围，生成时同时注入本章和上一章时间锚点，减少日期回退。
 - 作品定位保存目标平台、核心卖点、主角困境、首个兑现点和长线承诺的不可变版本，章节场景卡片把 POV、地点、目标、阻力、转折和钩子绑定到具体章节；两者由同一装配链进入预览和真实生成。
 - AI 输出先进入候选草稿；上游 SSE 未收到完整结束标记时，草稿会标记为 `failed`，返回 `STREAM_INTERRUPTED`，不会进入正文。
+- 百万字长篇通过 `POST /generate/long-plan` 拆成 800～32,000 字的有序生成段；每段保存来源修订、上下文清单、状态和错误码，支持中断后从第一个未完成段恢复，已采纳段不会被重写。
+- 章纲、势力博弈和伏笔可以作为剧情线/节拍写入持久化账本，段级校验在合并前检查长度、必需事实和边界重复，避免错误内容直接进入正文。
+- `GET /generate/models` 提供火山 Coding Plan 的模型目录；`server/scripts/compare_generation_models.py --run` 使用本机环境变量做短样本对比，结果仅写入被 Git 忽略的 `server/.local/model-comparisons/`。
 - Guard 优先使用确定性规则，对抽取器提供的结构化账目执行现金/库存、计件工资和资源数量校验；LLM 只负责抽取和补充软性问题，不负责最终算术结论。
 - 设定库使用 PostgreSQL/pgvector 检索。平台模型默认按 256k 窗口计算，扣除实际输出预留与 16k 安全余量后，上下文材料最多使用 208k token；智能档按作品可用资料在 64k、128k、208k 间弹性扩展，快速、标准、深度档也可显式选择。
 - 检索按人物、地点、物品、伏笔和场景拆分意图，精确名称/别名与向量结果共用一个总配额；当前章、未来章、近场重复、旧正文 revision 和陈旧章节摘要不会进入远距证据。

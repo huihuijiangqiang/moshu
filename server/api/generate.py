@@ -22,6 +22,7 @@ from api.auth import (
 )
 from config import settings
 from db.models_core import Chapter, ChapterBody, Project, User
+from db.models_long_generation import GenerationSegment
 from db.models_usage import GenerationDraft, GenerationRun
 from db.session import get_db
 from memory.assembler import ContextBudgetPolicy
@@ -36,6 +37,15 @@ from services.generation import (
     retryable_stream,
 )
 from services.generation_coverage import assess_draft_coverage
+from services.long_generation import (
+    DEFAULT_SEGMENT_WORDS,
+    MAX_LONG_WORDS,
+    MAX_SEGMENT_WORDS,
+    MIN_SEGMENT_WORDS,
+    build_context_manifest,
+    make_segment_plan,
+)
+from services.model_catalog import CODING_PLAN_MODELS
 from services.model_configs import active_user_generation_route
 from services.provenance import PROVENANCE_ALGORITHM, generated_paragraph_hashes
 from services.usage import (
@@ -57,6 +67,7 @@ class ChapterGenerationRequest(BaseModel):
     chapter_id: str = Field(alias="chapterId", min_length=1, max_length=32)
     target_words: int = Field(alias="targetWords", ge=200, le=20000)
     model: Literal["basic", "advanced"] = "basic"
+    provider_model: str | None = Field(None, alias="modelId", min_length=1, max_length=200)
     use_style_profile: bool = Field(True, alias="useStyleProfile")
     dialogue_density: Literal["low", "mid", "high"] = Field("mid", alias="dialogueDensity")
     context_mode: Literal["smart", "fast", "standard", "deep"] = Field(
@@ -79,6 +90,7 @@ class GenerationPreviewRequest(BaseModel):
     chapter_id: str = Field(alias="chapterId", min_length=1, max_length=32)
     target_words: int = Field(alias="targetWords", ge=200, le=20000)
     model: Literal["basic", "advanced"] = "basic"
+    provider_model: str | None = Field(None, alias="modelId", min_length=1, max_length=200)
     use_style_profile: bool = Field(True, alias="useStyleProfile")
     dialogue_density: Literal["low", "mid", "high"] = Field("mid", alias="dialogueDensity")
     context_mode: Literal["smart", "fast", "standard", "deep"] = Field(
@@ -105,12 +117,25 @@ class DraftContinueRequest(BaseModel):
 
     target_words: int = Field(alias="targetWords", ge=200, le=20000)
     model: Literal["basic", "advanced"] = "basic"
+    provider_model: str | None = Field(None, alias="modelId", min_length=1, max_length=200)
     use_style_profile: bool = Field(True, alias="useStyleProfile")
     dialogue_density: Literal["low", "mid", "high"] = Field("mid", alias="dialogueDensity")
     context_mode: Literal["smart", "fast", "standard", "deep"] = Field(
         "smart", alias="contextMode"
     )
     instruction: str = Field("", max_length=2000)
+
+
+class LongChapterPlanRequest(BaseModel):
+    """Create or inspect the durable segment plan for a long chapter."""
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    chapter_id: str = Field(alias="chapterId", min_length=1, max_length=32)
+    target_words: int = Field(alias="targetWords", ge=MIN_SEGMENT_WORDS, le=MAX_LONG_WORDS)
+    segment_words: int = Field(DEFAULT_SEGMENT_WORDS, alias="segmentWords", ge=MIN_SEGMENT_WORDS, le=MAX_SEGMENT_WORDS)
+    scene_purposes: list[str] = Field(default_factory=list, alias="scenePurposes", max_length=500)
+    required_beats: list[str] = Field(default_factory=list, alias="requiredBeats", max_length=500)
 
 
 def get_generation_gateway() -> GenerationGateway:
@@ -159,6 +184,7 @@ async def _prepare(
     user_route = await active_user_generation_route(db, user_id=user.id)
     kwargs = request.model_dump(by_alias=False)
     kwargs.pop("chapter_id")
+    provider_model = kwargs.pop("provider_model", None)
     if isinstance(request, InlineGenerationRequest):
         kwargs.update(
             action=request.action,
@@ -167,6 +193,14 @@ async def _prepare(
         )
     route = None
     if user_route is not None:
+        if provider_model:
+            raise HTTPException(
+                status_code=422,
+                detail={
+                    "code": "CUSTOM_MODEL_ROUTE_LOCKED",
+                    "message": "已启用自定义模型，请在模型配置中修改模型名称。",
+                },
+            )
         route = GenerationRoute(
             source="user",
             endpoint=user_route.endpoint,
@@ -178,7 +212,9 @@ async def _prepare(
             max_output_tokens=user_route.max_output_tokens,
             context_safety_margin_tokens=user_route.context_safety_margin_tokens,
         )
-    return await service.prepare(chapter=chapter, project=project, route=route, **kwargs)
+    if provider_model and provider_model not in {str(model["id"]) for model in CODING_PLAN_MODELS}:
+        raise HTTPException(status_code=422, detail={"code": "MODEL_NOT_ALLOWED", "message": "模型不在已验证的模型目录中。"})
+    return await service.prepare(chapter=chapter, project=project, route=route, provider_model=provider_model, **kwargs)
 
 
 async def _prepare_preview(
@@ -508,6 +544,123 @@ def _generation_response(
     )
 
 
+@router.get("/models")
+async def list_generation_models(user: User = Depends(get_current_user)):
+    """Return the curated Volcengine Coding Plan model matrix for model pickers."""
+    return {"baseUrl": "https://ark.cn-beijing.volces.com/api/coding/v3", "models": list(CODING_PLAN_MODELS)}
+
+
+@router.post("/long-plan")
+async def create_long_chapter_plan(
+    request: LongChapterPlanRequest,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Create a resumable segment ledger for up to one million Chinese words.
+
+    Planning is idempotent for a chapter. Existing accepted segments are kept;
+    changing the target only rebalances pending rows and marks surplus rows as
+    skipped, so an author can safely revise a long outline midway through a
+    book.
+    """
+    chapter, project = await _load_scope(
+        request.chapter_id, user, db, ProjectPermission.GENERATE
+    )
+    plans = make_segment_plan(
+        request.target_words,
+        scene_purposes=request.scene_purposes or chapter.outline or [],
+        required_beats=request.required_beats,
+        segment_words=request.segment_words,
+    )
+    result = await db.execute(
+        select(GenerationSegment)
+        .where(GenerationSegment.chapter_id == chapter.id)
+        .order_by(GenerationSegment.segment_index)
+        .with_for_update()
+    )
+    existing = list(result.scalars().all())
+    body = await db.scalar(select(ChapterBody).where(ChapterBody.chapter_id == chapter.id))
+    source_revisions = {"chapterBodyRev": body.rev if body else 0, "chapterUpdatedAt": chapter.updated_at.isoformat() if chapter.updated_at else None}
+    by_index = {row.segment_index: row for row in existing}
+    for plan in plans:
+        row = by_index.get(plan.index)
+        manifest = build_context_manifest(
+            chapter_id=chapter.id,
+            segment=plan,
+            source_revisions=source_revisions,
+            context_layers={},
+        )
+        if row is None:
+            row = GenerationSegment(
+                id=uuid.uuid4().hex,
+                project_id=project.id,
+                chapter_id=chapter.id,
+                segment_index=plan.index,
+                target_words=plan.target_words,
+                context_manifest=manifest,
+                status="pending",
+            )
+            db.add(row)
+        elif row.status not in {"accepted", "running"}:
+            row.target_words = plan.target_words
+            row.context_manifest = manifest
+            row.status = "pending"
+            row.error_code = None
+    planned_indexes = {plan.index for plan in plans}
+    for row in existing:
+        if row.segment_index not in planned_indexes and row.status not in {"accepted", "running"}:
+            row.status = "skipped"
+    await db.commit()
+    rows = await db.execute(
+        select(GenerationSegment).where(GenerationSegment.chapter_id == chapter.id).order_by(GenerationSegment.segment_index)
+    )
+    segments = list(rows.scalars().all())
+    return {
+        "chapterId": chapter.id,
+        "projectId": project.id,
+        "targetWords": request.target_words,
+        "segmentWords": request.segment_words,
+        "totalSegments": len(plans),
+        "nextSegment": next((row.segment_index for row in segments if row.status == "pending"), None),
+        "segments": [
+            {
+                "id": row.id,
+                "index": row.segment_index,
+                "targetWords": row.target_words,
+                "status": row.status,
+                "generatedWords": row.generated_words,
+                "manifest": row.context_manifest,
+            }
+            for row in segments
+        ],
+    }
+
+
+@router.get("/long-plan/{chapter_id}")
+async def get_long_chapter_plan(
+    chapter_id: str,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    chapter, project = await _load_scope(chapter_id, user, db)
+    result = await db.execute(
+        select(GenerationSegment).where(GenerationSegment.chapter_id == chapter.id).order_by(GenerationSegment.segment_index)
+    )
+    segments = list(result.scalars().all())
+    accepted = sum(row.status == "accepted" for row in segments)
+    return {
+        "chapterId": chapter.id,
+        "projectId": project.id,
+        "totalSegments": len(segments),
+        "acceptedSegments": accepted,
+        "nextSegment": next((row.segment_index for row in segments if row.status == "pending"), None),
+        "segments": [
+            {"id": row.id, "index": row.segment_index, "targetWords": row.target_words, "status": row.status, "generatedWords": row.generated_words, "errorCode": row.error_code}
+            for row in segments
+        ],
+    }
+
+
 @router.get("/context/{chapter_id}")
 async def preview_context(
     chapter_id: str,
@@ -620,6 +773,7 @@ async def generate_inline(
 def _request_summary(request: ChapterGenerationRequest) -> dict:
     summary = {
         "model": request.model,
+        "modelId": request.provider_model,
         "targetWords": request.target_words,
         "useStyleProfile": request.use_style_profile,
         "dialogueDensity": request.dialogue_density,

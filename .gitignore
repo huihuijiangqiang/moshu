@@ -1,5 +1,7 @@
 # Environment and local secrets
 .env
+.local/
+server/.local/
 .env.*
 !.env.example
 !.env.preview

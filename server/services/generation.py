@@ -183,6 +183,7 @@ class GenerationService:
         nearby_text: str = "",
         instruction: str = "",
         route: GenerationRoute | None = None,
+        provider_model: str | None = None,
         context_mode: ContextMode = "smart",
     ) -> PromptPackage:
         task = TASK_MAP.get(action or "", "chapter")
@@ -191,7 +192,7 @@ class GenerationService:
             source="platform",
             endpoint=settings.gateway_url(tier),
             api_key=settings.gateway_key(tier),
-            model_id=settings.resolved_generation_model,
+            model_id=provider_model or settings.resolved_generation_model,
             model_tier=tier,
             context_window_tokens=settings.generation_context_window_tokens,
             max_output_tokens=settings.generation_max_output_tokens,

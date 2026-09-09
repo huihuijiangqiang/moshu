@@ -39,6 +39,22 @@ server/
 └── main.py           # FastAPI 入口
 ```
 
+## 长篇生成与模型矩阵
+
+长篇章节先通过 `POST /generate/long-plan` 建立可恢复的分段账本（目标最多
+1,000,000 字，默认每段 2,400 字），再逐段调用现有生成流。段记录包含
+`context_manifest`、源正文修订号、prompt hash、状态和错误码；恢复时只继续第一个
+未完成段，作者采纳的段不会被重复生成。
+
+`GET /generate/models` 返回已登记的火山 Coding Plan 模型和上下文窗口。需要做真实
+对比时，在本机设置 `VOLCENGINE_API_KEY`（以及可选的 `VOLCENGINE_BASE_URL`），运行：
+
+```bash
+python scripts/compare_generation_models.py --run
+```
+
+输出位于 `server/.local/model-comparisons/`，该目录已加入 `.gitignore`，不会进入提交。
+
 ## 快速开始
 
 ### 1. 安装依赖

@@ -47,6 +47,7 @@ from db.models_writing import ProjectDailyWriting
 from db.models_adaptation import Adaptation, Episode, Scene, Shot, VisualProfile
 from db.models_scene_cards import ChapterScene
 from db.models_naturalization import NaturalizationFinding, NaturalizationRun
+from db.models_long_generation import GenerationSegment, PlotBeat, PlotThread, StoryArc
 
 __all__ = [
     "Base",
@@ -120,4 +121,8 @@ __all__ = [
     "ChapterScene",
     "NaturalizationRun",
     "NaturalizationFinding",
+    "StoryArc",
+    "PlotThread",
+    "PlotBeat",
+    "GenerationSegment",
 ]
