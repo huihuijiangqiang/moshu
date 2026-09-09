@@ -9,7 +9,7 @@ resume a run without duplicating accepted prose.
 from datetime import datetime
 from typing import Optional
 
-from sqlalchemy import CheckConstraint, ForeignKey, Index, Integer, String, Text, UniqueConstraint
+from sqlalchemy import CheckConstraint, DateTime, ForeignKey, Index, Integer, String, Text, UniqueConstraint
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -100,6 +100,11 @@ class GenerationSegment(Base, TimestampMixin):
     content_text: Mapped[str] = mapped_column(Text, default="", server_default="")
     generated_words: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
     revision: Mapped[int] = mapped_column(Integer, default=1, server_default="1")
+    # Durable worker lease.  ``revision`` remains the fencing token while
+    # these fields make ownership and expiry observable across processes.
+    lease_owner: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
+    lease_expires_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
+    heartbeat_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
     error_code: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
     completed_at: Mapped[Optional[datetime]] = mapped_column(nullable=True)
 
