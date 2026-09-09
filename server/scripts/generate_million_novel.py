@@ -53,9 +53,14 @@ META_PATTERN = re.compile(
 NOT_IS_COMPARISON_PATTERN = re.compile(
     r"(?:不是|并非|没有)[^。！？!?\n]{0,80}(?:，|,)[ \t]*(?:而是|只是|反倒是|却是|是)"
 )
+REVERSE_NOT_IS_PATTERN = re.compile(
+    r"是([^。！？!?\n，,]{1,12})[，,][ \t]*(?:而)?不是([^。！？!?\n]{1,20})"
+)
+REVERSE_NOT_IS_PREV_EXCLUDE = frozenset(
+    "不就也还只可但于倒像若要正便总老更最算怕凡或即自竟原本仍许净光单尽"
+)
 NEGATION_PARADE_PATTERN = re.compile(
-    r"(?:没有|并没有|未曾|不曾)[^。！？!?\n]{1,32}(?:，|,|、|；|;)[ \t]*"
-    r"(?:(?:也|又|更)[ \t]*)?(?:没有|并没有|未曾|不曾)"
+    r"(?:没有[^。！？!?\n，,]{1,12}[，,]){2}"
 )
 EM_DASH_PATTERN = re.compile(r"[—–]")
 
@@ -412,6 +417,11 @@ def chapter_quality(
         match.group(0)[:120]
         for match in NOT_IS_COMPARISON_PATTERN.finditer(text)
     ]
+    reverse_formulaic_matches = [
+        match.group(0)[:120]
+        for match in REVERSE_NOT_IS_PATTERN.finditer(text)
+        if match.start() == 0 or text[match.start() - 1] not in REVERSE_NOT_IS_PREV_EXCLUDE
+    ]
     negation_matches = [
         match.group(0)[:120]
         for match in NEGATION_PARADE_PATTERN.finditer(text)
@@ -426,6 +436,13 @@ def chapter_quality(
         )
     else:
         checks.append({"id": "no_formulaic_comparison", "ok": True, "matches": []})
+    checks.append(
+        {
+            "id": "no_reverse_formulaic_comparison",
+            "ok": not reverse_formulaic_matches,
+            "matches": reverse_formulaic_matches[:8],
+        }
+    )
     checks.append(
         {
             "id": "no_negation_parade",

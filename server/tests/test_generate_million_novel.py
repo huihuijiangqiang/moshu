@@ -55,6 +55,17 @@ def test_chapter_quality_blocks_bare_reverse_not_is_comparison():
     assert result["status"] == "blocked"
 
 
+def test_chapter_quality_blocks_reverse_not_is_comparison():
+    text = '周七要的是船期，不是真想接下一船来路有争议的粮。\n' + '他把缆绳重新打结，等着验货。\n' * 30
+    result = MODULE.chapter_quality(text, 1_000)
+    check = next(
+        item for item in result["checks"] if item["id"] == "no_reverse_formulaic_comparison"
+    )
+    assert check["ok"] is False
+    assert "是船期，不是" in check["matches"][0]
+    assert result["status"] == "blocked"
+
+
 def test_chapter_quality_blocks_negation_parade():
     text = '没有船号全称，没有验收人，也没有村方印。\n' + '她把收条压在账册下，等着对方补齐。\n' * 30
     result = MODULE.chapter_quality(text, 1_000)
@@ -62,6 +73,17 @@ def test_chapter_quality_blocks_negation_parade():
     assert check["ok"] is False
     assert "没有船号全称，没有" in check["matches"][0]
     assert result["status"] == "blocked"
+
+
+def test_chapter_quality_allows_two_negations_joined_by_connector():
+    text = '里正没有答应，也没有拒绝。\n' + "\n".join(
+        f'他把第{i}枚印泥推到桌角，等着沈砚秋补完第{i}笔账。'
+        for i in range(45)
+    )
+    result = MODULE.chapter_quality(text, 1_000)
+    check = next(item for item in result["checks"] if item["id"] == "no_negation_parade")
+    assert check["ok"] is True
+    assert result["status"] == "ready"
 
 
 def test_chapter_quality_blocks_em_dash_dialogue_shortcuts():
