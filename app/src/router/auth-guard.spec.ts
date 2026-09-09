@@ -25,6 +25,10 @@ describe('authentication route guard', () => {
     })
   })
 
+  it('allows an anonymous user to view a public page', () => {
+    expect(authGuard(route('landing', '/', { public: true }), false)).toBe(true)
+  })
+
   it('keeps an authenticated user out of the login page', () => {
     setSession({
       access_token: 'access',

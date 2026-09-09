@@ -2,11 +2,12 @@ import { createRouter, createWebHistory, type RouteLocationNormalized } from 'vu
 import { USE_MOCK } from '@/api/http'
 import { getSessionUser, hasSession } from '@/api/session'
 
-/** meta.bare = 不套 AppShell 的全屏页（登录、开书向导） */
+/** meta.bare = 不套 AppShell 的全屏页；meta.public = 真实环境也可匿名访问 */
 export const router = createRouter({
   history: createWebHistory(),
   routes: [
-    { path: '/', name: 'shelf', component: () => import('@/views/ShelfView.vue') },
+    { path: '/', name: 'landing', component: () => import('@/views/LandingView.vue'), meta: { bare: true, public: true } },
+    { path: '/workspace', name: 'shelf', component: () => import('@/views/ShelfView.vue') },
     { path: '/deconstruct', name: 'deconstruct', component: () => import('@/views/DeconstructView.vue') },
     { path: '/projects/:projectId/write', name: 'workspace', component: () => import('@/views/WorkspaceView.vue'), meta: { scope: 'project', section: 'write' } },
     { path: '/projects/:projectId/outline', name: 'outline', component: () => import('@/views/OutlineView.vue'), meta: { scope: 'project', section: 'outline' } },
@@ -46,6 +47,7 @@ export const router = createRouter({
 
 export function authGuard(to: RouteLocationNormalized, useMock = USE_MOCK) {
   if (useMock) return true
+  if (to.meta.public === true) return true
   if (to.name !== 'login' && to.name !== 'password-reset' && !hasSession()) {
     return { name: 'login', query: { redirect: to.fullPath } }
   }

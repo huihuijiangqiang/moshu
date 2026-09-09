@@ -37,7 +37,7 @@ watch(
       if (project.activeId) await project.openChapter(project.activeId)
     } catch (error) {
       if (error instanceof ApiError && error.status === 404) {
-        await router.replace('/')
+        await router.replace({ name: 'shelf' })
         return
       }
       if (error instanceof ApiError && error.status === 401) {

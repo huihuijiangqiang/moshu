@@ -44,7 +44,7 @@ const projectId = computed(() => routeProjectId(route))
 const inProject = computed(() => route.meta.scope === 'project' && !!projectId.value)
 
 const rail = computed<RailEntry[]>(() => {
-  const entries: RailEntry[] = [{ to: '/', icon: 'shelf', label: '作品库', shortLabel: '作品' }]
+  const entries: RailEntry[] = [{ to: '/workspace', icon: 'shelf', label: '作品库', shortLabel: '作品' }]
   if (!projectId.value) {
     entries.push({ to: '/deconstruct', icon: 'outline', label: '拆书分析', shortLabel: '拆书' })
     entries.push({ to: '/teams', icon: 'team', label: orgs.teamLabel, shortLabel: '团队' })
@@ -102,7 +102,7 @@ onMounted(() => {
 onUnmounted(() => window.removeEventListener('moshu:usage-changed', refreshUsage))
 
 function isCurrent(to: string) {
-  return to === '/' ? route.path === '/' : route.path.startsWith(to)
+  return route.path === to || route.path.startsWith(to + '/')
 }
 
 async function signOut() {
@@ -117,7 +117,7 @@ async function signOut() {
 <template>
   <div class="shell">
     <nav class="rail" aria-label="主导航">
-      <RouterLink to="/" class="rail-mark" :style="{ border: 0 }" aria-label="书架">墨</RouterLink>
+      <RouterLink to="/workspace" class="rail-mark" :style="{ border: 0 }" aria-label="书架">墨</RouterLink>
 
       <div class="rail-nav">
         <button
