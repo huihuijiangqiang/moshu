@@ -253,6 +253,62 @@ def validate_chapter_contracts(
     ]
 
 
+def chapter_editorial_gate(
+    outline: dict[str, Any],
+    analysis: dict[str, Any],
+    *,
+    minimum_score: float = 7.0,
+) -> dict[str, Any]:
+    """Require complete, evidenced contract compliance before Canon changes."""
+    expected_items = [
+        "required_outcome",
+        *(f"acceptance_criteria:{index}" for index in range(1, len(outline["acceptance_criteria"]) + 1)),
+        "reveal",
+        "hide",
+        "foreshadow",
+        "hook",
+    ]
+    reviews = analysis["contract_checks"]
+    actual_items = [item["item"].strip() for item in reviews]
+    duplicate_items = sorted({item for item in actual_items if actual_items.count(item) > 1})
+    missing_items = [item for item in expected_items if item not in actual_items]
+    unknown_items = [item for item in actual_items if item not in expected_items]
+    failed_items = [
+        item["item"].strip()
+        for item in reviews
+        if not item["ok"] or not item["evidence"].strip()
+    ]
+    low_scores = {
+        field: float(analysis["quality"][field])
+        for field in QUALITY_FIELDS
+        if float(analysis["quality"][field]) < minimum_score
+    }
+    checks = [
+        {
+            "id": "contract_coverage",
+            "ok": not missing_items and not unknown_items and not duplicate_items,
+            "missing": missing_items,
+            "unknown": unknown_items,
+            "duplicates": duplicate_items,
+        },
+        {
+            "id": "contract_evidence",
+            "ok": not failed_items,
+            "failed": failed_items,
+        },
+        {
+            "id": "editorial_scores",
+            "ok": not low_scores,
+            "minimum": minimum_score,
+            "lowScores": low_scores,
+        },
+    ]
+    return {
+        "status": "ready" if all(item["ok"] for item in checks) else "blocked",
+        "checks": checks,
+    }
+
+
 def validate_chapter_analysis(value: dict[str, Any]) -> dict[str, Any]:
     """Validate the structured state delta before it can change the Canon.
 
@@ -1078,9 +1134,18 @@ class LongNovelRun:
         return text, usage
 
     async def analyze_chapter(self, outline: dict[str, Any], prose: str) -> tuple[dict[str, Any], dict[str, int]]:
+        contract_check_ids = [
+            "required_outcome",
+            *(f"acceptance_criteria:{index}" for index in range(1, len(outline["acceptance_criteria"]) + 1)),
+            "reveal",
+            "hide",
+            "foreshadow",
+            "hook",
+        ]
         prompt = f"""从已完成正文抽取可用于下一章的权威候选状态。只输出 JSON：
 {{"summary":"不超过300字","character_updates":{{"姓名":{{"state":"","knows":[],"does_not_know":[],"public_goal":"","hidden_goal":""}}}},"faction_updates":{{}},"new_facts":["可核验事实"],"foreshadow_updates":[],"timeline_events":[{{"event":"可核验事件"}}],"contract_checks":[{{"item":"","ok":true,"evidence":""}}],"quality":{{"continuity":0,"character":0,"plot":0,"prose":0,"hook":0}}}}
-不得把推测写成事实；角色认知必须区分已知与未知；contract_checks 逐项检查 required_outcome、acceptance_criteria、reveal、hide、foreshadow、hook。
+不得把推测写成事实；角色认知必须区分已知与未知。quality 各项必须使用 0.0-10.0 分，禁止百分制。
+contract_checks 必须恰好逐项覆盖这些 ID，不得缺失、重复或改名：{json.dumps(contract_check_ids, ensure_ascii=False)}。每项 evidence 必须引用正文中的具体行动、事实或未泄露证据。
 章节契约：{json.dumps(outline, ensure_ascii=False)}
 正文：\n<prose>\n{prose}\n</prose>"""
         text, usage = await self.client.complete(
@@ -1203,6 +1268,15 @@ class LongNovelRun:
                 self.save()
                 analysis, analysis_usage = await self.analyze_chapter(outline, prose)
                 self.add_usage(analysis_usage)
+                editorial_gate = chapter_editorial_gate(outline, analysis)
+                if editorial_gate["status"] != "ready":
+                    metrics["chapters_blocked"] = int(metrics.get("chapters_blocked", 0)) + 1
+                    record["status"] = "review_blocked"
+                    record["editorial"] = analysis.get("quality", {})
+                    record["editorial_gate"] = editorial_gate
+                    self.save()
+                    atomic_write_json(self.output_dir / "analysis" / f"{number:04d}.json", analysis)
+                    raise ValueError(f"chapter editorial gate blocked: {editorial_gate['checks']}")
                 self.apply_analysis(analysis)
                 words = int(quality["words"])
                 entry = {
@@ -1215,6 +1289,7 @@ class LongNovelRun:
                     "summary": str(analysis.get("summary", "")),
                     "quality": quality,
                     "editorial": analysis.get("quality", {}),
+                    "editorial_gate": editorial_gate,
                     "canon_revision": self.checkpoint["canon_revision"],
                     "elapsed_seconds": round(time.time() - started, 2),
                 }

@@ -78,6 +78,25 @@ def _valid_analysis():
     }
 
 
+def _contract_analysis(contract):
+    value = _valid_analysis()
+    value["contract_checks"] = [
+        {"item": item, "ok": True, "evidence": f"正文证据：{item}"}
+        for item in [
+            "required_outcome",
+            *(
+                f"acceptance_criteria:{index}"
+                for index in range(1, len(contract["acceptance_criteria"]) + 1)
+            ),
+            "reveal",
+            "hide",
+            "foreshadow",
+            "hook",
+        ]
+    ]
+    return value
+
+
 def test_validate_chapter_analysis_accepts_complete_state_delta():
     value = _valid_analysis()
     assert MODULE.validate_chapter_analysis(value) is value
@@ -156,6 +175,76 @@ def test_validate_chapter_contract_rejects_incomplete_acceptance_gate():
         assert "hide" in str(exc)
     else:
         raise AssertionError("missing chapter constraints must be rejected")
+
+
+def test_editorial_gate_requires_complete_evidenced_contract_review():
+    contract = _valid_chapter_contract()
+    analysis = _contract_analysis(contract)
+    assert MODULE.chapter_editorial_gate(contract, analysis)["status"] == "ready"
+
+    analysis["contract_checks"].pop()
+    result = MODULE.chapter_editorial_gate(contract, analysis)
+    assert result["status"] == "blocked"
+    coverage = next(item for item in result["checks"] if item["id"] == "contract_coverage")
+    assert coverage["missing"] == ["hook"]
+
+
+def test_editorial_gate_blocks_failed_evidence_and_low_scores():
+    contract = _valid_chapter_contract()
+    analysis = _contract_analysis(contract)
+    analysis["contract_checks"][0]["ok"] = False
+    analysis["contract_checks"][1]["evidence"] = ""
+    analysis["quality"]["continuity"] = 6.5
+
+    result = MODULE.chapter_editorial_gate(contract, analysis)
+    assert result["status"] == "blocked"
+    evidence = next(item for item in result["checks"] if item["id"] == "contract_evidence")
+    scores = next(item for item in result["checks"] if item["id"] == "editorial_scores")
+    assert evidence["failed"] == ["required_outcome", "acceptance_criteria:1"]
+    assert scores["lowScores"] == {"continuity": 6.5}
+
+
+async def test_run_does_not_advance_canon_when_editorial_gate_blocks(tmp_path):
+    class FakeClient:
+        retry_count = 0
+
+    checkpoint = MODULE.new_checkpoint(target_words=100_000, chapter_words=800, model="m")
+    checkpoint["plan"] = MODULE.build_seed_plan(
+        target_words=checkpoint["target_words"],
+        chapter_count=checkpoint["chapter_count"],
+    )
+    runner = MODULE.LongNovelRun(tmp_path, FakeClient(), checkpoint)
+
+    async def write_chapter(outline, target_words):
+        del target_words
+        prose = "\n".join(
+            f"沈砚秋把第{index}袋粮称过一遍，赵顺随后记下{index}号袋的斤两。"
+            for index in range(42)
+        )
+        path = tmp_path / "chapters" / f"0001-{MODULE.safe_filename(outline['title'])}.md"
+        MODULE.atomic_write_text(path, prose + "\n")
+        return prose, {}
+
+    async def analyze_chapter(outline, prose):
+        del prose
+        analysis = _contract_analysis(outline)
+        analysis["contract_checks"][0]["ok"] = False
+        return analysis, {}
+
+    runner.write_chapter = write_chapter
+    runner.analyze_chapter = analyze_chapter
+
+    try:
+        await runner.run(max_chapters=1)
+    except ValueError as exc:
+        assert "editorial gate blocked" in str(exc)
+    else:
+        raise AssertionError("failed editorial review must stop the run")
+
+    assert checkpoint["canon_revision"] == 0
+    assert checkpoint["generated_words"] == 0
+    assert checkpoint["chapters"][0]["status"] == "review_blocked"
+    assert checkpoint["chapters"][0]["editorial_gate"]["status"] == "blocked"
 
 
 def test_safe_filename_removes_windows_reserved_characters():
