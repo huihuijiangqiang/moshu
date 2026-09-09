@@ -44,6 +44,15 @@ def test_chapter_quality_blocks_formulaic_not_is_comparison():
     assert result["status"] == "blocked"
 
 
+def test_chapter_quality_blocks_em_dash_dialogue_shortcuts():
+    text = "“你先听我——”\n" + "她把粮袋重新称量一遍，逐项记下经手人和斤两。\n" * 30
+    result = MODULE.chapter_quality(text, 1_000)
+    check = next(item for item in result["checks"] if item["id"] == "no_em_dash")
+    assert check["ok"] is False
+    assert check["matches"] == ["—", "—"]
+    assert result["status"] == "blocked"
+
+
 def test_chapter_quality_blocks_accidental_sentence_repetition():
     sentence = "她把账册翻到最后一页，确认每一笔粮款。"
     result = MODULE.chapter_quality((sentence + "\n") * 120, 1_000)

@@ -53,6 +53,7 @@ META_PATTERN = re.compile(
 NOT_IS_COMPARISON_PATTERN = re.compile(
     r"(?:不是|并非|没有)[^。！？!?\n]{0,80}(?:，|,)[ \t]*(?:而是|只是|反倒是|却是)"
 )
+EM_DASH_PATTERN = re.compile(r"[—–]")
 
 
 class GatewayRequestError(RuntimeError):
@@ -391,6 +392,11 @@ def chapter_quality(
         },
         {"id": "no_model_meta", "ok": META_PATTERN.search(text) is None},
         {"id": "has_dialogue_or_action", "ok": '"' in text or "“" in text or len(text.splitlines()) >= 8},
+        {
+            "id": "no_em_dash",
+            "ok": EM_DASH_PATTERN.search(text) is None,
+            "matches": [match.group(0) for match in list(EM_DASH_PATTERN.finditer(text))[:8]],
+        },
     ]
     metrics = prose_quality_metrics(text)
     formulaic_matches = [
