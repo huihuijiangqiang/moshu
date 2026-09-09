@@ -2,11 +2,13 @@
 .env
 .env.*
 !.env.example
+!.env.preview
 
 # Frontend dependencies and build output
 node_modules/
 dist/
 coverage/
+.wrangler/
 *.tsbuildinfo
 
 # Generated research/design exports and local test output

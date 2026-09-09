@@ -6,6 +6,8 @@
   "scripts": {
     "dev": "vite",
     "build": "vue-tsc --noEmit && vite build",
+    "build:preview": "vue-tsc --noEmit && vite build --mode preview",
+    "deploy:preview": "npm run build:preview && wrangler deploy",
     "preview": "vite preview",
     "typecheck": "vue-tsc --noEmit",
     "test": "vitest run",
@@ -32,6 +34,7 @@
     "typescript": "^5.6.3",
     "vite": "^6.0.3",
     "vitest": "^4.1.11",
-    "vue-tsc": "^2.1.10"
+    "vue-tsc": "^2.1.10",
+    "wrangler": "4.130.0"
   }
 }
