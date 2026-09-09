@@ -45,6 +45,21 @@ from services.long_generation import (
     build_context_manifest,
     make_segment_plan,
 )
+from services.long_generation_executor import (
+    SegmentBusyError,
+    SegmentCheckpointConflictError,
+    SegmentExecutionError,
+    SegmentLeaseLostError,
+    SegmentMergeBlockedError,
+    accept_ready_segment,
+    checkpoint_hash,
+    checkpoint_segment,
+    claim_segment,
+    fail_segment,
+    heartbeat_segment,
+    merge_segment_outputs,
+    validate_claimed_segment,
+)
 from services.model_catalog import CODING_PLAN_MODELS
 from services.model_configs import active_user_generation_route
 from services.provenance import PROVENANCE_ALGORITHM, generated_paragraph_hashes
@@ -136,6 +151,49 @@ class LongChapterPlanRequest(BaseModel):
     segment_words: int = Field(DEFAULT_SEGMENT_WORDS, alias="segmentWords", ge=MIN_SEGMENT_WORDS, le=MAX_SEGMENT_WORDS)
     scene_purposes: list[str] = Field(default_factory=list, alias="scenePurposes", max_length=500)
     required_beats: list[str] = Field(default_factory=list, alias="requiredBeats", max_length=500)
+
+
+class LongSegmentClaimRequest(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    lease_seconds: int = Field(300, alias="leaseSeconds", ge=1, le=3600)
+    lease_owner: str | None = Field(None, alias="leaseOwner", min_length=1, max_length=100)
+
+
+class LongSegmentCheckpointRequest(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    lease_revision: int = Field(alias="leaseRevision", ge=1)
+    expected_checkpoint_hash: str = Field(alias="expectedCheckpointHash", min_length=64, max_length=64)
+    content_text: str = Field(alias="contentText", max_length=500_000)
+    lease_owner: str | None = Field(None, alias="leaseOwner", min_length=1, max_length=100)
+    lease_seconds: int = Field(300, alias="leaseSeconds", ge=1, le=3600)
+
+
+class LongSegmentFailRequest(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    lease_revision: int = Field(alias="leaseRevision", ge=1)
+    error_code: str = Field("segment_failed", alias="errorCode", min_length=1, max_length=100)
+    lease_owner: str | None = Field(None, alias="leaseOwner", min_length=1, max_length=100)
+
+
+class LongSegmentValidateRequest(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    lease_revision: int = Field(alias="leaseRevision", ge=1)
+    required_terms: list[str] = Field(default_factory=list, alias="requiredTerms", max_length=500)
+    min_ratio: float = Field(0.55, alias="minRatio", gt=0, le=1)
+    max_ratio: float = Field(1.35, alias="maxRatio", ge=1, le=3)
+    lease_owner: str | None = Field(None, alias="leaseOwner", min_length=1, max_length=100)
+
+
+class LongSegmentHeartbeatRequest(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    lease_revision: int = Field(alias="leaseRevision", ge=1)
+    lease_owner: str | None = Field(None, alias="leaseOwner", min_length=1, max_length=100)
+    lease_seconds: int = Field(300, alias="leaseSeconds", ge=1, le=3600)
 
 
 def get_generation_gateway() -> GenerationGateway:
@@ -566,6 +624,7 @@ async def create_long_chapter_plan(
     chapter, project = await _load_scope(
         request.chapter_id, user, db, ProjectPermission.GENERATE
     )
+    await db.execute(select(Chapter.id).where(Chapter.id == chapter.id).with_for_update())
     plans = make_segment_plan(
         request.target_words,
         scene_purposes=request.scene_purposes or chapter.outline or [],
@@ -602,10 +661,23 @@ async def create_long_chapter_plan(
             )
             db.add(row)
         elif row.status not in {"accepted", "running"}:
-            row.target_words = plan.target_words
-            row.context_manifest = manifest
-            row.status = "pending"
-            row.error_code = None
+            plan_changed = row.target_words != plan.target_words or row.context_manifest != manifest
+            if plan_changed:
+                row.target_words = plan.target_words
+                row.context_manifest = manifest
+                row.content_text = ""
+                row.generated_words = 0
+                row.prompt_hash = None
+                row.revision += 1
+                row.completed_at = None
+                row.lease_owner = None
+                row.lease_expires_at = None
+                row.heartbeat_at = None
+                row.status = "pending"
+                row.error_code = None
+            elif row.status == "skipped":
+                row.status = "pending"
+                row.error_code = None
     planned_indexes = {plan.index for plan in plans}
     for row in existing:
         if row.segment_index not in planned_indexes and row.status not in {"accepted", "running"}:
@@ -629,6 +701,10 @@ async def create_long_chapter_plan(
                 "targetWords": row.target_words,
                 "status": row.status,
                 "generatedWords": row.generated_words,
+                "revision": row.revision,
+                "leaseOwner": row.lease_owner,
+                "leaseExpiresAt": row.lease_expires_at.isoformat() if row.lease_expires_at else None,
+                "heartbeatAt": row.heartbeat_at.isoformat() if row.heartbeat_at else None,
                 "manifest": row.context_manifest,
             }
             for row in segments
@@ -655,10 +731,335 @@ async def get_long_chapter_plan(
         "acceptedSegments": accepted,
         "nextSegment": next((row.segment_index for row in segments if row.status == "pending"), None),
         "segments": [
-            {"id": row.id, "index": row.segment_index, "targetWords": row.target_words, "status": row.status, "generatedWords": row.generated_words, "errorCode": row.error_code}
+            {
+                "id": row.id,
+                "index": row.segment_index,
+                "targetWords": row.target_words,
+                "status": row.status,
+                "revision": row.revision,
+                "generatedWords": row.generated_words,
+                "leaseOwner": row.lease_owner,
+                "leaseExpiresAt": row.lease_expires_at.isoformat() if row.lease_expires_at else None,
+                "heartbeatAt": row.heartbeat_at.isoformat() if row.heartbeat_at else None,
+                "errorCode": row.error_code,
+            }
             for row in segments
         ],
     }
+
+
+async def _load_segment_scope(
+    segment_id: str,
+    user: User,
+    db: AsyncSession,
+    permission: ProjectPermission = ProjectPermission.GENERATE,
+) -> GenerationSegment:
+    """Load a segment and authorize through its owning project."""
+    segment = await db.get(GenerationSegment, segment_id)
+    if segment is None:
+        raise HTTPException(status_code=404, detail="Generation segment not found")
+    chapter = await db.get(Chapter, segment.chapter_id)
+    if chapter is None or chapter.deleted_at is not None or chapter.project_id != segment.project_id:
+        raise HTTPException(status_code=404, detail="Generation segment chapter not found")
+    await verify_project_permission(segment.project_id, permission, user, db)
+    if permission in {ProjectPermission.GENERATE, ProjectPermission.EDIT_BODY}:
+        await verify_chapter_assignment(chapter, user, db)
+    return segment
+
+
+def _segment_error(exc: Exception) -> HTTPException:
+    if isinstance(exc, HTTPException):
+        return exc
+    if isinstance(exc, SegmentBusyError):
+        return HTTPException(status_code=409, detail={"code": "SEGMENT_BUSY", "message": str(exc)})
+    if isinstance(exc, SegmentLeaseLostError):
+        return HTTPException(status_code=409, detail={"code": "SEGMENT_LEASE_LOST", "message": str(exc)})
+    if isinstance(exc, SegmentCheckpointConflictError):
+        return HTTPException(status_code=409, detail={"code": "SEGMENT_CHECKPOINT_CONFLICT", "message": str(exc)})
+    if isinstance(exc, SegmentMergeBlockedError):
+        return HTTPException(status_code=409, detail={"code": "SEGMENT_MERGE_BLOCKED", "message": str(exc)})
+    if isinstance(exc, SegmentExecutionError):
+        return HTTPException(status_code=409, detail={"code": "SEGMENT_STATE_INVALID", "message": str(exc)})
+    if isinstance(exc, ValueError):
+        return HTTPException(status_code=422, detail={"code": "SEGMENT_INPUT_INVALID", "message": str(exc)})
+    return HTTPException(status_code=500, detail={"code": "SEGMENT_OPERATION_FAILED"})
+
+
+def _segment_payload(row: GenerationSegment, *, include_content: bool = False) -> dict:
+    payload = {
+        "id": row.id,
+        "projectId": row.project_id,
+        "chapterId": row.chapter_id,
+        "index": row.segment_index,
+        "targetWords": row.target_words,
+        "status": row.status,
+        "revision": row.revision,
+        "leaseOwner": row.lease_owner,
+        "leaseExpiresAt": row.lease_expires_at.isoformat() if row.lease_expires_at else None,
+        "heartbeatAt": row.heartbeat_at.isoformat() if row.heartbeat_at else None,
+        "generatedWords": row.generated_words,
+        "contentHash": checkpoint_hash(row.content_text),
+        "errorCode": row.error_code,
+        "completedAt": row.completed_at.isoformat() if row.completed_at else None,
+        "manifest": row.context_manifest or {},
+    }
+    if include_content:
+        payload["contentText"] = row.content_text or ""
+    return payload
+
+
+@router.post("/long-segments/{segment_id}/claim")
+async def claim_long_generation_segment(
+    segment_id: str,
+    request: LongSegmentClaimRequest | None = None,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Claim one segment; the returned revision fences every later mutation."""
+    await _load_segment_scope(segment_id, user, db)
+    try:
+        claim = await claim_segment(
+            db,
+            segment_id,
+            lease_seconds=request.lease_seconds if request else 300,
+            lease_owner=request.lease_owner if request else None,
+        )
+        await db.commit()
+    except Exception as exc:
+        await db.rollback()
+        raise _segment_error(exc) from exc
+    return {
+        "segmentId": claim.segment_id,
+        "chapterId": claim.chapter_id,
+        "index": claim.segment_index,
+        "leaseRevision": claim.lease_revision,
+        "checkpointHash": claim.checkpoint_hash,
+        "contentText": claim.content_text,
+        "targetWords": claim.target_words,
+        "manifest": claim.context_manifest,
+        "resumed": claim.resumed,
+        "leaseOwner": claim.lease_owner,
+        "leaseExpiresAt": claim.lease_expires_at.isoformat(),
+        "heartbeatAt": claim.heartbeat_at.isoformat(),
+    }
+
+
+@router.post("/long-segments/{segment_id}/checkpoint")
+async def checkpoint_long_generation_segment(
+    segment_id: str,
+    request: LongSegmentCheckpointRequest,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    await _load_segment_scope(segment_id, user, db)
+    try:
+        result = await checkpoint_segment(
+            db,
+            segment_id,
+            lease_revision=request.lease_revision,
+            expected_checkpoint_hash=request.expected_checkpoint_hash,
+            content_text=request.content_text,
+            lease_owner=request.lease_owner,
+            lease_seconds=request.lease_seconds,
+        )
+        await db.commit()
+    except Exception as exc:
+        await db.rollback()
+        raise _segment_error(exc) from exc
+    return {
+        "segmentId": result.segment_id,
+        "leaseRevision": result.lease_revision,
+        "checkpointHash": result.checkpoint_hash,
+        "generatedWords": result.generated_words,
+    }
+
+
+@router.post("/long-segments/{segment_id}/fail")
+async def fail_long_generation_segment(
+    segment_id: str,
+    request: LongSegmentFailRequest,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    await _load_segment_scope(segment_id, user, db)
+    try:
+        await fail_segment(
+            db,
+            segment_id,
+            lease_revision=request.lease_revision,
+            error_code=request.error_code,
+            lease_owner=request.lease_owner,
+        )
+        await db.commit()
+    except Exception as exc:
+        await db.rollback()
+        raise _segment_error(exc) from exc
+    row = await db.get(GenerationSegment, segment_id)
+    return _segment_payload(row) if row else {"segmentId": segment_id, "status": "failed"}
+
+
+@router.post("/long-segments/{segment_id}/validate")
+async def validate_long_generation_segment(
+    segment_id: str,
+    request: LongSegmentValidateRequest,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    await _load_segment_scope(segment_id, user, db)
+    if request.max_ratio < request.min_ratio:
+        raise HTTPException(status_code=422, detail={"code": "SEGMENT_RATIO_INVALID"})
+    try:
+        check = await validate_claimed_segment(
+            db,
+            segment_id,
+            lease_revision=request.lease_revision,
+            required_terms=request.required_terms,
+            min_ratio=request.min_ratio,
+            max_ratio=request.max_ratio,
+            lease_owner=request.lease_owner,
+        )
+        await db.commit()
+    except Exception as exc:
+        await db.rollback()
+        raise _segment_error(exc) from exc
+    row = await db.get(GenerationSegment, segment_id)
+    return {
+        "segment": _segment_payload(row) if row else {"id": segment_id},
+        "status": check.status,
+        "blocking": check.blocking,
+        "checks": [dict(item) for item in check.checks],
+    }
+
+
+@router.post("/long-segments/{segment_id}/heartbeat")
+async def heartbeat_long_generation_segment(
+    segment_id: str,
+    request: LongSegmentHeartbeatRequest,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    await _load_segment_scope(segment_id, user, db)
+    try:
+        heartbeat = await heartbeat_segment(
+            db,
+            segment_id,
+            lease_revision=request.lease_revision,
+            lease_owner=request.lease_owner,
+            lease_seconds=request.lease_seconds,
+        )
+        await db.commit()
+    except Exception as exc:
+        await db.rollback()
+        raise _segment_error(exc) from exc
+    return {
+        "segmentId": heartbeat.segment_id,
+        "leaseRevision": heartbeat.lease_revision,
+        "leaseOwner": heartbeat.lease_owner,
+        "leaseExpiresAt": heartbeat.lease_expires_at.isoformat(),
+        "heartbeatAt": heartbeat.heartbeat_at.isoformat(),
+    }
+
+
+@router.post("/long-plan/{chapter_id}/merge")
+async def merge_long_generation_segments(
+    chapter_id: str,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Build or reuse an author-facing candidate draft from completed segments."""
+    chapter, project = await _load_scope(chapter_id, user, db, ProjectPermission.GENERATE)
+    try:
+        await db.execute(select(Chapter.id).where(Chapter.id == chapter.id).with_for_update())
+        drafts = (
+            await db.execute(
+                select(GenerationDraft)
+                .where(
+                    GenerationDraft.chapter_id == chapter.id,
+                    GenerationDraft.kind == "chapter",
+                )
+                .order_by(GenerationDraft.created_at.desc())
+                .with_for_update()
+            )
+        ).scalars().all()
+        result = await db.execute(
+            select(GenerationSegment)
+            .where(GenerationSegment.chapter_id == chapter.id)
+            .order_by(GenerationSegment.segment_index)
+            .with_for_update()
+        )
+        rows = list(result.scalars().all())
+        merged = merge_segment_outputs(rows)
+        segment_meta = [
+            {
+                "id": row.id,
+                "index": row.segment_index,
+                "revision": row.revision,
+                "contentHash": checkpoint_hash(row.content_text),
+            }
+            for row in rows
+            if row.id in merged.segment_ids
+        ]
+        merge_key = hashlib.sha256(
+            json.dumps(
+                {"chapterId": chapter.id, "segments": segment_meta, "contentHash": merged.content_hash},
+                ensure_ascii=False,
+                sort_keys=True,
+            ).encode("utf-8")
+        ).hexdigest()
+        existing_draft = None
+        for candidate in drafts:
+            summary = candidate.request_summary if isinstance(candidate.request_summary, dict) else {}
+            metadata = summary.get("longGenerationMerge")
+            if isinstance(metadata, dict) and metadata.get("mergeKey") == merge_key:
+                if candidate.status == "rejected":
+                    raise HTTPException(
+                        status_code=409,
+                        detail={
+                            "code": "LONG_MERGE_REJECTED",
+                            "message": "相同内容已被拒绝，请先修改或重新生成分段。",
+                        },
+                    )
+                if candidate.status not in {"ready", "accepted"}:
+                    raise HTTPException(
+                        status_code=409,
+                        detail={"code": "LONG_MERGE_NOT_REUSABLE"},
+                    )
+                existing_draft = candidate
+                break
+        if existing_draft is None:
+            summary = {
+                "source": "long_generation_segments",
+                "longGenerationMerge": {
+                    "version": 1,
+                    "mergeKey": merge_key,
+                    "segmentIds": list(merged.segment_ids),
+                    "segments": segment_meta,
+                    "contentHash": merged.content_hash,
+                },
+            }
+            # The deterministic id closes the concurrent-merge race even
+            # though the legacy draft table has no dedicated merge-key column.
+            draft_id = f"lg_{merge_key[:29]}"
+            existing_draft = GenerationDraft(
+                id=draft_id,
+                run_id=None,
+                user_id=user.id,
+                project_id=project.id,
+                chapter_id=chapter.id,
+                kind="chapter",
+                status="ready",
+                content_text=merged.content_text,
+                generated_words=merged.generated_words,
+                request_summary=summary,
+            )
+            db.add(existing_draft)
+            await db.flush()
+        await db.commit()
+        await db.refresh(existing_draft)
+    except Exception as exc:
+        await db.rollback()
+        raise _segment_error(exc) from exc
+    return _draft_payload(existing_draft, include_content=True)
 
 
 @router.get("/context/{chapter_id}")
@@ -1115,6 +1516,29 @@ async def accept_draft(
             status_code=409,
             detail={"code": "DRAFT_REVIEW_EMPTY", "message": "没有接受的段落，请舍弃候选或重新选择。"},
         )
+    # A long-generation merge is still a candidate until the author accepts it.
+    # Fence every source segment at the revision captured during merge, then
+    # promote it to accepted in the same transaction as the draft decision.
+    merge_meta = (draft.request_summary or {}).get("longGenerationMerge") if isinstance(draft.request_summary, dict) else None
+    if isinstance(merge_meta, dict):
+        raw_segments = merge_meta.get("segments")
+        if not isinstance(raw_segments, list) or not raw_segments:
+            raise HTTPException(status_code=409, detail={"code": "DRAFT_SEGMENT_METADATA_MISSING"})
+        for item in raw_segments:
+            if not isinstance(item, dict) or not isinstance(item.get("id"), str) or not isinstance(item.get("revision"), int):
+                raise HTTPException(status_code=409, detail={"code": "DRAFT_SEGMENT_METADATA_INVALID"})
+            try:
+                source_segment = await db.get(GenerationSegment, item["id"])
+                if source_segment is None or source_segment.chapter_id != draft.chapter_id or source_segment.project_id != draft.project_id:
+                    raise HTTPException(status_code=409, detail={"code": "DRAFT_SEGMENT_SCOPE_MISMATCH"})
+                await accept_ready_segment(
+                    db,
+                    item["id"],
+                    lease_revision=item["revision"],
+                )
+            except Exception as exc:
+                await db.rollback()
+                raise _segment_error(exc) from exc
     draft.status = "accepted"
     draft.accepted_at = datetime.now(UTC)
     await db.commit()
