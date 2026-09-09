@@ -183,6 +183,74 @@ ANALYSIS_REQUIRED_FIELDS = (
     "quality",
 )
 QUALITY_FIELDS = ("continuity", "character", "plot", "prose", "hook")
+CHAPTER_CONTRACT_STRING_FIELDS = (
+    "title",
+    "objective",
+    "conflict",
+    "turn",
+    "required_outcome",
+    "reveal",
+    "hide",
+    "foreshadow",
+    "hook",
+    "pov",
+    "time_anchor",
+)
+
+
+def validate_chapter_contract(value: Any, *, expected_number: int) -> dict[str, Any]:
+    """Reject an incomplete chapter plan before it reaches the prose model."""
+    if not isinstance(value, dict):
+        raise ValueError(f"chapter contract {expected_number} must be an object")
+    number = value.get("number")
+    if isinstance(number, bool) or not isinstance(number, int) or number != expected_number:
+        raise ValueError(
+            f"chapter contract number mismatch: expected {expected_number}, got {number!r}"
+        )
+    for field in CHAPTER_CONTRACT_STRING_FIELDS:
+        item = value.get(field)
+        if not isinstance(item, str) or not item.strip():
+            raise ValueError(f"chapter contract {expected_number} requires non-empty {field}")
+        if len(item) > 2_000:
+            raise ValueError(f"chapter contract {expected_number} field {field} is too long")
+    criteria = value.get("acceptance_criteria")
+    if not isinstance(criteria, list) or not 3 <= len(criteria) <= 12:
+        raise ValueError(
+            f"chapter contract {expected_number} acceptance_criteria must contain 3-12 items"
+        )
+    normalized_criteria: list[str] = []
+    for index, item in enumerate(criteria):
+        if not isinstance(item, str) or not item.strip() or len(item) > 300:
+            raise ValueError(
+                f"chapter contract {expected_number} acceptance_criteria[{index}] is invalid"
+            )
+        normalized_criteria.append(item.strip())
+    if len(set(normalized_criteria)) != len(normalized_criteria):
+        raise ValueError(f"chapter contract {expected_number} acceptance_criteria contains duplicates")
+    if value["reveal"].strip() == value["hide"].strip():
+        raise ValueError(f"chapter contract {expected_number} cannot reveal its hidden constraint")
+    return value
+
+
+def validate_chapter_contracts(
+    values: Any,
+    *,
+    chapter_from: int,
+    chapter_to: int,
+) -> list[dict[str, Any]]:
+    """Validate exact, ordered coverage for a volume's executable plans."""
+    if not isinstance(values, list):
+        raise ValueError("volume chapter contracts must be an array")
+    expected_numbers = list(range(chapter_from, chapter_to + 1))
+    if len(values) != len(expected_numbers):
+        raise ValueError(
+            "volume chapter contract count mismatch: "
+            f"expected {len(expected_numbers)}, got {len(values)}"
+        )
+    return [
+        validate_chapter_contract(value, expected_number=number)
+        for value, number in zip(values, expected_numbers, strict=True)
+    ]
 
 
 def validate_chapter_analysis(value: dict[str, Any]) -> dict[str, Any]:
@@ -900,13 +968,21 @@ class LongNovelRun:
 
     async def ensure_volume_outline(self, volume: dict[str, Any]) -> list[dict[str, Any]]:
         key = str(volume.get("number"))
-        existing = self.checkpoint["volume_outlines"].get(key)
-        if isinstance(existing, list) and existing:
-            return existing
         start = int(volume["chapter_from"])
         end = int(volume["chapter_to"])
+        existing = self.checkpoint["volume_outlines"].get(key)
+        if isinstance(existing, list) and existing:
+            return validate_chapter_contracts(
+                existing,
+                chapter_from=start,
+                chapter_to=end,
+            )
         if os.getenv("MOSHU_AI_PLANNING", "0").lower() not in {"1", "true", "yes"}:
-            ordered = [build_seed_chapter_outline(number, volume) for number in range(start, end + 1)]
+            ordered = validate_chapter_contracts(
+                [build_seed_chapter_outline(number, volume) for number in range(start, end + 1)],
+                chapter_from=start,
+                chapter_to=end,
+            )
             self.checkpoint["volume_outlines"][key] = ordered
             self.save()
             atomic_write_json(self.output_dir / "outlines" / f"volume-{int(key):02d}.json", {"chapters": ordered})
@@ -946,7 +1022,11 @@ class LongNovelRun:
         missing = [number for number in range(start, end + 1) if number not in indexed]
         if missing:
             raise ValueError(f"volume outline missing chapter numbers: {missing[:10]}")
-        ordered = [indexed[number] for number in range(start, end + 1)]
+        ordered = validate_chapter_contracts(
+            [indexed[number] for number in range(start, end + 1)],
+            chapter_from=start,
+            chapter_to=end,
+        )
         self.checkpoint["volume_outlines"][key] = ordered
         self.add_usage(total_usage)
         self.save()

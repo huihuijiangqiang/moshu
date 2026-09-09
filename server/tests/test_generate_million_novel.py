@@ -103,6 +103,61 @@ def test_validate_chapter_analysis_rejects_missing_or_malformed_state():
         raise AssertionError("malformed cognition state must be rejected")
 
 
+def _valid_chapter_contract(number=1):
+    return {
+        "number": number,
+        "title": "盘账",
+        "objective": "核清救命粮的实际库存",
+        "conflict": "族人要求先分粮",
+        "turn": "旧账的经手人主动改口",
+        "required_outcome": "女主取得可复核的账簿副本",
+        "acceptance_criteria": ["有具体行动与代价", "出现数字证据", "认知不越界"],
+        "reveal": "粮袋重量与账面不符",
+        "hide": "幕后总账的最终主使",
+        "foreshadow": "缺角收条将在后续复核",
+        "hook": "账簿最后一页出现陌生私印",
+        "pov": "沈砚秋",
+        "time_anchor": "昭宁二十七年春荒第一日",
+    }
+
+
+def test_validate_chapter_contracts_requires_exact_ordered_coverage():
+    contracts = [_valid_chapter_contract(1), _valid_chapter_contract(2)]
+    assert MODULE.validate_chapter_contracts(
+        contracts,
+        chapter_from=1,
+        chapter_to=2,
+    ) == contracts
+
+    contracts[1]["number"] = 3
+    try:
+        MODULE.validate_chapter_contracts(contracts, chapter_from=1, chapter_to=2)
+    except ValueError as exc:
+        assert "number mismatch" in str(exc)
+    else:
+        raise AssertionError("out-of-order chapter contracts must be rejected")
+
+
+def test_validate_chapter_contract_rejects_incomplete_acceptance_gate():
+    contract = _valid_chapter_contract()
+    contract["acceptance_criteria"] = ["只有一项"]
+    try:
+        MODULE.validate_chapter_contract(contract, expected_number=1)
+    except ValueError as exc:
+        assert "acceptance_criteria" in str(exc)
+    else:
+        raise AssertionError("incomplete chapter acceptance gate must be rejected")
+
+    contract = _valid_chapter_contract()
+    contract.pop("hide")
+    try:
+        MODULE.validate_chapter_contract(contract, expected_number=1)
+    except ValueError as exc:
+        assert "hide" in str(exc)
+    else:
+        raise AssertionError("missing chapter constraints must be rejected")
+
+
 def test_safe_filename_removes_windows_reserved_characters():
     assert MODULE.safe_filename("账册:谁拿走了?/\\*") == "账册-谁拿走了----"
 
