@@ -260,4 +260,4 @@ docker-compose up -d
 
 ## 许可
 
-项目采用保留所有权利（All Rights Reserved）许可，详见根目录 [`LICENSE`](../LICENSE)。
+项目原创代码和文档采用 [MIT License](../LICENSE)；第三方依赖及外部资源遵循其各自许可证。

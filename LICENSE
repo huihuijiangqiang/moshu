@@ -1,10 +1,21 @@
-墨枢（Moshu）软件
-保留所有权利（All Rights Reserved）
+MIT License
 
-版权所有 (c) 2026 huihuijiangqiang
+Copyright (c) 2026 huihuijiangqiang
 
-除版权所有者通过书面许可明确授权外，任何人不得复制、修改、合并、发布、分发、再许可、出售本软件或本软件的副本，也不得将本软件用于生产环境或商业服务。
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
 
-本软件及其源代码按“现状”提供，不提供任何明示或默示的保证，包括但不限于适销性、特定用途适用性和不侵权保证。在适用法律允许的最大范围内，版权所有者不对因使用本软件产生的任何索赔、损害或其他责任负责。
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
 
-本许可仅适用于本项目原创代码、文档和素材。项目所使用的第三方依赖、字体、图标、模型及其他外部资源分别受其各自许可证约束；使用者应遵守相关许可证及适用法律。
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
