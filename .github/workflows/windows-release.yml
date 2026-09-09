@@ -56,8 +56,11 @@ jobs:
           }
           gh release view $tag *> $null
           if ($LASTEXITCODE -ne 0) {
-            $pre = if ($tag.Contains('-')) { '--prerelease' } else { @() }
-            gh release create $tag --title "墨枢 $tag：长篇小说创作工作台" --generate-notes @pre
+            if ($tag.Contains('-')) {
+              gh release create $tag --title "墨枢 $tag：长篇小说创作工作台" --generate-notes --prerelease
+            } else {
+              gh release create $tag --title "墨枢 $tag：长篇小说创作工作台" --generate-notes
+            }
           }
 
       - name: Upload Windows bundle
