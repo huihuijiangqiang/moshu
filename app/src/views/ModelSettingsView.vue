@@ -14,6 +14,9 @@ const form = reactive({
   providerName: '',
   baseUrl: '',
   model: '',
+  contextWindowTokens: 32768,
+  maxOutputTokens: 4096,
+  contextSafetyMarginTokens: 2048,
   apiKey: '',
   enabled: true
 })
@@ -34,6 +37,9 @@ function apply(value: UserModelConfig) {
   form.providerName = value.providerName
   form.baseUrl = value.baseUrl
   form.model = value.model
+  form.contextWindowTokens = value.contextWindowTokens
+  form.maxOutputTokens = value.maxOutputTokens
+  form.contextSafetyMarginTokens = value.contextSafetyMarginTokens
   form.apiKey = ''
   form.enabled = value.configured ? value.enabled : true
   deleteArmed.value = false
@@ -76,6 +82,9 @@ async function save() {
       providerName: form.providerName.trim(),
       baseUrl: form.baseUrl.trim(),
       model: form.model.trim(),
+      contextWindowTokens: form.contextWindowTokens,
+      maxOutputTokens: form.maxOutputTokens,
+      contextSafetyMarginTokens: form.contextSafetyMarginTokens,
       ...(form.apiKey.trim() ? { apiKey: form.apiKey.trim() } : {}),
       enabled: form.enabled,
       revision: config.value.revision
@@ -170,6 +179,19 @@ onMounted(() => {
             <span>模型名</span>
             <input v-model="form.model" required maxlength="200" placeholder="服务端实际支持的模型 ID">
           </label>
+          <div class="section-title model-capacity-title"><h2>模型容量</h2><span>按服务商公开参数填写</span></div>
+          <label>
+            <span>上下文窗口</span>
+            <input v-model.number="form.contextWindowTokens" required type="number" min="4096" max="2000000" step="1024">
+          </label>
+          <label>
+            <span>最大输出</span>
+            <input v-model.number="form.maxOutputTokens" required type="number" min="256" max="131072" step="256">
+          </label>
+          <label>
+            <span>安全余量</span>
+            <input v-model.number="form.contextSafetyMarginTokens" required type="number" min="256" max="262144" step="256">
+          </label>
           <label>
             <span>API Key</span>
             <input
@@ -198,6 +220,7 @@ onMounted(() => {
             <div><dt>生成来源</dt><dd>{{ configured && form.enabled ? '自定义服务' : '平台服务' }}</dd></div>
             <div><dt>连接检查</dt><dd :data-status="config.lastTestStatus">{{ testLabel }}</dd></div>
             <div><dt>密钥</dt><dd class="mono">{{ config.keyHint ?? '未保存' }}</dd></div>
+            <div><dt>上下文窗口</dt><dd class="mono">{{ config.contextWindowTokens.toLocaleString() }}</dd></div>
             <div><dt>配置版本</dt><dd class="mono">{{ config.revision || '—' }}</dd></div>
           </dl>
           <p class="security-note">密钥加密保存，之后不会再次显示。更换密钥时直接输入新值并保存。</p>
@@ -232,6 +255,7 @@ onMounted(() => {
 .model-layout { max-width: 1120px; margin: 0 auto; display: grid; grid-template-columns: minmax(0, 1.35fr) minmax(280px, .65fr); }
 .model-form, .model-audit { box-sizing: border-box; width: 100%; min-width: 0; padding: 34px clamp(24px, 4vw, 48px) 56px; }
 .model-form { display: grid; gap: 18px; border-right: var(--hair) solid var(--line); background: var(--paper); }
+.model-capacity-title { margin-top: 8px; }
 .model-audit { background: var(--panel-sunken); }
 .section-title { min-height: 34px; display: flex; align-items: baseline; justify-content: space-between; gap: 16px; border-bottom: 2px solid var(--ink); }
 .section-title h2 { margin: 0; font-size: 15px; }

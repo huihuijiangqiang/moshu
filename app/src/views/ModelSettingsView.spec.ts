@@ -18,6 +18,9 @@ const empty: UserModelConfig = {
   providerName: '',
   baseUrl: '',
   model: '',
+  contextWindowTokens: 32768,
+  maxOutputTokens: 4096,
+  contextSafetyMarginTokens: 2048,
   keyHint: null,
   enabled: false,
   revision: 0,
@@ -31,6 +34,9 @@ const saved: UserModelConfig = {
   providerName: '作者中转站',
   baseUrl: 'https://gateway.example.com/v1',
   model: 'novel-model',
+  contextWindowTokens: 256000,
+  maxOutputTokens: 32000,
+  contextSafetyMarginTokens: 16000,
   keyHint: 'sk-****cret',
   enabled: true,
   revision: 1,
@@ -57,7 +63,7 @@ describe('user model settings', () => {
     await inputs[0]!.setValue('作者中转站')
     await inputs[1]!.setValue('https://gateway.example.com/v1')
     await inputs[2]!.setValue('novel-model')
-    await inputs[3]!.setValue('sk-personal-secret')
+    await inputs[6]!.setValue('sk-personal-secret')
     await wrapper.get('form').trigger('submit')
     await flushPromises()
 
@@ -65,11 +71,14 @@ describe('user model settings', () => {
       providerName: '作者中转站',
       baseUrl: 'https://gateway.example.com/v1',
       model: 'novel-model',
+      contextWindowTokens: 32768,
+      maxOutputTokens: 4096,
+      contextSafetyMarginTokens: 2048,
       apiKey: 'sk-personal-secret',
       enabled: true,
       revision: 0
     })
-    expect((wrapper.findAll('.model-form input')[3]!.element as HTMLInputElement).value).toBe('')
+    expect((wrapper.findAll('.model-form input')[6]!.element as HTMLInputElement).value).toBe('')
     expect(wrapper.text()).toContain('sk-****cret')
     expect(wrapper.text()).not.toContain('sk-personal-secret')
 

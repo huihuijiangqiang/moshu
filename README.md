@@ -14,9 +14,9 @@
 - **一致性守卫**：展示冲突两端的证据，支持回到正文处理，不让模型静默改写作者设定。
 - **自然化审查**：按章或选区提示模板化衔接、句式节奏和修饰堆叠风险，可结合作者风格档和人物声口生成受事实锁约束的候选，修改必须由作者逐条确认并保留来源记录。
 - **漫剧分镜**：在独立改编版本中管理集、场景、镜头和人物视觉档案，镜头可维护景别、运镜、动作、对白、旁白与画面提示词。
-- **长文本基础设施**：PostgreSQL/pgvector 负责持久化与检索，Redis/Celery 承担异步分析和生成任务；正文按确定性分块覆盖全文，摘要、设定和向量检索分层装配。
+- **长文本基础设施**：PostgreSQL/pgvector 负责持久化与检索，Redis/Celery 承担异步分析和生成任务；正文按确定性分块覆盖全文，摘要、设定和向量检索分层装配，并按模型窗口弹性使用上下文。
 
-当前仓库包含 Vue 3 写作前端、FastAPI API、PostgreSQL/pgvector、Redis 与 Celery 异步任务，以及架构、计费和实现文档。后端当前 migration head 为 `036_password_reset_tokens`。
+当前仓库包含 Vue 3 写作前端、FastAPI API、PostgreSQL/pgvector、Redis 与 Celery 异步任务，以及架构、计费和实现文档。后端当前 migration head 为 `037_model_context_budgets`。
 
 ### 长篇一致性保障
 
@@ -24,7 +24,9 @@
 - 作品定位保存目标平台、核心卖点、主角困境、首个兑现点和长线承诺的不可变版本，章节场景卡片把 POV、地点、目标、阻力、转折和钩子绑定到具体章节；两者由同一装配链进入预览和真实生成。
 - AI 输出先进入候选草稿；上游 SSE 未收到完整结束标记时，草稿会标记为 `failed`，返回 `STREAM_INTERRUPTED`，不会进入正文。
 - Guard 优先使用确定性规则，对抽取器提供的结构化账目执行现金/库存、计件工资和资源数量校验；LLM 只负责抽取和补充软性问题，不负责最终算术结论。
-- 设定库使用 PostgreSQL/pgvector 检索，四层上下文预算上限为 25k token，正文、摘要、常驻设定和相关条目分层进入生成提示。
+- 设定库使用 PostgreSQL/pgvector 检索。平台模型默认按 256k 窗口计算，扣除实际输出预留与 16k 安全余量后，上下文材料最多使用 208k token；智能档按作品可用资料在 64k、128k、208k 间弹性扩展，快速、标准、深度档也可显式选择。
+- 检索按人物、地点、物品、伏笔和场景拆分意图，精确名称/别名与向量结果共用一个总配额；当前章、未来章、近场重复、旧正文 revision 和陈旧章节摘要不会进入远距证据。
+- 常驻设定、相关设定、摘要和最近正文按完整条目、段落或句子边界装配，空余预算可借给其他层；历史正文使用不可信引用边界，不能覆盖系统规则或作者当前指令。
 - 生成候选附带非阻断的规划覆盖报告，区分“规划已进入提示词”和“候选中找到字面证据”；语义兑现仍由作者判断。
 - `server/scripts/evaluate_long_novel.py` 可读取不入库的私有长篇 checkpoint，统计完成度、摘要/事实/向量覆盖、表层声口漂移和 token；检索与冲突召回只在提供人工 gold 时计算。
 
@@ -113,6 +115,9 @@ MODEL_GATEWAY_PREMIUM_KEY=your-api-key
 # 生成和一致性分析使用的模型名
 GENERATION_GATEWAY_TIER=main
 GENERATION_MODEL=your-text-model
+GENERATION_CONTEXT_WINDOW_TOKENS=256000
+GENERATION_MAX_OUTPUT_TOKENS=32000
+GENERATION_CONTEXT_SAFETY_MARGIN_TOKENS=16000
 CONSISTENCY_GATEWAY_TIER=main
 CONSISTENCY_SUMMARY_MODEL=your-text-model
 CONSISTENCY_EXTRACTION_MODEL=your-text-model
@@ -136,6 +141,8 @@ curl http://localhost:8000/health/ready
 - 基础地址：例如 `https://api.example.com/v1`，系统会自动拼接
   `/chat/completions`；也可以直接填写完整聊天端点；
 - 模型名：供应商实际接受的模型 ID；
+- 上下文窗口、最大输出和安全余量：按供应商公开参数填写；未知模型默认保守使用
+  `32768 / 4096 / 2048`，不会根据模型名猜测容量；
 - API key：只在保存或更新时提交，界面只显示脱敏提示。
 
 出于 SSRF 防护，用户自定义地址必须是可解析的公网 `https` 地址，不能包含账号密码、
@@ -211,7 +218,7 @@ MOSHU_REDIS_DATA_DIR=<redis-data-directory>
 ## 核心约束
 
 - 一章一文档，章节列表接口不返回正文。
-- 单次生成上下文不超过 25k token。
+- 单次生成严格服从所选模型的上下文窗口，并为输出和协议误差保留空间；平台材料上限为 208k token，短篇不会为了填满预算注入低相关内容。
 - AI 流式输出先进入 `aiDraft`，采纳后才成为正文。
 - 正文中的设定引用保存条目 ID，不保存显示名称。
 - MVP 阶段不引入 Yjs；多人协作留到工作室阶段。
@@ -248,7 +255,7 @@ ready/pending/failed/stale 分块、已完成向量的章节数和排队数；
 `POST /projects/{project_id}/chapter-chunks/reindex` 以异步 outbox 方式批量重建当前正文版本。
 查看需要作品权限，批量重建需要项目管理权限；重建不会改写正文或正文版本历史。
 
-最近一次后端回归记录：`1455 passed, 38 skipped`；本轮前端回归为 `172 passed`。后端被跳过的
+最近一次后端回归记录：`1475 passed, 38 skipped`；本轮前端回归为 `174 passed`。后端被跳过的
 测试需要显式配置真实 PostgreSQL/pgvector 集成环境；测试正文、模型 key、`.env` 和 Docker
 数据卷均不提交 Git。
 

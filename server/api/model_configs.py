@@ -5,11 +5,17 @@ from __future__ import annotations
 from datetime import UTC, datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from api.auth import get_current_user
+from config import (
+    DEFAULT_CONTEXT_SAFETY_MARGIN_TOKENS,
+    DEFAULT_CONTEXT_WINDOW_TOKENS,
+    DEFAULT_MAX_OUTPUT_TOKENS,
+    MIN_CONTEXT_INPUT_TOKENS,
+)
 from db.models_core import User
 from db.models_model_config import UserModelConfig
 from db.session import get_db
@@ -31,9 +37,44 @@ class ModelConfigWrite(BaseModel):
     provider_name: str = Field(alias="providerName", min_length=1, max_length=100)
     base_url: str = Field(alias="baseUrl", min_length=1, max_length=1000)
     model: str = Field(min_length=1, max_length=200)
+    context_window_tokens: int = Field(
+        default=DEFAULT_CONTEXT_WINDOW_TOKENS,
+        alias="contextWindowTokens",
+        strict=True,
+        ge=4_096,
+        le=2_000_000,
+    )
+    max_output_tokens: int = Field(
+        default=DEFAULT_MAX_OUTPUT_TOKENS,
+        alias="maxOutputTokens",
+        strict=True,
+        ge=256,
+        le=131_072,
+    )
+    context_safety_margin_tokens: int = Field(
+        default=DEFAULT_CONTEXT_SAFETY_MARGIN_TOKENS,
+        alias="contextSafetyMarginTokens",
+        strict=True,
+        ge=256,
+        le=262_144,
+    )
     api_key: str | None = Field(default=None, alias="apiKey", min_length=8, max_length=512)
     enabled: bool = True
     revision: int = Field(default=0, ge=0)
+
+    @model_validator(mode="after")
+    def validate_context_budget(self) -> "ModelConfigWrite":
+        available_input = (
+            self.context_window_tokens
+            - self.max_output_tokens
+            - self.context_safety_margin_tokens
+        )
+        if available_input < MIN_CONTEXT_INPUT_TOKENS:
+            raise ValueError(
+                "context budget must reserve at least "
+                f"{MIN_CONTEXT_INPUT_TOKENS} tokens for input"
+            )
+        return self
 
 
 class ModelConfigTest(BaseModel):
@@ -51,6 +92,9 @@ def _payload(config: UserModelConfig | None) -> dict:
             "providerName": "",
             "baseUrl": "",
             "model": "",
+            "contextWindowTokens": DEFAULT_CONTEXT_WINDOW_TOKENS,
+            "maxOutputTokens": DEFAULT_MAX_OUTPUT_TOKENS,
+            "contextSafetyMarginTokens": DEFAULT_CONTEXT_SAFETY_MARGIN_TOKENS,
             "keyHint": None,
             "enabled": False,
             "revision": 0,
@@ -63,6 +107,9 @@ def _payload(config: UserModelConfig | None) -> dict:
         "providerName": config.provider_name,
         "baseUrl": config.base_url,
         "model": config.model,
+        "contextWindowTokens": config.context_window_tokens,
+        "maxOutputTokens": config.max_output_tokens,
+        "contextSafetyMarginTokens": config.context_safety_margin_tokens,
         "keyHint": config.api_key_hint,
         "enabled": config.enabled,
         "revision": config.revision,
@@ -129,6 +176,9 @@ async def save_model_config(
             provider_name=provider_name,
             base_url=base_url,
             model=model,
+            context_window_tokens=request.context_window_tokens,
+            max_output_tokens=request.max_output_tokens,
+            context_safety_margin_tokens=request.context_safety_margin_tokens,
             api_key_ciphertext=ciphertext,
             api_key_hint=api_key_hint(request.api_key),
             enabled=request.enabled,
@@ -142,6 +192,9 @@ async def save_model_config(
         config.provider_name = provider_name
         config.base_url = base_url
         config.model = model
+        config.context_window_tokens = request.context_window_tokens
+        config.max_output_tokens = request.max_output_tokens
+        config.context_safety_margin_tokens = request.context_safety_margin_tokens
         config.enabled = request.enabled
         if request.api_key is not None:
             try:

@@ -4,12 +4,23 @@
 from pathlib import Path
 from typing import Optional
 
-from pydantic import field_validator
+from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 # Resolve .env relative to this module so Celery, Alembic, pytest, and server
 # startup all read the same local configuration regardless of cwd.
 _ENV_FILE = Path(__file__).resolve().parent / ".env"
+
+# Unknown BYOK model identifiers must not silently inherit the platform
+# model's larger context window. Users may override these conservative values
+# only within the validated bounds below.
+DEFAULT_CONTEXT_WINDOW_TOKENS = 32_768
+DEFAULT_MAX_OUTPUT_TOKENS = 4_096
+DEFAULT_CONTEXT_SAFETY_MARGIN_TOKENS = 2_048
+MIN_CONTEXT_INPUT_TOKENS = 1_024
+DEFAULT_GENERATION_CONTEXT_WINDOW_TOKENS = 256_000
+DEFAULT_GENERATION_MAX_OUTPUT_TOKENS = 32_000
+DEFAULT_GENERATION_CONTEXT_SAFETY_MARGIN_TOKENS = 16_000
 
 
 class Settings(BaseSettings):
@@ -100,6 +111,15 @@ class Settings(BaseSettings):
     generation_model: Optional[str] = None
     generation_reasoning_effort: str = "low"
     generation_request_timeout: float = 600.0
+    generation_context_window_tokens: int = Field(
+        default=DEFAULT_GENERATION_CONTEXT_WINDOW_TOKENS, ge=4_096, le=2_000_000
+    )
+    generation_max_output_tokens: int = Field(
+        default=DEFAULT_GENERATION_MAX_OUTPUT_TOKENS, ge=256, le=131_072
+    )
+    generation_context_safety_margin_tokens: int = Field(
+        default=DEFAULT_GENERATION_CONTEXT_SAFETY_MARGIN_TOKENS, ge=256, le=262_144
+    )
 
     # User-provided model keys are encrypted at rest. Deployments should set a
     # dedicated value; the JWT key is a backward-compatible derivation source.
@@ -113,6 +133,20 @@ class Settings(BaseSettings):
                 "embedding_dimensions must be 2048 for the HALFVEC(2048) schema"
             )
         return value
+
+    @model_validator(mode="after")
+    def validate_context_budget(self) -> "Settings":
+        available_input = (
+            self.generation_context_window_tokens
+            - self.generation_max_output_tokens
+            - self.generation_context_safety_margin_tokens
+        )
+        if available_input < MIN_CONTEXT_INPUT_TOKENS:
+            raise ValueError(
+                "context budget must reserve at least "
+                f"{MIN_CONTEXT_INPUT_TOKENS} tokens for input"
+            )
+        return self
 
     @property
     def cors_origins_list(self) -> list[str]:

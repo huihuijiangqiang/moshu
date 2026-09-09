@@ -1310,8 +1310,10 @@ const realApi = {
       body: JSON.stringify({ action, issue_rev: issueRev })
     })
   },
-  async getContextLayers(_projectId: string, chapterId: string): Promise<ContextLayer[]> {
-    const result = await request<{ layers: ContextLayer[] }>(`/generate/context/${chapterId}`)
+  async getContextLayers(_projectId: string, chapterId: string, contextMode = 'smart'): Promise<ContextLayer[]> {
+    const result = await request<{ layers: ContextLayer[] }>(
+      `/generate/context/${chapterId}?contextMode=${encodeURIComponent(contextMode)}`
+    )
     return result.layers
   },
   draftParagraphs: []

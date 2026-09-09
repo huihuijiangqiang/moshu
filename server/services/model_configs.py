@@ -35,6 +35,9 @@ class UserGenerationRoute:
     endpoint: str
     model: str
     api_key: str = field(repr=False)
+    context_window_tokens: int = 32_768
+    max_output_tokens: int = 4_096
+    context_safety_margin_tokens: int = 2_048
 
 
 @dataclass(frozen=True)
@@ -163,6 +166,9 @@ async def active_user_generation_route(
         endpoint=chat_completions_url(config.base_url),
         model=config.model,
         api_key=decrypt_api_key(config.api_key_ciphertext, user_id=user_id, config_id=config.id),
+        context_window_tokens=config.context_window_tokens,
+        max_output_tokens=config.max_output_tokens,
+        context_safety_margin_tokens=config.context_safety_margin_tokens,
     )
 
 

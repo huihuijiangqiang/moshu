@@ -355,7 +355,7 @@ body { font-family: var(--font-ui); font-size: var(--fs); }
 }
 
 /* ══ 上下文预算条 ══
-   四层预算是产品的核心约束，必须能一眼看出哪一层吃掉了 25k。 */
+   四层预算是产品的核心约束，必须能一眼看出每层的实际占用。 */
 .bar { height: 4px; background: var(--line); }
 .bar > span { display: block; height: 100%; background: var(--ink-3); }
 .bar[data-layer='resident'] > span { background: var(--ink); }

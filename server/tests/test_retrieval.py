@@ -21,7 +21,11 @@ from db.models_codex import (
 )
 from db.models_consistency_extended import DocumentSummary
 from services.providers import MockEmbeddingProvider
-from services.retrieval import ConsistencyRetrieval
+from services.retrieval import (
+    ConsistencyRetrieval,
+    deduplicate_retrieval_results,
+    normalize_structured_queries,
+)
 
 
 @pytest.fixture
@@ -31,6 +35,32 @@ def retrieval():
 
 class _StopExecutionError(Exception):
     """拦下 db.execute 之后用来终止调用链的哨兵异常。"""
+
+
+class RecordingStructuredRetrieval(ConsistencyRetrieval):
+    def __init__(self, *, entity_results=None, chunk_results=None):
+        super().__init__(embedding_provider=None)
+        self.entity_results = entity_results or {}
+        self.chunk_results = chunk_results or {}
+        self.entity_calls = []
+        self.chunk_calls = []
+
+    async def retrieve_similar_entities_l3(
+        self, db, project_id, query_text, top_k=5, threshold=0.8, kinds=None,
+        exclude_entry_ids=None, statuses=None,
+    ):
+        self.entity_calls.append(
+            {"query_text": query_text, "top_k": top_k, "threshold": threshold, "kinds": kinds}
+        )
+        return list(self.entity_results.get(query_text, []))
+
+    async def retrieve_chapter_chunks_l3(
+        self, db, project_id, query_text, *, top_k=8, threshold=0.55, chapter_ids=None,
+    ):
+        self.chunk_calls.append(
+            {"query_text": query_text, "top_k": top_k, "threshold": threshold, "chapter_ids": chapter_ids}
+        )
+        return list(self.chunk_results.get(query_text, []))
 
 
 def make_entry(entry_id: str, project_id: str = "proj_a", **overrides) -> CodexEntry:
@@ -478,3 +508,182 @@ async def test_missing_chapter_returns_empty(async_db_session, seed_project, ret
     await seed_project()
 
     assert await retrieval.retrieve_adjacent_summaries_l4(async_db_session, "ch_missing") == []
+
+
+# --- structured multi-query retrieval -----------------------------------------
+
+
+def test_structured_queries_normalize_groups_terms_and_aliases():
+    result = normalize_structured_queries(
+        {
+            "人物": ["  阿宁  ", "阿宁", "Ame\u0301lie"],
+            "scenes": " 雨夜追逐 ",
+            "items": [" ", "玉佩"],
+        }
+    )
+
+    assert result == {
+        "characters": ["阿宁", "Amélie"],
+        "items": ["玉佩"],
+        "scenes": ["雨夜追逐"],
+    }
+    with pytest.raises(ValueError, match="unknown structured query group"):
+        normalize_structured_queries({"factions": ["商会"]})
+
+
+def test_structured_result_deduplication_uses_hash_and_normalized_content():
+    results = deduplicate_retrieval_results(
+        [
+            {"chunk_id": "a", "content_hash": "same", "content_text": "雨夜 追逐"},
+            {"chunk_id": "b", "content_hash": "same", "content_text": "另一段"},
+            {"chunk_id": "c", "content_hash": "different", "content_text": " 雨夜   追逐 "},
+            {"chunk_id": "d", "content_hash": "unique", "content_text": "城门关闭"},
+        ]
+    )
+
+    assert [row["chunk_id"] for row in results] == ["a", "d"]
+
+
+async def test_structured_retrieval_prefers_typed_exact_alias_and_deduplicates_vector_hit(
+    async_db_session, seed_project
+):
+    await seed_project(chapter_ids=("ch_1",))
+    entry = make_entry("cx_ning", kind="character", name="宁晚")
+    async_db_session.add(entry)
+    await async_db_session.flush()
+    async_db_session.add(CodexAlias(entry_id=entry.id, alias="小宁"))
+    await async_db_session.flush()
+    vector_copy = {
+        "entry_id": entry.id,
+        "chunk_id": None,
+        "name": entry.name,
+        "kind": entry.kind,
+        "source": "codex_vector",
+        "reason": "semantic_similarity",
+        "score": 0.99,
+        "content_text": "character: 宁晚\n描述",
+        "content_hash": "vector-hash",
+        "chapter_id": None,
+        "body_rev": None,
+    }
+    retrieval = RecordingStructuredRetrieval(entity_results={"小宁": [vector_copy]})
+
+    results = await retrieval.retrieve_structured_context(
+        async_db_session,
+        "proj_a",
+        {"characters": ["小宁"]},
+        current_chapter_id="ch_1",
+        top_k=3,
+    )
+
+    assert len(results) == 1
+    assert results[0]["entry_id"] == entry.id
+    assert results[0]["source"] == "codex_alias"
+    assert results[0]["reason"] == "exact_name_or_alias:characters"
+    assert results[0]["score"] == 1.0
+    assert results[0]["content_hash"]
+    assert results[0]["chapter_id"] is None
+    assert retrieval.entity_calls[0]["kinds"] == ["character"]
+
+
+async def test_structured_retrieval_excludes_current_future_and_near_chapters(
+    async_db_session, seed_project
+):
+    await seed_project(chapter_ids=("ch_1", "ch_2", "ch_3", "ch_4", "ch_5", "ch_6"))
+    chunks = [
+        {
+            "chunk_id": "chunk-a", "chapter_id": "ch_1", "body_rev": 2,
+            "content_text": "雨夜 追逐", "content_hash": "hash-a", "score": 0.9,
+            "source": "chapter_chunk", "kind": "chapter_chunk",
+        },
+        {
+            "chunk_id": "chunk-b", "chapter_id": "ch_2", "body_rev": 3,
+            "content_text": "雨夜   追逐", "content_hash": "hash-b", "score": 0.88,
+            "source": "chapter_chunk", "kind": "chapter_chunk",
+        },
+        {
+            "chunk_id": "chunk-c", "chapter_id": "ch_3", "body_rev": 1,
+            "content_text": "城门关闭", "content_hash": "hash-c", "score": 0.8,
+            "source": "chapter_chunk", "kind": "chapter_chunk",
+        },
+    ]
+    retrieval = RecordingStructuredRetrieval(chunk_results={"雨夜追逐": chunks})
+
+    results = await retrieval.retrieve_structured_context(
+        async_db_session,
+        "proj_a",
+        {"scenes": ["雨夜追逐"]},
+        current_chapter_id="ch_5",
+        near_window=1,
+        top_k=4,
+    )
+
+    assert retrieval.chunk_calls[0]["chapter_ids"] == ["ch_1", "ch_2", "ch_3"]
+    assert [row["chunk_id"] for row in results] == ["chunk-a", "chunk-c"]
+    assert all(row["reason"] == "semantic_chapter:scenes" for row in results)
+    assert results[0]["body_rev"] == 2
+
+
+async def test_structured_retrieval_enforces_one_global_budget_across_groups(
+    async_db_session, seed_project
+):
+    await seed_project(chapter_ids=("ch_1", "ch_2"))
+    terms = {
+        "characters": ["阿宁"],
+        "locations": ["北城"],
+        "items": ["玉佩"],
+        "foreshadows": ["旧信"],
+        "scenes": ["雨夜"],
+    }
+    entity_results = {
+        term[0]: [{
+            "entry_id": f"entry-{group}", "kind": group, "source": "codex_vector",
+            "reason": "semantic_similarity", "score": 0.9,
+            "content_text": f"entity {group}", "content_hash": f"entity-{group}",
+        }]
+        for group, term in terms.items()
+        if group != "scenes"
+    }
+    chunk_results = {
+        term[0]: [{
+            "chunk_id": f"chunk-{group}", "kind": "chapter_chunk", "source": "chapter_chunk",
+            "reason": "semantic_similarity", "score": 0.8,
+            "content_text": f"chunk {group}", "content_hash": f"chunk-{group}",
+            "chapter_id": "ch_1", "body_rev": 1,
+        }]
+        for group, term in terms.items()
+    }
+    retrieval = RecordingStructuredRetrieval(
+        entity_results=entity_results,
+        chunk_results=chunk_results,
+    )
+
+    results = await retrieval.retrieve_structured_context(
+        async_db_session,
+        "proj_a",
+        terms,
+        current_chapter_id="ch_2",
+        near_window=0,
+        top_k=5,
+    )
+
+    assert len(results) == 5
+    assert {row["query_kind"] for row in results} == set(terms)
+    assert all(call["top_k"] == 1 for call in retrieval.entity_calls + retrieval.chunk_calls)
+
+
+async def test_structured_retrieval_unknown_current_chapter_never_opens_future_body(
+    async_db_session, seed_project
+):
+    await seed_project(chapter_ids=("ch_1", "ch_2"))
+    retrieval = RecordingStructuredRetrieval()
+
+    results = await retrieval.retrieve_structured_context(
+        async_db_session,
+        "proj_a",
+        {"scenes": ["雨夜"]},
+        current_chapter_id="another-project-chapter",
+    )
+
+    assert results == []
+    assert retrieval.chunk_calls == []

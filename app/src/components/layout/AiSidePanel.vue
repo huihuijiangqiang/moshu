@@ -6,7 +6,7 @@ import { useProjectStore } from '@/stores/project'
 import { codexEntrySearchText, useCodexStore } from '@/stores/codex'
 import { useGuardStore } from '@/stores/guard'
 import { useStylesStore } from '@/stores/styles'
-import { CODEX_KIND_LABEL, type CodexEntry, type CodexStateHistoryItem, type ContextLayer, type GenerationControls, type ProjectNote } from '@/types'
+import { CODEX_KIND_LABEL, type CodexEntry, type CodexStateHistoryItem, type ContextLayer, type ContextMode, type GenerationControls, type ProjectNote } from '@/types'
 import { useProjectNavigation } from '@/composables/use-project-navigation'
 import { generationDraftApi, previewGeneration, type GenerationPreview } from '@/api/generation'
 import AppIcon from '@/components/ui/AppIcon.vue'
@@ -16,7 +16,7 @@ import type { GenerationDraftDecision, GenerationDraftDetail, GenerationDraftSum
 /**
  * AI 面板。三件事按重要性排：能不能生成（章纲 + 参数）、
  * 生成会带什么进去（四层预算）、生成前有什么没解决（守卫提醒）。
- * 四层预算是产品的硬约束，必须逐层可见 —— 作者要知道 25k 被谁吃掉了。
+ * 弹性预算必须逐层可见，作者应知道上下文被哪些材料占用。
  */
 const props = defineProps<{
   generating?: boolean
@@ -62,6 +62,7 @@ const layers = ref<ContextLayer[]>([])
 const tab = ref<'ai' | 'drafts' | 'refs' | 'review' | 'notes'>('ai')
 const targetWords = ref(3000)
 const model = ref<'basic' | 'advanced'>('basic')
+const contextMode = ref<ContextMode>('smart')
 const loadingContext = ref(false)
 const contextError = ref('')
 const selectedDraft = ref<GenerationDraftDetail | null>(null)
@@ -88,7 +89,15 @@ let referenceStateRequest = 0
 let previewRequest = 0
 let notesRequest = 0
 
-const BUDGET = 25000
+const CONTEXT_MODES: ReadonlyArray<{ value: ContextMode; label: string; budget: number; title: string }> = [
+  { value: 'smart', label: '智能', budget: 208000, title: '按作品长度与本章关联内容在 64k 至 208k 间弹性分配' },
+  { value: 'fast', label: '快速', budget: 64000, title: '减少远距资料，优先保证生成速度' },
+  { value: 'standard', label: '标准', budget: 128000, title: '兼顾最近正文、设定与历史摘要' },
+  { value: 'deep', label: '深度', budget: 208000, title: '为长篇关键章节加载更多远距证据' }
+]
+const CONTEXT_MODE_BUDGET = Object.fromEntries(
+  CONTEXT_MODES.map((item) => [item.value, item.budget])
+) as Record<ContextMode, number>
 const availableTabs = computed(() => props.mobileReadOnly
   ? (['notes'] as const)
   : (['ai', 'drafts', 'refs', 'review', 'notes'] as const))
@@ -163,14 +172,14 @@ function noteTime(value: string) {
 }
 
 watch(
-  () => [project.project?.id, project.activeId] as const,
-  async ([projectId, chapterId]) => {
+  () => [project.project?.id, project.activeId, contextMode.value] as const,
+  async ([projectId, chapterId, selectedContextMode]) => {
     if (!projectId || !chapterId) return
     loadingContext.value = true
     contextError.value = ''
     try {
       const [context] = await Promise.all([
-        contentApi.getContextLayers(projectId, chapterId),
+        contentApi.getContextLayers(projectId, chapterId, selectedContextMode),
         styles.load()
       ])
       layers.value = context
@@ -189,7 +198,8 @@ function generationOptions(): GenerationControls {
     targetWords: Math.max(200, Math.min(20000, targetWords.value || 3000)),
     model: model.value,
     useStyleProfile: true,
-    dialogueDensity: 'high'
+    dialogueDensity: 'high',
+    contextMode: contextMode.value
   }
 }
 
@@ -247,21 +257,56 @@ function closePromptPreview() {
 }
 
 const total = computed(() => layers.value.reduce((s, l) => s + l.tokens, 0))
-const over = computed(() => total.value > BUDGET)
+const contextBudgetLimit = computed(() => CONTEXT_MODE_BUDGET[contextMode.value])
+const over = computed(() => total.value > contextBudgetLimit.value)
 const k = (n: number) => (n / 1000).toFixed(1) + 'k'
-
-/** 每层的上限，和后端 assembler 的四层预算一致 */
-const CAP: Record<ContextLayer['key'], number> = {
-  resident: 6000,
-  retrieved: 5000,
-  summary: 4000,
-  adjacent: 10000
-}
+const layerShare = (tokens: number) => total.value ? Math.min(100, (tokens / total.value) * 100) : 0
 const LAYER_LABEL: Record<string, string> = {
   resident: '常驻设定',
   retrieved: '本章相关设定',
   summary: '前情摘要',
   adjacent: '相邻章节原文'
+}
+
+const previewContextStats = computed(() => {
+  if (!preview.value) return null
+  const value = preview.value
+  const stats = value.contextStats ?? value.context_stats
+  return {
+    mode: stats?.mode ?? value.tokenBudget.mode ?? contextMode.value,
+    budget: stats?.budgetTokens ?? stats?.budget_tokens ?? value.tokenBudget.total,
+    used: stats?.usedTokens ?? stats?.used_tokens ?? value.tokenBudget.context,
+    modelWindow: stats?.modelWindowTokens ?? stats?.model_window_tokens ?? value.tokenBudget.modelWindow,
+    reservedOutput: stats?.reservedOutputTokens ?? stats?.reserved_output_tokens ?? value.tokenBudget.reservedOutput,
+    safetyMargin: stats?.safetyMarginTokens ?? value.tokenBudget.safetyMargin,
+    usableContext: stats?.usableContextTokens ?? value.tokenBudget.usableContext
+  }
+})
+
+const previewContextSections = computed(() => {
+  if (!preview.value) return []
+  if (preview.value.sections?.length) {
+    return preview.value.sections.map((section, index) => ({
+      key: section.key ?? `${section.source ?? section.label ?? 'section'}-${index}`,
+      label: section.label ?? section.source ?? section.key ?? '上下文资料',
+      source: section.source,
+      included: section.includedTokens ?? section.included_tokens ?? 0,
+      available: section.availableTokens ?? section.available_tokens,
+      trimReason: section.trimReason ?? section.trim_reason
+    }))
+  }
+  return preview.value.layers.map((layer) => ({
+    key: layer.key,
+    label: layer.label ?? LAYER_LABEL[layer.key] ?? layer.key,
+    source: layer.source,
+    included: layer.tokens,
+    available: layer.availableTokens ?? layer.budgetTokens ?? layer.budget,
+    trimReason: layer.trimReason
+  }))
+})
+
+function contextModeLabel(mode?: ContextMode) {
+  return CONTEXT_MODES.find((item) => item.value === mode)?.label ?? '智能'
 }
 
 const cost = computed(() => (model.value === 'advanced' ? 35 : 18))
@@ -507,6 +552,28 @@ function forwardReviewDecision(round: ReviewRound, decision: 'approved' | 'chang
           <span>{{ preview.tokenBudget.prompt.toLocaleString() }} tokens</span>
         </div>
 
+        <section v-if="previewContextStats" class="prompt-preview-section context-stats" aria-label="上下文用量">
+          <div class="row-between">
+            <div class="wk-label">上下文用量 · {{ contextModeLabel(previewContextStats.mode) }}</div>
+            <span class="prompt-preview-metric">
+              {{ previewContextStats.used.toLocaleString() }} / {{ previewContextStats.budget.toLocaleString() }}
+            </span>
+          </div>
+          <div class="context-stat-grid">
+            <span v-if="previewContextStats.modelWindow"><small>模型窗口</small>{{ k(previewContextStats.modelWindow) }}</span>
+            <span v-if="previewContextStats.reservedOutput"><small>输出预留</small>{{ k(previewContextStats.reservedOutput) }}</span>
+            <span v-if="previewContextStats.safetyMargin"><small>安全余量</small>{{ k(previewContextStats.safetyMargin) }}</span>
+            <span v-if="previewContextStats.usableContext"><small>可用上限</small>{{ k(previewContextStats.usableContext) }}</span>
+          </div>
+          <div v-if="previewContextSections.length" class="context-section-list">
+            <div v-for="section in previewContextSections" :key="section.key" class="context-section-row">
+              <span><strong>{{ section.label }}</strong><small v-if="section.source">{{ section.source }}</small></span>
+              <span>{{ section.included.toLocaleString() }}<template v-if="section.available !== undefined"> / {{ section.available.toLocaleString() }}</template></span>
+              <p v-if="section.trimReason">{{ section.trimReason }}</p>
+            </div>
+          </div>
+        </section>
+
         <section class="prompt-preview-section" aria-labelledby="preflight-title">
           <div class="wk-label" id="preflight-title">生成前检查</div>
           <p
@@ -638,6 +705,20 @@ function forwardReviewDecision(round: ReviewRound, decision: 'approved' | 'chang
             <input v-model.number="targetWords" class="wk-input" type="number" step="500"
                    :style="{ width: '120px', height: '22px', fontFamily: 'var(--font-mono)' }">
           </label>
+          <div class="context-mode-field">
+            <span>上下文范围</span>
+            <div class="context-mode-control" role="radiogroup" aria-label="上下文范围">
+              <button
+                v-for="item in CONTEXT_MODES"
+                :key="item.value"
+                type="button"
+                role="radio"
+                :aria-checked="contextMode === item.value"
+                :title="item.title"
+                @click="contextMode = item.value"
+              >{{ item.label }}</button>
+            </div>
+          </div>
           <div class="row-between">
             <span :style="{ color: 'var(--ink-2)' }">风格档</span>
             <span>{{ styleName }}</span>
@@ -649,17 +730,17 @@ function forwardReviewDecision(round: ReviewRound, decision: 'approved' | 'chang
         </div>
       </section>
 
-      <!-- 四层上下文预算 -->
+      <!-- 当前上下文素材 -->
       <section class="wk-sec">
         <div class="row-between" :style="{ marginBottom: 'var(--u2)' }">
-          <span class="wk-label">上下文预算</span>
+          <span class="wk-label">上下文预算 · {{ contextModeLabel(contextMode) }}</span>
           <span
             :style="{
               fontFamily: 'var(--font-mono)', fontSize: 'var(--fs-sm)',
               color: over ? 'var(--alert-ink)' : 'var(--ink-3)',
               fontWeight: over ? 700 : 400
             }"
-          >{{ k(total) }} / 25k</span>
+          >{{ k(total) }} / {{ k(contextBudgetLimit) }}</span>
         </div>
 
         <div :style="{ display: 'grid', gap: 'var(--u2)' }">
@@ -667,11 +748,11 @@ function forwardReviewDecision(round: ReviewRound, decision: 'approved' | 'chang
             <div class="row-between" :style="{ fontSize: 'var(--fs-sm)', marginBottom: '3px' }">
               <span :title="l.detail" :style="{ color: 'var(--ink-2)' }">{{ l.label }}</span>
               <span :style="{ fontFamily: 'var(--font-mono)', color: 'var(--ink-3)' }">
-                {{ k(l.tokens) }} / {{ k(CAP[l.key]) }}
+                {{ k(l.tokens) }}
               </span>
             </div>
-            <div class="bar" :data-layer="l.key" :data-over="l.tokens > CAP[l.key]">
-              <span :style="{ width: Math.min(100, (l.tokens / CAP[l.key]) * 100) + '%' }" />
+            <div class="bar" :data-layer="l.key">
+              <span :style="{ width: layerShare(l.tokens) + '%' }" />
             </div>
           </div>
         </div>
@@ -948,6 +1029,37 @@ function forwardReviewDecision(round: ReviewRound, decision: 'approved' | 'chang
 .prompt-preview-checks li { padding-left: 2px; }
 .prompt-preview-checks strong { display: block; color: var(--ink-2); font-family: var(--font-mono); font-size: 10px; font-weight: 500; }
 .prompt-preview-metric { color: var(--ink-3); font: 10px var(--font-mono); }
+.context-stat-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 1px;
+  margin-top: var(--u2);
+  background: var(--line);
+  border: var(--hair) solid var(--line);
+}
+.context-stat-grid > span {
+  min-width: 0;
+  display: grid;
+  gap: 2px;
+  padding: 7px 8px;
+  color: var(--ink-2);
+  background: var(--panel);
+  font: 11px/1.35 var(--font-mono);
+}
+.context-stat-grid small { color: var(--ink-4); font-family: var(--font-ui); font-size: 9px; }
+.context-section-list { margin-top: var(--u2); border-top: var(--hair) solid var(--line); }
+.context-section-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 3px var(--u2);
+  padding: 7px 0;
+  border-bottom: var(--hair) solid var(--line);
+}
+.context-section-row > span:first-child { min-width: 0; display: flex; align-items: baseline; gap: 6px; }
+.context-section-row strong { overflow: hidden; color: var(--ink-2); font-size: var(--fs-xs); text-overflow: ellipsis; white-space: nowrap; }
+.context-section-row small { color: var(--ink-4); font-size: 9px; }
+.context-section-row > span:nth-child(2) { color: var(--ink-4); font: 10px/1.5 var(--font-mono); }
+.context-section-row p { grid-column: 1 / -1; margin: 0; color: var(--alert-ink); font-size: 10px; line-height: 1.5; }
 .prompt-layer, .prompt-message { margin-top: 5px; background: var(--panel); border: var(--hair) solid var(--line); }
 .prompt-layer summary, .prompt-message summary { display: flex; justify-content: space-between; gap: var(--u2); padding: 7px 8px; color: var(--ink-2); font-size: var(--fs-xs); cursor: pointer; list-style: none; }
 .prompt-layer summary::-webkit-details-marker, .prompt-message summary::-webkit-details-marker { display: none; }
@@ -1057,6 +1169,28 @@ function forwardReviewDecision(round: ReviewRound, decision: 'approved' | 'chang
 .generation-recovery p { margin: 0; font-size: var(--fs-sm); line-height: 1.65; overflow-wrap: anywhere; }
 .generation-recovery-actions { display: flex; flex-wrap: wrap; gap: var(--u2); }
 .generation-recovery small { color: var(--ink-3); font-size: var(--fs-xs); line-height: 1.5; }
+.context-mode-field { display: grid; gap: 5px; color: var(--ink-2); }
+.context-mode-control {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  min-height: 27px;
+  overflow: hidden;
+  border: var(--hair) solid var(--line-strong);
+  border-radius: 3px;
+}
+.context-mode-control button {
+  min-width: 0;
+  padding: 0 3px;
+  color: var(--ink-3);
+  background: transparent;
+  border: 0;
+  border-left: var(--hair) solid var(--line);
+  font-size: var(--fs-xs);
+  cursor: pointer;
+}
+.context-mode-control button:first-child { border-left: 0; }
+.context-mode-control button[aria-checked='true'] { color: var(--ink); background: var(--panel-sunken); font-weight: 700; }
+.context-mode-control button:focus-visible { position: relative; outline: 2px solid var(--primary); outline-offset: -2px; }
 .quick-notes { padding: var(--u3); }
 .quick-note-form { padding-bottom: var(--u4); border-bottom: var(--hair) solid var(--line-strong); }
 .quick-note-form textarea { width: 100%; min-height: 118px; padding: var(--u3); resize: vertical; line-height: 1.7; }

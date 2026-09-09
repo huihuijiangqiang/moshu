@@ -1,6 +1,9 @@
+import pytest
+from pydantic import ValidationError
 from sqlalchemy import select
 
 from api.model_configs import get_model_config_probe
+from config import Settings
 from db.models_core import User
 from db.models_model_config import UserModelConfig
 from main import app
@@ -70,6 +73,9 @@ async def test_model_config_is_encrypted_masked_isolated_and_versioned(
     assert payload["baseUrl"] == "https://gateway.example.com/v1"
     assert payload["keyHint"] == "sk-****cret"
     assert payload["revision"] == 1
+    assert payload["contextWindowTokens"] == 32_768
+    assert payload["maxOutputTokens"] == 4_096
+    assert payload["contextSafetyMarginTokens"] == 2_048
     assert "sk-personal-secret" not in created.text
 
     stored = (await async_db_session.execute(select(UserModelConfig))).scalar_one()
@@ -89,14 +95,23 @@ async def test_model_config_is_encrypted_masked_isolated_and_versioned(
             "providerName": "我的中转站",
             "baseUrl": "https://gateway.example.com/v1",
             "model": "novel-model-v2",
+            "contextWindowTokens": 128_000,
+            "maxOutputTokens": 16_000,
+            "contextSafetyMarginTokens": 8_000,
             "enabled": False,
             "revision": 1,
         },
     )
     assert updated.status_code == 200
     assert updated.json()["revision"] == 2
+    assert updated.json()["contextWindowTokens"] == 128_000
+    assert updated.json()["maxOutputTokens"] == 16_000
+    assert updated.json()["contextSafetyMarginTokens"] == 8_000
     assert updated.json()["keyHint"] == "sk-****cret"
     await async_db_session.refresh(stored)
+    assert stored.context_window_tokens == 128_000
+    assert stored.max_output_tokens == 16_000
+    assert stored.context_safety_margin_tokens == 8_000
     assert decrypt_api_key(
         stored.api_key_ciphertext, user_id="model_owner", config_id=stored.id
     ) == "sk-personal-secret"
@@ -113,6 +128,60 @@ async def test_model_config_is_encrypted_masked_isolated_and_versioned(
     )
     assert conflict.status_code == 409
     assert conflict.json()["detail"]["currentRevision"] == 2
+
+
+@pytest.mark.parametrize(
+    ("budget", "invalid_value"),
+    [
+        ({"contextWindowTokens": 4095}, 4095),
+        ({"contextWindowTokens": 2_000_001}, 2_000_001),
+        ({"maxOutputTokens": 255}, 255),
+        ({"maxOutputTokens": 131_073}, 131_073),
+        ({"contextSafetyMarginTokens": 255}, 255),
+        ({"contextSafetyMarginTokens": 262_145}, 262_145),
+        ({"contextWindowTokens": "32768"}, "32768"),
+        (
+            {
+                "contextWindowTokens": 4096,
+                "maxOutputTokens": 3072,
+                "contextSafetyMarginTokens": 256,
+            },
+            4096,
+        ),
+    ],
+)
+async def test_model_config_rejects_invalid_context_budgets(
+    app_client, async_db_session, auth_headers, budget, invalid_value
+):
+    await _users(async_db_session)
+    response = await app_client.put(
+        "/account/model-config",
+        headers=auth_headers("model_owner"),
+        json={
+            "providerName": "provider",
+            "baseUrl": "https://gateway.example.com/v1",
+            "model": "unknown-custom-model",
+            "apiKey": "sk-personal-secret",
+            "revision": 0,
+            **budget,
+        },
+    )
+    assert response.status_code == 422, invalid_value
+
+
+def test_platform_generation_context_budget_defaults_and_relation():
+    platform = Settings(_env_file=None)
+    assert platform.generation_context_window_tokens == 256_000
+    assert platform.generation_max_output_tokens == 32_000
+    assert platform.generation_context_safety_margin_tokens == 16_000
+
+    with pytest.raises(ValidationError, match="reserve at least 1024 tokens"):
+        Settings(
+            _env_file=None,
+            generation_context_window_tokens=4096,
+            generation_max_output_tokens=3072,
+            generation_context_safety_margin_tokens=256,
+        )
 
 
 async def test_model_config_rejects_non_public_or_credentialed_endpoints(

@@ -82,6 +82,7 @@ async def test_successful_sse_stream_still_yields_text_and_usage():
     def handler(request: httpx.Request) -> httpx.Response:
         assert str(request.url) == "https://gateway.invalid/v1/chat/completions"
         assert request.headers["authorization"] == "Bearer test-key"
+        assert json.loads(request.content)["max_tokens"] == 1800
         return httpx.Response(200, request=request, text=body)
 
     client = httpx.AsyncClient(transport=httpx.MockTransport(handler))

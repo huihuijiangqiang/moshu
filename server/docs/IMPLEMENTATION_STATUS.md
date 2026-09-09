@@ -6,11 +6,11 @@
 所有声明基于实际代码与测试结果，不夸大、不省略已知缺口。
 
 **关键事实**：
-- ✅ 62 张表完整 Alembic 覆盖，增量迁移已到 `036_password_reset_tokens`
-- ✅ 1455 个单元/功能测试通过，38 个需要真实外部依赖的集成测试按条件跳过（SQLite in-memory，受控 embedding/LLM provider）
-- ✅ 前端 172 个测试、TypeScript 类型检查和生产构建通过
+- ✅ 62 张表完整 Alembic 覆盖，增量迁移已到 `037_model_context_budgets`
+- ✅ 1475 个单元/功能测试通过，38 个需要真实外部依赖的集成测试按条件跳过（SQLite in-memory，受控 embedding/LLM provider）
+- ✅ 前端 174 个测试、TypeScript 类型检查和生产构建通过
 - ✅ 前端生产与开发依赖均通过 `npm audit`，当前为 0 个已知漏洞（2026-09-07）
-- ✅ 38 个集成测试已在 Docker 真实 PostgreSQL + pgvector 环境通过；`036_password_reset_tokens` 已完成迁移契约校验
+- ✅ 38 个集成测试已在 Docker 真实 PostgreSQL + pgvector 环境通过；`037_model_context_budgets` 已完成迁移契约校验
 - ✅ 已完成真实账号认证、作品创建、作品归档、分卷与章节增删改排、回收站和章纲编辑闭环
 - ✅ 大纲页支持卷排序、同卷章节排序与跨卷拖放；键盘/按钮排序保留为无障碍回退
 - ✅ P1 拆书分析支持 TXT/Markdown/DOCX/EPUB，内存解析章节结构、节奏节点和爽点分布；不落库、不调用模型、不扣作者积分
@@ -47,7 +47,7 @@
 - ✅ 七类确定性规则已由真实 `RuleScanner` 跑过 280 正例、140 hard negatives、20 easy negatives，
   recall / 证据定位 / hard-negative precision 均为 100%
 - ⚠️ 上述结构化评测不覆盖正文抽取和 LLM 仲裁的真实盲评质量，不能据此宣称全链路生产就绪
-- ✅ 2026-09-08 Docker Compose 真实验收：PostgreSQL/Redis/API/frontend/worker/dispatcher/beat 全部运行，迁移 head 为 `036_password_reset_tokens`；数据卷使用 Compose 配置的相对路径或部署环境显式配置，不绑定开发机盘符
+- ✅ 2026-09-09 Docker Compose 真实验收：PostgreSQL/Redis/API/frontend/worker/dispatcher/beat 全部运行，迁移 head 为 `037_model_context_budgets`；数据卷使用 Compose 配置的相对路径或部署环境显式配置，不绑定开发机盘符
 - ✅ `035_adaptation_refs` 在审核数据库执行前检查历史重复，当前重复数为 0；唯一索引已核验
 
 ### 性能基准（可重复）
@@ -176,9 +176,9 @@ PostgreSQL/pgvector 检索必须在真实部署上单独压测；该脚本只覆
   `002_embedding_halfvec_2048.py` 清理旧向量并迁移到 HALFVEC(2048)，以
   `halfvec_cosine_ops` 重建 HNSW 索引；upgrade/downgrade 均会要求重新回填向量
 - ✅ `alembic upgrade head --sql` 与 `alembic downgrade head:-1 --sql` 语法验证通过
-- ✅ 迁移契约的 516 项检查通过；代码已将 head 推进到 `036_password_reset_tokens`，覆盖新增表、唯一约束、
+- ✅ 迁移契约的 516 项检查通过；代码已将 head 推进到 `037_model_context_budgets`，覆盖新增表、唯一约束、
   CHECK 约束和时间戳非空契约
-- ✅ `034_chapter_chunks` 与 `035_adaptation_refs` 已在 Docker PostgreSQL 审核数据库执行，`036_password_reset_tokens` 已通过迁移一致性校验
+- ✅ `034_chapter_chunks`、`035_adaptation_refs`、`036_password_reset_tokens` 与 `037_model_context_budgets` 已在 Docker PostgreSQL 审核数据库执行
 
 ---
 
@@ -253,6 +253,9 @@ PostgreSQL/pgvector 检索必须在真实部署上单独压测；该脚本只覆
 - ✅ 失败与进行中状态使用 `role=alert` / `aria-live` 播报，辅助技术能感知生成状态变化
 - ✅ 未采纳候选不会进入正文版本、Codex、摘要、RAG、Guard、来源占比或导出
 - ✅ 用户可配置自己的 OpenAI 兼容正文生成服务；Prompt Preview 与真实生成复用同一路由，停用/删除后立即回退平台模型
+- ✅ 平台模型按 256k 窗口弹性装配，智能档按资料量扩展到 64k/128k/208k，快速/标准/深度档可人工选择；BYOK 明确保存窗口、输出和安全余量，未知模型保守降级
+- ✅ 人物、地点、物品、伏笔和场景使用结构化多查询，精确别名与向量召回共享总配额；未来章、近场重复、旧正文版本和陈旧摘要会在装配前排除
+- ✅ 历史正文和选区以不可信引用资料隔离，完整设定条目优先原子装配，正文只在段落、句子或 Unicode 字符边界裁剪
 - ✅ 自带 API Key 使用 AES-GCM 加密并绑定用户/配置 ID，API、提示词预览、错误和对象 repr 均不返回明文；密钥轮换使用乐观锁
 - ✅ 自定义地址只接受无凭据/查询参数的公网 HTTPS，并在调用前复查 DNS 解析结果；生产部署仍需以网络出口策略防御 DNS rebinding
 
@@ -598,16 +601,16 @@ PostgreSQL/pgvector 检索必须在真实部署上单独压测；该脚本只覆
 
 ### 5. 测试覆盖
 
-#### 单元测试（1455 passed，SQLite in-memory，受控 providers）
+#### 单元测试（1475 passed，SQLite in-memory，受控 providers）
 
-**全量测试结果**：1455 passed, 38 skipped（未设置集成测试 URL 时）；前端 172 passed
+**全量测试结果**：1475 passed, 38 skipped（未设置集成测试 URL 时）；前端 174 passed
 
 #### 前端依赖安全审计
 
 - ✅ `vitest` 已升级至 4.1.11，修复测试服务任意文件读取与执行风险
 - ✅ `happy-dom` 已升级至 20.14.0，修复 VM context escape 与跨源凭据泄露风险
 - ✅ `npm audit --omit=dev` 与完整 `npm audit` 均为 0 个已知漏洞
-- ✅ 作品定位、场景卡片、自然化审查、充值订单自动查单、漫剧静态编辑、任务中心和账号安全实现后 172 个前端测试、TypeScript 类型检查和 Vite 生产构建全部通过
+- ✅ 作品定位、场景卡片、自然化审查、充值订单自动查单、漫剧静态编辑、任务中心、账号安全和弹性上下文实现后 174 个前端测试、TypeScript 类型检查和 Vite 生产构建全部通过
 
 主要测试覆盖（不逐文件列举测试数量，以实际 pytest 结果为准）：
 - ✅ Codex 设定库：页面与 API 完整 CRUD、关系增改删与双向投影、引用删除保护、原子别名替换、可检索文本判据、两段式事务、deferred 降级、httpx 错误重试
@@ -629,7 +632,7 @@ PostgreSQL/pgvector 检索必须在真实部署上单独压测；该脚本只覆
 - ✅ 句式校样：规则原因、段落/字符定位、Unicode 偏移换算、定位与候选重写路由
 - ✅ 作品定位、场景卡片和自然化审查：项目隔离、乐观锁、不可变版本、正文边界、过期拒绝与来源回写
 - ✅ 生成规划覆盖：预览/SSE/运行记录同源、场景版本风险、拒绝段落后证据重算
-- ✅ 生成前预检：报告 prompt token、25k 硬预算、定位/场景卡风险和可继续状态；预检不扣额度、不调用模型
+- ✅ 生成前预检：报告 prompt token、模型窗口、弹性材料预算、输出预留、安全余量、定位/场景卡风险和可继续状态；预检不扣额度、不调用模型
 - ✅ 断点续写：失败草稿可从最后完整段落继续，校验源正文版本与哈希，生成新候选而不覆盖正式正文
 - ✅ 正文分块检索：当前版本语义搜索和显式 reindex，支持项目隔离与旧版本淘汰
 - ✅ 支付：渠道协议签名验签、回调幂等、载荷冲突、订单同步、退款冻结/恢复/冲正与 migration 约束
@@ -991,9 +994,9 @@ cd server
 - `server/tasks/consistency.py` - 一致性任务
 - `server/tasks/codex.py` - Codex 回填任务
 
-### 测试（1455 passed；另有 38 个真实 PostgreSQL 测试通过）
-- `server/tests/` - 单元/功能测试（1455 passed）
-- `app/src/**/*.spec.ts` - 前端测试（172 passed）
+### 测试（1475 passed；另有 38 个真实 PostgreSQL 测试通过）
+- `server/tests/` - 单元/功能测试（1475 passed）
+- `app/src/**/*.spec.ts` - 前端测试（174 passed）
 - `server/tests/integration/` - 集成测试（38 passed，需设置真实 PostgreSQL URL）
 
 ### 文档（1 个文件）
@@ -1003,10 +1006,10 @@ cd server
 
 ## 总结
 
-墨枢一致性后端已完成核心数据模型、服务层、API 端点和异步任务定义，1455 个单元/功能
+墨枢一致性后端已完成核心数据模型、服务层、API 端点和异步任务定义，1475 个单元/功能
 测试在 SQLite in-memory + 受控 providers 环境下通过，另有 38 个集成测试在真实
 PostgreSQL + pgvector 环境通过。真实认证、可吊销会话、管理员、工作室 RBAC、作品创建、
-作品归档、分卷与章节生命周期、虚拟化章节导航、写作台新建章节、作品定位、章纲、场景卡片、章节 POV、人物出场轨迹、逐章设定状态沿革、可编辑设定关系、资料与正文并排、故事/章节双序时间板、作者人工计划事件、正文版本历史与恢复、AI 多候选草稿及逐段审阅、自然化审查、移动端只读与私有速记、全书查找替换、章节审稿与段落批注、工作室章节任务与产量看板、全量导出、非覆盖备份恢复、风格指纹、AI 来源账本、拆书分析、作者生成用量与平台模型成本台账、任务中心和账号安全已经接通，前端 172 个测试与生产构建通过。
+作品归档、分卷与章节生命周期、虚拟化章节导航、写作台新建章节、作品定位、章纲、场景卡片、章节 POV、人物出场轨迹、逐章设定状态沿革、可编辑设定关系、资料与正文并排、故事/章节双序时间板、作者人工计划事件、正文版本历史与恢复、AI 多候选草稿及逐段审阅、自然化审查、移动端只读与私有速记、全书查找替换、章节审稿与段落批注、工作室章节任务与产量看板、全量导出、非覆盖备份恢复、风格指纹、AI 来源账本、拆书分析、作者生成用量与平台模型成本台账、任务中心、账号安全和弹性长篇上下文已经接通，前端 174 个测试与生产构建通过。
 
 **关键限制**：
 1. 七条确定性规则的 280/140 结构化评测门禁、模糊区间人工确认和多剧情线时间板已完成，但真实正文盲评仍需补充

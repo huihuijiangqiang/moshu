@@ -1,7 +1,33 @@
 import { request, requestResponse, USE_MOCK } from './http'
 import { mockApi } from './mock'
 import { getAccessToken } from './session'
-import type { GenerateOptions, GenerationCoverageReport, GenerationDraftDecision, GenerationDraftDetail, GenerationDraftSummary, GenerationMeta, InlineGenerateOptions } from '@/types'
+import type { ContextMode, GenerateOptions, GenerationCoverageReport, GenerationDraftDecision, GenerationDraftDetail, GenerationDraftSummary, GenerationMeta, InlineGenerateOptions } from '@/types'
+
+export interface GenerationContextStats {
+  mode?: ContextMode
+  budgetTokens?: number
+  usedTokens?: number
+  modelWindowTokens?: number
+  reservedOutputTokens?: number
+  safetyMarginTokens?: number
+  usableContextTokens?: number
+  budget_tokens?: number
+  used_tokens?: number
+  model_window_tokens?: number
+  reserved_output_tokens?: number
+}
+
+export interface GenerationContextSection {
+  key?: string
+  label?: string
+  source?: string
+  includedTokens?: number
+  availableTokens?: number
+  trimReason?: string | null
+  included_tokens?: number
+  available_tokens?: number
+  trim_reason?: string | null
+}
 
 export interface GenerationPreview {
   chapterId: string
@@ -16,7 +42,14 @@ export interface GenerationPreview {
     prompt: number
     context: number
     trimmedLayers: string[]
+    mode?: ContextMode
+    modelWindow?: number
+    reservedOutput?: number
+    safetyMargin?: number
+    usableContext?: number
   }
+  contextStats?: GenerationContextStats
+  context_stats?: GenerationContextStats
   preflight: {
     status: 'ready' | 'attention' | 'blocked'
     blocking: boolean
@@ -28,7 +61,19 @@ export interface GenerationPreview {
   skills: Array<{ id: string; version: string; category: string; priority: number }>
   scene: string
   coverage: GenerationCoverageReport
-  layers: Array<{ key: string; tokens: number; items: Array<Record<string, unknown>>; content: string }>
+  sections?: GenerationContextSection[]
+  layers: Array<{
+    key: string
+    label?: string
+    source?: string
+    tokens: number
+    budget?: number
+    availableTokens?: number
+    budgetTokens?: number
+    trimReason?: string | null
+    items: Array<Record<string, unknown>>
+    content: string
+  }>
   messages: Array<{ role: 'system' | 'user'; content: string }>
 }
 
@@ -57,6 +102,11 @@ export function streamInline(opts: InlineGenerateOptions, h: StreamHandlers): ()
 
 export async function previewGeneration(opts: GenerateOptions | InlineGenerateOptions): Promise<GenerationPreview> {
   if (USE_MOCK) {
+    const mockBudget = opts.contextMode === 'fast'
+      ? 64000
+      : opts.contextMode === 'deep'
+        ? 208000
+        : 128000
     return {
       chapterId: opts.chapterId,
       projectId: 'mock-project',
@@ -65,8 +115,18 @@ export async function previewGeneration(opts: GenerateOptions | InlineGenerateOp
       targetWords: opts.targetWords,
       model: { id: 'mock', tier: opts.model },
       provider: { source: 'platform', configId: null },
-      tokenBudget: { total: 25000, prompt: 0, context: 0, trimmedLayers: [] },
-      preflight: { status: 'ready', blocking: false, promptTokens: 0, budget: 25000, warningCount: 0, checks: [] },
+      tokenBudget: {
+        total: mockBudget,
+        prompt: 0,
+        context: 0,
+        trimmedLayers: [],
+        mode: opts.contextMode ?? 'smart',
+        modelWindow: 256000,
+        reservedOutput: 32000,
+        safetyMargin: 16000,
+        usableContext: 208000
+      },
+      preflight: { status: 'ready', blocking: false, promptTokens: 0, budget: mockBudget, warningCount: 0, checks: [] },
       skills: [],
       scene: 'general',
       coverage: {

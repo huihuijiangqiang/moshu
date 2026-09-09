@@ -554,12 +554,15 @@ export interface ContextLayer {
   tokens: number
 }
 
+export type ContextMode = 'smart' | 'fast' | 'standard' | 'deep'
+
 export interface GenerateOptions {
   chapterId: string
   targetWords: number
   model: 'basic' | 'advanced'
   useStyleProfile: boolean
   dialogueDensity: 'low' | 'mid' | 'high'
+  contextMode?: ContextMode
   instruction?: string
 }
 

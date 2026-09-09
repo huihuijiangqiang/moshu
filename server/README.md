@@ -117,7 +117,7 @@ uvicorn main:app --reload --host 0.0.0.0 --port 8000
 PostgreSQL、Redis 与 Alembic head，全部通过时返回 200，否则返回 503 和逐项状态。
 响应包含 `BUILD_REVISION`，用于判断正在运行的实例是否与待验收提交一致。
 
-当前 migration head 为 `036_password_reset_tokens`。更新代码后建议显式执行 migration
+当前 migration head 为 `037_model_context_budgets`。更新代码后建议显式执行 migration
 容器，再重建 API 和 worker，避免复用旧的已完成 migration 容器：
 
 ```bash
@@ -146,10 +146,11 @@ docker compose up -d --build api worker dispatcher beat frontend
 ### 核心模块
 - ✅ **四层上下文装配器** (`memory/assembler.py`)
   - Layer 1: 常驻设定（按 id 排序保证字节稳定，命中 prompt cache）
-  - Layer 2: 章纲名称/别名精确命中 → pgvector 向量兜底，排除常驻重复项
-  - Layer 3: 更早卷摘要 + 当前卷最近 20 条有效章摘要（允许中间章节尚未生成摘要）
-  - Layer 4: 最近两章已有正文，超预算时优先保留章末
-  - 预算裁剪：25k 上限，layer4→3→2 顺序削减，layer1 永不削
+  - Layer 2: 人物/地点/物品/伏笔/场景的名称与别名精确命中，pgvector 向量补充，共享全局 top-k
+  - Layer 3: 更早卷摘要 + 当前卷最近 20 条当前 revision 摘要 + 排除近场重复的远距正文证据
+  - Layer 4: 最近正文随快速/标准/深度档扩展，超预算时优先保留章末
+  - 预算裁剪：平台按 256k 窗口预留输出和 16k 安全余量，材料最多 208k；智能档按可用资料在 64k/128k/208k 间弹性增长
+  - 历史正文和选区均按不可信引用资料隔离，不能覆盖系统规则或作者当前指令
 
 - ✅ **真实生成链路** (`api/generate.py`, `services/generation.py`)
   - 版本化运行时写作 Skill：基础 → 题材 → 任务 → 场景 → 作者风格
@@ -199,7 +200,7 @@ docker compose up -d --build api worker dispatcher beat frontend
 session、管理员设置与审计、项目/工作室 RBAC、设定库 CRUD 与 embedding 回填、
 持续章纲、版本化正文保存、四层上下文、SSE 生成、导出备份、用量结算、Guard
 扫描与 LLM 仲裁、平台后台模型用量台账、移动端只读与私有速记均已接通。后端单元/功能
-测试为 1455 passed，另有 38 个需要真实 PostgreSQL/pgvector 的集成测试按条件跳过；前端测试为 172 passed。
+测试为 1475 passed，另有 38 个需要真实 PostgreSQL/pgvector 的集成测试按条件跳过；前端测试为 174 passed。
 
 仍需在生产数据上继续验证的事项：
 

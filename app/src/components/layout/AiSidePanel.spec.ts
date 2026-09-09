@@ -136,6 +136,115 @@ describe('writing reference side panel', () => {
     wrapper.unmount()
   })
 
+  it('sends the selected elastic context mode and explains preview usage', async () => {
+    const basePreview = await generationApi.previewGeneration({
+      chapterId: 'ch87',
+      targetWords: 3000,
+      model: 'basic',
+      useStyleProfile: true,
+      dialogueDensity: 'high',
+      contextMode: 'smart'
+    })
+    const previewSpy = vi.spyOn(generationApi, 'previewGeneration').mockResolvedValue({
+      ...basePreview,
+      tokenBudget: {
+        ...basePreview.tokenBudget,
+        mode: 'deep',
+        total: 208000,
+        context: 156000,
+        modelWindow: 256000,
+        reservedOutput: 32000,
+        safetyMargin: 16000,
+        usableContext: 208000
+      },
+      sections: [{
+        key: 'remote-evidence',
+        label: '远距正文证据',
+        source: '正文向量召回',
+        includedTokens: 48000,
+        availableTokens: 52000,
+        trimReason: '低相关内容已省略'
+      }]
+    })
+    const pinia = createPinia()
+    setActivePinia(pinia)
+    const router = createRouter({
+      history: createMemoryHistory(),
+      routes: [{ path: '/projects/:projectId/write', component: { template: '<div />' } }]
+    })
+    await router.push('/projects/p1/write')
+    await router.isReady()
+    await Promise.all([useProjectStore().load('p1'), useCodexStore().load('p1')])
+    vi.spyOn(contentApi, 'getContextLayers').mockResolvedValue([])
+    const wrapper = mount(AiSidePanel, {
+      attachTo: document.body,
+      props: { drafts: [], draftsLoading: false },
+      global: { plugins: [pinia, router] }
+    })
+    await flushPromises()
+
+    const deepMode = wrapper.findAll('.context-mode-control button').find((button) => button.text() === '深度')
+    if (!deepMode) throw new Error('deep context mode not found')
+    await deepMode.trigger('click')
+    expect(deepMode.attributes('aria-checked')).toBe('true')
+
+    const previewButton = wrapper.findAll('button').find((button) => button.text() === '预览提示词')
+    if (!previewButton) throw new Error('prompt preview button not found')
+    await previewButton.trigger('click')
+    await flushPromises()
+
+    expect(previewSpy).toHaveBeenLastCalledWith(expect.objectContaining({ contextMode: 'deep' }))
+    const region = wrapper.get('[role="region"]')
+    expect(region.text()).toContain('上下文用量 · 深度')
+    expect(region.text()).toContain('156,000 / 208,000')
+    expect(region.text()).toContain('正文向量召回')
+    expect(region.text()).toContain('低相关内容已省略')
+
+    await wrapper.get('button[data-primary="true"]').trigger('click')
+    await flushPromises()
+    expect(wrapper.emitted('generate')?.[0]?.[0]).toMatchObject({ contextMode: 'deep' })
+    wrapper.unmount()
+  })
+
+  it('keeps legacy prompt previews usable without elastic context metadata', async () => {
+    const basePreview = await generationApi.previewGeneration({
+      chapterId: 'ch87', targetWords: 3000, model: 'basic', useStyleProfile: true, dialogueDensity: 'high'
+    })
+    const { mode, modelWindow, reservedOutput, safetyMargin, usableContext, ...legacyBudget } = basePreview.tokenBudget
+    vi.spyOn(generationApi, 'previewGeneration').mockResolvedValue({
+      ...basePreview,
+      tokenBudget: legacyBudget,
+      sections: undefined,
+      contextStats: undefined,
+      context_stats: undefined
+    })
+    const pinia = createPinia()
+    setActivePinia(pinia)
+    const router = createRouter({
+      history: createMemoryHistory(),
+      routes: [{ path: '/projects/:projectId/write', component: { template: '<div />' } }]
+    })
+    await router.push('/projects/p1/write')
+    await router.isReady()
+    await Promise.all([useProjectStore().load('p1'), useCodexStore().load('p1')])
+    vi.spyOn(contentApi, 'getContextLayers').mockResolvedValue([])
+    const wrapper = mount(AiSidePanel, {
+      attachTo: document.body,
+      props: { drafts: [], draftsLoading: false },
+      global: { plugins: [pinia, router] }
+    })
+    await flushPromises()
+
+    const previewButton = wrapper.findAll('button').find((button) => button.text() === '预览提示词')
+    if (!previewButton) throw new Error('prompt preview button not found')
+    await previewButton.trigger('click')
+    await flushPromises()
+
+    expect(wrapper.get('[role="region"]').text()).toContain('上下文用量 · 智能')
+    expect(wrapper.get('[role="region"]').text()).toContain('0 / 128,000')
+    wrapper.unmount()
+  })
+
   it('blocks generation when the preflight reports a hard failure', async () => {
     const basePreview = await generationApi.previewGeneration({
       chapterId: 'ch87', targetWords: 3000, model: 'basic', useStyleProfile: true, dialogueDensity: 'high'

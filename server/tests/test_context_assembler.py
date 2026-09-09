@@ -1,9 +1,11 @@
+from unittest.mock import AsyncMock
+
 from db.models_codex import CodexAlias, CodexEntry, CodexRelation, CodexStateChange
 from db.models_consistency_extended import DocumentSummary
 from db.models_core import ChapterBody
 from db.models_positioning import ProjectPositioning
 from db.models_scene_cards import ChapterScene
-from memory.assembler import ContextAssembler
+from memory.assembler import ContextAssembler, ContextBudgetPolicy, ContextLayer
 from memory.tokenizer import tokenizer
 
 
@@ -109,8 +111,6 @@ async def test_context_assembler_builds_all_four_layers(
 
 def test_context_trim_uses_exact_token_budget_and_can_keep_tail():
     assembler = ContextAssembler(None, tokenizer)  # type: ignore[arg-type]
-    from memory.assembler import ContextLayer
-
     original = ContextLayer("adjacent", "开头" * 100 + "关键章末", 0, [])
     original.tokens = tokenizer.count(original.content)
     trimmed = assembler._trim_layer(original, 30, keep_tail=True)
@@ -118,6 +118,110 @@ def test_context_trim_uses_exact_token_budget_and_can_keep_tail():
     assert trimmed.tokens <= 30
     assert "关键章末" in trimmed.content
     assert trimmed.content.startswith("[前文已截断]")
+
+
+def test_context_policy_scales_smart_mode_and_respects_small_byok_windows():
+    platform = ContextBudgetPolicy.create()
+
+    assert platform.target_for(30_000) == 64_000
+    assert platform.target_for(90_000) == 128_000
+    assert platform.target_for(180_000) == 208_000
+
+    byok = ContextBudgetPolicy.create(
+        model_window_tokens=32_768,
+        reserved_output_tokens=4_096,
+        safety_margin_tokens=2_048,
+    )
+    assert byok.max_context_tokens == 26_624
+    assert byok.target_for(180_000) == 26_624
+
+
+def test_context_trim_never_decodes_a_partial_sentence_or_unbroken_unit():
+    assembler = ContextAssembler(None, tokenizer)  # type: ignore[arg-type]
+    content = "第一句。第二句。" + "无标点长段" * 200
+    original = ContextLayer("summary", content, tokenizer.count(content), [])
+    target = tokenizer.count("第一句。第二句。\n[已截断]") + 2
+
+    trimmed = assembler._trim_layer(original, target)
+
+    assert trimmed.tokens <= target
+    assert "第一句。第二句。" in trimmed.content
+    assert "无标点长段" not in trimmed.content
+    assert trimmed.content.endswith("[已截断]")
+
+
+async def test_context_excludes_summary_from_an_old_body_revision(
+    async_db_session, seed_project
+):
+    chapters = await seed_project(
+        user_id="summary_writer",
+        project_id="summary_novel",
+        chapter_ids=("summary_old", "summary_target"),
+    )
+    async_db_session.add(
+        ChapterBody(
+            chapter_id="summary_old",
+            content_html="<p>正文已经改成第二版。</p>",
+            content_json={},
+            rev=2,
+        )
+    )
+    async_db_session.add(
+        DocumentSummary(
+            owner_type="chapter",
+            owner_id="summary_old",
+            source_rev=1,
+            summary_version="test-v1",
+            content="第一版中主角已经离开村庄。",
+            model_id="test-model",
+            token_count=20,
+            status="active",
+        )
+    )
+    await async_db_session.flush()
+
+    context = await ContextAssembler(async_db_session, tokenizer).build(
+        "summary_novel", "summary_target", chapters[1].outline
+    )
+
+    assert "第一版中主角已经离开村庄" not in context.layer3_summary.content
+
+
+async def test_context_build_routes_structured_distant_evidence_into_summary(
+    async_db_session, seed_project
+):
+    chapters = await seed_project(
+        user_id="rag_writer",
+        project_id="rag_novel",
+        chapter_ids=("rag_old", "rag_target"),
+    )
+    chapters[1].outline = ["沈禾追查旧田契的下落"]
+    await async_db_session.flush()
+    assembler = ContextAssembler(async_db_session, tokenizer)
+    structured = AsyncMock(
+        return_value=[
+            {
+                "chunk_id": "chunk-old",
+                "entry_id": None,
+                "content_text": "她曾在雨夜看见田契上的暗记。",
+                "content_hash": "hash-old",
+                "chapter_id": "rag_old",
+                "chapter_index": 1024,
+                "body_rev": 3,
+                "similarity": 0.91,
+                "source": "chapter_chunk",
+                "reason": "semantic_chapter:scenes",
+            }
+        ]
+    )
+    assembler._retrieve_structured_evidence = structured  # type: ignore[method-assign]
+
+    context = await assembler.build("rag_novel", "rag_target", chapters[1].outline)
+
+    assert "她曾在雨夜看见田契上的暗记" in context.layer3_summary.content
+    assert any(item["id"] == "chunk:chunk-old" for item in context.layer3_summary.items)
+    structured.assert_awaited_once()
+    assert structured.await_args.kwargs["near_window"] == 12
 
 
 async def test_context_includes_positioning_and_ordered_scene_cards_in_resident_and_retrieval_layers(

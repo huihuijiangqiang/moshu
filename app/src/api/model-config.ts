@@ -7,6 +7,9 @@ export interface UserModelConfig {
   providerName: string
   baseUrl: string
   model: string
+  contextWindowTokens: number
+  maxOutputTokens: number
+  contextSafetyMarginTokens: number
   keyHint: string | null
   enabled: boolean
   revision: number
@@ -19,6 +22,9 @@ export interface UserModelConfigWrite {
   providerName: string
   baseUrl: string
   model: string
+  contextWindowTokens: number
+  maxOutputTokens: number
+  contextSafetyMarginTokens: number
   apiKey?: string
   enabled: boolean
   revision: number
@@ -29,6 +35,9 @@ const emptyConfig = (): UserModelConfig => ({
   providerName: '',
   baseUrl: '',
   model: '',
+  contextWindowTokens: 32768,
+  maxOutputTokens: 4096,
+  contextSafetyMarginTokens: 2048,
   keyHint: null,
   enabled: false,
   revision: 0,
@@ -60,6 +69,9 @@ const mockApi = {
       providerName: value.providerName,
       baseUrl: value.baseUrl.replace(/\/$/, ''),
       model: value.model,
+      contextWindowTokens: value.contextWindowTokens,
+      maxOutputTokens: value.maxOutputTokens,
+      contextSafetyMarginTokens: value.contextSafetyMarginTokens,
       keyHint: value.apiKey ? `${value.apiKey.slice(0, 3)}****${value.apiKey.slice(-4)}` : mockConfig.keyHint,
       enabled: value.enabled,
       revision: mockConfig.revision + 1,

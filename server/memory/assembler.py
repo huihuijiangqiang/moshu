@@ -4,9 +4,10 @@
 """
 
 import json
+import re
 from dataclasses import dataclass, field
 from html.parser import HTMLParser
-from typing import Optional
+from typing import Literal, Optional
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -75,6 +76,65 @@ class ContextLayer:
     content: str
     tokens: int
     items: list[dict]  # 用于右栏展示
+    available_tokens: int = 0
+    budget_tokens: int = 0
+    trim_reason: str | None = None
+
+
+ContextMode = Literal["smart", "fast", "standard", "deep"]
+
+
+@dataclass(frozen=True)
+class ContextBudgetPolicy:
+    """Model-aware input budget with an explicit output and transport reserve."""
+
+    mode: ContextMode = "smart"
+    model_window_tokens: int = 256_000
+    reserved_output_tokens: int = 32_000
+    safety_margin_tokens: int = 16_000
+    max_context_tokens: int = 208_000
+
+    @classmethod
+    def create(
+        cls,
+        *,
+        mode: ContextMode = "smart",
+        model_window_tokens: int = 256_000,
+        reserved_output_tokens: int = 32_000,
+        safety_margin_tokens: int = 16_000,
+    ) -> "ContextBudgetPolicy":
+        usable = max(1_024, model_window_tokens - reserved_output_tokens - safety_margin_tokens)
+        # 208K is the tested material ceiling. Larger provider windows do not
+        # silently increase cost and latency until they have their own evals.
+        return cls(
+            mode=mode,
+            model_window_tokens=model_window_tokens,
+            reserved_output_tokens=reserved_output_tokens,
+            safety_margin_tokens=safety_margin_tokens,
+            max_context_tokens=min(208_000, usable),
+        )
+
+    def target_for(self, available_tokens: int) -> int:
+        limits = {"fast": 64_000, "standard": 128_000, "deep": self.max_context_tokens}
+        if self.mode in limits:
+            return min(self.max_context_tokens, limits[self.mode])
+        if available_tokens <= 64_000:
+            return min(self.max_context_tokens, 64_000)
+        if available_tokens <= 128_000:
+            return min(self.max_context_tokens, 128_000)
+        return self.max_context_tokens
+
+    def layer_budgets(self, total: int) -> dict[str, int]:
+        # Deep-mode ceilings: 40K authoritative state, 40K related Codex,
+        # 56K summaries/distant evidence and 72K recent prose.
+        weights = {"resident": 40, "retrieved": 40, "summary": 56, "adjacent": 72}
+        result = {key: total * weight // 208 for key, weight in weights.items()}
+        result["adjacent"] += total - sum(result.values())
+        return result
+
+    @property
+    def adjacent_chapters(self) -> int:
+        return {"fast": 2, "standard": 6, "deep": 12, "smart": 12}[self.mode]
 
 
 @dataclass
@@ -89,19 +149,20 @@ class AssembledContext:
     budget_exceeded: bool
     trimmed_layers: list[str]  # 被削减的层
     guidance: dict = field(default_factory=dict)
+    policy: ContextBudgetPolicy = field(default_factory=ContextBudgetPolicy.create)
+    target_tokens: int = 0
 
 
 class ContextAssembler:
     """上下文装配器 - 四层预算分配与裁剪"""
 
-    # 预算分配（单位：token）
-    BUDGET_TOTAL = 25000
-    BUDGET_LAYER1 = 6000  # 常驻设定，永不削减
-    BUDGET_LAYER2 = 5000  # 检索条目
-    BUDGET_LAYER3 = 4000  # 前情摘要
-    BUDGET_LAYER4 = 10000  # 相邻原文
-    BUDGET_CONFIRMED_TIMELINE = 1500
-    BUDGET_STORY_GUIDANCE = 2600
+    # Backward-compatible public ceilings. Each request now uses a policy
+    # derived from the selected model instead of treating these as hard-coded.
+    BUDGET_TOTAL = 208_000
+    BUDGET_LAYER1 = 40_000
+    BUDGET_LAYER2 = 40_000
+    BUDGET_LAYER3 = 56_000
+    BUDGET_LAYER4 = 72_000
 
     def __init__(
         self,
@@ -118,6 +179,8 @@ class ContextAssembler:
         project_id: str,
         chapter_id: str,
         outline_nodes: list[str],
+        *,
+        policy: ContextBudgetPolicy | None = None,
     ) -> AssembledContext:
         """
         装配四层上下文
@@ -130,11 +193,14 @@ class ContextAssembler:
         Returns:
             装配完成的四层上下文
         """
+        policy = policy or ContextBudgetPolicy.create()
+
         # Layer 1: 常驻设定 + 作者明确写下的作品承诺和本章场景计划。
         # Guidance is read once here and reused by retrieval, prompt preview and
         # real generation, so those paths cannot silently diverge.
         story_guidance, guidance = await self._build_story_guidance(project_id, chapter_id)
-        trimmed_story_guidance = self._trim_layer(story_guidance, self.BUDGET_STORY_GUIDANCE)
+        story_guidance_budget = min(8_000, max(2_600, policy.max_context_tokens // 16))
+        trimmed_story_guidance = self._trim_layer(story_guidance, story_guidance_budget)
         guidance["storyGuidanceTrimmed"] = trimmed_story_guidance.tokens < story_guidance.tokens
         layer1 = await self._build_layer1_resident(
             project_id,
@@ -145,53 +211,76 @@ class ContextAssembler:
         # Scene/positioning text participates in the existing exact/vector
         # retrieval route instead of creating a second RAG implementation.
         retrieval_nodes = [*outline_nodes, *guidance.pop("retrievalNodes", [])]
-        layer2 = await self._build_layer2_retrieved(project_id, chapter_id, retrieval_nodes)
+        structured_results = await self._retrieve_structured_evidence(
+            project_id,
+            chapter_id,
+            retrieval_nodes,
+            near_window=policy.adjacent_chapters,
+            top_k={"fast": 8, "standard": 16, "deep": 24, "smart": 24}[policy.mode],
+        )
+        layer2 = await self._build_layer2_retrieved(
+            project_id,
+            chapter_id,
+            retrieval_nodes,
+            structured_results=structured_results,
+        )
 
         # Layer 3: 前情摘要（本卷章摘要 + 更早的卷摘要）
-        layer3 = await self._build_layer3_summary(project_id, chapter_id, retrieval_nodes)
+        layer3 = await self._build_layer3_summary(
+            project_id,
+            chapter_id,
+            retrieval_nodes,
+            structured_results=structured_results,
+        )
 
-        # Layer 4: 相邻原文（前2章，从章末往前截取）
-        layer4 = await self._build_layer4_adjacent(chapter_id)
+        # Layer 4: 相邻原文（数量随模式扩展，从章末往前截取）
+        layer4 = await self._build_layer4_adjacent(
+            chapter_id, limit=policy.adjacent_chapters
+        )
 
-        # 预算检查与裁剪
-        layer2 = self._trim_layer(layer2, self.BUDGET_LAYER2)
-        layer3 = self._trim_layer(layer3, self.BUDGET_LAYER3)
-        layer4 = self._trim_layer(layer4, self.BUDGET_LAYER4, keep_tail=True)
+        raw_layers = {
+            "resident": layer1,
+            "retrieved": layer2,
+            "summary": layer3,
+            "adjacent": layer4,
+        }
+        available_total = sum(layer.tokens for layer in raw_layers.values())
+        target = policy.target_for(available_total)
+        budgets = policy.layer_budgets(target)
+        packed = {
+            key: self._trim_layer(layer, budgets[key], keep_tail=key == "adjacent")
+            for key, layer in raw_layers.items()
+        }
 
-        total = layer1.tokens + layer2.tokens + layer3.tokens + layer4.tokens
+        # Sparse layers lend unused space to the most continuity-sensitive
+        # material. Long works grow naturally without padding short prompts.
+        remaining = max(0, target - sum(layer.tokens for layer in packed.values()))
+        for key in ("adjacent", "resident", "retrieved", "summary"):
+            if remaining <= 0:
+                break
+            raw = raw_layers[key]
+            current = packed[key]
+            requested = min(raw.tokens, current.tokens + remaining)
+            expanded = self._trim_layer(raw, requested, keep_tail=key == "adjacent")
+            remaining -= max(0, expanded.tokens - current.tokens)
+            packed[key] = expanded
+
         trimmed = ["story_guidance"] if guidance["storyGuidanceTrimmed"] else []
+        for key, raw in raw_layers.items():
+            selected = packed[key]
+            reason = None
+            if selected.tokens < raw.tokens:
+                reason = "budget_limit"
+                trimmed.append(key)
+            selected.available_tokens = raw.tokens
+            selected.budget_tokens = max(budgets[key], selected.tokens)
+            selected.trim_reason = reason
 
-        if total > self.BUDGET_TOTAL:
-            # 按 layer4 → layer3 → layer2 顺序削减，layer1 永不削
-            overage = total - self.BUDGET_TOTAL
-
-            # 先削 layer4
-            if layer4.tokens > overage:
-                layer4 = self._trim_layer(layer4, layer4.tokens - overage, keep_tail=True)
-                trimmed.append("layer4")
-                overage = 0
-            else:
-                overage -= layer4.tokens
-                layer4 = self._trim_layer(layer4, 0, keep_tail=True)
-                trimmed.append("layer4")
-
-            # 还超就削 layer3
-            if overage > 0:
-                if layer3.tokens > overage:
-                    layer3 = self._trim_layer(layer3, layer3.tokens - overage)
-                    trimmed.append("layer3")
-                    overage = 0
-                else:
-                    overage -= layer3.tokens
-                    layer3 = self._trim_layer(layer3, 0)
-                    trimmed.append("layer3")
-
-            # 还超就削 layer2
-            if overage > 0:
-                layer2 = self._trim_layer(layer2, max(0, layer2.tokens - overage))
-                trimmed.append("layer2")
-
-            total = layer1.tokens + layer2.tokens + layer3.tokens + layer4.tokens
+        layer1 = packed["resident"]
+        layer2 = packed["retrieved"]
+        layer3 = packed["summary"]
+        layer4 = packed["adjacent"]
+        total = sum(layer.tokens for layer in packed.values())
 
         return AssembledContext(
             layer1_resident=layer1,
@@ -202,6 +291,8 @@ class ContextAssembler:
             budget_exceeded=len(trimmed) > 0,
             trimmed_layers=trimmed,
             guidance=guidance,
+            policy=policy,
+            target_tokens=target,
         )
 
     async def _build_story_guidance(
@@ -499,7 +590,7 @@ class ContextAssembler:
 
         content = "\n".join(lines) if len(lines) > 1 else ""
         # Keep the embedding/exact-retrieval query bounded independently from
-        # the 25k prompt budget.
+        # the elastic prompt budget.
         bounded_nodes: list[str] = []
         remaining = 6000
         for node in retrieval_nodes:
@@ -622,30 +713,16 @@ class ContextAssembler:
             lines.append(text)
             items.append({"id": entry.id, "name": entry.name, "kind": entry.kind})
 
-        resident_tokens = self.tokenizer.count("\n".join(lines))
-        state_budget = max(0, min(2000, self.BUDGET_LAYER1 - resident_tokens))
-        author_states = self._trim_layer(
-            await self._build_author_state_facts(
-                project_id,
-                chapter_id,
-                [entry.id for entry in entries],
-            ),
-            state_budget,
+        author_states = await self._build_author_state_facts(
+            project_id,
+            chapter_id,
+            [entry.id for entry in entries],
         )
         if author_states.content:
             lines.append(f"# 作者记录的当前状态\n{author_states.content}")
             items.extend(author_states.items)
 
-        resident_tokens = self.tokenizer.count("\n".join(lines))
-        timeline_budget = max(
-            0,
-            min(self.BUDGET_CONFIRMED_TIMELINE, self.BUDGET_LAYER1 - resident_tokens),
-        )
-        timeline = self._trim_layer(
-            await self._build_confirmed_temporal_facts(project_id),
-            timeline_budget,
-            keep_tail=True,
-        )
+        timeline = await self._build_confirmed_temporal_facts(project_id)
         if timeline.content:
             lines.append(f"# 作者确认的时间事实\n{timeline.content}")
             items.extend(timeline.items)
@@ -725,6 +802,8 @@ class ContextAssembler:
         project_id: str,
         chapter_id: str,
         outline_nodes: list[str],
+        *,
+        structured_results: list[dict] | None = None,
     ) -> ContextLayer:
         """
         Layer 2: 章纲精确命中设定名/别名，向量检索补足语义相关条目。
@@ -744,6 +823,7 @@ class ContextAssembler:
             .order_by(CodexEntry.id)
         )
         entries = list(result.scalars().unique().all())
+        entries_by_id = {entry.id: entry for entry in entries}
         matched = {
             entry.id: entry
             for entry in entries
@@ -752,6 +832,21 @@ class ContextAssembler:
 
         bind = self.db.get_bind()
         supports_vector = bind is not None and bind.dialect.name == "postgresql"
+        retrieval_metadata: dict[str, dict] = {}
+        if structured_results is not None:
+            semantic_ids = [
+                str(row["entry_id"])
+                for row in structured_results
+                if row.get("entry_id")
+            ]
+            for entry_id in semantic_ids:
+                if entry_id in entries_by_id:
+                    matched[entry_id] = entries_by_id[entry_id]
+            retrieval_metadata = {
+                str(row["entry_id"]): row
+                for row in structured_results
+                if row.get("entry_id")
+            }
         if self.retrieval is not None and supports_vector:
             try:
                 resident_result = await self.db.execute(
@@ -771,12 +866,16 @@ class ContextAssembler:
                     exclude_entry_ids=[*matched, *resident_ids],
                 )
                 semantic_ids = [row["entry_id"] for row in semantic]
-                if semantic_ids:
-                    semantic_result = await self.db.execute(select(CodexEntry).where(CodexEntry.id.in_(semantic_ids)))
-                    by_id = {entry.id: entry for entry in semantic_result.scalars().all()}
-                    for entry_id in semantic_ids:
-                        if entry_id in by_id:
-                            matched[entry_id] = by_id[entry_id]
+                for entry_id in semantic_ids:
+                    if entry_id in entries_by_id:
+                        matched[entry_id] = entries_by_id[entry_id]
+                retrieval_metadata.update(
+                    {
+                        str(row["entry_id"]): row
+                        for row in semantic
+                        if row.get("entry_id")
+                    }
+                )
             except Exception:
                 # Exact retrieval remains useful if the embedding gateway is unavailable.
                 pass
@@ -803,7 +902,17 @@ class ContextAssembler:
                 )
                 text += f"\n当前状态: {current}"
             lines.append(text)
-            items.append({"id": entry.id, "name": entry.name, "kind": entry.kind})
+            metadata = retrieval_metadata.get(entry.id, {})
+            items.append(
+                {
+                    "id": entry.id,
+                    "name": entry.name,
+                    "kind": entry.kind,
+                    "source": metadata.get("source", "exact_name_or_alias"),
+                    "reason": metadata.get("reason", "outline_reference"),
+                    "score": metadata.get("score", 1.0),
+                }
+            )
         content = "\n\n".join(lines)
         return ContextLayer("retrieved", content, self.tokenizer.count(content), items)
 
@@ -812,6 +921,8 @@ class ContextAssembler:
         project_id: str,
         chapter_id: str,
         retrieval_nodes: Optional[list[str]] = None,
+        *,
+        structured_results: list[dict] | None = None,
     ) -> ContextLayer:
         """
         Layer 3: 前情摘要
@@ -855,7 +966,30 @@ class ContextAssembler:
             .order_by(Chapter.idx)
         )
         previous = list(chapters_result.scalars().all())
-        if self.retrieval is not None and retrieval_nodes:
+        if structured_results is not None:
+            for row in structured_results:
+                if not row.get("chunk_id") or not row.get("content_text"):
+                    continue
+                label = (
+                    f"第{row['chapter_index']}章"
+                    if row.get("chapter_index") is not None
+                    else "前文"
+                )
+                lines.append(f"## 正文远距证据 · {label}\n{row['content_text']}")
+                items.append(
+                    {
+                        "id": f"chunk:{row['chunk_id']}",
+                        "name": f"{label} 正文分块",
+                        "kind": "chapter_chunk",
+                        "source": row.get("source"),
+                        "reason": row.get("reason"),
+                        "chapterId": row.get("chapter_id"),
+                        "bodyRev": row.get("body_rev"),
+                        "similarity": row.get("similarity"),
+                        "contentHash": row.get("content_hash"),
+                    }
+                )
+        elif self.retrieval is not None and retrieval_nodes:
             bind = self.db.get_bind()
             if bind is not None and bind.dialect.name == "postgresql" and previous:
                 query_text = "\n".join(node.strip() for node in retrieval_nodes if node.strip())
@@ -892,10 +1026,12 @@ class ContextAssembler:
         same_volume = [chapter for chapter in previous if chapter.volume_id == current.volume_id]
         summary_result = await self.db.execute(
             select(DocumentSummary.owner_id, DocumentSummary.content)
+            .join(ChapterBody, ChapterBody.chapter_id == DocumentSummary.owner_id)
             .where(
                 DocumentSummary.owner_type == "chapter",
                 DocumentSummary.owner_id.in_([chapter.id for chapter in same_volume]),
                 DocumentSummary.status == "active",
+                DocumentSummary.source_rev == ChapterBody.rev,
             )
             .order_by(DocumentSummary.owner_id, DocumentSummary.source_rev.desc())
         )
@@ -915,10 +1051,84 @@ class ContextAssembler:
         content = "\n\n".join(lines)
         return ContextLayer("summary", content, self.tokenizer.count(content), items)
 
-    async def _build_layer4_adjacent(self, chapter_id: str) -> ContextLayer:
+    async def _retrieve_structured_evidence(
+        self,
+        project_id: str,
+        chapter_id: str,
+        retrieval_nodes: list[str],
+        *,
+        near_window: int,
+        top_k: int,
+    ) -> list[dict] | None:
+        """Build bounded semantic groups and retrieve distant evidence once."""
+        if self.retrieval is None:
+            return None
+        bind = self.db.get_bind()
+        if bind is None or bind.dialect.name != "postgresql":
+            return None
+        query_text = "\n".join(node.strip() for node in retrieval_nodes if node.strip())
+        if not query_text:
+            return []
+
+        entries = list(
+            (
+                await self.db.execute(
+                    select(CodexEntry)
+                    .options(selectinload(CodexEntry.aliases))
+                    .where(
+                        CodexEntry.project_id == project_id,
+                        CodexEntry.status == "confirmed",
+                    )
+                    .order_by(CodexEntry.id)
+                )
+            )
+            .scalars()
+            .unique()
+            .all()
+        )
+        group_for_kind = {
+            "character": "characters",
+            "location": "locations",
+            "item": "items",
+            "event": "foreshadows",
+        }
+        queries: dict[str, list[str]] = {
+            "scenes": [node.strip() for node in retrieval_nodes if node.strip()][:12]
+        }
+        for entry in entries:
+            group = group_for_kind.get(entry.kind)
+            if group is None:
+                continue
+            if entry.name in query_text or any(
+                alias.alias and alias.alias in query_text for alias in entry.aliases
+            ):
+                queries.setdefault(group, []).append(entry.name)
+        foreshadow_markers = ("伏笔", "悬念", "秘密", "线索", "未解", "谜")
+        marked_nodes = [
+            node.strip()
+            for node in retrieval_nodes
+            if node.strip() and any(marker in node for marker in foreshadow_markers)
+        ]
+        if marked_nodes:
+            queries.setdefault("foreshadows", []).extend(marked_nodes)
+        try:
+            return await self.retrieval.retrieve_structured_context(
+                self.db,
+                project_id,
+                queries,
+                current_chapter_id=chapter_id,
+                top_k=top_k,
+                near_window=near_window,
+            )
+        except Exception:
+            # Summaries, exact in-process matching and adjacent prose remain
+            # available when embeddings or pgvector are temporarily unavailable.
+            return None
+
+    async def _build_layer4_adjacent(self, chapter_id: str, *, limit: int = 2) -> ContextLayer:
         """
         Layer 4: 相邻原文
-        - 前2章全文
+        - 最近若干章全文，数量由上下文模式决定
         - 从章末往前截取（开头往往是过渡，章末才是情节推进）
         """
         current_result = await self.db.execute(
@@ -937,7 +1147,7 @@ class ContextAssembler:
                 Chapter.idx < current.idx,
             )
             .order_by(Chapter.idx.desc())
-            .limit(2)
+            .limit(limit)
         )
         rows = list(result.all())
         # Present prose in chronological order while taking the nearest two chapters.
@@ -967,9 +1177,17 @@ class ContextAssembler:
         return result.scalar_one_or_none()
 
     def _trim_layer(self, layer: ContextLayer, target_tokens: int, *, keep_tail: bool = False) -> ContextLayer:
-        """裁剪层内容到目标token数"""
+        """Pack complete lines/sentences into a token budget without token slicing."""
         if target_tokens <= 0:
-            return ContextLayer(key=layer.key, content="", tokens=0, items=[])
+            return ContextLayer(
+                key=layer.key,
+                content="",
+                tokens=0,
+                items=[],
+                available_tokens=layer.tokens,
+                budget_tokens=max(0, target_tokens),
+                trim_reason="budget_limit" if layer.tokens else None,
+            )
 
         if layer.tokens <= target_tokens:
             return layer
@@ -977,15 +1195,74 @@ class ContextAssembler:
         marker = "[前文已截断]\n" if keep_tail else "\n[已截断]"
         marker_tokens = self.tokenizer.count(marker)
         if target_tokens <= marker_tokens:
-            content = self.tokenizer.decode(self.tokenizer.encode(marker)[:target_tokens])
-            return ContextLayer(layer.key, content, self.tokenizer.count(content), [])
-        content_budget = max(0, target_tokens - marker_tokens)
-        encoded = self.tokenizer.encode(layer.content)
-        selected = encoded[-content_budget:] if keep_tail and content_budget else encoded[:content_budget]
-        trimmed_content = (
-            marker + self.tokenizer.decode(selected) if keep_tail else self.tokenizer.decode(selected) + marker
-        )
+            return ContextLayer(
+                layer.key,
+                "",
+                0,
+                [],
+                available_tokens=layer.tokens,
+                budget_tokens=target_tokens,
+                trim_reason="budget_limit",
+            )
+
+        units = self._packing_units(layer.content)
+        if keep_tail:
+            units.reverse()
+        chosen: list[str] = []
+        remaining_tokens = target_tokens - marker_tokens
+        separator_tokens = self.tokenizer.count("\n")
+        for unit in units:
+            unit_tokens = self.tokenizer.count(unit) + (separator_tokens if chosen else 0)
+            if unit_tokens <= remaining_tokens:
+                chosen = [unit, *chosen] if keep_tail else [*chosen, unit]
+                remaining_tokens -= unit_tokens
+                continue
+
+            # Stored prose and summaries may contribute complete sentences from
+            # an oversized block. Codex/resident entries stay atomic.
+            if layer.key not in {"summary", "adjacent"}:
+                continue
+            heading, body = self._split_heading(unit)
+            sentences = [part.strip() for part in re.split(r"(?<=[。！？!?；;])", body) if part.strip()]
+            if len(sentences) <= 1:
+                if layer.key == "adjacent" and remaining_tokens > 0:
+                    fragment = self._fit_text_boundary(
+                        body,
+                        remaining_tokens - (separator_tokens if chosen else 0),
+                        keep_tail=keep_tail,
+                    )
+                    if fragment:
+                        chosen = [fragment, *chosen] if keep_tail else [*chosen, fragment]
+                continue
+            iterable = reversed(sentences) if keep_tail else sentences
+            sentence_choice: list[str] = []
+            for sentence in iterable:
+                next_choice = [sentence, *sentence_choice] if keep_tail else [*sentence_choice, sentence]
+                fragment = "".join(next_choice)
+                if heading:
+                    fragment = f"{heading}\n{fragment}"
+                fragment_tokens = self.tokenizer.count(fragment) + (
+                    separator_tokens if chosen else 0
+                )
+                if fragment_tokens > remaining_tokens:
+                    break
+                sentence_choice = next_choice
+            if sentence_choice:
+                fragment = "".join(sentence_choice)
+                if heading:
+                    fragment = f"{heading}\n{fragment}"
+                chosen = [fragment, *chosen] if keep_tail else [*chosen, fragment]
+
+        selected_content = "\n".join(chosen)
+        trimmed_content = marker + selected_content if keep_tail else selected_content + marker
         trimmed_tokens = self.tokenizer.count(trimmed_content)
+        # Tokenizers may merge across line boundaries. Remove complete units
+        # until the exact final encoding fits; never decode a partial token run.
+        while chosen and trimmed_tokens > target_tokens:
+            chosen.pop(0 if keep_tail else -1)
+            selected_content = "\n".join(chosen)
+            trimmed_content = marker + selected_content if keep_tail else selected_content + marker
+            trimmed_tokens = self.tokenizer.count(trimmed_content)
         ratio = target_tokens / layer.tokens
 
         return ContextLayer(
@@ -997,4 +1274,39 @@ class ContextAssembler:
                 if keep_tail and layer.items
                 else layer.items[: int(len(layer.items) * ratio)]
             ),
+            available_tokens=layer.tokens,
+            budget_tokens=target_tokens,
+            trim_reason="budget_limit",
         )
+
+    @staticmethod
+    def _packing_units(content: str) -> list[str]:
+        """Keep each heading-led Codex/chapter block intact during packing."""
+        normalized = content.replace("\r\n", "\n").replace("\r", "\n").strip()
+        if not normalized:
+            return []
+        units = [
+            unit.strip()
+            for unit in re.split(r"\n(?=##?\s)", normalized)
+            if unit.strip()
+        ]
+        return units
+
+    @staticmethod
+    def _split_heading(unit: str) -> tuple[str, str]:
+        first, separator, rest = unit.partition("\n")
+        return (first, rest) if separator and first.startswith("#") else ("", unit)
+
+    def _fit_text_boundary(self, content: str, budget: int, *, keep_tail: bool) -> str:
+        """Fit an unpunctuated prose fallback at Unicode character boundaries."""
+        if budget <= 0 or not content:
+            return ""
+        low, high = 0, len(content)
+        while low < high:
+            size = (low + high + 1) // 2
+            candidate = content[-size:] if keep_tail else content[:size]
+            if self.tokenizer.count(candidate) <= budget:
+                low = size
+            else:
+                high = size - 1
+        return content[-low:] if keep_tail and low else content[:low]

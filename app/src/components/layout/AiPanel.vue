@@ -59,7 +59,7 @@ const styleName = computed(() => {
       </section>
 
       <section class="rule-b" :style="{ padding: '18px 16px' }">
-        <div class="kicker" :style="{ marginBottom: '14px' }">上下文（已装配 {{ fmt(total) }} / 25k 上限）</div>
+        <div class="kicker" :style="{ marginBottom: '14px' }">上下文（已装配 {{ fmt(total) }} / 208k 弹性上限）</div>
         <div :style="{ display: 'grid', gap: '9px', fontSize: '13px' }">
           <div v-for="l in layers" :key="l.key" class="row-between">
             <span :title="l.detail">{{ l.label }}</span>

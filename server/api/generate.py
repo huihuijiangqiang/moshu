@@ -20,10 +20,11 @@ from api.auth import (
     verify_chapter_assignment,
     verify_project_permission,
 )
+from config import settings
 from db.models_core import Chapter, ChapterBody, Project, User
 from db.models_usage import GenerationDraft, GenerationRun
 from db.session import get_db
-from memory.assembler import ContextAssembler
+from memory.assembler import ContextBudgetPolicy
 from memory.tokenizer import tokenizer
 from services.generation import (
     GenerationGateway,
@@ -58,6 +59,9 @@ class ChapterGenerationRequest(BaseModel):
     model: Literal["basic", "advanced"] = "basic"
     use_style_profile: bool = Field(True, alias="useStyleProfile")
     dialogue_density: Literal["low", "mid", "high"] = Field("mid", alias="dialogueDensity")
+    context_mode: Literal["smart", "fast", "standard", "deep"] = Field(
+        "smart", alias="contextMode"
+    )
     instruction: str = Field("", max_length=2000)
 
 
@@ -77,6 +81,9 @@ class GenerationPreviewRequest(BaseModel):
     model: Literal["basic", "advanced"] = "basic"
     use_style_profile: bool = Field(True, alias="useStyleProfile")
     dialogue_density: Literal["low", "mid", "high"] = Field("mid", alias="dialogueDensity")
+    context_mode: Literal["smart", "fast", "standard", "deep"] = Field(
+        "smart", alias="contextMode"
+    )
     instruction: str = Field("", max_length=2000)
     action: Literal["续写", "扩写", "润色", "改写语气", "按我的风格"] | None = None
     selected_text: str = Field("", alias="selectedText", max_length=20000)
@@ -100,6 +107,9 @@ class DraftContinueRequest(BaseModel):
     model: Literal["basic", "advanced"] = "basic"
     use_style_profile: bool = Field(True, alias="useStyleProfile")
     dialogue_density: Literal["low", "mid", "high"] = Field("mid", alias="dialogueDensity")
+    context_mode: Literal["smart", "fast", "standard", "deep"] = Field(
+        "smart", alias="contextMode"
+    )
     instruction: str = Field("", max_length=2000)
 
 
@@ -164,6 +174,9 @@ async def _prepare(
             model_id=user_route.model,
             model_tier="custom",
             config_id=user_route.config_id,
+            context_window_tokens=user_route.context_window_tokens,
+            max_output_tokens=user_route.max_output_tokens,
+            context_safety_margin_tokens=user_route.context_safety_margin_tokens,
         )
     return await service.prepare(chapter=chapter, project=project, route=route, **kwargs)
 
@@ -214,10 +227,23 @@ def _preview_payload(package: PromptPackage) -> dict:
         "model": {"id": package.model_id, "tier": package.model_tier},
         "provider": {"source": package.route.source, "configId": package.route.config_id},
         "tokenBudget": {
-            "total": ContextAssembler.BUDGET_TOTAL,
+            "total": package.context.target_tokens,
             "prompt": package.prompt_tokens,
             "context": package.context.total_tokens,
             "trimmedLayers": package.context.trimmed_layers,
+            "mode": package.context.policy.mode,
+            "modelWindow": package.context.policy.model_window_tokens,
+            "reservedOutput": package.context.policy.reserved_output_tokens,
+            "safetyMargin": package.context.policy.safety_margin_tokens,
+            "usableContext": package.preflight.get("budget"),
+        },
+        "contextStats": {
+            "mode": package.context.policy.mode,
+            "budgetTokens": package.context.target_tokens,
+            "usedTokens": package.context.total_tokens,
+            "modelWindowTokens": package.context.policy.model_window_tokens,
+            "reservedOutputTokens": package.context.policy.reserved_output_tokens,
+            "safetyMarginTokens": package.context.policy.safety_margin_tokens,
         },
         "skills": [
             {
@@ -237,6 +263,9 @@ def _preview_payload(package: PromptPackage) -> dict:
                 "tokens": layer.tokens,
                 "items": layer.items,
                 "content": layer.content,
+                "availableTokens": layer.available_tokens,
+                "budgetTokens": layer.budget_tokens,
+                "trimReason": layer.trim_reason,
             }
             for layer in layers
         ],
@@ -345,6 +374,7 @@ def _generation_response(
                 "provider": package.route.source,
                 "coverage": package.coverage,
                 "preflight": package.preflight,
+                "contextStats": package.layer_report.get("context", {}),
             }
         )
         try:
@@ -481,11 +511,38 @@ def _generation_response(
 @router.get("/context/{chapter_id}")
 async def preview_context(
     chapter_id: str,
+    context_mode: Literal["smart", "fast", "standard", "deep"] = Query(
+        "smart", alias="contextMode"
+    ),
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     chapter, project = await _load_scope(chapter_id, user, db)
-    context = await GenerationService(db).assembler.build(project.id, chapter.id, chapter.outline or [])
+    user_route = await active_user_generation_route(db, user_id=user.id)
+    policy = ContextBudgetPolicy.create(
+        mode=context_mode,
+        model_window_tokens=(
+            user_route.context_window_tokens
+            if user_route is not None
+            else settings.generation_context_window_tokens
+        ),
+        reserved_output_tokens=(
+            user_route.max_output_tokens
+            if user_route is not None
+            else settings.generation_max_output_tokens
+        ),
+        safety_margin_tokens=(
+            user_route.context_safety_margin_tokens
+            if user_route is not None
+            else settings.generation_context_safety_margin_tokens
+        ),
+    )
+    context = await GenerationService(db).assembler.build(
+        project.id,
+        chapter.id,
+        chapter.outline or [],
+        policy=policy,
+    )
     selection = select_writing_skills(genre=project.genre, task="chapter", outline=chapter.outline or [])
     labels = {
         "resident": "设定与本章规划 · 常驻",
@@ -506,6 +563,9 @@ async def preview_context(
                 "label": labels[layer.key],
                 "detail": f"{len(layer.items)} 项",
                 "tokens": layer.tokens,
+                "availableTokens": layer.available_tokens,
+                "budgetTokens": layer.budget_tokens,
+                "trimReason": layer.trim_reason,
                 "items": layer.items,
             }
             for layer in layers
@@ -513,6 +573,8 @@ async def preview_context(
         "totalTokens": context.total_tokens,
         "budgetExceeded": context.budget_exceeded,
         "trimmedLayers": context.trimmed_layers,
+        "contextMode": context.policy.mode,
+        "contextBudget": context.target_tokens,
         "skills": selection.ids,
         "scene": selection.scene,
     }
@@ -561,6 +623,7 @@ def _request_summary(request: ChapterGenerationRequest) -> dict:
         "targetWords": request.target_words,
         "useStyleProfile": request.use_style_profile,
         "dialogueDensity": request.dialogue_density,
+        "contextMode": request.context_mode,
     }
     if request.instruction.strip():
         summary["instruction"] = request.instruction.strip()
@@ -756,6 +819,7 @@ async def continue_draft(
         model=request.model,
         useStyleProfile=request.use_style_profile,
         dialogueDensity=request.dialogue_density,
+        contextMode=request.context_mode,
         action="续写",
         selectedText="",
         nearbyText=tail,
