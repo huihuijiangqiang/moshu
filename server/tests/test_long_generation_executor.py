@@ -209,6 +209,43 @@ async def test_validation_persists_evidence_and_allows_retry(async_db_session, e
     assert row.context_manifest["lastValidation"]["status"] == "ready"
 
 
+async def test_validation_request_cannot_weaken_manifest_policy(async_db_session, executor_scope):
+    row = await _segment(async_db_session)
+    row.context_manifest = {
+        "qualityPolicy": {
+            "minRatio": 0.8,
+            "maxRatio": 1.1,
+            "requiredTerms": ["粮账"],
+        }
+    }
+    claim = await claim_segment(async_db_session, row.id)
+    prose = "沈砚秋当众复核每袋斤两并记录经手人。" * 28
+    await checkpoint_segment(
+        async_db_session,
+        row.id,
+        lease_revision=claim.lease_revision,
+        expected_checkpoint_hash=claim.checkpoint_hash,
+        content_text=prose,
+    )
+
+    result = await validate_claimed_segment(
+        async_db_session,
+        row.id,
+        lease_revision=claim.lease_revision,
+        min_ratio=0.1,
+        max_ratio=3.0,
+    )
+
+    assert result.blocking is True
+    required = next(item for item in result.checks if item["id"] == "required_terms")
+    assert required["missing"] == ["粮账"]
+    assert row.context_manifest["lastValidation"]["effectivePolicy"] == {
+        "minRatio": 0.8,
+        "maxRatio": 1.1,
+        "requiredTerms": ["粮账"],
+    }
+
+
 async def test_merge_requires_contiguous_ready_segments_and_deduplicates_boundary(async_db_session, executor_scope):
     boundary = "这是需要跨段保留且不能重复出现的边界句子。"
     first = await _segment(async_db_session, index=0, status="ready", content="第一段正文。" + boundary)

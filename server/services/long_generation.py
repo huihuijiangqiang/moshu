@@ -12,11 +12,12 @@ import re
 from dataclasses import dataclass
 from typing import Any, Iterable
 
-
 MAX_LONG_WORDS = 1_000_000
 MIN_SEGMENT_WORDS = 800
 DEFAULT_SEGMENT_WORDS = 2_400
 MAX_SEGMENT_WORDS = 32_000
+DEFAULT_MIN_OUTPUT_RATIO = 0.55
+DEFAULT_MAX_OUTPUT_RATIO = 1.35
 
 
 @dataclass(frozen=True)
@@ -106,7 +107,9 @@ def build_context_manifest(
     source_revisions: dict[str, Any],
     context_layers: dict[str, int],
     open_threads: Iterable[str] = (),
+    required_terms: Iterable[str] = (),
 ) -> dict[str, Any]:
+    terms = list(dict.fromkeys(str(value).strip() for value in required_terms if str(value).strip()))
     return {
         "version": 1,
         "chapterId": chapter_id,
@@ -117,6 +120,11 @@ def build_context_manifest(
         "sourceRevisions": dict(source_revisions),
         "contextLayers": {key: int(value) for key, value in context_layers.items()},
         "openThreads": [str(value) for value in open_threads],
+        "qualityPolicy": {
+            "minRatio": DEFAULT_MIN_OUTPUT_RATIO,
+            "maxRatio": DEFAULT_MAX_OUTPUT_RATIO,
+            "requiredTerms": terms,
+        },
     }
 
 
@@ -136,8 +144,8 @@ def validate_segment_output(
     target_words: int,
     required_terms: Iterable[str] = (),
     previous_tail: str = "",
-    min_ratio: float = 0.55,
-    max_ratio: float = 1.35,
+    min_ratio: float = DEFAULT_MIN_OUTPUT_RATIO,
+    max_ratio: float = DEFAULT_MAX_OUTPUT_RATIO,
 ) -> SegmentCheck:
     """Hard-gate malformed segments before they can be merged into a chapter."""
     content = (text or "").strip()
@@ -169,6 +177,7 @@ def next_segment_index(rows: Iterable[dict[str, Any]]) -> int:
 
 __all__ = [
     "MAX_LONG_WORDS", "MIN_SEGMENT_WORDS", "MAX_SEGMENT_WORDS", "DEFAULT_SEGMENT_WORDS",
+    "DEFAULT_MIN_OUTPUT_RATIO", "DEFAULT_MAX_OUTPUT_RATIO",
     "SegmentPlan", "SegmentCheck", "split_target_words", "make_segment_plan",
     "context_budget_for_segment", "prompt_hash", "build_context_manifest",
     "validate_segment_output", "next_segment_index",

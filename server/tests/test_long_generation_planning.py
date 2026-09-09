@@ -41,6 +41,11 @@ def test_manifest_carries_revisions_and_recovery_index():
         chapter_id="ch1", segment=plan, source_revisions={"bodyRev": 3}, context_layers={"resident": 100}, open_threads=["t1"]
     )
     assert manifest["sourceRevisions"]["bodyRev"] == 3
+    assert manifest["qualityPolicy"] == {
+        "minRatio": 0.55,
+        "maxRatio": 1.35,
+        "requiredTerms": [],
+    }
     assert next_segment_index([
         {"segmentIndex": 0, "status": "accepted"},
         {"segmentIndex": 1, "status": "failed"},

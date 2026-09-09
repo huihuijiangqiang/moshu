@@ -17,7 +17,12 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from db.models_long_generation import GenerationSegment
-from services.long_generation import SegmentCheck, validate_segment_output
+from services.long_generation import (
+    DEFAULT_MAX_OUTPUT_RATIO,
+    DEFAULT_MIN_OUTPUT_RATIO,
+    SegmentCheck,
+    validate_segment_output,
+)
 
 DEFAULT_SEGMENT_LEASE_SECONDS = 5 * 60
 LEGACY_SEGMENT_LEASE_SECONDS = DEFAULT_SEGMENT_LEASE_SECONDS
@@ -264,8 +269,8 @@ async def validate_claimed_segment(
     *,
     lease_revision: int,
     required_terms: Iterable[str] = (),
-    min_ratio: float = 0.55,
-    max_ratio: float = 1.35,
+    min_ratio: float = DEFAULT_MIN_OUTPUT_RATIO,
+    max_ratio: float = DEFAULT_MAX_OUTPUT_RATIO,
     now: datetime | None = None,
     lease_owner: str | None = None,
 ) -> SegmentCheck:
@@ -282,21 +287,41 @@ async def validate_claimed_segment(
             GenerationSegment.status.in_(("ready", "accepted")),
         )
     )
+    manifest = dict(row.context_manifest or {})
+    policy = manifest.get("qualityPolicy") if isinstance(manifest.get("qualityPolicy"), dict) else {}
+    policy_min_ratio = float(policy.get("minRatio", DEFAULT_MIN_OUTPUT_RATIO))
+    policy_max_ratio = float(policy.get("maxRatio", DEFAULT_MAX_OUTPUT_RATIO))
+    effective_min_ratio = max(DEFAULT_MIN_OUTPUT_RATIO, policy_min_ratio, min_ratio)
+    effective_max_ratio = min(DEFAULT_MAX_OUTPUT_RATIO, policy_max_ratio, max_ratio)
+    if effective_max_ratio < effective_min_ratio:
+        raise ValueError("effective segment validation ratios do not overlap")
+    policy_terms = policy.get("requiredTerms") if isinstance(policy.get("requiredTerms"), list) else []
+    effective_terms = list(
+        dict.fromkeys(
+            str(value).strip()
+            for value in [*policy_terms, *required_terms]
+            if str(value).strip()
+        )
+    )
     check = validate_segment_output(
         row.content_text,
         target_words=row.target_words,
-        required_terms=required_terms,
+        required_terms=effective_terms,
         previous_tail=previous.content_text if previous is not None else "",
-        min_ratio=min_ratio,
-        max_ratio=max_ratio,
+        min_ratio=effective_min_ratio,
+        max_ratio=effective_max_ratio,
     )
-    manifest = dict(row.context_manifest or {})
     manifest["lastValidation"] = {
         "version": 1,
         "status": check.status,
         "checks": [dict(item) for item in check.checks],
         "validatedAt": current.isoformat(),
         "checkpointHash": checkpoint_hash(row.content_text),
+        "effectivePolicy": {
+            "minRatio": effective_min_ratio,
+            "maxRatio": effective_max_ratio,
+            "requiredTerms": effective_terms,
+        },
     }
     row.context_manifest = manifest
     row.generated_words = _word_count(row.content_text)
