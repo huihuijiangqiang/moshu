@@ -256,8 +256,50 @@ async def test_run_does_not_advance_canon_when_editorial_gate_blocks(tmp_path):
     assert checkpoint["chapters"][0]["editorial_gate"]["status"] == "blocked"
 
 
+async def test_run_recovers_and_normalizes_orphan_chapter(tmp_path):
+    class FakeClient:
+        retry_count = 0
+
+    checkpoint = MODULE.new_checkpoint(target_words=100_000, chapter_words=800, model="m")
+    checkpoint["plan"] = MODULE.build_seed_plan(
+        target_words=checkpoint["target_words"],
+        chapter_count=checkpoint["chapter_count"],
+    )
+    outline = MODULE.build_seed_chapter_outline(1, checkpoint["plan"]["volumes"][0])
+    prose = "\n".join(
+        ["“账还没核完——”沈砚秋按住被风吹起的纸角。"]
+        + [
+            f"她把第{index}袋粮重新称量，赵顺逐项记下经手人和斤两。"
+            for index in range(41)
+        ]
+    )
+    path = tmp_path / "chapters" / f"0001-{MODULE.safe_filename(outline['title'])}.md"
+    MODULE.atomic_write_text(path, prose + "\n")
+    runner = MODULE.LongNovelRun(tmp_path, FakeClient(), checkpoint)
+
+    async def unexpected_write(*args, **kwargs):
+        del args, kwargs
+        raise AssertionError("orphan prose must be reused without another model call")
+
+    async def analyze_chapter(chapter_outline, chapter_prose):
+        assert "—" not in chapter_prose
+        return _contract_analysis(chapter_outline), {}
+
+    runner.write_chapter = unexpected_write
+    runner.analyze_chapter = analyze_chapter
+    await runner.run(max_chapters=1)
+
+    assert checkpoint["chapters"][0]["status"] == "accepted"
+    assert "——" not in path.read_text(encoding="utf-8")
+    assert "……" in path.read_text(encoding="utf-8")
+
+
 def test_safe_filename_removes_windows_reserved_characters():
     assert MODULE.safe_filename("账册:谁拿走了?/\\*") == "账册-谁拿走了----"
+
+
+def test_normalize_blocking_punctuation_preserves_interrupted_rhythm():
+    assert MODULE.normalize_blocking_punctuation("“等等——”她追出去。甲–乙") == "“等等……”她追出去。甲…乙"
 
 
 def test_compact_canon_does_not_include_full_prose():

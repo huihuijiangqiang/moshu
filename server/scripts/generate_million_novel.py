@@ -149,6 +149,11 @@ def content_sha256(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
+def normalize_blocking_punctuation(text: str) -> str:
+    """Repair punctuation that is forbidden regardless of narrative context."""
+    return (text or "").replace("——", "……").replace("—", "…").replace("–", "…")
+
+
 def safe_filename(value: str, *, fallback: str = "untitled") -> str:
     cleaned = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "-", value).strip(" .")
     cleaned = re.sub(r"\s+", " ", cleaned)
@@ -1243,7 +1248,19 @@ contract_checks 必须恰好逐项覆盖这些 ID，不得缺失、重复或改�
                         raise ValueError("pending chapter content hash no longer matches checkpoint")
                     prose_usage: dict[str, int] = {}
                 else:
-                    prose, prose_usage = await self.write_chapter(outline, target_words)
+                    orphan_matches = sorted((self.output_dir / "chapters").glob(f"{number:04d}-*.md"))
+                    if record is None and len(orphan_matches) == 1:
+                        prose = orphan_matches[0].read_text(encoding="utf-8").strip()
+                        prose_usage = {}
+                    else:
+                        prose, prose_usage = await self.write_chapter(outline, target_words)
+                normalized_prose = normalize_blocking_punctuation(prose)
+                if normalized_prose != prose:
+                    prose = normalized_prose
+                    chapter_matches = sorted((self.output_dir / "chapters").glob(f"{number:04d}-*.md"))
+                    if len(chapter_matches) != 1:
+                        raise ValueError("cannot normalize chapter with ambiguous output files")
+                    atomic_write_text(chapter_matches[0], prose + "\n")
                 quality = chapter_quality(
                     prose,
                     target_words,
