@@ -14,7 +14,7 @@ export interface CreateBookInput {
   template: string
   tags: string[]
   volumes: Array<{ title: string; summary: string }>
-  chapters?: Array<{ title: string; outline: string[] }>
+  chapters?: Array<{ title: string; outline: string[]; volumeIndex?: number }>
   targetPlatform?: 'fanqie' | 'qimao' | 'qidian' | 'general'
 }
 

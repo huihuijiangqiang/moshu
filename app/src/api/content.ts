@@ -157,7 +157,16 @@ interface GuardIssueDto {
   confidence: number
   chapter_index: number
   chapter_title: string
-  evidence: Array<{ label: string; text: string; accent?: boolean }>
+  evidence: Array<{
+    label: string
+    text: string
+    accent?: boolean
+    chapter_id?: string | null
+    paragraph_id?: string | null
+    start_offset?: number | null
+    end_offset?: number | null
+    source_anchor?: string | null
+  }>
   actions: string[]
   arbitration_status: GuardIssue['arbitrationStatus']
   arbitration_confidence: number | null
@@ -368,8 +377,20 @@ const RESOLUTION_LABELS: Record<GuardResolutionAction, string> = {
   defer: '稍后处理'
 }
 
+/** Accept both backend action codes and the older mock/demo Chinese labels. */
+export function guardResolutionAction(value: string): GuardResolutionAction {
+  if (value in RESOLUTION_LABELS) return value as GuardResolutionAction
+  const label = value.trim()
+  if (/误报/.test(label)) return 'false_positive'
+  if (/改写|回到正文|补一段|下一章提及/.test(label)) return 'fixed_in_body'
+  if (/更新设定|采用.*事实|以本章为准|入库/.test(label)) return 'accept_new_fact'
+  if (/保留.*设定|以第.+章为准/.test(label)) return 'accept_old_fact'
+  if (/有意|忽略/.test(label)) return 'intentional_exception'
+  return 'defer'
+}
+
 export function guardIssueFromDto(dto: GuardIssueDto): GuardIssue {
-  const actionCodes = dto.actions.filter((action): action is GuardResolutionAction => action in RESOLUTION_LABELS)
+  const actionCodes = dto.actions.map(guardResolutionAction)
   return {
     id: dto.id,
     kind: 'conflict',
@@ -378,7 +399,14 @@ export function guardIssueFromDto(dto: GuardIssueDto): GuardIssue {
     title: dto.description,
     chapterRef: `第 ${dto.chapter_index} 章 · ${dto.chapter_title}`,
     detail: `规则置信度 ${Math.round(dto.confidence * 100)}% · 扫描结果不会自动修改正文`,
-    evidence: dto.evidence,
+    evidence: dto.evidence.map((item) => ({
+      ...item,
+      chapterId: item.chapter_id ?? undefined,
+      paragraphId: item.paragraph_id ?? undefined,
+      startOffset: item.start_offset ?? undefined,
+      endOffset: item.end_offset ?? undefined,
+      sourceAnchor: item.source_anchor ?? undefined
+    })),
     actions: actionCodes.map((action) => RESOLUTION_LABELS[action]),
     actionCodes,
     issueRev: dto.issue_rev,

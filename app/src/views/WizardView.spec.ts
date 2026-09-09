@@ -55,7 +55,7 @@ describe('new project wizard', () => {
     await buttonByText(wrapper, '继续')?.trigger('click')
 
     expect(wrapper.text()).toContain('这是根据你的选择搭出的骨架')
-    expect(wrapper.get('input[type="text"]').element).toHaveProperty('value', '残锋照雪')
+    expect((wrapper.get('input[type="text"]').element as HTMLInputElement).value).toContain('架空历史')
     expect(wrapper.get('textarea[aria-label="主角设定"]').element).toHaveProperty('value')
     expect(wrapper.get('textarea:not([aria-label])').element).toHaveProperty('value')
     expect(wrapper.text()).toContain('架空历史 · 谜团追索')

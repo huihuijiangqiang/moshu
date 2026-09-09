@@ -36,6 +36,7 @@ interface VolumeDraft {
 interface ChapterDraft {
   title: string
   outline: string
+  volumeIndex?: number
 }
 
 const DRAFT_KEY = 'moshu:new-project-draft'
@@ -43,9 +44,9 @@ const router = useRouter()
 const step = ref(1)
 const highestStep = ref(1)
 const inspiration = ref('')
-const audience = ref<Audience>('male')
+const audience = ref<Audience>('general')
 const targetPlatform = ref<TargetPlatform>('general')
-const genreGroupId = ref('fantasy')
+const genreGroupId = ref('')
 const genreId = ref('')
 const tagIds = ref<string[]>([])
 const customGenre = ref('')
@@ -61,9 +62,22 @@ const creating = ref(false)
 const createError = ref('')
 const planning = ref(false)
 const planningError = ref('')
+const planningNotice = ref('')
 const chapters = ref<ChapterDraft[]>([])
+type SkeletonSnapshot = {
+  title: string
+  protagonist: string
+  coreHook: string
+  synopsis: string
+  volumes: VolumeDraft[]
+  chapters: ChapterDraft[]
+}
+const generatedSnapshot = ref<SkeletonSnapshot | null>(null)
+const lastPlanSignature = ref('')
 
 const inspirations = [
+  '她穿越成荒年农家的长女，先要保住一亩薄田，再把一家人的日子过成自己的选择。',
+  '她醒来成了被退婚的农家女，带着一间空粮仓和一笔旧账，从种田开始翻身。',
   '一个守关将军能听见兵器记忆，却发现佩剑一直在替师父撒谎。',
   '所有人都忘记了昨夜，只有停尸房里的一具尸体记得。',
   '她替姐姐嫁进敌国，婚书上却写着自己十年前用过的名字。',
@@ -114,7 +128,12 @@ const genreGroups: GenreGroup[] = [
   {
     id: 'romance', label: '言情情感', genres: [
       { id: 'ancient-romance', label: '古代言情', note: '古代关系与身份约束' },
+      { id: 'transmigration-farming', label: '穿越种田', note: '农事经营、家宅关系与逆境成长' },
+      { id: 'ancient-house', label: '宅斗宫斗', note: '家族秩序、身份博弈与情感选择' },
+      { id: 'ancient-business', label: '古代经商', note: '从小本经营到事业版图' },
       { id: 'modern-romance', label: '现代言情', note: '当代关系与个人选择' },
+      { id: 'era-rebirth', label: '年代重生', note: '时代机遇、家庭经营与人生重启' },
+      { id: 'sweet-romance', label: '先婚后爱', note: '契约关系中的信任与心动' },
       { id: 'campus', label: '青春校园', note: '成长阶段与青春关系' },
       { id: 'wealthy-family', label: '豪门世家', note: '家族利益与亲密关系' },
       { id: 'workplace-romance', label: '婚恋职场', note: '事业压力与情感协商' },
@@ -149,10 +168,13 @@ const contentTags = [
 ]
 
 const templates: Choice[] = [
+  { id: 'farming', label: '穿越种田', note: '从资源盘点到家业成长，事业线与感情线同步推进', cue: '强经营' },
   { id: 'growth', label: '升级闯关', note: '目标逐级抬高，每卷解决一个更大的阻碍', cue: '强推进' },
   { id: 'mystery', label: '谜团追索', note: '答案不断改写问题，真相分层揭露', cue: '强悬念' },
   { id: 'reversal', label: '身份翻转', note: '隐藏身份持续改变人物关系和选择', cue: '强反转' },
-  { id: 'ensemble', label: '群像经营', note: '多人物目标交叉，靠关系变化推动剧情', cue: '强关系' }
+  { id: 'ensemble', label: '群像经营', note: '多人物目标交叉，靠关系变化推动剧情', cue: '强关系' },
+  { id: 'romance-growth', label: '事业感情双线', note: '事业目标和关系推进互相制造选择与回报', cue: '强双线' },
+  { id: 'revenge', label: '打脸复仇', note: '旧债逐层清算，每次反击都抬高新的目标', cue: '强爽点' }
 ]
 
 const platformOptions: Array<{ id: TargetPlatform; label: string; note: string }> = [
@@ -174,7 +196,7 @@ const hookVariants = [
   ['同断 · 人器共担', '能让持有者与兵器分担致命损伤；兵器一旦彻底折断，所有积压的伤会同时回到人身上。']
 ]
 
-const selectedGenreGroup = computed(() => genreGroups.find((group) => group.id === genreGroupId.value) ?? genreGroups[0])
+const selectedGenreGroup = computed(() => genreGroups.find((group) => group.id === genreGroupId.value))
 const visibleGenres = computed(() => selectedGenreGroup.value?.genres ?? [])
 const selectedGenre = computed<GenreOption | null>(() => {
   if (genreGroupId.value === 'custom') {
@@ -186,6 +208,7 @@ const selectedGenre = computed<GenreOption | null>(() => {
 const selectedTags = computed(() => contentTags.filter((tag) => tagIds.value.includes(tag.id)))
 const selectedTemplate = computed(() => templates.find((item) => item.id === templateId.value) ?? null)
 const audienceLabel = computed(() => audience.value === 'male' ? '男频' : audience.value === 'female' ? '女频' : '通用')
+const planSignature = computed(() => JSON.stringify({ inspiration: inspiration.value.trim(), audience: audienceLabel.value, genre: selectedGenre.value?.label ?? '', tags: selectedTags.value.map((tag) => tag.label), template: selectedTemplate.value?.label ?? '' }))
 const inspirationValid = computed(() => inspiration.value.trim().length >= 8)
 const choicesValid = computed(() => !!selectedGenre.value && !!templateId.value)
 const skeletonValid = computed(() =>
@@ -229,11 +252,13 @@ function chooseGenreGroup(groupId: string) {
 }
 
 async function buildSkeleton(force = false) {
-  if (!force && skeletonValid.value) return
+  if (!force && skeletonValid.value && lastPlanSignature.value === planSignature.value) return
   if (planning.value || !selectedGenre.value || !selectedTemplate.value) return
   planning.value = true
   planningError.value = ''
+  planningNotice.value = ''
   try {
+    const signature = planSignature.value
     const plan = await planWizard({
       inspiration: inspiration.value.trim(),
       audience: audienceLabel.value,
@@ -241,7 +266,8 @@ async function buildSkeleton(force = false) {
       tags: selectedTags.value.map((tag) => tag.label),
       template: selectedTemplate.value.label
     })
-    applyPlan(plan)
+    applyPlan(plan, force)
+    lastPlanSignature.value = signature
   } catch {
     planningError.value = '故事骨架生成失败，选择“重试生成”再试一次。'
   } finally {
@@ -249,13 +275,38 @@ async function buildSkeleton(force = false) {
   }
 }
 
-function applyPlan(plan: WizardPlan) {
-  bookTitle.value = plan.title
-  protagonist.value = plan.protagonist
-  coreHook.value = plan.coreHook
-  synopsis.value = plan.synopsis
-  volumes.value = plan.volumes.map((volume) => ({ ...volume }))
-  chapters.value = plan.chapters.map((chapter) => ({ title: chapter.title, outline: chapter.outline.join('\n') }))
+function applyPlan(plan: WizardPlan, preserveEdits = false) {
+  const previous = generatedSnapshot.value
+  const nextVolumes = plan.volumes.map((volume) => ({ ...volume }))
+  const nextChapters = plan.chapters.map((chapter) => ({
+    title: chapter.title,
+    outline: chapter.outline.join('\n'),
+    ...(chapter.volumeIndex === undefined ? {} : { volumeIndex: chapter.volumeIndex })
+  }))
+  const keep = (current: string, original: string | undefined) => preserveEdits && original !== undefined && current !== original
+  const keptTitle = keep(bookTitle.value, previous?.title)
+  const keptProtagonist = keep(protagonist.value, previous?.protagonist)
+  const keptCoreHook = keep(coreHook.value, previous?.coreHook)
+  const keptSynopsis = keep(synopsis.value, previous?.synopsis)
+  bookTitle.value = keptTitle ? bookTitle.value : plan.title
+  protagonist.value = keptProtagonist ? protagonist.value : plan.protagonist
+  coreHook.value = keptCoreHook ? coreHook.value : plan.coreHook
+  synopsis.value = keptSynopsis ? synopsis.value : plan.synopsis
+  const volumesEdited = preserveEdits && previous && JSON.stringify(volumes.value) !== JSON.stringify(previous.volumes)
+  const chaptersEdited = preserveEdits && previous && JSON.stringify(chapters.value) !== JSON.stringify(previous.chapters)
+  if (!volumesEdited) volumes.value = nextVolumes
+  if (!chaptersEdited) chapters.value = nextChapters
+  generatedSnapshot.value = {
+    title: plan.title,
+    protagonist: plan.protagonist,
+    coreHook: plan.coreHook,
+    synopsis: plan.synopsis,
+    volumes: nextVolumes,
+    chapters: nextChapters
+  }
+  if (preserveEdits && (keptTitle || keptProtagonist || keptCoreHook || keptSynopsis || volumesEdited || chaptersEdited)) {
+    planningNotice.value = '已重新生成；你手动修改过的字段已保留。'
+  }
 }
 
 function buildLocalSkeleton() {
@@ -323,9 +374,9 @@ function resetDraft() {
   step.value = 1
   highestStep.value = 1
   inspiration.value = ''
-  audience.value = 'male'
+  audience.value = 'general'
   targetPlatform.value = 'general'
-  genreGroupId.value = 'fantasy'
+  genreGroupId.value = ''
   genreId.value = ''
   tagIds.value = []
   customGenre.value = ''
@@ -336,6 +387,9 @@ function resetDraft() {
   synopsis.value = ''
   volumes.value = []
   chapters.value = []
+  generatedSnapshot.value = null
+  lastPlanSignature.value = ''
+  planningNotice.value = ''
   expandedOutline.value = false
   variant.value = 0
   localStorage.removeItem(DRAFT_KEY)
@@ -359,7 +413,8 @@ async function createProject() {
       volumes: volumes.value,
       chapters: chapters.value.map((chapter) => ({
         title: chapter.title,
-        outline: chapter.outline.split(/\n+/).map((beat) => beat.trim()).filter(Boolean)
+        outline: chapter.outline.split(/\n+/).map((beat) => beat.trim()).filter(Boolean),
+        ...(chapter.volumeIndex === undefined ? {} : { volumeIndex: chapter.volumeIndex })
       })),
       targetPlatform: targetPlatform.value
     })
@@ -390,7 +445,7 @@ onMounted(() => {
     step.value = Math.min(4, Math.max(1, Number(draft.step) || 1))
     highestStep.value = Math.min(4, Math.max(step.value, Number(draft.highestStep) || 1))
     inspiration.value = typeof draft.inspiration === 'string' ? draft.inspiration : ''
-    audience.value = ['male', 'female', 'general'].includes(draft.audience) ? draft.audience : 'male'
+    audience.value = ['male', 'female', 'general'].includes(draft.audience) ? draft.audience : 'general'
     targetPlatform.value = ['fanqie', 'qimao', 'qidian', 'general'].includes(draft.targetPlatform) ? draft.targetPlatform : 'general'
     const legacyGenres: Record<string, [string, string]> = {
       fantasy: ['fantasy', 'oriental-fantasy'],
@@ -401,7 +456,7 @@ onMounted(() => {
       scifi: ['suspense-scifi', 'apocalypse']
     }
     const legacyGenre = typeof draft.genreId === 'string' ? legacyGenres[draft.genreId] : undefined
-    genreGroupId.value = legacyGenre?.[0] ?? (typeof draft.genreGroupId === 'string' ? draft.genreGroupId : 'fantasy')
+    genreGroupId.value = legacyGenre?.[0] ?? (typeof draft.genreGroupId === 'string' ? draft.genreGroupId : '')
     genreId.value = legacyGenre?.[1] ?? (typeof draft.genreId === 'string' ? draft.genreId : '')
     tagIds.value = Array.isArray(draft.tagIds)
       ? draft.tagIds.filter((id: unknown): id is string => typeof id === 'string').slice(0, 3)
@@ -595,6 +650,7 @@ watch(
             {{ planningError }}
             <button type="button" @click="void buildSkeleton(true)">重试生成</button>
           </div>
+          <div v-else-if="planningNotice" class="wizard-plan-status" role="status">{{ planningNotice }}</div>
 
           <label class="wizard-field wizard-field-short"><span>暂定书名</span><input v-model="bookTitle" type="text"></label>
 

@@ -17,6 +17,19 @@ export interface ShelfBook {
   coverTone: 'mountain' | 'city' | 'river' | 'spring' | 'space'
 }
 
+export interface CreatedBook extends ShelfBook {
+  inspiration: string
+  synopsis: string
+  protagonist: string
+  coreHook: string
+  audience: string
+  template: string
+  tags: string[]
+  targetPlatform: 'fanqie' | 'qimao' | 'qidian' | 'general'
+  draftVolumes: Array<{ title: string; summary: string }>
+  draftChapters: Array<{ title: string; outline: string[]; volumeIndex?: number }>
+}
+
 const CREATED_BOOKS_KEY = 'moshu:created-books'
 
 export const SHELF_BOOKS: ShelfBook[] = [
@@ -52,7 +65,7 @@ export const SHELF_BOOKS: ShelfBook[] = [
   }
 ]
 
-function readCreatedBooks(): ShelfBook[] {
+function readCreatedBooks(): CreatedBook[] {
   if (typeof localStorage === 'undefined' || typeof localStorage.getItem !== 'function') return []
   try {
     const value = JSON.parse(localStorage.getItem(CREATED_BOOKS_KEY) ?? '[]')
@@ -62,12 +75,12 @@ function readCreatedBooks(): ShelfBook[] {
   }
 }
 
-function writeCreatedBooks(books: ShelfBook[]) {
+function writeCreatedBooks(books: CreatedBook[]) {
   if (typeof localStorage === 'undefined' || typeof localStorage.setItem !== 'function') return
   localStorage.setItem(CREATED_BOOKS_KEY, JSON.stringify(books))
 }
 
-export function findShelfBook(id: string) {
+export function findShelfBook(id: string): CreatedBook | ShelfBook | undefined {
   return readCreatedBooks().find((book) => book.id === id) ?? SHELF_BOOKS.find((book) => book.id === id)
 }
 
@@ -77,22 +90,51 @@ export const shelfApi = {
     return structuredClone([...readCreatedBooks(), ...SHELF_BOOKS])
   },
 
-  async createBook(input: { title: string; genre: string }): Promise<ShelfBook> {
+  async createBook(input: {
+    title: string
+    genre: string
+    inspiration?: string
+    synopsis?: string
+    protagonist?: string
+    coreHook?: string
+    audience?: string
+    template?: string
+    tags?: string[]
+    volumes?: Array<{ title: string; summary: string }>
+    chapters?: Array<{ title: string; outline: string[]; volumeIndex?: number }>
+    targetPlatform?: 'fanqie' | 'qimao' | 'qidian' | 'general'
+  }): Promise<ShelfBook> {
     await delay(160)
-    const book: ShelfBook = {
+    const draftVolumes = (input.volumes ?? []).map((volume) => ({ title: volume.title, summary: volume.summary }))
+    const draftChapters = (input.chapters ?? []).map((chapter) => ({
+      title: chapter.title,
+      outline: [...chapter.outline],
+      volumeIndex: chapter.volumeIndex
+    }))
+    const book: CreatedBook = {
       id: `draft-${Date.now().toString(36)}`,
       title: input.title.trim() || '未命名作品',
       genre: input.genre,
       status: 'planning',
       words: 0,
-      chapters: 0,
+      chapters: draftChapters.length,
       codexCount: 0,
       guardOpen: 0,
       lastTouched: '刚刚 · 创建故事骨架',
       targetWords: 600000,
       progress: 0,
       todayWords: 0,
-      coverTone: 'mountain'
+      coverTone: 'mountain',
+      inspiration: input.inspiration ?? '',
+      synopsis: input.synopsis ?? '',
+      protagonist: input.protagonist ?? '',
+      coreHook: input.coreHook ?? '',
+      audience: input.audience ?? '通用',
+      template: input.template ?? '',
+      tags: [...(input.tags ?? [])],
+      targetPlatform: input.targetPlatform ?? 'general',
+      draftVolumes,
+      draftChapters
     }
     writeCreatedBooks([book, ...readCreatedBooks()])
     return structuredClone(book)

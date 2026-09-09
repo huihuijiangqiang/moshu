@@ -1,6 +1,6 @@
 import { delay } from '../http'
 import * as seed from './seed'
-import { findShelfBook } from './shelf'
+import { findShelfBook, type CreatedBook } from './shelf'
 import type { Chapter, ChapterPlanPatch, ChapterVersionDetail, ChapterVersionRestoreResult, ChapterVersionSummary, CharacterStatistics, CodexEntry, CodexEntryDraft, CodexRelation, CodexRelationDraft, CodexStateDraft, CodexStateHistoryItem, GuardIssue, GuardOverview, GuardResolutionAction, Project, ProjectNote, ContextLayer, ProjectPatch, ProjectTrash, TemporalDecisionResult, TemporalReviewItem, TimelineBoard, TimelineEntry, TimelineEntryDraft, TimelineReflowResult, WritingProgressDay, StoryboardAdaptation, StoryboardEpisode, StoryboardScene, StoryboardShot, VisualProfile } from '@/types'
 
 /** 内存态副本：mock 下的写操作要真的改变数据，否则界面行为是假的。 */
@@ -168,6 +168,10 @@ function projectFor(id: string): Project {
   const existing = projectStates.get(id)
   if (existing) return existing
   const book = findShelfBook(id)
+  const created = book && 'draftVolumes' in book ? book as CreatedBook : undefined
+  const volumes = created?.draftVolumes?.length
+    ? created.draftVolumes.map((volume, index) => ({ id: `${id}-v${index + 1}`, index: index + 1, title: volume.title || `第 ${index + 1} 卷` }))
+    : [{ id: `${id}-v1`, index: 1, title: book?.status === 'planning' ? '故事构思' : '第一卷' }]
   const project: Project = {
     id,
     title: book?.title ?? '未命名作品',
@@ -178,7 +182,7 @@ function projectFor(id: string): Project {
     dailyGoal: 3000,
     dailyWords: book?.todayWords ?? 0,
     styleProfile: null,
-    volumes: [{ id: `${id}-v1`, index: 1, title: book?.status === 'planning' ? '故事构思' : '第一卷' }]
+    volumes
   }
   projectStates.set(id, project)
   return project
@@ -202,6 +206,28 @@ function chaptersFor(id: string): Chapter[] {
   if (existing) return existing
 
   const book = findShelfBook(id)
+  const created = book && 'draftChapters' in book ? book as CreatedBook : undefined
+  if (created?.draftChapters?.length) {
+    const volumes = projectFor(id).volumes
+    const rows = created.draftChapters.map((draft, index): Chapter => {
+      // CreateBookInput.volumeIndex follows the API contract and is zero-based.
+      const volumeIndex = Math.max(0, Math.min(volumes.length - 1, draft.volumeIndex ?? 0))
+      const title = draft.title.trim() || `第 ${index + 1} 章`
+      const outline = draft.outline.filter((beat) => beat.trim())
+      return {
+        id: `${id}-ch${index + 1}`,
+        volumeId: volumes[volumeIndex]?.id ?? volumes[0]!.id,
+        index: index + 1,
+        title,
+        words: 0,
+        status: 'outlined',
+        outline,
+        outlineNote: outline.join('；')
+      }
+    })
+    projectDrafts.set(id, rows)
+    return rows
+  }
   const chapterTitle: Record<string, string> = {
     p2: '无人知晓',
     p3: '纸船灯影',

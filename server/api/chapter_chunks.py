@@ -119,11 +119,17 @@ async def reindex_project_chapter_chunks(
     await verify_project_permission(project_id, ProjectPermission.MANAGE_PROJECT, user, db)
     revisions = await project_body_revisions(db, project_id=project_id)
     current_states = await current_chunk_states_by_chapter(db, project_id=project_id)
+    # A body save queues ``chapter.chunk_embedding_requested`` while this
+    # project-level operation queues the forceful reindex variant.  Treat both
+    # topics as the same in-flight work item so a user clicking reindex while a
+    # fresh save is dispatching cannot create duplicate embedding jobs.
     existing_rows = list(
         (
             await db.execute(
                 select(OutboxEvent).where(
-                    OutboxEvent.topic == "chapter.chunk_reindex_requested",
+                    OutboxEvent.topic.in_(
+                        ("chapter.chunk_reindex_requested", "chapter.chunk_embedding_requested")
+                    ),
                     OutboxEvent.aggregate_id.in_([chapter_id for chapter_id, _ in revisions]),
                 )
             )
@@ -131,7 +137,21 @@ async def reindex_project_chapter_chunks(
         .scalars()
         .all()
     ) if revisions else []
-    existing = {(row.aggregate_id, row.aggregate_rev): row for row in existing_rows}
+    # Prefer an active event over a terminal one; among events with the same
+    # lifecycle state prefer the forceful reindex variant.  This handles a
+    # stale dead-letter reindex alongside a newer body-save event without
+    # reactivating both tasks.
+    def _event_priority(event: OutboxEvent) -> tuple[int, int]:
+        lifecycle = {"pending": 0, "dispatching": 0, "sent": 1}.get(event.status, 2)
+        force = 0 if event.topic == "chapter.chunk_reindex_requested" else 1
+        return lifecycle, force
+
+    existing: dict[tuple[str, int], OutboxEvent] = {}
+    for row in existing_rows:
+        key = (row.aggregate_id, row.aggregate_rev)
+        current = existing.get(key)
+        if current is None or _event_priority(row) < _event_priority(current):
+            existing[key] = row
     queued = already_queued = requeued = 0
     for chapter_id, body_rev in revisions:
         payload = {

@@ -139,6 +139,20 @@ class VolumeCreate(BaseModel):
     summary: str = Field(default="", max_length=20_000)
 
 
+class ProjectChapterPlan(WizardChapterPlan):
+    """章节初始计划，支持可选的 0 起始卷索引。
+
+    ``WizardChapterPlan`` 用于模型规划响应，保持其严格结构不变；项目创建
+    请求单独扩展 ``volumeIndex``，这样旧客户端（没有该字段）仍默认归第一卷。
+    """
+
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+
+    # Range validation depends on the number of volumes in this request and is
+    # therefore performed by ``create_project`` rather than by Pydantic.
+    volume_index: int | None = Field(default=None, alias="volumeIndex")
+
+
 class ProjectCreate(BaseModel):
     title: str = Field(min_length=1, max_length=200)
     genre: str | None = Field(default=None, max_length=100)
@@ -151,7 +165,7 @@ class ProjectCreate(BaseModel):
     template: str = Field(default="", max_length=100)
     tags: list[str] = Field(default_factory=list, max_length=20)
     volumes: list[VolumeCreate] = Field(default_factory=list, max_length=20)
-    chapters: list[WizardChapterPlan] = Field(default_factory=list, max_length=10)
+    chapters: list[ProjectChapterPlan] = Field(default_factory=list, max_length=10)
     target_platform: Literal["fanqie", "qimao", "qidian", "general"] = "general"
 
 
@@ -551,6 +565,21 @@ async def create_project(
     db: AsyncSession = Depends(get_db),
 ) -> ProjectOut:
     """Create a real project, its volume plan, first chapter, and initial codex entries."""
+    volume_count = len(request.volumes) or 1
+    for chapter_index, chapter_plan in enumerate(request.chapters):
+        volume_index = chapter_plan.volume_index
+        if volume_index is not None and not 0 <= volume_index < volume_count:
+            raise HTTPException(
+                status_code=422,
+                detail={
+                    "code": "CHAPTER_VOLUME_INDEX_OUT_OF_RANGE",
+                    "field": f"chapters[{chapter_index}].volumeIndex",
+                    "volume_index": volume_index,
+                    "volume_count": volume_count,
+                    "message": f"volumeIndex 必须是 0 到 {volume_count - 1} 之间的整数。",
+                },
+            )
+
     project = Project(
         id=f"p_{secrets.token_hex(12)}",
         owner_id=user.id,
@@ -605,14 +634,22 @@ async def create_project(
             ["建立主角当前处境", "发生打破日常的事件"][len(default_outline):]
         )
     chapter_plans = request.chapters or [
-        WizardChapterPlan(title="第 1 章 · 开篇", outline=default_outline)
+        ProjectChapterPlan(title="第 1 章 · 开篇", outline=default_outline)
     ]
     for index, chapter_plan in enumerate(chapter_plans, start=1):
+        # ``volumeIndex`` is intentionally zero-based to match the array index
+        # used by the wizard UI.  Omitted values retain legacy first-volume
+        # behavior; invalid indexes fail before any chapter is persisted.
+        volume_index = chapter_plan.volume_index
+        if volume_index is None:
+            target_volume = volumes[0]
+        else:
+            target_volume = volumes[volume_index]
         db.add(
             Chapter(
                 id=f"ch_{secrets.token_hex(12)}",
                 project_id=project.id,
-                volume_id=volumes[0].id,
+                volume_id=target_volume.id,
                 title=chapter_plan.title.strip(),
                 idx=index,
                 words=0,

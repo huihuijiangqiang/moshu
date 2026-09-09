@@ -4,6 +4,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { useGuardStore } from '@/stores/guard'
 import { useProjectStore } from '@/stores/project'
 import { useShellStore } from '@/stores/shell'
+import { guardResolutionAction } from '@/api/content'
 import type { GuardIssue, GuardKind } from '@/types'
 import { useProjectNavigation } from '@/composables/use-project-navigation'
 import AppIcon from '@/components/ui/AppIcon.vue'
@@ -45,6 +46,24 @@ const rows = computed<GuardIssue[]>(() =>
 )
 
 const selected = computed(() => rows.value.find((i) => i.id === selectedId.value) ?? rows.value[0] ?? null)
+const selectedResolution = computed(() => selected.value ? guard.resolutions[selected.value.id] ?? null : null)
+
+type GuardEvidence = GuardIssue['evidence'][number] & {
+  chapterId?: string
+  paragraphId?: string
+  startOffset?: number
+  endOffset?: number
+  sourceAnchor?: string
+}
+
+function evidenceWithAnchor(value: GuardIssue['evidence'][number]): GuardEvidence {
+  return value as GuardEvidence
+}
+
+function hasEvidenceAnchor(value: GuardIssue['evidence'][number]) {
+  const item = evidenceWithAnchor(value)
+  return Boolean(item.chapterId || item.paragraphId || item.sourceAnchor)
+}
 
 const runtimeLabel = computed(() => ({
   idle: '尚未扫描',
@@ -167,34 +186,42 @@ watch(
   { immediate: true }
 )
 
-function act(issue: GuardIssue, action: string, index: number) {
+async function act(issue: GuardIssue, action: string, index: number) {
   if (action.includes('查看时间线')) {
     router.push(toProject('timeline'))
     return
   }
   if (action.includes('改写') || action.includes('回到正文') || action.includes('补一段')) {
-    openIssueChapter(issue)
+    openIssueChapter(issue, issue.evidence.find(hasEvidenceAnchor))
     return
   }
 
-  // 更新设定、确认忽略等动作由 mock API 记录为已处置；正文修改必须由作者完成后再消警。
-  void guard.resolve(issue.id, issue.actionCodes?.[index] ?? 'defer')
+  // 中文 mock 标签和后端动作码都收敛到同一语义，并在详情页留下可验证记录。
+  await guard.resolve(issue.id, issue.actionCodes?.[index] ?? guardResolutionAction(action))
+  // Keep the resolved issue selected so the author can verify what was recorded.
+  guard.tab = 'resolved'
 }
 
-function openIssueChapter(issue: GuardIssue) {
-  const directChapter = issue.chapterId
-    ? project.chapters.find((item) => item.id === issue.chapterId)
+function openIssueChapter(issue: GuardIssue, evidence?: GuardIssue['evidence'][number]) {
+  const anchored = evidence ? evidenceWithAnchor(evidence) : undefined
+  const targetChapterId = anchored?.chapterId ?? issue.chapterId
+  const directChapter = targetChapterId
+    ? project.chapters.find((item) => item.id === targetChapterId)
     : undefined
-  const indexes = [...issue.chapterRef.matchAll(/\d+/g)].map((match) => Number(match[0]))
-  const chapter = directChapter ?? [...indexes]
-    .reverse()
-    .map((index) => project.chapters.find((item) => item.index === index))
-    .find(Boolean)
+  // ``chapterRef`` may contain numbers in the title (for example “第 3 章 ·
+  // 二十四节气”), so only the leading chapter number is a valid fallback.
+  const chapterIndex = issue.chapterRef.match(/第\s*(\d+)\s*章/)?.[1]
+  const chapter = directChapter ?? (chapterIndex
+    ? project.chapters.find((item) => item.index === Number(chapterIndex))
+    : undefined)
 
-  router.push({
-    path: toProject('write'),
-    query: chapter ? { chapter: chapter.id } : undefined
-  })
+  const query: Record<string, string> = {}
+  if (chapter) query.chapter = chapter.id
+  if (anchored?.paragraphId) query.paragraph = anchored.paragraphId
+  if (anchored && Number.isInteger(anchored.startOffset)) query.start = String(anchored.startOffset)
+  if (anchored && Number.isInteger(anchored.endOffset)) query.end = String(anchored.endOffset)
+  if (anchored?.sourceAnchor) query.anchor = anchored.sourceAnchor
+  router.push({ path: toProject('write'), query })
 }
 
 function clearChapterScope() {
@@ -440,8 +467,29 @@ function clearChapterScope() {
                 <p :style="{ margin: 0, fontFamily: 'var(--font-prose)', fontSize: 'var(--fs-lg)', lineHeight: 1.95, color: 'var(--ink)' }">
                   {{ ev.text }}
                 </p>
+                <button
+                  v-if="hasEvidenceAnchor(ev)"
+                  class="wk-btn wk-btn-xs"
+                  type="button"
+                  :style="{ marginTop: 'var(--u2)' }"
+                  @click="openIssueChapter(selected, ev)"
+                >定位此证据</button>
               </div>
             </template>
+
+            <div
+              v-if="selectedResolution"
+              class="guard-resolution-note"
+              role="status"
+              aria-live="polite"
+            >
+              <div class="guard-resolution-head">
+                <strong>{{ selectedResolution.label }}</strong>
+                <span>{{ new Date(selectedResolution.recordedAt).toLocaleString('zh-CN', { hour12: false }) }}</span>
+              </div>
+              <p>{{ selectedResolution.message }}</p>
+              <p v-if="selectedResolution.followUp" class="guard-resolution-follow-up">{{ selectedResolution.followUp }}</p>
+            </div>
 
             <div
               v-if="arbitrationCopy"
@@ -479,7 +527,7 @@ function clearChapterScope() {
                 >这是误报</button>
               </div>
               <p :style="{ margin: 'var(--u3) 0 0', fontSize: 'var(--fs-sm)', color: 'var(--ink-3)', lineHeight: 1.7 }">
-                处置结果会回写设定库。标记误报不会改动正文，只用于持续调准扫描规则。
+                处置只记录你的判断，不会替你静默改写正文或设定；需要后续动作时，状态会显示在上方。
               </p>
             </div>
           </div>
@@ -537,6 +585,12 @@ function clearChapterScope() {
 .temporal-review-actions label { display: flex; align-items: center; gap: 6px; color: var(--ink-3); font-size: var(--fs-sm); }
 .temporal-review-actions input[type="number"] { width: 88px; min-height: 30px; border: var(--hair) solid var(--line-strong); background: var(--canvas); color: var(--ink); padding: 4px 7px; }
 .temporal-picked { margin-right: auto; color: var(--ink-2); font-family: var(--font-mono); font-size: var(--fs-sm); }
+.guard-resolution-note { margin-top: var(--u4); padding: var(--u3) var(--u4); border-left: 3px solid var(--primary); background: var(--primary-soft); color: var(--ink-2); }
+.guard-resolution-head { display: flex; align-items: baseline; gap: var(--u3); }
+.guard-resolution-head strong { color: var(--ink); }
+.guard-resolution-head span { color: var(--ink-3); font-size: var(--fs-xs); }
+.guard-resolution-note p { margin: 5px 0 0; font-size: var(--fs-sm); line-height: 1.65; }
+.guard-resolution-note .guard-resolution-follow-up { color: var(--primary-ink, var(--ink-2)); }
 
 @media (max-width: 760px) {
   .temporal-review-head { flex-wrap: wrap; }

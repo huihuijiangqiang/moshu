@@ -265,3 +265,89 @@ async def test_recent_sent_event_with_pending_chunks_is_not_republished(
     ).scalar_one()
     assert event.status == "sent"
     assert event.attempts == 1
+
+
+async def test_body_save_embedding_event_is_not_duplicated_by_project_reindex(
+    app_client, async_db_session, seed_project, auth_headers
+):
+    """Project reindex reuses a fresh body-save embedding event."""
+    await seed_project(chapter_ids=("ch_1",))
+    async_db_session.add(
+        ChapterBody(
+            chapter_id="ch_1",
+            content_html="<p>一</p>",
+            content_json=document("一"),
+            rev=3,
+        )
+    )
+    async_db_session.add(
+        OutboxEvent(
+            topic="chapter.chunk_embedding_requested",
+            aggregate_id="ch_1",
+            aggregate_rev=3,
+            payload={"project_id": "proj_a", "chapter_id": "ch_1", "body_rev": 3},
+            status="pending",
+            attempts=0,
+        )
+    )
+    await async_db_session.commit()
+
+    response = await app_client.post(
+        "/projects/proj_a/chapter-chunks/reindex", headers=auth_headers("user_a")
+    )
+
+    assert response.status_code == 202
+    assert response.json()["already_queued"] == 1
+    assert response.json()["queued"] == 0
+    events = list((await async_db_session.execute(select(OutboxEvent))).scalars())
+    assert len(events) == 1
+    assert events[0].topic == "chapter.chunk_embedding_requested"
+
+
+async def test_active_body_save_event_wins_over_stale_reindex_event(
+    app_client, async_db_session, seed_project, auth_headers
+):
+    """A pending save event must not be duplicated by an old dead letter."""
+    await seed_project(chapter_ids=("ch_1",))
+    async_db_session.add(
+        ChapterBody(
+            chapter_id="ch_1",
+            content_html="<p>一</p>",
+            content_json=document("一"),
+            rev=3,
+        )
+    )
+    async_db_session.add_all(
+        [
+            OutboxEvent(
+                topic="chapter.chunk_reindex_requested",
+                aggregate_id="ch_1",
+                aggregate_rev=3,
+                payload={"project_id": "proj_a", "chapter_id": "ch_1", "body_rev": 3, "force": True},
+                status="dead_letter",
+                attempts=5,
+            ),
+            OutboxEvent(
+                topic="chapter.chunk_embedding_requested",
+                aggregate_id="ch_1",
+                aggregate_rev=3,
+                payload={"project_id": "proj_a", "chapter_id": "ch_1", "body_rev": 3},
+                status="pending",
+                attempts=0,
+            ),
+        ]
+    )
+    await async_db_session.commit()
+
+    response = await app_client.post(
+        "/projects/proj_a/chapter-chunks/reindex", headers=auth_headers("user_a")
+    )
+
+    assert response.status_code == 202
+    assert response.json()["already_queued"] == 1
+    assert response.json()["queued"] == 0
+    events = list((await async_db_session.execute(select(OutboxEvent))).scalars())
+    assert {(event.topic, event.status) for event in events} == {
+        ("chapter.chunk_reindex_requested", "dead_letter"),
+        ("chapter.chunk_embedding_requested", "pending"),
+    }

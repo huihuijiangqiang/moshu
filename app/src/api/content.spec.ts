@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { reactive } from 'vue'
 import { ApiError } from './http'
-import { bodyConflictFromError, characterStatisticsFromDto, codexDraftAttrs, codexFromDto, codexStateFromDto, guardIssueFromDto, guardOverviewFromDto, htmlToDocument, temporalReviewFromDto, timelineBoardFromDto, timelineReflowFromDto } from './content'
+import { bodyConflictFromError, characterStatisticsFromDto, codexDraftAttrs, codexFromDto, codexStateFromDto, guardIssueFromDto, guardOverviewFromDto, guardResolutionAction, htmlToDocument, temporalReviewFromDto, timelineBoardFromDto, timelineReflowFromDto } from './content'
 
 describe('htmlToDocument', () => {
   it('uses the backend paragraph pid contract', () => {
@@ -270,6 +270,32 @@ describe('characterStatisticsFromDto', () => {
 })
 
 describe('Guard DTO mapping', () => {
+  it('maps legacy Chinese actions and preserves evidence anchors', () => {
+    const issue = guardIssueFromDto({
+      id: 'g-anchor', chapter_id: 'ch4', issue_type: 'alive_conflict', severity: 'high',
+      description: '测试问题', status: 'open', resolved: false, issue_rev: 1,
+      confidence: 0.9, chapter_index: 4, chapter_title: '第四章',
+      evidence: [{
+        label: '本次正文', text: '她推开门。', accent: true,
+        chapter_id: 'ch4', paragraph_id: 'p-7', start_offset: 2, end_offset: 7, source_anchor: 'claim:42'
+      }],
+      actions: ['以本章为准，更新设定', '改写第 4 章', '有意为之，忽略'],
+      arbitration_status: 'not_requested', arbitration_confidence: null,
+      arbitration_rationale: null, updated_at: '2026-09-03T10:00:00Z'
+    })
+
+    expect(issue.actionCodes).toEqual(['accept_new_fact', 'fixed_in_body', 'intentional_exception'])
+    expect(issue.evidence[0]).toMatchObject({
+      chapterId: 'ch4', paragraphId: 'p-7', startOffset: 2, endOffset: 7, sourceAnchor: 'claim:42'
+    })
+    expect(guardResolutionAction('入库')).toBe('accept_new_fact')
+    expect(guardResolutionAction('这是误报')).toBe('false_positive')
+    expect(guardResolutionAction('改写第 4 章')).toBe('fixed_in_body')
+    expect(guardResolutionAction('回到正文确认')).toBe('fixed_in_body')
+    expect(guardResolutionAction('补一段说明')).toBe('fixed_in_body')
+    expect(guardResolutionAction('下一章提及')).toBe('fixed_in_body')
+  })
+
   it('keeps issue revision, evidence and resolution actions for real handling', () => {
     const issue = guardIssueFromDto({
       id: 'g1', chapter_id: 'ch1', issue_type: 'alive_conflict', severity: 'high',

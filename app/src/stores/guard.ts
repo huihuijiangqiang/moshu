@@ -4,6 +4,44 @@ import { contentApi } from '@/api/content'
 import { ApiError } from '@/api/http'
 import type { GuardIssue, GuardKind, GuardOverview, GuardResolutionAction, TemporalReviewItem, TimelineReflowResult } from '@/types'
 
+export interface GuardResolutionRecord {
+  action: GuardResolutionAction
+  label: string
+  message: string
+  followUp?: string
+  recordedAt: string
+}
+
+const RESOLUTION_RECORDS: Record<GuardResolutionAction, Omit<GuardResolutionRecord, 'action' | 'recordedAt'>> = {
+  accept_old_fact: {
+    label: '已采用原设定',
+    message: '后续正文应以已有设定为准。',
+    followUp: '如正文仍未修改，请打开对应章节并重新扫描。'
+  },
+  accept_new_fact: {
+    label: '已采用本章新事实',
+    message: '处置决定已记录，设定库需要按本章事实核对。',
+    followUp: '请在设定库确认条目描述和状态，再重新扫描。'
+  },
+  intentional_exception: {
+    label: '已标记为有意例外',
+    message: '这处差异按作者意图保留，不会自动改动正文或设定。'
+  },
+  false_positive: {
+    label: '已标记为误报',
+    message: '这条告警已从待处理列表移出，仅保留处置记录用于复盘。'
+  },
+  fixed_in_body: {
+    label: '已标记正文修正',
+    message: '处置决定已记录，正文修改需要由作者完成。',
+    followUp: '修改正文并保存后重新扫描，确认这条告警不再出现。'
+  },
+  defer: {
+    label: '已暂缓处理',
+    message: '这条告警已记录为稍后处理。'
+  }
+}
+
 const EMPTY_OVERVIEW: GuardOverview = {
   status: 'idle', queued: 0, running: 0, completed: 0, failed: 0,
   outboxPending: 0, outboxDeadLetter: 0, runs: []
@@ -22,6 +60,7 @@ export const useGuardStore = defineStore('guard', () => {
   const temporalDecisionError = ref<string | null>(null)
   const loaded = ref(false)
   const loadedProjectId = ref<string | null>(null)
+  const resolutions = ref<Record<string, GuardResolutionRecord>>({})
   const overview = ref<GuardOverview>({ ...EMPTY_OVERVIEW })
   let polling: Promise<void> | null = null
   let pollingProjectId: string | null = null
@@ -112,6 +151,7 @@ export const useGuardStore = defineStore('guard', () => {
       temporalReviews.value = []
       temporalDecisionPendingId.value = null
       temporalDecisionError.value = null
+      resolutions.value = {}
       // Mark the route target before I/O so a late request from the previous
       // project cannot refresh its data back into this shared store.
       loadedProjectId.value = projectId
@@ -202,13 +242,18 @@ export const useGuardStore = defineStore('guard', () => {
     const i = issues.value.find((item) => item.id === id)
     if (!projectId || !i) return
     await contentApi.resolveGuardIssue(projectId, id, i.issueRev ?? 1, action)
-    if (i) i.resolved = true
+    i.resolved = true
+    resolutions.value[id] = {
+      action,
+      ...RESOLUTION_RECORDS[action],
+      recordedAt: new Date().toISOString()
+    }
   }
 
   return {
     issues, tab, scanning, scanRequestPending, timelineReflowPending,
     timelineReflowResult, timelineReflowError, temporalReviews,
-    temporalDecisionPendingId, temporalDecisionError, overview, open, counts, visible,
+    temporalDecisionPendingId, temporalDecisionError, overview, open, counts, visible, resolutions,
     topThree, load, rescan, reflowTimeline, decideTemporalReview, resolve, loadedProjectId
   }
 })

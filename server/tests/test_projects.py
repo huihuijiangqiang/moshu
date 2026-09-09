@@ -368,8 +368,90 @@ async def test_create_project_persists_plan_first_chapter_and_initial_codex(
     assert project.owner_id == "user_a"
     assert len(volumes) == 2
     assert len(chapters) == 1
+    assert chapters[0].volume_id == volumes[0].id
     assert chapters[0].outline == ["她带着一本账册穿越到荒年。", "从修水渠开始重建村庄。"]
     assert {(entry.kind, entry.name) for entry in entries} == {("character", "许知微"), ("rule", "功德账")}
+
+
+async def test_create_project_assigns_initial_chapters_to_requested_volumes(
+    app_client,
+    async_db_session,
+    make_user,
+    auth_headers,
+):
+    """Initial chapter plans may explicitly target a zero-based volume index."""
+    async_db_session.add(make_user("user_a"))
+    await async_db_session.flush()
+
+    response = await app_client.post(
+        "/projects",
+        headers=auth_headers("user_a"),
+        json={
+            "title": "多卷映射测试",
+            "volumes": [
+                {"title": "第一卷", "summary": "起步"},
+                {"title": "第二卷", "summary": "成长"},
+                {"title": "第三卷", "summary": "决战"},
+            ],
+            "chapters": [
+                {"title": "第一章", "outline": ["开场", "冲突"], "volumeIndex": 0},
+                {"title": "第二章", "outline": ["修行", "突破"], "volumeIndex": 1},
+                {"title": "第三章", "outline": ["赴约", "交锋"], "volumeIndex": 2},
+                {"title": "第四章", "outline": ["余波", "埋线"], "volumeIndex": 1},
+            ],
+        },
+    )
+
+    assert response.status_code == 201
+    project_id = response.json()["id"]
+    volumes = (
+        await async_db_session.execute(
+            select(Volume).where(Volume.project_id == project_id).order_by(Volume.idx)
+        )
+    ).scalars().all()
+    chapters = (
+        await async_db_session.execute(
+            select(Chapter).where(Chapter.project_id == project_id).order_by(Chapter.idx)
+        )
+    ).scalars().all()
+
+    assert [chapter.volume_id for chapter in chapters] == [
+        volumes[0].id,
+        volumes[1].id,
+        volumes[2].id,
+        volumes[1].id,
+    ]
+
+
+async def test_create_project_rejects_initial_chapter_volume_index_out_of_range(
+    app_client,
+    async_db_session,
+    make_user,
+    auth_headers,
+):
+    async_db_session.add(make_user("user_a"))
+    await async_db_session.flush()
+
+    response = await app_client.post(
+        "/projects",
+        headers=auth_headers("user_a"),
+        json={
+            "title": "非法卷索引测试",
+            "volumes": [{"title": "第一卷", "summary": "起步"}],
+            "chapters": [
+                {"title": "第一章", "outline": ["开场", "冲突"], "volumeIndex": 1}
+            ],
+        },
+    )
+
+    assert response.status_code == 422
+    assert response.json()["detail"] == {
+        "code": "CHAPTER_VOLUME_INDEX_OUT_OF_RANGE",
+        "field": "chapters[0].volumeIndex",
+        "volume_index": 1,
+        "volume_count": 1,
+        "message": "volumeIndex 必须是 0 到 0 之间的整数。",
+    }
 
 
 async def test_insert_chapter_reindexes_the_whole_book(

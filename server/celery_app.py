@@ -26,7 +26,7 @@ celery_app.conf.update(
     task_reject_on_worker_lost=True,
     worker_prefetch_multiplier=1,
     worker_max_tasks_per_child=1000,
-    imports=("tasks.consistency", "tasks.codex"),
+    imports=("tasks.consistency", "tasks.codex", "tasks.generation"),
     task_routes={
         "consistency.dispatch_outbox": {"queue": "outbox"},
         "consistency.process_body_saved": {"queue": "consistency"},
@@ -47,6 +47,10 @@ celery_app.conf.update(
         },
         "recover-stale-embedding-jobs": {
             "task": "codex.recover_stale_embedding_jobs",
+            "schedule": 60.0,
+        },
+        "recover-stale-generation-state": {
+            "task": "generation.recover_stale_state",
             "schedule": 60.0,
         },
     },
