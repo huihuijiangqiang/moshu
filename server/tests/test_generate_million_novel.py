@@ -231,6 +231,57 @@ def test_record_accepted_style_revision_rejects_bad_prose(tmp_path):
     assert "style_revisions" not in checkpoint
 
 
+def test_reject_last_accepted_chapter_rebuilds_canon_and_quarantines_files(tmp_path):
+    checkpoint = MODULE.new_checkpoint(target_words=100_000, chapter_words=800, model="m")
+    checkpoint["plan"] = MODULE.build_seed_plan(
+        target_words=checkpoint["target_words"],
+        chapter_count=checkpoint["chapter_count"],
+    )
+    for number in (1, 2):
+        outline = MODULE.build_seed_chapter_outline(number, checkpoint["plan"]["volumes"][0])
+        prose = "\n".join(
+            f"沈砚秋核对第{index}袋粮，赵顺记下经手人和斤两。" for index in range(42)
+        )
+        path = tmp_path / "chapters" / f"{number:04d}-test.md"
+        MODULE.atomic_write_text(path, prose + "\n")
+        quality = MODULE.chapter_quality(prose, 800)
+        analysis = _contract_analysis(outline)
+        analysis["new_facts"] = [f"第{number}章事实"]
+        MODULE.atomic_write_json(tmp_path / "analysis" / f"{number:04d}.json", analysis)
+        checkpoint["chapters"].append(
+            {
+                "number": number,
+                "status": "accepted",
+                "path": path.relative_to(tmp_path).as_posix(),
+                "words": quality["words"],
+                "sha256": MODULE.content_sha256(prose),
+                "quality": quality,
+            }
+        )
+    checkpoint["canon_revision"] = 2
+    checkpoint["generated_words"] = sum(item["words"] for item in checkpoint["chapters"])
+    checkpoint["metrics"]["chapters_accepted"] = 2
+
+    rejection = MODULE.reject_last_accepted_chapter(
+        checkpoint,
+        tmp_path,
+        reason="账目连续性错误",
+        rejected_at=123,
+    )
+
+    assert rejection["chapter"] == 2
+    assert rejection["reason"] == "账目连续性错误"
+    assert [item["number"] for item in checkpoint["chapters"]] == [1]
+    assert checkpoint["canon_revision"] == 1
+    assert checkpoint["generated_words"] == checkpoint["chapters"][0]["words"]
+    assert checkpoint["metrics"]["chapters_accepted"] == 1
+    assert any(item["fact"] == "第1章事实" for item in checkpoint["canon"]["facts"].values())
+    assert not any(item["fact"] == "第2章事实" for item in checkpoint["canon"]["facts"].values())
+    assert list((tmp_path / "chapters").glob("0002-*.md")) == []
+    assert len(list((tmp_path / "rejected").glob("0002-*.md"))) == 1
+    assert (tmp_path / "rejected" / "analysis" / "0002-123.json").exists()
+
+
 def test_chapter_quality_blocks_formulaic_not_is_comparison():
     text = '她手里不是空账，而是四枚旧铜钱。\n' + '她把钱压在账册上，等着对方开口。\n' * 30
     result = MODULE.chapter_quality(text, 1_000)

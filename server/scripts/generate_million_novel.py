@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import copy
 import hashlib
 import json
 import math
@@ -687,6 +688,97 @@ def record_accepted_style_revision(
     }
     checkpoint.setdefault("style_revisions", []).append(revision)
     return revision
+
+
+def reject_last_accepted_chapter(
+    checkpoint: dict[str, Any],
+    output_dir: Path,
+    *,
+    reason: str,
+    rejected_at: int | None = None,
+) -> dict[str, Any]:
+    """Remove only the Canon tail and rebuild derived state from prior analyses."""
+    rejection_reason = reason.strip()
+    if not rejection_reason:
+        raise ValueError("chapter rejection reason must not be empty")
+    accepted = sorted(
+        (item for item in checkpoint.get("chapters", []) if item.get("status") == "accepted"),
+        key=lambda item: int(item.get("number", 0)),
+    )
+    if not accepted:
+        raise ValueError("the run has no accepted chapter to reject")
+    rejected_record = accepted[-1]
+    rejected_number = int(rejected_record["number"])
+    later_records = [
+        int(item.get("number", 0))
+        for item in checkpoint.get("chapters", [])
+        if int(item.get("number", 0)) > rejected_number
+    ]
+    if later_records:
+        raise ValueError("cannot reject a chapter while later chapter records exist")
+
+    remaining = accepted[:-1]
+    analyses: list[dict[str, Any]] = []
+    for record in remaining:
+        analysis_path = output_dir / "analysis" / f"{int(record['number']):04d}.json"
+        if not analysis_path.exists():
+            raise ValueError(f"accepted chapter analysis is missing: {analysis_path.name}")
+        analysis = json.loads(analysis_path.read_text(encoding="utf-8"))
+        if not isinstance(analysis, dict):
+            raise ValueError(f"accepted chapter analysis is invalid: {analysis_path.name}")
+        analyses.append(analysis)
+
+    rebuilt = copy.deepcopy(checkpoint)
+    rebuilt["chapters"] = copy.deepcopy(remaining)
+    rebuilt["canon_revision"] = 0
+    rebuilt["canon"] = {
+        "characters": {},
+        "factions": {},
+        "facts": {},
+        "open_foreshadows": {},
+        "timeline": [],
+    }
+    replay = LongNovelRun(output_dir, None, rebuilt)
+    for analysis in analyses:
+        replay.apply_analysis(analysis)
+    rebuilt["generated_words"] = sum(int(item.get("words", 0)) for item in remaining)
+    quality_totals = {"visible_chars": 0, "paragraphs": 0, "sentences": 0}
+    for record in remaining:
+        quality_metrics = record.get("quality", {}).get("metrics", {})
+        for key in quality_totals:
+            quality_totals[key] += int(quality_metrics.get(key, 0))
+    rebuilt.setdefault("metrics", {})["quality_totals"] = quality_totals
+    rebuilt["metrics"]["chapters_accepted"] = len(remaining)
+    rebuilt["status"] = "paused"
+    rebuilt["active_chapter"] = None
+
+    chapter_path = (output_dir / str(rejected_record.get("path", ""))).resolve()
+    if output_dir.resolve() not in chapter_path.parents or not chapter_path.exists():
+        raise ValueError("accepted chapter file is missing or outside the run directory")
+    timestamp = int(time.time() if rejected_at is None else rejected_at)
+    rejected_path = quarantine_rejected_chapter(output_dir, chapter_path)
+    analysis_path = output_dir / "analysis" / f"{rejected_number:04d}.json"
+    rejected_analysis_path = output_dir / "rejected" / "analysis" / f"{rejected_number:04d}-{timestamp}.json"
+    if analysis_path.exists():
+        rejected_analysis_path.parent.mkdir(parents=True, exist_ok=True)
+        os.replace(analysis_path, rejected_analysis_path)
+
+    checkpoint.clear()
+    checkpoint.update(rebuilt)
+    rejection = {
+        "chapter": rejected_number,
+        "reason": rejection_reason,
+        "previous_sha256": str(rejected_record.get("sha256", "")),
+        "rejected_path": rejected_path.relative_to(output_dir).as_posix(),
+        "analysis_path": (
+            rejected_analysis_path.relative_to(output_dir).as_posix()
+            if rejected_analysis_path.exists()
+            else None
+        ),
+        "at": timestamp,
+    }
+    checkpoint.setdefault("canon_rejections", []).append(rejection)
+    return rejection
 
 
 def _bounded_json(value: Any, budget: int) -> Any:
@@ -1746,6 +1838,18 @@ async def async_main(args: argparse.Namespace) -> None:
                 atomic_write_json(checkpoint_path, checkpoint)
                 print(json.dumps(revision, ensure_ascii=False), flush=True)
                 return
+            if args.reject_last_chapter:
+                try:
+                    rejection = reject_last_accepted_chapter(
+                        checkpoint,
+                        output_dir,
+                        reason=args.rejection_reason or "",
+                    )
+                except (OSError, ValueError) as exc:
+                    raise SystemExit(str(exc)) from None
+                atomic_write_json(checkpoint_path, checkpoint)
+                print(json.dumps(rejection, ensure_ascii=False), flush=True)
+                return
             try:
                 switch_checkpoint_model(
                     checkpoint,
@@ -1756,8 +1860,8 @@ async def async_main(args: argparse.Namespace) -> None:
                 raise SystemExit(str(exc)) from None
             atomic_write_json(checkpoint_path, checkpoint)
         else:
-            if args.record_style_revision is not None:
-                raise SystemExit("cannot revise a chapter before the run checkpoint exists")
+            if args.record_style_revision is not None or args.reject_last_chapter:
+                raise SystemExit("cannot revise or reject a chapter before the run checkpoint exists")
             checkpoint = new_checkpoint(
                 target_words=args.target_words,
                 chapter_words=args.chapter_words,
@@ -1815,7 +1919,11 @@ def main() -> None:
     parser.add_argument("--allow-model-switch", action="store_true")
     parser.add_argument("--record-style-revision", type=int)
     parser.add_argument("--revision-reason")
+    parser.add_argument("--reject-last-chapter", action="store_true")
+    parser.add_argument("--rejection-reason")
     args = parser.parse_args()
+    if args.record_style_revision is not None and args.reject_last_chapter:
+        raise SystemExit("style revision and chapter rejection are mutually exclusive")
     if args.target_words < 100_000:
         raise SystemExit("target words must be at least 100000 for a long-novel evaluation")
     if not 800 <= args.chapter_words <= 20_000:
