@@ -813,6 +813,12 @@ def test_normalize_blocking_punctuation_preserves_interrupted_rhythm():
     assert MODULE.normalize_blocking_punctuation("“等等——”她追出去。甲–乙") == "“等等……”她追出去。甲…乙"
 
 
+def test_remove_adjacent_duplicate_lines_keeps_short_deliberate_repetition():
+    text = "“走！”\n“走！”\n春二七由谁经手，逐项念。\n春二七由谁经手，逐项念。\n下一行。"
+
+    assert MODULE.remove_adjacent_duplicate_lines(text) == "“走！”\n“走！”\n春二七由谁经手，逐项念。\n下一行。"
+
+
 def test_compact_canon_does_not_include_full_prose():
     checkpoint = MODULE.new_checkpoint(target_words=1_000_000, chapter_words=3_200, model="m")
     checkpoint["plan"] = {"fixed_facts": ["不能凭空暴富"]}

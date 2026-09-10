@@ -204,6 +204,20 @@ def normalize_blocking_punctuation(text: str) -> str:
     return (text or "").replace("——", "……").replace("—", "…").replace("–", "…")
 
 
+def remove_adjacent_duplicate_lines(text: str, *, minimum_chars: int = 12) -> str:
+    """Drop obvious stream-boundary duplication without flattening short dialogue."""
+    lines = (text or "").splitlines()
+    normalized: list[str] = []
+    previous_content = ""
+    for line in lines:
+        content = line.strip()
+        if content and len(content) >= minimum_chars and content == previous_content:
+            continue
+        normalized.append(line)
+        previous_content = content
+    return "\n".join(normalized)
+
+
 def mask_style_quotes(text: str) -> str:
     """Replace quoted dialogue with spaces for prose-template style checks."""
     return STYLE_QUOTE_PATTERN.sub(lambda match: " " * len(match.group(0)), text or "")
@@ -1701,7 +1715,9 @@ integrity_checks 必须恰好覆盖这些 ID：{json.dumps(INTEGRITY_CHECK_IDS, 
                         prose_usage = {}
                     else:
                         prose, prose_usage = await self.write_chapter(outline, target_words)
-                normalized_prose = normalize_blocking_punctuation(prose)
+                normalized_prose = remove_adjacent_duplicate_lines(
+                    normalize_blocking_punctuation(prose)
+                )
                 if normalized_prose != prose:
                     prose = normalized_prose
                     chapter_matches = sorted((self.output_dir / "chapters").glob(f"{number:04d}-*.md"))
