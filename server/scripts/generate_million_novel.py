@@ -266,6 +266,15 @@ INTEGRITY_CHECK_IDS = (
     "exchange_proportionality",
     "evidence_integrity",
 )
+REPAIRABLE_QUALITY_CHECK_IDS = frozenset(
+    {
+        "length",
+        "no_formulaic_comparison",
+        "no_reverse_formulaic_comparison",
+        "no_negation_parade",
+        "no_voice_contrast",
+    }
+)
 CHAPTER_CONTRACT_STRING_FIELDS = (
     "title",
     "objective",
@@ -615,6 +624,15 @@ def chapter_quality(
         "words": words,
         "metrics": metrics,
     }
+
+
+def repairable_quality_failure(quality: dict[str, Any]) -> bool:
+    """Return true only for complete prose that can be safely compressed once."""
+    failed = [item for item in quality.get("checks", []) if not item.get("ok")]
+    if not failed or any(item.get("id") not in REPAIRABLE_QUALITY_CHECK_IDS for item in failed):
+        return False
+    length = next((item for item in failed if item.get("id") == "length"), None)
+    return length is None or int(length.get("actual", 0)) > int(length.get("target", 0))
 
 
 def prose_quality_metrics(text: str) -> dict[str, Any]:
@@ -1592,6 +1610,37 @@ class LongNovelRun:
             partial_path.unlink()
         return text, usage
 
+    async def revise_chapter_once(
+        self,
+        outline: dict[str, Any],
+        prose: str,
+        target_words: int,
+        quality: dict[str, Any],
+    ) -> tuple[str, dict[str, int]]:
+        """Compress a complete pre-Canon draft once while freezing its facts."""
+        lower = max(800, int(target_words * 0.9))
+        upper = max(lower, int(target_words * 1.1))
+        failed_ids = [item["id"] for item in quality["checks"] if not item["ok"]]
+        prompt = f"""修订第{outline['number']}章《{outline.get('title', '')}》的完整初稿。
+只输出修订后的小说正文，不输出标题、说明、提纲、检查报告或 Markdown 围栏。
+目标长度：{lower}-{upper} 个中文有效字。当前失败项：{json.dumps(failed_ids, ensure_ascii=False)}。
+章节契约：{json.dumps(outline, ensure_ascii=False)}
+硬性冻结：保留初稿中所有已经发生的事件、人物选择、时间顺序、日期时辰、地名、人名、金额、数量、契约条款、权限边界、证据来源、证据真伪状态、已知与未知边界、行动代价及章尾钩子；不得新增、删除、合并或反转事实，不得把猜测改成事实，不得补写证物，不得提前泄露 hide 字段。
+修订方法：删除重复解释、重复问答、重复反应和无功能流程，合并同义段落；改掉“不是A而是B”、反序对比、连续否定和声线反差模板；保持第三人称限知与原有事件顺序。若压缩与事实完整性冲突，优先保留事实。
+完整初稿：
+<prose>
+{prose}
+</prose>"""
+        return await self.client.complete(
+            [
+                {"role": "system", "content": "你是中文长篇责任编辑，只做事实冻结的压缩修订。"},
+                {"role": "user", "content": prompt},
+            ],
+            max_tokens=min(settings.generation_max_output_tokens, max(2_000, int(target_words * 1.6))),
+            temperature=0.35,
+            stream=False,
+        )
+
     async def analyze_chapter(self, outline: dict[str, Any], prose: str) -> tuple[dict[str, Any], dict[str, int]]:
         contract_check_ids = [
             "required_outcome",
@@ -1694,6 +1743,7 @@ integrity_checks 必须恰好覆盖这些 ID：{json.dumps(INTEGRITY_CHECK_IDS, 
             retries_before = self.client.retry_count
             try:
                 chapter_source = "generated"
+                quality_repair: dict[str, Any] | None = None
                 # Editorial review can fail after prose and analysis have both
                 # been persisted. Reuse that immutable draft on retry instead
                 # of paying for a second prose generation.
@@ -1731,6 +1781,33 @@ integrity_checks 必须恰好覆盖这些 ID：{json.dumps(INTEGRITY_CHECK_IDS, 
                     forbid_first_person_narration=True,
                 )
                 self.add_usage(prose_usage)
+                if chapter_source != "pending" and repairable_quality_failure(quality):
+                    initial_words = int(quality["words"])
+                    failed_checks = [item["id"] for item in quality["checks"] if not item["ok"]]
+                    prose, repair_usage = await self.revise_chapter_once(
+                        outline,
+                        prose,
+                        target_words,
+                        quality,
+                    )
+                    prose = remove_adjacent_duplicate_lines(normalize_blocking_punctuation(prose)).strip()
+                    chapter_matches = sorted((self.output_dir / "chapters").glob(f"{number:04d}-*.md"))
+                    if len(chapter_matches) != 1:
+                        raise ValueError("cannot persist repaired chapter with ambiguous output files")
+                    atomic_write_text(chapter_matches[0], prose + "\n")
+                    self.add_usage(repair_usage)
+                    quality = chapter_quality(
+                        prose,
+                        target_words,
+                        min_accept_ratio=(1.0 if number == self.checkpoint["chapter_count"] else MIN_ACCEPT_RATIO),
+                        forbid_first_person_narration=True,
+                    )
+                    quality_repair = {
+                        "attempted": True,
+                        "initial_words": initial_words,
+                        "final_words": int(quality["words"]),
+                        "failed_checks": failed_checks,
+                    }
                 if quality["status"] != "ready":
                     metrics["chapters_blocked"] = int(metrics.get("chapters_blocked", 0)) + 1
                     rejected_path = None
@@ -1760,6 +1837,7 @@ integrity_checks 必须恰好覆盖这些 ID：{json.dumps(INTEGRITY_CHECK_IDS, 
                     "sha256": content_sha256(prose),
                     "path": chapter_matches[0].relative_to(self.output_dir).as_posix(),
                     "quality": quality,
+                    **({"quality_repair": quality_repair} if quality_repair else {}),
                 }
                 if record is None:
                     self.checkpoint["chapters"].append(pending)
@@ -1791,6 +1869,7 @@ integrity_checks 必须恰好覆盖这些 ID：{json.dumps(INTEGRITY_CHECK_IDS, 
                     "path": pending["path"],
                     "summary": str(analysis.get("summary", "")),
                     "quality": quality,
+                    **({"quality_repair": pending["quality_repair"]} if pending.get("quality_repair") else {}),
                     "editorial": analysis.get("quality", {}),
                     "editorial_gate": editorial_gate,
                     "canon_revision": self.checkpoint["canon_revision"],

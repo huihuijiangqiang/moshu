@@ -805,6 +805,72 @@ async def test_run_quarantines_pre_canon_prose_that_fails_quality(tmp_path):
     assert checkpoint["generated_words"] == 0
 
 
+async def test_run_repairs_overlong_style_failure_once_before_quarantine(tmp_path):
+    class FakeClient:
+        retry_count = 0
+        model = "m"
+
+    checkpoint = MODULE.new_checkpoint(target_words=100_000, chapter_words=800, model="m")
+    checkpoint["plan"] = MODULE.build_seed_plan(
+        target_words=checkpoint["target_words"],
+        chapter_count=checkpoint["chapter_count"],
+    )
+    runner = MODULE.LongNovelRun(tmp_path, FakeClient(), checkpoint)
+    original = "\n".join(
+        f"她查的不是第{index}袋粮，而是第{index}张经手票据和收条。" for index in range(80)
+    )
+    repaired = "\n".join(
+        f"沈砚秋核对第{index}袋粮，赵顺逐项记下经手人和斤两。" for index in range(42)
+    )
+    repair_calls = 0
+
+    async def write_chapter(chapter_outline, target_words):
+        del target_words
+        path = tmp_path / "chapters" / f"0001-{MODULE.safe_filename(chapter_outline['title'])}.md"
+        MODULE.atomic_write_text(path, original + "\n")
+        return original, {}
+
+    async def revise_chapter_once(chapter_outline, prose, target_words, quality):
+        nonlocal repair_calls
+        del chapter_outline, target_words
+        repair_calls += 1
+        assert prose == original
+        assert MODULE.repairable_quality_failure(quality)
+        return repaired, {}
+
+    async def analyze_chapter(chapter_outline, prose):
+        assert prose == repaired
+        return _contract_analysis(chapter_outline), {}
+
+    runner.write_chapter = write_chapter
+    runner.revise_chapter_once = revise_chapter_once
+    runner.analyze_chapter = analyze_chapter
+
+    await runner.run(max_chapters=1)
+
+    assert repair_calls == 1
+    assert checkpoint["chapters"][0]["status"] == "accepted"
+    assert checkpoint["chapters"][0]["quality_repair"] == {
+        "attempted": True,
+        "initial_words": MODULE.count_generated_words(original),
+        "final_words": MODULE.count_generated_words(repaired),
+        "failed_checks": ["length", "no_formulaic_comparison"],
+    }
+    assert list((tmp_path / "rejected").glob("0001-*.md")) == []
+
+
+def test_repairable_quality_failure_rejects_underlength_and_hard_failures():
+    assert MODULE.repairable_quality_failure(
+        {"checks": [{"id": "length", "ok": False, "actual": 1_300, "target": 800}]}
+    )
+    assert not MODULE.repairable_quality_failure(
+        {"checks": [{"id": "length", "ok": False, "actual": 200, "target": 800}]}
+    )
+    assert not MODULE.repairable_quality_failure(
+        {"checks": [{"id": "no_evidence_tampering", "ok": False}]}
+    )
+
+
 def test_safe_filename_removes_windows_reserved_characters():
     assert MODULE.safe_filename("账册:谁拿走了?/\\*") == "账册-谁拿走了----"
 
