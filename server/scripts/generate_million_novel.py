@@ -86,7 +86,7 @@ class GatewayRequestError(RuntimeError):
 
     @property
     def retryable(self) -> bool:
-        return self.status_code is None or self.status_code in {408, 425, 429, 500, 502, 503, 504}
+        return self.status_code is None or self.status_code in {408, 425, 429, 500, 502, 503, 504, 524}
 
 
 class RunAlreadyActiveError(RuntimeError):

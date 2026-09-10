@@ -404,9 +404,11 @@ def test_chapter_quality_records_explainable_prose_metrics():
 
 def test_retry_policy_only_retries_transient_statuses():
     transient = MODULE.GatewayRequestError("busy", status_code=503)
+    gateway_timeout = MODULE.GatewayRequestError("upstream timeout", status_code=524)
     client_error = MODULE.GatewayRequestError("bad request", status_code=400)
     stream_error = MODULE.GatewayRequestError("stream interrupted")
     assert transient.retryable is True
+    assert gateway_timeout.retryable is True
     assert client_error.retryable is False
     assert stream_error.retryable is True
 
