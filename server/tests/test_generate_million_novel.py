@@ -133,6 +133,30 @@ def test_chapter_quality_accepts_substantial_prose():
     assert result["status"] == "ready"
 
 
+async def test_write_chapter_prompt_guards_evidence_and_numeric_continuity(tmp_path):
+    class FakeClient:
+        async def complete(self, messages, **kwargs):
+            del kwargs
+            prompt = messages[-1]["content"]
+            assert "女主不得制造、仿造、补盖、篡改或污染证据" in prompt
+            assert "新数字必须能从执行契约或当前权威状态推出" in prompt
+            return "沈砚秋核完账，把原件重新封好。", {}
+
+    checkpoint = MODULE.new_checkpoint(target_words=100_000, chapter_words=800, model="m")
+    checkpoint["plan"] = MODULE.build_seed_plan(
+        target_words=checkpoint["target_words"],
+        chapter_count=checkpoint["chapter_count"],
+    )
+    outline = MODULE.build_seed_chapter_outline(1, checkpoint["plan"]["volumes"][0])
+    runner = MODULE.LongNovelRun(tmp_path, FakeClient(), checkpoint)
+
+    prose, usage = await runner.write_chapter(outline, 800)
+
+    assert prose == "沈砚秋核完账，把原件重新封好。"
+    assert usage == {}
+    assert list((tmp_path / "chapters").glob("0001-*.md"))
+
+
 def test_record_accepted_style_revision_revalidates_and_audits(tmp_path):
     checkpoint = MODULE.new_checkpoint(target_words=100_000, chapter_words=800, model="m")
     original = "\n".join(
