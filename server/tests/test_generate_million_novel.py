@@ -34,6 +34,23 @@ def test_seed_outlines_use_unique_titles_and_progressive_phases():
     assert "结算阶段" in contracts[24]["objective"]
 
 
+def test_seed_outlines_use_volume_specific_actions():
+    plan = MODULE.build_seed_plan(target_words=1_000_000, chapter_count=313)
+    river_port = plan["volumes"][3]
+    border_grain = plan["volumes"][6]
+
+    berth = MODULE.build_seed_chapter_outline(river_port["chapter_from"] + 1, river_port)
+    military_transport = MODULE.build_seed_chapter_outline(
+        border_grain["chapter_from"] + 1,
+        border_grain,
+    )
+
+    assert "量泊" in berth["title"]
+    assert "泊位、水深与靠泊时段" in berth["objective"]
+    assert "试种" not in berth["objective"]
+    assert "军民分线运输" in military_transport["objective"]
+
+
 def test_seed_outline_upgrade_preserves_canon_and_refreshes_future(tmp_path):
     checkpoint = MODULE.new_checkpoint(
         target_words=1_000_000,
