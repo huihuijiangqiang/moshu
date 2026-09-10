@@ -575,6 +575,9 @@ async def test_analyze_chapter_prompt_requires_scoped_proportional_exchange(tmp_
             assert "列出本章关键金额、数量、比例或单位换算的算式" in prompt
             assert "指出差额并标为待核时可以通过" in prompt
             assert "不得把合直接当成斗" in prompt
+            assert "对手提出无权请求、越权口信或未经授权的威胁不算正文越权" in prompt
+            assert "只有正文实际把未授权请求当成有效批准、交付或收条时才为 false" in prompt
+            assert "单纯出现的谈判要求" in prompt
             return MODULE.json.dumps(_contract_analysis(outline), ensure_ascii=False), {}
 
     class GenerationClient:
