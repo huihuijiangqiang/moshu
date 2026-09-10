@@ -1485,7 +1485,10 @@ contract_checks 必须恰好逐项覆盖这些 ID，不得缺失、重复或改�
             retries_before = self.client.retry_count
             try:
                 chapter_source = "generated"
-                if record and record.get("status") == "analysis_pending":
+                # Editorial review can fail after prose and analysis have both
+                # been persisted. Reuse that immutable draft on retry instead
+                # of paying for a second prose generation.
+                if record and record.get("status") in {"analysis_pending", "review_blocked"}:
                     chapter_source = "pending"
                     relative_path = str(record.get("path", ""))
                     chapter_path = (self.output_dir / relative_path).resolve()

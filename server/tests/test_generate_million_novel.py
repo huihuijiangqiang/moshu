@@ -477,6 +477,52 @@ async def test_run_does_not_advance_canon_when_editorial_gate_blocks(tmp_path):
     assert checkpoint["chapters"][0]["editorial_gate"]["status"] == "blocked"
 
 
+async def test_run_reuses_review_blocked_prose_without_regenerating(tmp_path):
+    class FakeClient:
+        retry_count = 0
+        model = "m"
+
+    checkpoint = MODULE.new_checkpoint(target_words=100_000, chapter_words=800, model="m")
+    checkpoint["plan"] = MODULE.build_seed_plan(
+        target_words=checkpoint["target_words"],
+        chapter_count=checkpoint["chapter_count"],
+    )
+    outline = MODULE.build_seed_chapter_outline(1, checkpoint["plan"]["volumes"][0])
+    prose = "\n".join(
+        f"沈砚秋把第{index}袋粮重新称量，赵顺逐项记下经手人和斤两。"
+        for index in range(42)
+    )
+    path = tmp_path / "chapters" / f"0001-{MODULE.safe_filename(outline['title'])}.md"
+    MODULE.atomic_write_text(path, prose + "\n")
+    checkpoint["chapters"] = [
+        {
+            "number": 1,
+            "status": "review_blocked",
+            "title": outline["title"],
+            "words": MODULE.count_generated_words(prose),
+            "sha256": MODULE.content_sha256(prose),
+            "path": path.relative_to(tmp_path).as_posix(),
+        }
+    ]
+    runner = MODULE.LongNovelRun(tmp_path, FakeClient(), checkpoint)
+
+    async def unexpected_write(*args, **kwargs):
+        del args, kwargs
+        raise AssertionError("review-blocked prose must be reused without regeneration")
+
+    async def analyze_chapter(chapter_outline, chapter_prose):
+        assert chapter_prose == prose
+        return _contract_analysis(chapter_outline), {}
+
+    runner.write_chapter = unexpected_write
+    runner.analyze_chapter = analyze_chapter
+    await runner.run(max_chapters=1)
+
+    assert checkpoint["chapters"][0]["status"] == "accepted"
+    assert checkpoint["canon_revision"] == 1
+    assert checkpoint["generated_words"] == MODULE.count_generated_words(prose)
+
+
 async def test_run_recovers_and_normalizes_orphan_chapter(tmp_path):
     class FakeClient:
         retry_count = 0
