@@ -140,6 +140,7 @@ async def test_write_chapter_prompt_guards_evidence_and_numeric_continuity(tmp_p
             prompt = messages[-1]["content"]
             assert "女主不得制造、仿造、补盖、篡改或污染证据" in prompt
             assert "不得添加自创暗记或私人记号" in prompt
+            assert "必须承接当前权威状态中的最后一个 timeline_tail 事件" in prompt
             assert "新数字必须能从执行契约或当前权威状态推出" in prompt
             assert "不能直接换永久、独占、一年期或跨机构特权" in prompt
             assert "经办人只能承诺自己管辖范围内的事项" in prompt
@@ -507,12 +508,13 @@ async def test_analyze_chapter_prompt_requires_scoped_proportional_exchange(tmp_
             prompt = messages[-1]["content"]
             assert "分别比较金额、期限、覆盖范围和最坏损失" in prompt
             assert "基层经办人若授予跨机构、长期或排他权利" in prompt
+            assert "temporal_continuity 必须核对正文开场和事件顺序" in prompt
             return MODULE.json.dumps(_contract_analysis(outline), ensure_ascii=False), {}
 
     runner = MODULE.LongNovelRun(tmp_path, FakeClient(), checkpoint)
     analysis, usage = await runner.analyze_chapter(outline, "沈砚秋核对换契。")
 
-    assert analysis["integrity_checks"][0]["id"] == "numeric_continuity"
+    assert analysis["integrity_checks"][0]["id"] == "temporal_continuity"
     assert usage == {}
 
 
