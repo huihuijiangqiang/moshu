@@ -73,6 +73,11 @@ FIRST_PERSON_NARRATION_PATTERN = re.compile(
     r"问|说|道|站|走|看|听|想|心|指|手|脚|怀|身|眼|头|脸|肩|背|腰|腿|"
     r"口|耳|鼻|抬|低|伸|摸|翻|压|推|递|收|放|坐|跟|等)"
 )
+EVIDENCE_TAMPERING_PATTERN = re.compile(
+    r"(?:契纸|契书|账页|账册|证物|原件|抄件|凭据|文书)"
+    r"[^。！？!?\n]{0,48}(?:描|刻|盖|划|写|添|补)"
+    r"[^。！？!?\n]{0,20}(?:暗记|私印|记号)"
+)
 EM_DASH_PATTERN = re.compile(r"[—–]")
 STYLE_QUOTE_PATTERN = re.compile(
     r"“[^”\n]*”|「[^」\n]*」|『[^』\n]*』|【[^】\n]*】|\"[^\"\n]*\"|‘[^’\n]*’"
@@ -517,6 +522,10 @@ def chapter_quality(
         match.group(0)[:120]
         for match in FIRST_PERSON_NARRATION_PATTERN.finditer(style_text)
     ]
+    evidence_tampering_matches = [
+        match.group(0)[:120]
+        for match in EVIDENCE_TAMPERING_PATTERN.finditer(style_text)
+    ]
     if formulaic_matches:
         checks.append(
             {
@@ -556,6 +565,13 @@ def chapter_quality(
                 "matches": first_person_matches[:8],
             }
         )
+    checks.append(
+        {
+            "id": "no_evidence_tampering",
+            "ok": not evidence_tampering_matches,
+            "matches": evidence_tampering_matches[:8],
+        }
+    )
 
     # A very low unique-sentence ratio is almost always an interrupted stream
     # or accidental repetition.  Keep this conservative so dialogue echoes
@@ -1541,7 +1557,7 @@ class LongNovelRun:
 只输出小说正文，不输出章节标题、说明、提纲、检查报告或 Markdown 围栏。
 执行契约：{json.dumps(outline, ensure_ascii=False)}
 当前权威状态：{compact_canon(self.checkpoint)}
-要求：全程使用第三人称限知叙述，深度贴近女主；用行动、账目、物价、生产工序和利益交换推动剧情；权谋必须体现各方目标、资源、错误情报和行动成本；每章形成状态变化，结尾落在具体动作、发现或决定上。证据完整性是硬约束：女主不得制造、仿造、补盖、篡改或污染证据，不得把未确认的猜测写成事实；新数字必须能从执行契约或当前权威状态推出，无法确认时保持待查。权利与交换边界同样是硬约束：短期小额让步只能换同量级、有限期限、附条件、可复核或待上级批准的程序性权益，不能直接换永久、独占、一年期或跨机构特权；经办人只能承诺自己管辖范围内的事项，超出权限只能受理申请或提交有权者审批；对价必须同时比较金额、期限、覆盖范围和最坏损失。不要总结升华，不用机械排比、万能微动作、“不是A而是B”或连续“没有A，没有B”句式。不得违背 hide 字段，不得新增改变全书走向的设定。{continuation}"""
+要求：全程使用第三人称限知叙述，深度贴近女主；用行动、账目、物价、生产工序和利益交换推动剧情；权谋必须体现各方目标、资源、错误情报和行动成本；每章形成状态变化，结尾落在具体动作、发现或决定上。证据完整性是硬约束：女主不得制造、仿造、补盖、篡改或污染证据，不得把未确认的猜测写成事实；任何用于留档、比对或审查的原件、副本、契纸、账页和证物都不得添加自创暗记或私人记号，只能另建登记页记录编号、特征、时辰与见证人；新数字必须能从执行契约或当前权威状态推出，无法确认时保持待查。权利与交换边界同样是硬约束：短期小额让步只能换同量级、有限期限、附条件、可复核或待上级批准的程序性权益，不能直接换永久、独占、一年期或跨机构特权；经办人只能承诺自己管辖范围内的事项，超出权限只能受理申请或提交有权者审批；对价必须同时比较金额、期限、覆盖范围和最坏损失。不要总结升华，不用机械排比、万能微动作、“不是A而是B”或连续“没有A，没有B”句式。不得违背 hide 字段，不得新增改变全书走向的设定。{continuation}"""
         generated, usage = await self.client.complete(
             [
                 {"role": "system", "content": "你是经验丰富的中文女频长篇作者，严格执行章节契约，只写正文。"},

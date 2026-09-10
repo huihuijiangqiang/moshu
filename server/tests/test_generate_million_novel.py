@@ -139,6 +139,7 @@ async def test_write_chapter_prompt_guards_evidence_and_numeric_continuity(tmp_p
             del kwargs
             prompt = messages[-1]["content"]
             assert "女主不得制造、仿造、补盖、篡改或污染证据" in prompt
+            assert "不得添加自创暗记或私人记号" in prompt
             assert "新数字必须能从执行契约或当前权威状态推出" in prompt
             assert "不能直接换永久、独占、一年期或跨机构特权" in prompt
             assert "经办人只能承诺自己管辖范围内的事项" in prompt
@@ -392,6 +393,25 @@ def test_chapter_quality_allows_first_person_inside_dialogue_for_third_person_pr
         forbid_first_person_narration=True,
     )
     check = next(item for item in result["checks"] if item["id"] == "third_person_narration")
+    assert check["ok"] is True
+    assert result["status"] == "ready"
+
+
+def test_chapter_quality_blocks_private_marks_on_evidence():
+    text = "她在自己留存的契纸背面描了个七二暗记。\n" + "她核对封条与账目。\n" * 80
+    result = MODULE.chapter_quality(text, 1_000)
+    check = next(item for item in result["checks"] if item["id"] == "no_evidence_tampering")
+    assert check["ok"] is False
+    assert "契纸背面描了个七二暗记" in check["matches"][0]
+    assert result["status"] == "blocked"
+
+
+def test_chapter_quality_allows_dialogue_about_evidence_marks():
+    text = "“谁敢在契纸背面描暗记，我就报官。”\n" + "\n".join(
+        f"她核对第{index}处封条与对应账目。" for index in range(100)
+    )
+    result = MODULE.chapter_quality(text, 1_000)
+    check = next(item for item in result["checks"] if item["id"] == "no_evidence_tampering")
     assert check["ok"] is True
     assert result["status"] == "ready"
 
