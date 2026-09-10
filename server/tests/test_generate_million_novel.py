@@ -609,6 +609,28 @@ def test_validate_chapter_analysis_rejects_missing_or_malformed_state():
         raise AssertionError("malformed cognition state must be rejected")
 
 
+def test_validate_chapter_analysis_rejects_false_grain_unit_equations():
+    value = _valid_analysis()
+    numeric = next(
+        item for item in value["integrity_checks"] if item["id"] == "numeric_continuity"
+    )
+    numeric["evidence"] = "30石=300斗；随后误写30石=3000斗；2斗=200升。"
+
+    try:
+        MODULE.validate_chapter_analysis(value)
+    except ValueError as exc:
+        assert "invalid grain conversions" in str(exc)
+        assert "30石=3000斗" in str(exc)
+        assert "2斗=200升" in str(exc)
+    else:
+        raise AssertionError("false unit equations must not enter Canon")
+
+
+def test_grain_unit_equation_validator_accepts_the_fixed_ladder():
+    evidence = "1石=10斗，1斗=10升，1升=10合，2斗=200合。"
+    assert MODULE.invalid_grain_unit_equations(evidence) == []
+
+
 def _valid_chapter_contract(number=1):
     return {
         "number": number,

@@ -86,6 +86,11 @@ EM_DASH_PATTERN = re.compile(r"[—–]")
 STYLE_QUOTE_PATTERN = re.compile(
     r"“[^”\n]*”|「[^」\n]*」|『[^』\n]*』|【[^】\n]*】|\"[^\"\n]*\"|‘[^’\n]*’"
 )
+GRAIN_UNIT_EQUATION_PATTERN = re.compile(
+    r"(?P<left>\d+(?:\.\d+)?)\s*(?P<left_unit>石|斗|升|合)\s*=\s*"
+    r"(?P<right>\d+(?:\.\d+)?)\s*(?P<right_unit>石|斗|升|合)"
+)
+GRAIN_UNIT_TO_HE = {"石": 1_000.0, "斗": 100.0, "升": 10.0, "合": 1.0}
 
 
 class GatewayRequestError(RuntimeError):
@@ -427,6 +432,17 @@ def chapter_editorial_gate(
     }
 
 
+def invalid_grain_unit_equations(text: str) -> list[str]:
+    """Return explicit capacity equations that violate the fixed unit ladder."""
+    invalid: list[str] = []
+    for match in GRAIN_UNIT_EQUATION_PATTERN.finditer(text):
+        left = float(match.group("left")) * GRAIN_UNIT_TO_HE[match.group("left_unit")]
+        right = float(match.group("right")) * GRAIN_UNIT_TO_HE[match.group("right_unit")]
+        if not math.isclose(left, right, rel_tol=1e-9, abs_tol=1e-9):
+            invalid.append(match.group(0))
+    return invalid
+
+
 def validate_chapter_analysis(value: dict[str, Any]) -> dict[str, Any]:
     """Validate the structured state delta before it can change the Canon.
 
@@ -497,6 +513,13 @@ def validate_chapter_analysis(value: dict[str, Any]) -> dict[str, Any]:
             raise ValueError(f"chapter analysis integrity_checks[{index}] has no id")
         if not isinstance(check.get("ok"), bool) or not isinstance(check.get("evidence"), str):
             raise ValueError(f"chapter analysis integrity_checks[{index}] has invalid result")
+        if check["id"] == "numeric_continuity":
+            invalid_equations = invalid_grain_unit_equations(check["evidence"])
+            if invalid_equations:
+                raise ValueError(
+                    "chapter analysis numeric_continuity contains invalid grain conversions: "
+                    f"{invalid_equations[:5]}"
+                )
     for index, event in enumerate(value["timeline_events"]):
         if not isinstance(event, dict) or not isinstance(event.get("event"), str) or not event["event"].strip():
             raise ValueError(f"chapter analysis timeline_events[{index}] requires an event string")
