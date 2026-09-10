@@ -19,6 +19,53 @@ def test_checkpoint_covers_million_character_target():
     assert checkpoint["generated_words"] == 0
 
 
+def test_seed_outlines_use_unique_titles_and_progressive_phases():
+    plan = MODULE.build_seed_plan(target_words=1_000_000, chapter_count=313)
+    volume = plan["volumes"][0]
+    contracts = [
+        MODULE.build_seed_chapter_outline(number, volume)
+        for number in range(volume["chapter_from"], volume["chapter_to"] + 1)
+    ]
+
+    assert len({item["title"] for item in contracts}) == len(contracts)
+    assert "摸底阶段" in contracts[0]["objective"]
+    assert "立规阶段" in contracts[8]["objective"]
+    assert "反查阶段" in contracts[16]["objective"]
+    assert "结算阶段" in contracts[24]["objective"]
+
+
+def test_seed_outline_upgrade_preserves_canon_and_refreshes_future(tmp_path):
+    checkpoint = MODULE.new_checkpoint(
+        target_words=1_000_000,
+        chapter_words=3_200,
+        model="m",
+    )
+    checkpoint["plan"] = MODULE.build_seed_plan(
+        target_words=checkpoint["target_words"],
+        chapter_count=checkpoint["chapter_count"],
+    )
+    volume = checkpoint["plan"]["volumes"][0]
+    old_contracts = []
+    for number in range(volume["chapter_from"], volume["chapter_to"] + 1):
+        contract = MODULE.build_seed_chapter_outline(number, volume)
+        contract["title"] = f"legacy-{number}"
+        old_contracts.append(contract)
+    checkpoint["volume_outlines"]["1"] = old_contracts
+    checkpoint["canon_revision"] = 3
+
+    changed = MODULE.refresh_unwritten_seed_outlines(checkpoint, tmp_path)
+
+    refreshed = checkpoint["volume_outlines"]["1"]
+    assert changed == len(old_contracts) - 3
+    assert [item["title"] for item in refreshed[:3]] == ["legacy-1", "legacy-2", "legacy-3"]
+    assert all(not item["title"].startswith("legacy-") for item in refreshed[3:])
+    assert checkpoint["seed_outline_version"] == MODULE.SEED_OUTLINE_VERSION
+    persisted = MODULE.json.loads(
+        (tmp_path / "outlines" / "volume-01.json").read_text(encoding="utf-8")
+    )
+    assert persisted["chapters"] == refreshed
+
+
 def test_checkpoint_model_switch_is_explicit_and_audited():
     checkpoint = MODULE.new_checkpoint(
         target_words=1_000_000,

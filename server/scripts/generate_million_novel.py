@@ -36,6 +36,7 @@ from config import settings  # noqa: E402
 from services.generation import count_generated_words, provider_error_detail  # noqa: E402
 
 CHECKPOINT_SCHEMA = "moshu-private-long-novel/v2"
+SEED_OUTLINE_VERSION = 2
 DEFAULT_TARGET_WORDS = 1_000_000
 DEFAULT_CHAPTER_WORDS = 3_200
 MIN_ACCEPT_RATIO = 0.72
@@ -768,32 +769,90 @@ def build_seed_plan(*, target_words: int, chapter_count: int) -> dict[str, Any]:
 
 def build_seed_chapter_outline(number: int, volume: dict[str, Any]) -> dict[str, Any]:
     """Create varied chapter contracts when the planning gateway is unavailable."""
-    beats = [
-        ("盘账", "发现一处数字差额并锁定经手人", "把差额证据留在公开账上", "下一笔粮款即将被截留"),
-        ("试种", "在有限土地上验证一项低成本工序", "让产量变化可复核", "有人要求提前收成"),
-        ("谈价", "以实物和交付期限换取更低运价", "迫使对方承认真实成本", "合同出现第二个版本"),
-        ("借势", "借县衙公文压住宗族私令", "把私人争执变成可审查事项", "公文来源被人反咬"),
-        ("设局", "放出半真消息测试各方反应", "确认谁在提前调仓", "错误情报传到不该知道的人手里"),
-        ("救急", "在缺粮时优先保住最脆弱的一环", "让合作关系付出可见代价", "救下的人带来旧案线索"),
-        ("换契", "用一项短期让步换长期信用", "写入违约与复核条款", "对手提出更高抵押"),
-        ("追责", "沿着一张票据追到上游经手", "公开证据但不暴露底牌", "县仓封门，时间只剩三日"),
+    phases = [
+        ("摸底", "建立可复核基线并找出最先阻挡本卷目标的人", "只确认一层现场事实"),
+        ("立规", "把临时做法变成多方必须遵守的交付规则", "让局部合作承担书面责任"),
+        ("反查", "利用已有证据链逼出上游操盘的一层代理", "只揭示代理链，不触碰终局真相"),
+        ("结算", "兑现本卷资源收益并把责任钉入正式凭据", "完成阶段结算并留下下一卷入口"),
     ]
-    beat, outcome, hook, ending = beats[(number - 1) % len(beats)]
+    beats = [
+        (("清点旧仓", "对验双账", "追出暗扣", "封存总册"), "盘账", "发现一处数字差额并锁定经手人", "把差额证据留在公开账上", "下一笔粮款即将被截留"),
+        (("量地试种", "复验新苗", "对照减耗", "定下农程"), "试种", "在有限土地上验证一项低成本工序", "让产量变化可复核", "有人要求提前收成"),
+        (("盐车开价", "拆开脚费", "压定复核", "锁住交割"), "谈价", "以实物和交付期限换取更低运价", "迫使对方承认真实成本", "合同出现第二个版本"),
+        (("借来县印", "公文压令", "逼出经手", "三方留证"), "借势", "借县衙公文压住宗族私令", "把私人争执变成可审查事项", "公文来源被人反咬"),
+        (("半真风声", "错仓试探", "假票回流", "顺线收网"), "设局", "放出半真消息测试各方反应", "确认谁在提前调仓", "错误情报传到不该知道的人手里"),
+        (("先保病栏", "粮路续命", "护住工棚", "挪出活路"), "救急", "在缺粮时优先保住最脆弱的一环", "让合作关系付出可见代价", "救下的人带来旧案线索"),
+        (("盐粮换契", "分责落印", "反签旧约", "复核定约"), "换契", "用一项短期让步换长期信用", "写入违约与复核条款", "对手提出更高抵押"),
+        (("票据寻人", "顺查交接", "追到上游", "截住改票"), "追责", "沿着一张票据追到上游经手", "公开证据但不暴露底牌", "县仓封门，时间只剩三日"),
+    ]
+    volume_start = int(volume["chapter_from"])
+    volume_end = int(volume["chapter_to"])
+    offset = number - volume_start
+    if offset < 0 or number > volume_end:
+        raise ValueError(f"chapter {number} is outside volume range {volume_start}-{volume_end}")
+    phase_index = min(len(phases) - 1, offset // len(beats))
+    phase, phase_goal, phase_boundary = phases[phase_index]
+    titles, beat, outcome, turn, ending = beats[offset % len(beats)]
     return {
         "number": number,
-        "title": f"{beat}与{volume['title']}",
-        "objective": f"围绕{volume['objective']}完成一次{beat}行动：{outcome}",
+        "title": f"{volume['title']}：{titles[phase_index]}",
+        "objective": f"在{phase}阶段围绕{volume['objective']}执行{beat}行动：{outcome}；{phase_goal}",
         "conflict": volume["conflict"],
-        "turn": hook,
-        "required_outcome": f"留下可核验的{beat}结果，并改变至少一项资源或关系顺序",
-        "acceptance_criteria": ["有具体行动与代价", "至少一条数字/契约/物价证据", "角色认知不越界"],
-        "reveal": f"本章只揭示与{beat}直接相关的一层因果",
+        "turn": f"{turn}，并使本卷从{phase}阶段向前推进",
+        "required_outcome": f"{phase_boundary}；留下可核验的{beat}结果，并改变至少一项资源或关系顺序",
+        "acceptance_criteria": [
+            "有具体行动与代价",
+            "至少一条数字/契约/物价证据",
+            "角色认知不越界",
+            f"推进结果符合{phase}阶段，不重复上一阶段已完成的工作",
+        ],
+        "reveal": f"本章只揭示{phase}阶段与{beat}直接相关的一层因果",
         "hide": volume["forbidden_reveal"],
-        "foreshadow": f"为{volume['milestone']}埋下一条可回收账目线索",
-        "hook": ending,
+        "foreshadow": f"为{volume['milestone']}埋下一条能在后续阶段回收的账目线索",
+        "hook": f"{ending}，并留下{phase}阶段的新后果",
         "pov": "沈砚秋",
         "time_anchor": f"昭宁二十七年，卷{volume['number']}，第{number}章",
     }
+
+
+def refresh_unwritten_seed_outlines(checkpoint: dict[str, Any], output_dir: Path) -> int:
+    """Upgrade only uncommitted seeded contracts once per outline version."""
+    if checkpoint.get("plan", {}).get("planning_mode") != "seeded":
+        return 0
+    if int(checkpoint.get("seed_outline_version", 0)) >= SEED_OUTLINE_VERSION:
+        return 0
+    canon_revision = int(checkpoint.get("canon_revision", 0))
+    volumes = {
+        int(volume["number"]): volume
+        for volume in checkpoint.get("plan", {}).get("volumes", [])
+    }
+    changed = 0
+    for key, contracts in checkpoint.get("volume_outlines", {}).items():
+        if not isinstance(contracts, list) or int(key) not in volumes:
+            continue
+        volume = volumes[int(key)]
+        refreshed = []
+        volume_changed = False
+        for contract in contracts:
+            number = int(contract.get("number", 0))
+            if number > canon_revision:
+                contract = build_seed_chapter_outline(number, volume)
+                changed += 1
+                volume_changed = True
+            refreshed.append(contract)
+        if volume_changed:
+            validated = validate_chapter_contracts(
+                refreshed,
+                chapter_from=int(volume["chapter_from"]),
+                chapter_to=int(volume["chapter_to"]),
+            )
+            checkpoint["volume_outlines"][key] = validated
+            atomic_write_json(
+                output_dir / "outlines" / f"volume-{int(key):02d}.json",
+                {"chapters": validated},
+            )
+    checkpoint["seed_outline_version"] = SEED_OUTLINE_VERSION
+    return changed
 
 
 class CompatibleChatClient:
@@ -1315,6 +1374,10 @@ contract_checks 必须恰好逐项覆盖这些 ID，不得缺失、重复或改�
 
     async def run(self, *, max_chapters: int | None) -> None:
         await self.ensure_plan()
+        seed_version_before = int(self.checkpoint.get("seed_outline_version", 0))
+        refresh_unwritten_seed_outlines(self.checkpoint, self.output_dir)
+        if int(self.checkpoint.get("seed_outline_version", 0)) != seed_version_before:
+            self.save()
         # A resumed process is an active run even when the previous attempt
         # stopped in a chapter or during analysis.  Keep the historical
         # failures, but make the current lifecycle state truthful.
