@@ -67,6 +67,11 @@ NEGATION_PARADE_PATTERN = re.compile(
 VOICE_CONTRAST_PATTERN = re.compile(
     r"声音(?:并)?不[大高响亮][^。！？!?\n]{0,16}[却但偏]"
 )
+FIRST_PERSON_NARRATION_PATTERN = re.compile(
+    r"我(?:的|把|将|刚|正|先|又|再|没|在|从|要|只|便|也|却|虽|趁|接|数|"
+    r"问|说|道|站|走|看|听|想|心|指|手|脚|怀|身|眼|头|脸|肩|背|腰|腿|"
+    r"口|耳|鼻|抬|低|伸|摸|翻|压|推|递|收|放|坐|跟|等)"
+)
 EM_DASH_PATTERN = re.compile(r"[—–]")
 STYLE_QUOTE_PATTERN = re.compile(
     r"“[^”\n]*”|「[^」\n]*」|『[^』\n]*』|【[^】\n]*】|\"[^\"\n]*\"|‘[^’\n]*’"
@@ -427,6 +432,7 @@ def chapter_quality(
     target_words: int,
     *,
     min_accept_ratio: float = MIN_ACCEPT_RATIO,
+    forbid_first_person_narration: bool = False,
 ) -> dict[str, Any]:
     words = count_generated_words(text)
     checks = [
@@ -464,6 +470,10 @@ def chapter_quality(
         match.group(0)[:120]
         for match in VOICE_CONTRAST_PATTERN.finditer(style_text)
     ]
+    first_person_matches = [
+        match.group(0)[:120]
+        for match in FIRST_PERSON_NARRATION_PATTERN.finditer(style_text)
+    ]
     if formulaic_matches:
         checks.append(
             {
@@ -495,6 +505,14 @@ def chapter_quality(
             "matches": voice_contrast_matches[:8],
         }
     )
+    if forbid_first_person_narration:
+        checks.append(
+            {
+                "id": "third_person_narration",
+                "ok": not first_person_matches,
+                "matches": first_person_matches[:8],
+            }
+        )
 
     # A very low unique-sentence ratio is almost always an interrupted stream
     # or accidental repetition.  Keep this conservative so dialogue echoes
@@ -589,6 +607,7 @@ def record_accepted_style_revision(
         min_accept_ratio=(
             1.0 if chapter_number == int(checkpoint["chapter_count"]) else MIN_ACCEPT_RATIO
         ),
+        forbid_first_person_narration=True,
     )
     if quality["status"] != "ready":
         raise ValueError(f"revised chapter quality gate blocked: {quality['checks']}")
@@ -1383,7 +1402,7 @@ class LongNovelRun:
 只输出小说正文，不输出章节标题、说明、提纲、检查报告或 Markdown 围栏。
 执行契约：{json.dumps(outline, ensure_ascii=False)}
 当前权威状态：{compact_canon(self.checkpoint)}
-要求：深度限知贴近女主；用行动、账目、物价、生产工序和利益交换推动剧情；权谋必须体现各方目标、资源、错误情报和行动成本；每章形成状态变化，结尾落在具体动作、发现或决定上。不要总结升华，不用机械排比、万能微动作、“不是A而是B”或连续“没有A，没有B”句式。不得违背 hide 字段，不得新增改变全书走向的设定。{continuation}"""
+要求：全程使用第三人称限知叙述，深度贴近女主；用行动、账目、物价、生产工序和利益交换推动剧情；权谋必须体现各方目标、资源、错误情报和行动成本；每章形成状态变化，结尾落在具体动作、发现或决定上。不要总结升华，不用机械排比、万能微动作、“不是A而是B”或连续“没有A，没有B”句式。不得违背 hide 字段，不得新增改变全书走向的设定。{continuation}"""
         generated, usage = await self.client.complete(
             [
                 {"role": "system", "content": "你是经验丰富的中文女频长篇作者，严格执行章节契约，只写正文。"},
@@ -1531,6 +1550,7 @@ contract_checks 必须恰好逐项覆盖这些 ID，不得缺失、重复或改�
                     prose,
                     target_words,
                     min_accept_ratio=(1.0 if number == self.checkpoint["chapter_count"] else MIN_ACCEPT_RATIO),
+                    forbid_first_person_narration=True,
                 )
                 self.add_usage(prose_usage)
                 if quality["status"] != "ready":

@@ -288,6 +288,37 @@ def test_chapter_quality_allows_voice_contrast_inside_dialogue():
     assert result["status"] == "ready"
 
 
+def test_chapter_quality_blocks_first_person_narration_when_third_person_required():
+    text = '我把账册推到桌子中央，等着孙账手回答。\n' + "\n".join(
+        f'沈砚秋把第{i}笔运费写进账册，等着船帮复核。'
+        for i in range(45)
+    )
+    result = MODULE.chapter_quality(
+        text,
+        1_000,
+        forbid_first_person_narration=True,
+    )
+    check = next(item for item in result["checks"] if item["id"] == "third_person_narration")
+    assert check["ok"] is False
+    assert check["matches"] == ["我把"]
+    assert result["status"] == "blocked"
+
+
+def test_chapter_quality_allows_first_person_inside_dialogue_for_third_person_prose():
+    text = '“我把账册带来了。”孙账手说。\n' + "\n".join(
+        f'沈砚秋把第{i}笔运费写进账册，等着船帮复核。'
+        for i in range(45)
+    )
+    result = MODULE.chapter_quality(
+        text,
+        1_000,
+        forbid_first_person_narration=True,
+    )
+    check = next(item for item in result["checks"] if item["id"] == "third_person_narration")
+    assert check["ok"] is True
+    assert result["status"] == "ready"
+
+
 def test_chapter_quality_blocks_em_dash_dialogue_shortcuts():
     text = "“你先听我——”\n" + "她把粮袋重新称量一遍，逐项记下经手人和斤两。\n" * 30
     result = MODULE.chapter_quality(text, 1_000)
