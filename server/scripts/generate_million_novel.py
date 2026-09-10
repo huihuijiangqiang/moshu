@@ -233,9 +233,16 @@ ANALYSIS_REQUIRED_FIELDS = (
     "foreshadow_updates",
     "timeline_events",
     "contract_checks",
+    "integrity_checks",
     "quality",
 )
 QUALITY_FIELDS = ("continuity", "character", "plot", "prose", "hook")
+INTEGRITY_CHECK_IDS = (
+    "numeric_continuity",
+    "authority_scope",
+    "exchange_proportionality",
+    "evidence_integrity",
+)
 CHAPTER_CONTRACT_STRING_FIELDS = (
     "title",
     "objective",
@@ -331,6 +338,18 @@ def chapter_editorial_gate(
         for item in reviews
         if not item["ok"] or not item["evidence"].strip()
     ]
+    integrity_reviews = analysis["integrity_checks"]
+    actual_integrity = [item["id"].strip() for item in integrity_reviews]
+    duplicate_integrity = sorted(
+        {item for item in actual_integrity if actual_integrity.count(item) > 1}
+    )
+    missing_integrity = [item for item in INTEGRITY_CHECK_IDS if item not in actual_integrity]
+    unknown_integrity = [item for item in actual_integrity if item not in INTEGRITY_CHECK_IDS]
+    failed_integrity = [
+        item["id"].strip()
+        for item in integrity_reviews
+        if not item["ok"] or not item["evidence"].strip()
+    ]
     low_scores = {
         field: float(analysis["quality"][field])
         for field in QUALITY_FIELDS
@@ -348,6 +367,18 @@ def chapter_editorial_gate(
             "id": "contract_evidence",
             "ok": not failed_items,
             "failed": failed_items,
+        },
+        {
+            "id": "integrity_coverage",
+            "ok": not missing_integrity and not unknown_integrity and not duplicate_integrity,
+            "missing": missing_integrity,
+            "unknown": unknown_integrity,
+            "duplicates": duplicate_integrity,
+        },
+        {
+            "id": "integrity_evidence",
+            "ok": not failed_integrity,
+            "failed": failed_integrity,
         },
         {
             "id": "editorial_scores",
@@ -383,7 +414,13 @@ def validate_chapter_analysis(value: dict[str, Any]) -> dict[str, Any]:
     ):
         if not isinstance(value[field], dict):
             raise ValueError(f"chapter analysis {field} must be an object")
-    for field in ("new_facts", "foreshadow_updates", "timeline_events", "contract_checks"):
+    for field in (
+        "new_facts",
+        "foreshadow_updates",
+        "timeline_events",
+        "contract_checks",
+        "integrity_checks",
+    ):
         if not isinstance(value[field], list):
             raise ValueError(f"chapter analysis {field} must be an array")
     for index, fact in enumerate(value["new_facts"]):
@@ -421,6 +458,11 @@ def validate_chapter_analysis(value: dict[str, Any]) -> dict[str, Any]:
             raise ValueError(f"chapter analysis contract_checks[{index}] has no item")
         if not isinstance(check.get("ok"), bool) or not isinstance(check.get("evidence"), str):
             raise ValueError(f"chapter analysis contract_checks[{index}] has invalid result")
+    for index, check in enumerate(value["integrity_checks"]):
+        if not isinstance(check, dict) or not isinstance(check.get("id"), str) or not check["id"].strip():
+            raise ValueError(f"chapter analysis integrity_checks[{index}] has no id")
+        if not isinstance(check.get("ok"), bool) or not isinstance(check.get("evidence"), str):
+            raise ValueError(f"chapter analysis integrity_checks[{index}] has invalid result")
     for index, event in enumerate(value["timeline_events"]):
         if not isinstance(event, dict) or not isinstance(event.get("event"), str) or not event["event"].strip():
             raise ValueError(f"chapter analysis timeline_events[{index}] requires an event string")
@@ -1429,10 +1471,12 @@ class LongNovelRun:
             "hook",
         ]
         prompt = f"""从已完成正文抽取可用于下一章的权威候选状态。只输出 JSON：
-{{"summary":"不超过300字","character_updates":{{"姓名":{{"state":"","knows":[],"does_not_know":[],"public_goal":"","hidden_goal":""}}}},"faction_updates":{{}},"new_facts":["可核验事实"],"foreshadow_updates":[],"timeline_events":[{{"event":"可核验事件"}}],"contract_checks":[{{"item":"","ok":true,"evidence":""}}],"quality":{{"continuity":0,"character":0,"plot":0,"prose":0,"hook":0}}}}
+{{"summary":"不超过300字","character_updates":{{"姓名":{{"state":"","knows":[],"does_not_know":[],"public_goal":"","hidden_goal":""}}}},"faction_updates":{{}},"new_facts":["可核验事实"],"foreshadow_updates":[],"timeline_events":[{{"event":"可核验事件"}}],"contract_checks":[{{"item":"","ok":true,"evidence":""}}],"integrity_checks":[{{"id":"","ok":true,"evidence":""}}],"quality":{{"continuity":0,"character":0,"plot":0,"prose":0,"hook":0}}}}
 不得把推测写成事实；角色认知必须区分已知与未知。quality 各项必须使用 0.0-10.0 分，禁止百分制。
 contract_checks 必须恰好逐项覆盖这些 ID，不得缺失、重复或改名：{json.dumps(contract_check_ids, ensure_ascii=False)}。每项 evidence 必须引用正文中的具体行动、事实或未泄露证据。
+integrity_checks 必须恰好覆盖这些 ID：{json.dumps(INTEGRITY_CHECK_IDS, ensure_ascii=False)}。numeric_continuity 核对正文数字与当前权威状态；authority_scope 核对签约、盖印、处分资源者是否有对应权限；exchange_proportionality 核对代价、收益和风险是否基本对等且对方有接受动机；evidence_integrity 核对角色没有制造、仿造、篡改、污染证据或把猜测当事实。任一项存在冲突、权限不足、明显失衡或无正文依据时必须 ok=false，不得用完成章节契约代替完整性判断。
 章节契约：{json.dumps(outline, ensure_ascii=False)}
+当前权威状态：{compact_canon(self.checkpoint)}
 正文：\n<prose>\n{prose}\n</prose>"""
         text, usage = await self.client.complete(
             [

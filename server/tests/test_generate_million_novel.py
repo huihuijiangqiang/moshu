@@ -382,6 +382,10 @@ def _valid_analysis():
         "foreshadow_updates": [],
         "timeline_events": [{"event": "船粮票据被公开复核"}],
         "contract_checks": [{"item": "required_outcome", "ok": True, "evidence": "留下差额记录"}],
+        "integrity_checks": [
+            {"id": check_id, "ok": True, "evidence": f"正文及权威状态核验：{check_id}"}
+            for check_id in MODULE.INTEGRITY_CHECK_IDS
+        ],
         "quality": {"continuity": 8, "character": 8, "plot": 7, "prose": 7, "hook": 8},
     }
 
@@ -510,6 +514,22 @@ def test_editorial_gate_blocks_failed_evidence_and_low_scores():
     scores = next(item for item in result["checks"] if item["id"] == "editorial_scores")
     assert evidence["failed"] == ["required_outcome", "acceptance_criteria:1"]
     assert scores["lowScores"] == {"continuity": 6.5}
+
+
+def test_editorial_gate_blocks_failed_integrity_check():
+    contract = _valid_chapter_contract()
+    analysis = _contract_analysis(contract)
+    analysis["integrity_checks"][1] = {
+        "id": "authority_scope",
+        "ok": False,
+        "evidence": "仓务书吏无权授予永久第一议价权",
+    }
+
+    result = MODULE.chapter_editorial_gate(contract, analysis)
+
+    assert result["status"] == "blocked"
+    integrity = next(item for item in result["checks"] if item["id"] == "integrity_evidence")
+    assert integrity["failed"] == ["authority_scope"]
 
 
 async def test_run_does_not_advance_canon_when_editorial_gate_blocks(tmp_path):
