@@ -75,8 +75,10 @@ FIRST_PERSON_NARRATION_PATTERN = re.compile(
 )
 EVIDENCE_TAMPERING_PATTERN = re.compile(
     r"(?:契纸|契书|账页|账册|证物|原件|抄件|凭据|文书)"
-    r"[^。！？!?\n]{0,48}(?:描|刻|盖|划|写|添|补)"
-    r"[^。！？!?\n]{0,20}(?:暗记|私印|记号)"
+    r"[^。！？!?\n]{0,64}(?:"
+    r"(?:描|刻|盖|划|写|添|补)[^。！？!?\n]{0,20}(?:暗记|私印|记号)"
+    r"|(?:暗记|私印|记号)[^。！？!?\n]{0,24}(?:描|刻|盖|划|添|补)"
+    r")"
 )
 EM_DASH_PATTERN = re.compile(r"[—–]")
 STYLE_QUOTE_PATTERN = re.compile(

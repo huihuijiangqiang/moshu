@@ -406,6 +406,17 @@ def test_chapter_quality_blocks_private_marks_on_evidence():
     assert result["status"] == "blocked"
 
 
+def test_chapter_quality_blocks_evidence_mark_described_before_tampering_action():
+    text = (
+        "病栏账页的拓片右下角缺了半笔的七二暗记，她用细炭笔描了三遍。\n"
+        + "她核对封条与账目。\n" * 100
+    )
+    result = MODULE.chapter_quality(text, 1_000)
+    check = next(item for item in result["checks"] if item["id"] == "no_evidence_tampering")
+    assert check["ok"] is False
+    assert "暗记，她用细炭笔描" in check["matches"][0]
+
+
 def test_chapter_quality_allows_dialogue_about_evidence_marks():
     text = "“谁敢在契纸背面描暗记，我就报官。”\n" + "\n".join(
         f"她核对第{index}处封条与对应账目。" for index in range(100)
