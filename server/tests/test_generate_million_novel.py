@@ -66,6 +66,16 @@ def test_chapter_quality_blocks_reverse_not_is_comparison():
     assert result["status"] == "blocked"
 
 
+def test_chapter_quality_allows_formulaic_dialogue_when_quoted():
+    text = '“周七要的是船期，不是真想接下一船粮。”\n' + "\n".join(
+        f'她把第{i}笔运费写进账册，等着船帮复核。'
+        for i in range(45)
+    )
+    result = MODULE.chapter_quality(text, 1_000)
+    assert next(item for item in result["checks"] if item["id"] == "no_reverse_formulaic_comparison")["ok"]
+    assert result["status"] == "ready"
+
+
 def test_chapter_quality_blocks_negation_parade():
     text = '没有船号全称，没有验收人，也没有村方印。\n' + '她把收条压在账册下，等着对方补齐。\n' * 30
     result = MODULE.chapter_quality(text, 1_000)

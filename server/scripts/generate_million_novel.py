@@ -63,6 +63,9 @@ NEGATION_PARADE_PATTERN = re.compile(
     r"(?:没有[^。！？!?\n，,]{1,12}[，,]){2}"
 )
 EM_DASH_PATTERN = re.compile(r"[—–]")
+STYLE_QUOTE_PATTERN = re.compile(
+    r"“[^”\n]*”|「[^」\n]*」|『[^』\n]*』|【[^】\n]*】|\"[^\"\n]*\"|‘[^’\n]*’"
+)
 
 
 class GatewayRequestError(RuntimeError):
@@ -161,6 +164,11 @@ def content_sha256(text: str) -> str:
 def normalize_blocking_punctuation(text: str) -> str:
     """Repair punctuation that is forbidden regardless of narrative context."""
     return (text or "").replace("——", "……").replace("—", "…").replace("–", "…")
+
+
+def mask_style_quotes(text: str) -> str:
+    """Replace quoted dialogue with spaces for prose-template style checks."""
+    return STYLE_QUOTE_PATTERN.sub(lambda match: " " * len(match.group(0)), text or "")
 
 
 def safe_filename(value: str, *, fallback: str = "untitled") -> str:
@@ -413,18 +421,19 @@ def chapter_quality(
         },
     ]
     metrics = prose_quality_metrics(text)
+    style_text = mask_style_quotes(text)
     formulaic_matches = [
         match.group(0)[:120]
-        for match in NOT_IS_COMPARISON_PATTERN.finditer(text)
+        for match in NOT_IS_COMPARISON_PATTERN.finditer(style_text)
     ]
     reverse_formulaic_matches = [
         match.group(0)[:120]
-        for match in REVERSE_NOT_IS_PATTERN.finditer(text)
-        if match.start() == 0 or text[match.start() - 1] not in REVERSE_NOT_IS_PREV_EXCLUDE
+        for match in REVERSE_NOT_IS_PATTERN.finditer(style_text)
+        if match.start() == 0 or style_text[match.start() - 1] not in REVERSE_NOT_IS_PREV_EXCLUDE
     ]
     negation_matches = [
         match.group(0)[:120]
-        for match in NEGATION_PARADE_PATTERN.finditer(text)
+        for match in NEGATION_PARADE_PATTERN.finditer(style_text)
     ]
     if formulaic_matches:
         checks.append(
