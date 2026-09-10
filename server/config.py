@@ -109,6 +109,7 @@ class Settings(BaseSettings):
     # summary model so deployments keep one source of truth unless overridden.
     generation_gateway_tier: str = "main"
     generation_model: Optional[str] = None
+    generation_review_model: Optional[str] = None
     generation_reasoning_effort: str = "low"
     generation_request_timeout: float = 600.0
     generation_context_window_tokens: int = Field(

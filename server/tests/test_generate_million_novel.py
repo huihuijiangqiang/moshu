@@ -577,7 +577,17 @@ async def test_analyze_chapter_prompt_requires_scoped_proportional_exchange(tmp_
             assert "不得把合直接当成斗" in prompt
             return MODULE.json.dumps(_contract_analysis(outline), ensure_ascii=False), {}
 
-    runner = MODULE.LongNovelRun(tmp_path, FakeClient(), checkpoint)
+    class GenerationClient:
+        async def complete(self, *args, **kwargs):
+            del args, kwargs
+            raise AssertionError("chapter analysis must use the dedicated review client")
+
+    runner = MODULE.LongNovelRun(
+        tmp_path,
+        GenerationClient(),
+        checkpoint,
+        review_client=FakeClient(),
+    )
     analysis, usage = await runner.analyze_chapter(outline, "沈砚秋核对换契。")
 
     assert analysis["integrity_checks"][0]["id"] == "temporal_continuity"
