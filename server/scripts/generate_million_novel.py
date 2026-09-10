@@ -830,6 +830,94 @@ def record_accepted_style_revision(
     return revision
 
 
+def record_pending_style_revision(
+    checkpoint: dict[str, Any],
+    output_dir: Path,
+    chapter_number: int,
+    *,
+    reason: str,
+    revised_at: int | None = None,
+) -> dict[str, Any]:
+    """Revalidate an edited non-Canon draft and require a fresh model review."""
+    revision_reason = reason.strip()
+    if not revision_reason:
+        raise ValueError("pending style revision reason must not be empty")
+    record = next(
+        (
+            item
+            for item in checkpoint.get("chapters", [])
+            if int(item.get("number", 0)) == chapter_number
+        ),
+        None,
+    )
+    if not record or record.get("status") not in {"analysis_pending", "review_blocked"}:
+        raise ValueError(f"chapter {chapter_number} is not a pending non-Canon chapter")
+    root = output_dir.resolve()
+    chapter_path = (root / str(record.get("path", ""))).resolve()
+    if root not in chapter_path.parents:
+        raise ValueError("pending chapter path escapes the run directory")
+    prose = chapter_path.read_text(encoding="utf-8").strip()
+    length_check = next(
+        (
+            check
+            for check in record.get("quality", {}).get("checks", [])
+            if check.get("id") == "length"
+        ),
+        {},
+    )
+    target_words = int(length_check.get("target") or checkpoint["chapter_words"])
+    quality = chapter_quality(
+        prose,
+        target_words,
+        min_accept_ratio=(
+            1.0 if chapter_number == int(checkpoint["chapter_count"]) else MIN_ACCEPT_RATIO
+        ),
+        forbid_first_person_narration=True,
+    )
+    if quality["status"] != "ready":
+        raise ValueError(f"revised pending chapter quality gate blocked: {quality['checks']}")
+    old_sha256 = str(record.get("sha256", ""))
+    new_sha256 = content_sha256(prose)
+    if new_sha256 == old_sha256:
+        raise ValueError("revised pending chapter content is unchanged")
+    timestamp = int(time.time() if revised_at is None else revised_at)
+    analysis_path = output_dir / "analysis" / f"{chapter_number:04d}.json"
+    archived_analysis_path = (
+        output_dir / "rejected" / "analysis" / f"{chapter_number:04d}-style-{timestamp}.json"
+    )
+    if analysis_path.exists():
+        archived_analysis_path.parent.mkdir(parents=True, exist_ok=True)
+        os.replace(analysis_path, archived_analysis_path)
+    revision = {
+        "chapter": chapter_number,
+        "reason": revision_reason,
+        "previous_sha256": old_sha256,
+        "sha256": new_sha256,
+        "previous_words": int(record.get("words", 0)),
+        "words": int(quality["words"]),
+        "analysis_path": (
+            archived_analysis_path.relative_to(output_dir).as_posix()
+            if archived_analysis_path.exists()
+            else None
+        ),
+        "at": timestamp,
+    }
+    record.update(
+        {
+            "status": "analysis_pending",
+            "sha256": new_sha256,
+            "words": int(quality["words"]),
+            "quality": quality,
+        }
+    )
+    record.pop("editorial", None)
+    record.pop("editorial_gate", None)
+    checkpoint["status"] = "paused"
+    checkpoint["active_chapter"] = None
+    checkpoint.setdefault("pending_style_revisions", []).append(revision)
+    return revision
+
+
 def reject_last_accepted_chapter(
     checkpoint: dict[str, Any],
     output_dir: Path,
@@ -2378,6 +2466,19 @@ async def async_main(args: argparse.Namespace) -> None:
                 atomic_write_json(checkpoint_path, checkpoint)
                 print(json.dumps(revision, ensure_ascii=False), flush=True)
                 return
+            if args.record_pending_style_revision is not None:
+                try:
+                    revision = record_pending_style_revision(
+                        checkpoint,
+                        output_dir,
+                        args.record_pending_style_revision,
+                        reason=args.revision_reason or "",
+                    )
+                except (OSError, ValueError) as exc:
+                    raise SystemExit(str(exc)) from None
+                atomic_write_json(checkpoint_path, checkpoint)
+                print(json.dumps(revision, ensure_ascii=False), flush=True)
+                return
             if args.reject_pending_chapter:
                 try:
                     rejection = reject_pending_chapter(
@@ -2414,6 +2515,7 @@ async def async_main(args: argparse.Namespace) -> None:
         else:
             if (
                 args.record_style_revision is not None
+                or args.record_pending_style_revision is not None
                 or args.reject_pending_chapter
                 or args.reject_last_chapter
             ):
@@ -2494,6 +2596,7 @@ def main() -> None:
     parser.add_argument("--model")
     parser.add_argument("--allow-model-switch", action="store_true")
     parser.add_argument("--record-style-revision", type=int)
+    parser.add_argument("--record-pending-style-revision", type=int)
     parser.add_argument("--revision-reason")
     parser.add_argument("--reject-pending-chapter", action="store_true")
     parser.add_argument("--reject-last-chapter", action="store_true")
@@ -2502,6 +2605,7 @@ def main() -> None:
     revision_actions = sum(
         (
             args.record_style_revision is not None,
+            args.record_pending_style_revision is not None,
             args.reject_pending_chapter,
             args.reject_last_chapter,
         )

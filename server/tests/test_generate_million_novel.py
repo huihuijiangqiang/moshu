@@ -255,6 +255,54 @@ def test_record_accepted_style_revision_rejects_bad_prose(tmp_path):
     assert "style_revisions" not in checkpoint
 
 
+def test_record_pending_style_revision_requires_fresh_review_and_archives_analysis(tmp_path):
+    checkpoint = MODULE.new_checkpoint(target_words=100_000, chapter_words=800, model="m")
+    original = "\n".join(
+        f"沈砚秋称过第{index}袋粮，赵顺记下斤两和经手人。" for index in range(42)
+    )
+    revised = original.replace("赵顺记下", "赵顺随即记下", 1)
+    path = tmp_path / "chapters" / "0001-test.md"
+    MODULE.atomic_write_text(path, revised + "\n")
+    quality = MODULE.chapter_quality(original, 800)
+    checkpoint["chapters"] = [
+        {
+            "number": 1,
+            "status": "review_blocked",
+            "path": "chapters/0001-test.md",
+            "words": quality["words"],
+            "sha256": MODULE.content_sha256(original),
+            "quality": quality,
+            "editorial": {"continuity": 7},
+            "editorial_gate": {"status": "blocked"},
+            "editorial_repair": {"attempted": True},
+        }
+    ]
+    checkpoint["status"] = "failed"
+    checkpoint["active_chapter"] = 1
+    MODULE.atomic_write_json(tmp_path / "analysis" / "0001.json", {"quality": {}})
+
+    result = MODULE.record_pending_style_revision(
+        checkpoint,
+        tmp_path,
+        1,
+        reason="remove a formulaic phrase",
+        revised_at=123,
+    )
+
+    record = checkpoint["chapters"][0]
+    assert record["status"] == "analysis_pending"
+    assert record["sha256"] == MODULE.content_sha256(revised)
+    assert record["quality"]["status"] == "ready"
+    assert "editorial" not in record
+    assert "editorial_gate" not in record
+    assert record["editorial_repair"] == {"attempted": True}
+    assert checkpoint["status"] == "paused"
+    assert checkpoint["active_chapter"] is None
+    assert result["analysis_path"] == "rejected/analysis/0001-style-123.json"
+    assert not (tmp_path / "analysis" / "0001.json").exists()
+    assert (tmp_path / result["analysis_path"]).exists()
+
+
 def test_reject_last_accepted_chapter_rebuilds_canon_and_quarantines_files(tmp_path):
     checkpoint = MODULE.new_checkpoint(target_words=100_000, chapter_words=800, model="m")
     checkpoint["plan"] = MODULE.build_seed_plan(
