@@ -1887,6 +1887,19 @@ integrity_checks 必须恰好覆盖这些 ID：{json.dumps(INTEGRITY_CHECK_IDS, 
                     if record and isinstance(record.get("editorial_repair"), dict)
                     else None
                 )
+                blocked_analysis: dict[str, Any] | None = None
+                blocked_editorial_gate: dict[str, Any] | None = None
+                if record and record.get("status") == "review_blocked":
+                    blocked_analysis_path = self.output_dir / "analysis" / f"{number:04d}.json"
+                    if not blocked_analysis_path.exists():
+                        raise ValueError("review-blocked chapter analysis is missing")
+                    loaded_analysis = json.loads(blocked_analysis_path.read_text(encoding="utf-8"))
+                    if not isinstance(loaded_analysis, dict):
+                        raise ValueError("review-blocked chapter analysis is invalid")
+                    blocked_analysis = validate_chapter_analysis(loaded_analysis)
+                    blocked_editorial_gate = chapter_editorial_gate(outline, blocked_analysis)
+                    if blocked_editorial_gate["status"] != "blocked":
+                        raise ValueError("review-blocked chapter no longer has failing analysis evidence")
                 # Editorial review can fail after prose and analysis have both
                 # been persisted. Reuse that immutable draft on retry instead
                 # of paying for a second prose generation.
@@ -1990,9 +2003,13 @@ integrity_checks 必须恰好覆盖这些 ID：{json.dumps(INTEGRITY_CHECK_IDS, 
                     record.clear()
                     record.update(pending)
                 self.save()
-                analysis, analysis_usage = await self.analyze_chapter(outline, prose)
-                self.add_usage(analysis_usage)
-                editorial_gate = chapter_editorial_gate(outline, analysis)
+                if blocked_analysis is not None and blocked_editorial_gate is not None:
+                    analysis = blocked_analysis
+                    editorial_gate = blocked_editorial_gate
+                else:
+                    analysis, analysis_usage = await self.analyze_chapter(outline, prose)
+                    self.add_usage(analysis_usage)
+                    editorial_gate = chapter_editorial_gate(outline, analysis)
                 if editorial_gate["status"] != "ready" and not editorial_repair:
                     failed_checks = [
                         str(item.get("id", "unknown"))
