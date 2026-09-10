@@ -34,6 +34,67 @@ def test_seed_outlines_use_unique_titles_and_progressive_phases():
     assert "结算阶段" in contracts[24]["objective"]
 
 
+def test_repair_legacy_seed_titles_updates_only_exact_legacy_records(tmp_path):
+    checkpoint = MODULE.new_checkpoint(
+        target_words=1_000_000,
+        chapter_words=3_200,
+        model="m",
+    )
+    checkpoint["plan"] = MODULE.build_seed_plan(
+        target_words=checkpoint["target_words"],
+        chapter_count=checkpoint["chapter_count"],
+    )
+    volume = checkpoint["plan"]["volumes"][0]
+    contracts = [
+        MODULE.build_seed_chapter_outline(number, volume)
+        for number in range(volume["chapter_from"], volume["chapter_to"] + 1)
+    ]
+    checkpoint["volume_outlines"]["1"] = contracts
+    checkpoint["canon_revision"] = 2
+    old_records = []
+    for number in (1, 2):
+        legacy_title = f"{MODULE.LEGACY_SEED_BEATS[number - 1]}与{volume['title']}"
+        old_path = tmp_path / "chapters" / f"{number:04d}-{MODULE.safe_filename(legacy_title)}.md"
+        MODULE.atomic_write_text(old_path, f"正文-{number}\n")
+        old_records.append(
+            {
+                "number": number,
+                "title": legacy_title,
+                "status": "accepted",
+                "path": old_path.relative_to(tmp_path).as_posix(),
+                "sha256": MODULE.content_sha256(f"正文-{number}"),
+            }
+        )
+    custom_path = tmp_path / "chapters" / "0003-作者自定标题.md"
+    MODULE.atomic_write_text(custom_path, "正文-3\n")
+    old_records.append(
+        {
+            "number": 3,
+            "title": "作者自定标题",
+            "status": "accepted",
+            "path": custom_path.relative_to(tmp_path).as_posix(),
+            "sha256": MODULE.content_sha256("正文-3"),
+        }
+    )
+    checkpoint["chapters"] = old_records
+
+    changed = MODULE.repair_legacy_seed_titles(checkpoint, tmp_path)
+
+    assert changed == 2
+    assert checkpoint["seed_title_repair_version"] == MODULE.SEED_TITLE_REPAIR_VERSION
+    for number in (1, 2):
+        expected = MODULE.build_seed_chapter_outline(number, volume)["title"]
+        record = next(item for item in checkpoint["chapters"] if item["number"] == number)
+        assert record["title"] == expected
+        assert (tmp_path / record["path"]).read_text(encoding="utf-8") == f"正文-{number}\n"
+        assert record["sha256"] == MODULE.content_sha256(f"正文-{number}")
+    custom = next(item for item in checkpoint["chapters"] if item["number"] == 3)
+    assert custom["title"] == "作者自定标题"
+    assert (tmp_path / custom["path"]).exists()
+    assert checkpoint["volume_outlines"]["1"][0]["title"] == MODULE.build_seed_chapter_outline(1, volume)["title"]
+    assert MODULE.repair_legacy_seed_titles(checkpoint, tmp_path) == 0
+
+
 def test_seed_outlines_use_volume_specific_actions():
     plan = MODULE.build_seed_plan(target_words=1_000_000, chapter_count=313)
     river_port = plan["volumes"][3]

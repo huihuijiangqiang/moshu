@@ -38,6 +38,8 @@ from services.generation import count_generated_words, provider_error_detail  # 
 
 CHECKPOINT_SCHEMA = "moshu-private-long-novel/v2"
 SEED_OUTLINE_VERSION = 3
+SEED_TITLE_REPAIR_VERSION = 1
+LEGACY_SEED_BEATS = ("盘账", "试种", "谈价", "借势", "设局", "救急", "换契", "追责")
 DEFAULT_TARGET_WORDS = 1_000_000
 DEFAULT_CHAPTER_WORDS = 3_200
 MIN_ACCEPT_RATIO = 0.72
@@ -1217,6 +1219,7 @@ def new_checkpoint(*, target_words: int, chapter_words: int, model: str) -> dict
         "volume_outlines": {},
         "chapters": [],
         "canon_revision": 0,
+        "seed_title_repair_version": 0,
         "canon": {
             "characters": {},
             "factions": {},
@@ -1468,6 +1471,72 @@ def build_seed_chapter_outline(number: int, volume: dict[str, Any]) -> dict[str,
         "pov": "沈砚秋",
         "time_anchor": f"昭宁二十七年，卷{volume['number']}，第{number}章",
     }
+
+
+def repair_legacy_seed_titles(checkpoint: dict[str, Any], output_dir: Path) -> int:
+    """Rename exact legacy seed titles without touching authored titles or prose."""
+    if checkpoint.get("plan", {}).get("planning_mode") != "seeded":
+        return 0
+    if int(checkpoint.get("seed_title_repair_version", 0)) >= SEED_TITLE_REPAIR_VERSION:
+        return 0
+    volumes = {
+        int(volume["number"]): volume
+        for volume in checkpoint.get("plan", {}).get("volumes", [])
+    }
+    changed = 0
+    changed_volumes: set[int] = set()
+    root = output_dir.resolve()
+    for record in checkpoint.get("chapters", []):
+        if record.get("status") != "accepted":
+            continue
+        number = int(record.get("number", 0))
+        volume = next(
+            (
+                candidate
+                for candidate in volumes.values()
+                if int(candidate["chapter_from"]) <= number <= int(candidate["chapter_to"])
+            ),
+            None,
+        )
+        if volume is None:
+            continue
+        legacy_title = f"{LEGACY_SEED_BEATS[(number - 1) % len(LEGACY_SEED_BEATS)]}与{volume['title']}"
+        if str(record.get("title", "")) != legacy_title:
+            continue
+        new_title = build_seed_chapter_outline(number, volume)["title"]
+        old_path = (output_dir / str(record.get("path", ""))).resolve()
+        if root not in old_path.parents:
+            raise ValueError(f"legacy chapter path escapes run directory: {record.get('path')}")
+        new_path = output_dir / "chapters" / f"{number:04d}-{safe_filename(new_title)}.md"
+        if old_path != new_path.resolve():
+            if new_path.exists():
+                raise ValueError(f"cannot repair legacy title; target exists: {new_path}")
+            if not old_path.exists():
+                raise ValueError(f"cannot repair legacy title; source missing: {old_path}")
+            os.replace(old_path, new_path)
+        record["title"] = new_title
+        record["path"] = new_path.relative_to(output_dir).as_posix()
+        changed += 1
+        changed_volumes.add(int(volume["number"]))
+
+    for key, contracts in checkpoint.get("volume_outlines", {}).items():
+        volume_number = int(key)
+        if volume_number not in changed_volumes or not isinstance(contracts, list):
+            continue
+        volume = volumes[volume_number]
+        for contract in contracts:
+            number = int(contract.get("number", 0))
+            if not (int(volume["chapter_from"]) <= number <= int(volume["chapter_to"])):
+                continue
+            legacy_title = f"{LEGACY_SEED_BEATS[(number - 1) % len(LEGACY_SEED_BEATS)]}与{volume['title']}"
+            if str(contract.get("title", "")) == legacy_title:
+                contract["title"] = build_seed_chapter_outline(number, volume)["title"]
+        atomic_write_json(
+            output_dir / "outlines" / f"volume-{volume_number:02d}.json",
+            {"chapters": contracts},
+        )
+    checkpoint["seed_title_repair_version"] = SEED_TITLE_REPAIR_VERSION
+    return changed
 
 
 def refresh_unwritten_seed_outlines(checkpoint: dict[str, Any], output_dir: Path) -> int:
@@ -2198,6 +2267,10 @@ authority_scope 补充要求：基层经办人若授予跨机构、长期或排�
 
     async def run(self, *, max_chapters: int | None) -> None:
         await self.ensure_plan()
+        title_repair_version_before = int(self.checkpoint.get("seed_title_repair_version", 0))
+        repaired_titles = repair_legacy_seed_titles(self.checkpoint, self.output_dir)
+        if repaired_titles or int(self.checkpoint.get("seed_title_repair_version", 0)) != title_repair_version_before:
+            self.save()
         seed_version_before = int(self.checkpoint.get("seed_outline_version", 0))
         refresh_unwritten_seed_outlines(self.checkpoint, self.output_dir)
         if int(self.checkpoint.get("seed_outline_version", 0)) != seed_version_before:
