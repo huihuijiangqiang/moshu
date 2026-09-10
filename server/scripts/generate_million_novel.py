@@ -1950,7 +1950,7 @@ authority_scope 补充要求：基层经办人若授予跨机构、长期或排�
                             # separate ledger records.
                             numeric_check.update(
                                 {
-                                    "ok": True,
+                                    "ok": bool(numeric_check.get("ok")),
                                     "evidence": deterministic_grain_evidence(prose),
                                 }
                             )
@@ -1986,7 +1986,7 @@ authority_scope 补充要求：基层经办人若授予跨机构、长期或排�
         repaired = extract_json_object(text)
         if not isinstance(repaired.get("ok"), bool) or not isinstance(repaired.get("evidence"), str):
             raise ValueError("numeric evidence repair must return ok and evidence")
-        if repaired["ok"] and invalid_grain_unit_equations(repaired["evidence"]):
+        if invalid_grain_unit_equations(repaired["evidence"]):
             raise ValueError(
                 "numeric evidence repair contains invalid grain conversions: "
                 f"{invalid_grain_unit_equations(repaired['evidence'])[:5]}"

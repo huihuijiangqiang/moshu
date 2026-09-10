@@ -729,6 +729,44 @@ async def test_analyze_chapter_uses_local_grain_fallback_when_focused_repair_is_
     assert MODULE.invalid_grain_unit_equations(numeric["evidence"]) == []
 
 
+async def test_analyze_chapter_rejects_original_numeric_failure_during_local_fallback(tmp_path):
+    checkpoint = MODULE.new_checkpoint(target_words=100_000, chapter_words=800, model="m")
+    checkpoint["plan"] = MODULE.build_seed_plan(
+        target_words=checkpoint["target_words"],
+        chapter_count=checkpoint["chapter_count"],
+    )
+    outline = MODULE.build_seed_chapter_outline(1, checkpoint["plan"]["volumes"][0])
+
+    class FakeClient:
+        async def complete(self, messages, **kwargs):
+            del kwargs
+            if "只修复一项审查结果" in messages[-1]["content"]:
+                return MODULE.json.dumps({"ok": False, "evidence": "2斗=72斗。"}), {}
+            value = _contract_analysis(outline)
+            numeric = next(
+                item for item in value["integrity_checks"] if item["id"] == "numeric_continuity"
+            )
+            numeric.update({"ok": False, "evidence": "10斗=300斗。"})
+            return MODULE.json.dumps(value, ensure_ascii=False), {}
+
+    class GenerationClient:
+        async def complete(self, *args, **kwargs):
+            del args, kwargs
+            raise AssertionError("chapter analysis must use the dedicated review client")
+
+    runner = MODULE.LongNovelRun(
+        tmp_path,
+        GenerationClient(),
+        checkpoint,
+        review_client=FakeClient(),
+    )
+    analysis, _ = await runner.analyze_chapter(outline, "正文记三十石。")
+
+    numeric = next(item for item in analysis["integrity_checks"] if item["id"] == "numeric_continuity")
+    assert numeric["ok"] is False
+    assert "本地确定性容量核验" in numeric["evidence"]
+
+
 def test_validate_chapter_analysis_accepts_complete_state_delta():
     value = _valid_analysis()
     assert MODULE.validate_chapter_analysis(value) is value
