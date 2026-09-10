@@ -140,6 +140,8 @@ async def test_write_chapter_prompt_guards_evidence_and_numeric_continuity(tmp_p
             prompt = messages[-1]["content"]
             assert "女主不得制造、仿造、补盖、篡改或污染证据" in prompt
             assert "新数字必须能从执行契约或当前权威状态推出" in prompt
+            assert "不能直接换永久、独占、一年期或跨机构特权" in prompt
+            assert "经办人只能承诺自己管辖范围内的事项" in prompt
             return "沈砚秋核完账，把原件重新封好。", {}
 
     checkpoint = MODULE.new_checkpoint(target_words=100_000, chapter_words=800, model="m")
@@ -458,6 +460,29 @@ def _contract_analysis(contract):
         ]
     ]
     return value
+
+
+async def test_analyze_chapter_prompt_requires_scoped_proportional_exchange(tmp_path):
+    checkpoint = MODULE.new_checkpoint(target_words=100_000, chapter_words=800, model="m")
+    checkpoint["plan"] = MODULE.build_seed_plan(
+        target_words=checkpoint["target_words"],
+        chapter_count=checkpoint["chapter_count"],
+    )
+    outline = MODULE.build_seed_chapter_outline(1, checkpoint["plan"]["volumes"][0])
+
+    class FakeClient:
+        async def complete(self, messages, **kwargs):
+            del kwargs
+            prompt = messages[-1]["content"]
+            assert "分别比较金额、期限、覆盖范围和最坏损失" in prompt
+            assert "基层经办人若授予跨机构、长期或排他权利" in prompt
+            return MODULE.json.dumps(_contract_analysis(outline), ensure_ascii=False), {}
+
+    runner = MODULE.LongNovelRun(tmp_path, FakeClient(), checkpoint)
+    analysis, usage = await runner.analyze_chapter(outline, "沈砚秋核对换契。")
+
+    assert analysis["integrity_checks"][0]["id"] == "numeric_continuity"
+    assert usage == {}
 
 
 def test_validate_chapter_analysis_accepts_complete_state_delta():

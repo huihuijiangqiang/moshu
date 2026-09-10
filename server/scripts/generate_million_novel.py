@@ -1541,7 +1541,7 @@ class LongNovelRun:
 只输出小说正文，不输出章节标题、说明、提纲、检查报告或 Markdown 围栏。
 执行契约：{json.dumps(outline, ensure_ascii=False)}
 当前权威状态：{compact_canon(self.checkpoint)}
-要求：全程使用第三人称限知叙述，深度贴近女主；用行动、账目、物价、生产工序和利益交换推动剧情；权谋必须体现各方目标、资源、错误情报和行动成本；每章形成状态变化，结尾落在具体动作、发现或决定上。证据完整性是硬约束：女主不得制造、仿造、补盖、篡改或污染证据，不得把未确认的猜测写成事实；新数字必须能从执行契约或当前权威状态推出，无法确认时保持待查。不要总结升华，不用机械排比、万能微动作、“不是A而是B”或连续“没有A，没有B”句式。不得违背 hide 字段，不得新增改变全书走向的设定。{continuation}"""
+要求：全程使用第三人称限知叙述，深度贴近女主；用行动、账目、物价、生产工序和利益交换推动剧情；权谋必须体现各方目标、资源、错误情报和行动成本；每章形成状态变化，结尾落在具体动作、发现或决定上。证据完整性是硬约束：女主不得制造、仿造、补盖、篡改或污染证据，不得把未确认的猜测写成事实；新数字必须能从执行契约或当前权威状态推出，无法确认时保持待查。权利与交换边界同样是硬约束：短期小额让步只能换同量级、有限期限、附条件、可复核或待上级批准的程序性权益，不能直接换永久、独占、一年期或跨机构特权；经办人只能承诺自己管辖范围内的事项，超出权限只能受理申请或提交有权者审批；对价必须同时比较金额、期限、覆盖范围和最坏损失。不要总结升华，不用机械排比、万能微动作、“不是A而是B”或连续“没有A，没有B”句式。不得违背 hide 字段，不得新增改变全书走向的设定。{continuation}"""
         generated, usage = await self.client.complete(
             [
                 {"role": "system", "content": "你是经验丰富的中文女频长篇作者，严格执行章节契约，只写正文。"},
@@ -1571,7 +1571,7 @@ class LongNovelRun:
 {{"summary":"不超过300字","character_updates":{{"姓名":{{"state":"","knows":[],"does_not_know":[],"public_goal":"","hidden_goal":""}}}},"faction_updates":{{}},"new_facts":["可核验事实"],"foreshadow_updates":[],"timeline_events":[{{"event":"可核验事件"}}],"contract_checks":[{{"item":"","ok":true,"evidence":""}}],"integrity_checks":[{{"id":"","ok":true,"evidence":""}}],"quality":{{"continuity":0,"character":0,"plot":0,"prose":0,"hook":0}}}}
 不得把推测写成事实；角色认知必须区分已知与未知。quality 各项必须使用 0.0-10.0 分，禁止百分制。
 contract_checks 必须恰好逐项覆盖这些 ID，不得缺失、重复或改名：{json.dumps(contract_check_ids, ensure_ascii=False)}。每项 evidence 必须引用正文中的具体行动、事实或未泄露证据。
-integrity_checks 必须恰好覆盖这些 ID：{json.dumps(INTEGRITY_CHECK_IDS, ensure_ascii=False)}。numeric_continuity 核对正文数字与当前权威状态；authority_scope 核对签约、盖印、处分资源者是否有对应权限；exchange_proportionality 核对代价、收益和风险是否基本对等且对方有接受动机；evidence_integrity 核对角色没有制造、仿造、篡改、污染证据或把猜测当事实。任一项存在冲突、权限不足、明显失衡或无正文依据时必须 ok=false，不得用完成章节契约代替完整性判断。
+integrity_checks 必须恰好覆盖这些 ID：{json.dumps(INTEGRITY_CHECK_IDS, ensure_ascii=False)}。numeric_continuity 核对正文数字与当前权威状态；authority_scope 核对签约、盖印、处分资源者是否有对应权限，基层经办人若授予跨机构、长期或排他权利，正文必须出现有权者批准，否则为 false；exchange_proportionality 必须在 evidence 中分别比较金额、期限、覆盖范围和最坏损失，短期小额垫款若直接换一年期、永久、独占或跨机构特权必须为 false，除非正文另有同量级代价和批准依据；evidence_integrity 核对角色没有制造、仿造、篡改、污染证据或把猜测当事实。任一项存在冲突、权限不足、明显失衡或无正文依据时必须 ok=false，不得用完成章节契约或笼统的“有接受动机”代替完整性判断。
 章节契约：{json.dumps(outline, ensure_ascii=False)}
 当前权威状态：{compact_canon(self.checkpoint)}
 正文：\n<prose>\n{prose}\n</prose>"""
