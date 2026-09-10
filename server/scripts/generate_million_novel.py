@@ -641,6 +641,44 @@ def new_checkpoint(*, target_words: int, chapter_words: int, model: str) -> dict
     }
 
 
+def switch_checkpoint_model(
+    checkpoint: dict[str, Any],
+    requested_model: str | None,
+    *,
+    allow_switch: bool,
+    switched_at: int | None = None,
+) -> None:
+    """Apply an explicit, auditable model switch at a Canon boundary."""
+    requested = (requested_model or "").strip()
+    current = str(checkpoint.get("model") or "").strip()
+    if not requested or requested == current:
+        return
+    if not allow_switch:
+        raise ValueError(
+            f"existing run uses model {current!r}; pass --allow-model-switch to change it"
+        )
+    pending = [
+        int(item.get("number", 0))
+        for item in checkpoint.get("chapters", [])
+        if item.get("status") != "accepted"
+    ]
+    if pending:
+        raise ValueError(
+            "cannot switch models while a chapter is pending review: "
+            + ", ".join(str(number) for number in pending)
+        )
+    effective_chapter = int(checkpoint.get("canon_revision", 0)) + 1
+    checkpoint.setdefault("model_history", []).append(
+        {
+            "from_model": current,
+            "to_model": requested,
+            "effective_chapter": effective_chapter,
+            "at": int(time.time() if switched_at is None else switched_at),
+        }
+    )
+    checkpoint["model"] = requested
+
+
 def build_seed_plan(*, target_words: int, chapter_count: int) -> dict[str, Any]:
     """Return a concrete, resumable story bible without a planning API call.
 
@@ -1324,10 +1362,12 @@ contract_checks 必须恰好逐项覆盖这些 ID，不得缺失、重复或改�
                 chapter_matches = sorted((self.output_dir / "chapters").glob(f"{number:04d}-*.md"))
                 if not chapter_matches:
                     raise ValueError("generated chapter file is missing")
+                generation_model = str(getattr(self.client, "model", self.checkpoint["model"]))
                 pending = {
                     "number": number,
                     "title": outline.get("title", ""),
                     "status": "analysis_pending",
+                    "generation_model": generation_model,
                     "words": int(quality["words"]),
                     "sha256": content_sha256(prose),
                     "path": chapter_matches[0].relative_to(self.output_dir).as_posix(),
@@ -1357,6 +1397,7 @@ contract_checks 必须恰好逐项覆盖这些 ID，不得缺失、重复或改�
                     "number": number,
                     "title": outline.get("title", ""),
                     "status": "accepted",
+                    "generation_model": pending.get("generation_model", generation_model),
                     "words": words,
                     "sha256": content_sha256(prose),
                     "path": pending["path"],
@@ -1438,6 +1479,15 @@ async def async_main(args: argparse.Namespace) -> None:
                 raise SystemExit("unsupported checkpoint schema")
             if checkpoint.get("target_words") != args.target_words:
                 raise SystemExit("target words differ from the existing checkpoint")
+            try:
+                switch_checkpoint_model(
+                    checkpoint,
+                    args.model,
+                    allow_switch=args.allow_model_switch,
+                )
+            except ValueError as exc:
+                raise SystemExit(str(exc)) from None
+            atomic_write_json(checkpoint_path, checkpoint)
         else:
             checkpoint = new_checkpoint(
                 target_words=args.target_words,
@@ -1493,6 +1543,7 @@ def main() -> None:
     parser.add_argument("--max-chapters", type=int)
     parser.add_argument("--tier", choices=("cheap", "main", "premium"), default="main")
     parser.add_argument("--model")
+    parser.add_argument("--allow-model-switch", action="store_true")
     args = parser.parse_args()
     if args.target_words < 100_000:
         raise SystemExit("target words must be at least 100000 for a long-novel evaluation")

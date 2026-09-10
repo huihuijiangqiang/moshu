@@ -19,6 +19,54 @@ def test_checkpoint_covers_million_character_target():
     assert checkpoint["generated_words"] == 0
 
 
+def test_checkpoint_model_switch_is_explicit_and_audited():
+    checkpoint = MODULE.new_checkpoint(
+        target_words=1_000_000,
+        chapter_words=3_200,
+        model="model-a",
+    )
+    checkpoint["canon_revision"] = 12
+
+    try:
+        MODULE.switch_checkpoint_model(checkpoint, "model-b", allow_switch=False)
+    except ValueError as exc:
+        assert "--allow-model-switch" in str(exc)
+    else:
+        raise AssertionError("model changes must require explicit approval")
+
+    MODULE.switch_checkpoint_model(
+        checkpoint,
+        "model-b",
+        allow_switch=True,
+        switched_at=123,
+    )
+    assert checkpoint["model"] == "model-b"
+    assert checkpoint["model_history"] == [
+        {
+            "from_model": "model-a",
+            "to_model": "model-b",
+            "effective_chapter": 13,
+            "at": 123,
+        }
+    ]
+
+
+def test_checkpoint_model_switch_refuses_pending_chapter():
+    checkpoint = MODULE.new_checkpoint(
+        target_words=1_000_000,
+        chapter_words=3_200,
+        model="model-a",
+    )
+    checkpoint["chapters"] = [{"number": 7, "status": "analysis_pending"}]
+
+    try:
+        MODULE.switch_checkpoint_model(checkpoint, "model-b", allow_switch=True)
+    except ValueError as exc:
+        assert "pending review: 7" in str(exc)
+    else:
+        raise AssertionError("pending prose must keep its original model boundary")
+
+
 def test_chapter_quality_blocks_short_and_model_meta():
     short = MODULE.chapter_quality("太短了", 1_000)
     leaked = MODULE.chapter_quality("以下是本章正文。" + "正文" * 400, 800)
