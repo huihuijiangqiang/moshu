@@ -533,6 +533,87 @@ def prose_quality_metrics(text: str) -> dict[str, Any]:
     }
 
 
+def record_accepted_style_revision(
+    checkpoint: dict[str, Any],
+    output_dir: Path,
+    chapter_number: int,
+    *,
+    reason: str,
+    revised_at: int | None = None,
+) -> dict[str, Any]:
+    """Revalidate and audit a fact-preserving prose-only revision."""
+    revision_reason = reason.strip()
+    if not revision_reason:
+        raise ValueError("style revision reason must not be empty")
+    record = next(
+        (
+            item
+            for item in checkpoint.get("chapters", [])
+            if int(item.get("number", 0)) == chapter_number
+        ),
+        None,
+    )
+    if not record or record.get("status") != "accepted":
+        raise ValueError(f"chapter {chapter_number} is not an accepted Canon chapter")
+    root = output_dir.resolve()
+    chapter_path = (root / str(record.get("path", ""))).resolve()
+    if root not in chapter_path.parents:
+        raise ValueError("accepted chapter path escapes the run directory")
+    prose = chapter_path.read_text(encoding="utf-8").strip()
+    length_check = next(
+        (
+            check
+            for check in record.get("quality", {}).get("checks", [])
+            if check.get("id") == "length"
+        ),
+        {},
+    )
+    target_words = int(length_check.get("target") or checkpoint["chapter_words"])
+    quality = chapter_quality(
+        prose,
+        target_words,
+        min_accept_ratio=(
+            1.0 if chapter_number == int(checkpoint["chapter_count"]) else MIN_ACCEPT_RATIO
+        ),
+    )
+    if quality["status"] != "ready":
+        raise ValueError(f"revised chapter quality gate blocked: {quality['checks']}")
+    old_sha256 = str(record.get("sha256", ""))
+    new_sha256 = content_sha256(prose)
+    if new_sha256 == old_sha256:
+        raise ValueError("revised chapter content is unchanged")
+    old_words = int(record.get("words", 0))
+    old_metrics = record.get("quality", {}).get("metrics", {})
+    new_metrics = quality.get("metrics", {})
+    quality_totals = checkpoint.setdefault("metrics", {}).setdefault("quality_totals", {})
+    for key in ("visible_chars", "paragraphs", "sentences"):
+        quality_totals[key] = max(
+            0,
+            int(quality_totals.get(key, 0))
+            - int(old_metrics.get(key, 0))
+            + int(new_metrics.get(key, 0)),
+        )
+    record["sha256"] = new_sha256
+    record["words"] = int(quality["words"])
+    record["quality"] = quality
+    checkpoint["generated_words"] = sum(
+        int(item.get("words", 0))
+        for item in checkpoint.get("chapters", [])
+        if item.get("status") == "accepted"
+    )
+    revision = {
+        "chapter": chapter_number,
+        "reason": revision_reason,
+        "previous_sha256": old_sha256,
+        "sha256": new_sha256,
+        "previous_words": old_words,
+        "words": int(quality["words"]),
+        "at": int(time.time() if revised_at is None else revised_at),
+    }
+    checkpoint.setdefault("style_revisions", []).append(revision)
+    return revision
+
+
 def _bounded_json(value: Any, budget: int) -> Any:
     """Bound JSON by complete entries, never by slicing serialized JSON."""
     if budget <= 2:
@@ -1571,6 +1652,19 @@ async def async_main(args: argparse.Namespace) -> None:
                 raise SystemExit("unsupported checkpoint schema")
             if checkpoint.get("target_words") != args.target_words:
                 raise SystemExit("target words differ from the existing checkpoint")
+            if args.record_style_revision is not None:
+                try:
+                    revision = record_accepted_style_revision(
+                        checkpoint,
+                        output_dir,
+                        args.record_style_revision,
+                        reason=args.revision_reason or "",
+                    )
+                except (OSError, ValueError) as exc:
+                    raise SystemExit(str(exc)) from None
+                atomic_write_json(checkpoint_path, checkpoint)
+                print(json.dumps(revision, ensure_ascii=False), flush=True)
+                return
             try:
                 switch_checkpoint_model(
                     checkpoint,
@@ -1581,6 +1675,8 @@ async def async_main(args: argparse.Namespace) -> None:
                 raise SystemExit(str(exc)) from None
             atomic_write_json(checkpoint_path, checkpoint)
         else:
+            if args.record_style_revision is not None:
+                raise SystemExit("cannot revise a chapter before the run checkpoint exists")
             checkpoint = new_checkpoint(
                 target_words=args.target_words,
                 chapter_words=args.chapter_words,
@@ -1636,6 +1732,8 @@ def main() -> None:
     parser.add_argument("--tier", choices=("cheap", "main", "premium"), default="main")
     parser.add_argument("--model")
     parser.add_argument("--allow-model-switch", action="store_true")
+    parser.add_argument("--record-style-revision", type=int)
+    parser.add_argument("--revision-reason")
     args = parser.parse_args()
     if args.target_words < 100_000:
         raise SystemExit("target words must be at least 100000 for a long-novel evaluation")

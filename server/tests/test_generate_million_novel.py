@@ -133,6 +133,80 @@ def test_chapter_quality_accepts_substantial_prose():
     assert result["status"] == "ready"
 
 
+def test_record_accepted_style_revision_revalidates_and_audits(tmp_path):
+    checkpoint = MODULE.new_checkpoint(target_words=100_000, chapter_words=800, model="m")
+    original = "\n".join(
+        f"沈砚秋称过第{index}袋粮，赵顺记下斤两和经手人。" for index in range(42)
+    )
+    revised = original.replace("赵顺记下", "赵顺随即记下", 1)
+    path = tmp_path / "chapters" / "0001-test.md"
+    MODULE.atomic_write_text(path, original + "\n")
+    quality = MODULE.chapter_quality(original, 800)
+    checkpoint["chapters"] = [
+        {
+            "number": 1,
+            "status": "accepted",
+            "path": "chapters/0001-test.md",
+            "words": quality["words"],
+            "sha256": MODULE.content_sha256(original),
+            "quality": quality,
+        }
+    ]
+    checkpoint["canon_revision"] = 1
+    checkpoint["generated_words"] = quality["words"]
+    checkpoint["metrics"]["quality_totals"] = {
+        key: quality["metrics"][key] for key in ("visible_chars", "paragraphs", "sentences")
+    }
+    MODULE.atomic_write_text(path, revised + "\n")
+
+    result = MODULE.record_accepted_style_revision(
+        checkpoint,
+        tmp_path,
+        1,
+        reason="remove a formulaic phrase",
+        revised_at=123,
+    )
+
+    assert result["previous_sha256"] == MODULE.content_sha256(original)
+    assert result["sha256"] == MODULE.content_sha256(revised)
+    assert result["at"] == 123
+    assert checkpoint["chapters"][0]["quality"]["status"] == "ready"
+    assert checkpoint["generated_words"] == checkpoint["chapters"][0]["words"]
+    assert checkpoint["canon_revision"] == 1
+    assert checkpoint["style_revisions"] == [result]
+
+
+def test_record_accepted_style_revision_rejects_bad_prose(tmp_path):
+    checkpoint = MODULE.new_checkpoint(target_words=100_000, chapter_words=800, model="m")
+    path = tmp_path / "chapters" / "0001-test.md"
+    MODULE.atomic_write_text(path, "太短。\n")
+    checkpoint["chapters"] = [
+        {
+            "number": 1,
+            "status": "accepted",
+            "path": "chapters/0001-test.md",
+            "words": 900,
+            "sha256": "old",
+            "quality": {"checks": [{"id": "length", "target": 800}], "metrics": {}},
+        }
+    ]
+
+    try:
+        MODULE.record_accepted_style_revision(
+            checkpoint,
+            tmp_path,
+            1,
+            reason="bad edit",
+        )
+    except ValueError as exc:
+        assert "quality gate blocked" in str(exc)
+    else:
+        raise AssertionError("a bad revision must not replace Canon metadata")
+
+    assert checkpoint["chapters"][0]["sha256"] == "old"
+    assert "style_revisions" not in checkpoint
+
+
 def test_chapter_quality_blocks_formulaic_not_is_comparison():
     text = '她手里不是空账，而是四枚旧铜钱。\n' + '她把钱压在账册上，等着对方开口。\n' * 30
     result = MODULE.chapter_quality(text, 1_000)
