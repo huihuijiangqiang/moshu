@@ -597,6 +597,46 @@ async def test_analyze_chapter_prompt_requires_scoped_proportional_exchange(tmp_
     assert usage == {}
 
 
+async def test_analyze_chapter_retries_deterministic_validation_failures(tmp_path):
+    checkpoint = MODULE.new_checkpoint(target_words=100_000, chapter_words=800, model="m")
+    checkpoint["plan"] = MODULE.build_seed_plan(
+        target_words=checkpoint["target_words"],
+        chapter_count=checkpoint["chapter_count"],
+    )
+    outline = MODULE.build_seed_chapter_outline(1, checkpoint["plan"]["volumes"][0])
+    calls = []
+
+    class FakeClient:
+        async def complete(self, messages, **kwargs):
+            del kwargs
+            calls.append(messages[-1]["content"])
+            value = _contract_analysis(outline)
+            if len(calls) == 1:
+                numeric = next(
+                    item for item in value["integrity_checks"] if item["id"] == "numeric_continuity"
+                )
+                numeric["evidence"] = "298斗=2斗。"
+            return MODULE.json.dumps(value, ensure_ascii=False), {"input_tokens": 10, "output_tokens": 4}
+
+    class GenerationClient:
+        async def complete(self, *args, **kwargs):
+            del args, kwargs
+            raise AssertionError("chapter analysis must use the dedicated review client")
+
+    runner = MODULE.LongNovelRun(
+        tmp_path,
+        GenerationClient(),
+        checkpoint,
+        review_client=FakeClient(),
+    )
+    analysis, usage = await runner.analyze_chapter(outline, "沈砚秋核对换契。")
+
+    assert analysis["quality"]["continuity"] == 8
+    assert len(calls) == 2
+    assert "上一次审查 JSON 未通过本地确定性校验" in calls[1]
+    assert usage == {"input_tokens": 20, "output_tokens": 8}
+
+
 def test_validate_chapter_analysis_accepts_complete_state_delta():
     value = _valid_analysis()
     assert MODULE.validate_chapter_analysis(value) is value
