@@ -768,6 +768,21 @@ def test_compact_canon_does_not_include_full_prose():
     assert "不应进入上下文" not in packed
 
 
+def test_compact_canon_prioritizes_latest_append_only_facts():
+    checkpoint = MODULE.new_checkpoint(target_words=1_000_000, chapter_words=3_200, model="m")
+    checkpoint["canon"]["facts"] = {
+        f"fact-{index}": {"fact": f"历史账目{index}-" + "旧" * 180}
+        for index in range(80)
+    }
+    checkpoint["canon"]["facts"]["latest"] = {
+        "fact": "当前盐路预备金余额为八十二文八分"
+    }
+
+    packed = MODULE.compact_canon(checkpoint)
+
+    assert "当前盐路预备金余额为八十二文八分" in packed
+
+
 def test_apply_analysis_persists_new_facts_in_canon():
     checkpoint = MODULE.new_checkpoint(target_words=1_000_000, chapter_words=3_200, model="m")
     runner = MODULE.LongNovelRun(Path("."), None, checkpoint)

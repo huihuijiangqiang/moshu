@@ -818,6 +818,7 @@ def _bounded_json(value: Any, budget: int) -> Any:
 def compact_canon(checkpoint: dict[str, Any], *, max_chars: int = CANON_MAX_CHARS) -> str:
     canon = checkpoint.get("canon") if isinstance(checkpoint.get("canon"), dict) else {}
     recent = checkpoint.get("chapters", [])[-20:]
+    canon_facts = canon.get("facts", {}) if isinstance(canon.get("facts"), dict) else {}
     payload = {
         "context_meta": {
             "canon_revision": checkpoint.get("canon_revision", 0),
@@ -829,7 +830,10 @@ def compact_canon(checkpoint: dict[str, Any], *, max_chars: int = CANON_MAX_CHAR
         "fixed_facts": checkpoint.get("plan", {}).get("fixed_facts", []),
         "characters": canon.get("characters", {}),
         "factions": canon.get("factions", {}),
-        "facts": canon.get("facts", {}),
+        # Facts are append-only audit history. Pack newest entries first so a
+        # bounded context keeps the current ledger state instead of an old
+        # balance that happened to be recorded earlier.
+        "facts": dict(reversed(list(canon_facts.items()))),
         "open_foreshadows": canon.get("open_foreshadows", {}),
         "timeline_tail": canon.get("timeline", [])[-30:],
         "recent_summaries": [
