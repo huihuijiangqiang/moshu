@@ -64,6 +64,9 @@ REVERSE_NOT_IS_PREV_EXCLUDE = frozenset(
 NEGATION_PARADE_PATTERN = re.compile(
     r"(?:没有[^。！？!?\n，,]{1,12}[，,]){2}"
 )
+VOICE_CONTRAST_PATTERN = re.compile(
+    r"声音(?:并)?不[大高响亮][^。！？!?\n]{0,16}[却但偏]"
+)
 EM_DASH_PATTERN = re.compile(r"[—–]")
 STYLE_QUOTE_PATTERN = re.compile(
     r"“[^”\n]*”|「[^」\n]*」|『[^』\n]*』|【[^】\n]*】|\"[^\"\n]*\"|‘[^’\n]*’"
@@ -457,6 +460,10 @@ def chapter_quality(
         match.group(0)[:120]
         for match in NEGATION_PARADE_PATTERN.finditer(style_text)
     ]
+    voice_contrast_matches = [
+        match.group(0)[:120]
+        for match in VOICE_CONTRAST_PATTERN.finditer(style_text)
+    ]
     if formulaic_matches:
         checks.append(
             {
@@ -479,6 +486,13 @@ def chapter_quality(
             "id": "no_negation_parade",
             "ok": not negation_matches,
             "matches": negation_matches[:8],
+        }
+    )
+    checks.append(
+        {
+            "id": "no_voice_contrast",
+            "ok": not voice_contrast_matches,
+            "matches": voice_contrast_matches[:8],
         }
     )
 
