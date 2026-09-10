@@ -842,12 +842,13 @@ def compact_canon(checkpoint: dict[str, Any], *, max_chars: int = CANON_MAX_CHAR
     # evidence. The result remains valid JSON even under very small budgets.
     sections = (
         ("context_meta", 800),
-        ("fixed_facts", 3_500),
-        ("characters", 8_000),
-        ("factions", 3_500),
-        ("open_foreshadows", 5_000),
-        ("timeline_tail", 3_500),
-        ("recent_summaries", 3_500),
+        ("fixed_facts", 3_000),
+        ("characters", 6_000),
+        ("factions", 3_000),
+        ("facts", 7_000),
+        ("open_foreshadows", 3_000),
+        ("timeline_tail", 2_500),
+        ("recent_summaries", 2_500),
     )
     bounded: dict[str, Any] = {}
     remaining = max_chars

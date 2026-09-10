@@ -758,9 +758,13 @@ def test_normalize_blocking_punctuation_preserves_interrupted_rhythm():
 def test_compact_canon_does_not_include_full_prose():
     checkpoint = MODULE.new_checkpoint(target_words=1_000_000, chapter_words=3_200, model="m")
     checkpoint["plan"] = {"fixed_facts": ["不能凭空暴富"]}
+    checkpoint["canon"]["facts"] = {
+        "balance": {"fact": "盐路预备金支出一百文后余八十二文八分"}
+    }
     checkpoint["chapters"] = [{"number": 1, "status": "accepted", "summary": "女主核对粮账", "prose": "不应进入上下文"}]
     packed = MODULE.compact_canon(checkpoint)
     assert "女主核对粮账" in packed
+    assert "盐路预备金支出一百文后余八十二文八分" in packed
     assert "不应进入上下文" not in packed
 
 
