@@ -833,6 +833,65 @@ def reject_last_accepted_chapter(
     return rejection
 
 
+def reject_pending_chapter(
+    checkpoint: dict[str, Any],
+    output_dir: Path,
+    *,
+    reason: str,
+    rejected_at: int | None = None,
+) -> dict[str, Any]:
+    """Quarantine the current non-Canon draft so the chapter can be regenerated."""
+    rejection_reason = reason.strip()
+    if not rejection_reason:
+        raise ValueError("draft rejection reason must not be empty")
+    pending = [
+        item
+        for item in checkpoint.get("chapters", [])
+        if item.get("status") in {"analysis_pending", "review_blocked"}
+    ]
+    if len(pending) != 1:
+        raise ValueError("the run must have exactly one pending chapter to reject")
+    rejected_record = pending[0]
+    rejected_number = int(rejected_record.get("number", 0))
+    if any(
+        int(item.get("number", 0)) > rejected_number
+        for item in checkpoint.get("chapters", [])
+    ):
+        raise ValueError("cannot reject a pending chapter while later chapter records exist")
+
+    chapter_path = (output_dir / str(rejected_record.get("path", ""))).resolve()
+    if output_dir.resolve() not in chapter_path.parents or not chapter_path.exists():
+        raise ValueError("pending chapter file is missing or outside the run directory")
+    timestamp = int(time.time() if rejected_at is None else rejected_at)
+    rejected_path = quarantine_rejected_chapter(output_dir, chapter_path)
+    analysis_path = output_dir / "analysis" / f"{rejected_number:04d}.json"
+    rejected_analysis_path = output_dir / "rejected" / "analysis" / f"{rejected_number:04d}-{timestamp}.json"
+    if analysis_path.exists():
+        rejected_analysis_path.parent.mkdir(parents=True, exist_ok=True)
+        os.replace(analysis_path, rejected_analysis_path)
+
+    checkpoint["chapters"] = [
+        item for item in checkpoint.get("chapters", []) if item is not rejected_record
+    ]
+    checkpoint["status"] = "paused"
+    checkpoint["active_chapter"] = None
+    rejection = {
+        "chapter": rejected_number,
+        "reason": rejection_reason,
+        "previous_sha256": str(rejected_record.get("sha256", "")),
+        "previous_status": str(rejected_record.get("status", "")),
+        "rejected_path": rejected_path.relative_to(output_dir).as_posix(),
+        "analysis_path": (
+            rejected_analysis_path.relative_to(output_dir).as_posix()
+            if rejected_analysis_path.exists()
+            else None
+        ),
+        "at": timestamp,
+    }
+    checkpoint.setdefault("draft_rejections", []).append(rejection)
+    return rejection
+
+
 def _bounded_json(value: Any, budget: int) -> Any:
     """Bound JSON by complete entries, never by slicing serialized JSON."""
     if budget <= 2:
@@ -2006,6 +2065,18 @@ async def async_main(args: argparse.Namespace) -> None:
                 atomic_write_json(checkpoint_path, checkpoint)
                 print(json.dumps(revision, ensure_ascii=False), flush=True)
                 return
+            if args.reject_pending_chapter:
+                try:
+                    rejection = reject_pending_chapter(
+                        checkpoint,
+                        output_dir,
+                        reason=args.rejection_reason or "",
+                    )
+                except (OSError, ValueError) as exc:
+                    raise SystemExit(str(exc)) from None
+                atomic_write_json(checkpoint_path, checkpoint)
+                print(json.dumps(rejection, ensure_ascii=False), flush=True)
+                return
             if args.reject_last_chapter:
                 try:
                     rejection = reject_last_accepted_chapter(
@@ -2028,7 +2099,11 @@ async def async_main(args: argparse.Namespace) -> None:
                 raise SystemExit(str(exc)) from None
             atomic_write_json(checkpoint_path, checkpoint)
         else:
-            if args.record_style_revision is not None or args.reject_last_chapter:
+            if (
+                args.record_style_revision is not None
+                or args.reject_pending_chapter
+                or args.reject_last_chapter
+            ):
                 raise SystemExit("cannot revise or reject a chapter before the run checkpoint exists")
             checkpoint = new_checkpoint(
                 target_words=args.target_words,
@@ -2087,11 +2162,19 @@ def main() -> None:
     parser.add_argument("--allow-model-switch", action="store_true")
     parser.add_argument("--record-style-revision", type=int)
     parser.add_argument("--revision-reason")
+    parser.add_argument("--reject-pending-chapter", action="store_true")
     parser.add_argument("--reject-last-chapter", action="store_true")
     parser.add_argument("--rejection-reason")
     args = parser.parse_args()
-    if args.record_style_revision is not None and args.reject_last_chapter:
-        raise SystemExit("style revision and chapter rejection are mutually exclusive")
+    revision_actions = sum(
+        (
+            args.record_style_revision is not None,
+            args.reject_pending_chapter,
+            args.reject_last_chapter,
+        )
+    )
+    if revision_actions > 1:
+        raise SystemExit("style revision and chapter rejection actions are mutually exclusive")
     if args.target_words < 100_000:
         raise SystemExit("target words must be at least 100000 for a long-novel evaluation")
     if not 800 <= args.chapter_words <= 20_000:

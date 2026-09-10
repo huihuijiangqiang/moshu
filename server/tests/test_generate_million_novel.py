@@ -303,6 +303,47 @@ def test_reject_last_accepted_chapter_rebuilds_canon_and_quarantines_files(tmp_p
     assert (tmp_path / "rejected" / "analysis" / "0002-123.json").exists()
 
 
+def test_reject_pending_chapter_quarantines_draft_without_changing_canon(tmp_path):
+    checkpoint = MODULE.new_checkpoint(target_words=100_000, chapter_words=800, model="m")
+    checkpoint["canon_revision"] = 4
+    checkpoint["generated_words"] = 3_200
+    checkpoint["canon"]["facts"] = {"fact-1": {"fact": "既有权威事实"}}
+    prose = "待隔离的正文"
+    path = tmp_path / "chapters" / "0005-test.md"
+    MODULE.atomic_write_text(path, prose + "\n")
+    MODULE.atomic_write_json(tmp_path / "analysis" / "0005.json", {"quality": {}})
+    checkpoint["chapters"] = [
+        {"number": 4, "status": "accepted", "path": "chapters/0004-test.md"},
+        {
+            "number": 5,
+            "status": "review_blocked",
+            "path": "chapters/0005-test.md",
+            "sha256": MODULE.content_sha256(prose),
+        },
+    ]
+    checkpoint["status"] = "failed"
+    checkpoint["active_chapter"] = 5
+
+    rejection = MODULE.reject_pending_chapter(
+        checkpoint,
+        tmp_path,
+        reason="时间承接失败",
+        rejected_at=456,
+    )
+
+    assert rejection["chapter"] == 5
+    assert rejection["previous_status"] == "review_blocked"
+    assert [item["number"] for item in checkpoint["chapters"]] == [4]
+    assert checkpoint["canon_revision"] == 4
+    assert checkpoint["generated_words"] == 3_200
+    assert checkpoint["canon"]["facts"] == {"fact-1": {"fact": "既有权威事实"}}
+    assert checkpoint["status"] == "paused"
+    assert checkpoint["active_chapter"] is None
+    assert list((tmp_path / "chapters").glob("0005-*.md")) == []
+    assert len(list((tmp_path / "rejected").glob("0005-*.md"))) == 1
+    assert (tmp_path / "rejected" / "analysis" / "0005-456.json").exists()
+
+
 def test_chapter_quality_blocks_formulaic_not_is_comparison():
     text = '她手里不是空账，而是四枚旧铜钱。\n' + '她把钱压在账册上，等着对方开口。\n' * 30
     result = MODULE.chapter_quality(text, 1_000)
