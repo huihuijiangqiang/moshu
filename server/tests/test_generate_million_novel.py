@@ -717,6 +717,7 @@ async def test_run_does_not_advance_canon_when_editorial_gate_blocks(tmp_path):
         chapter_count=checkpoint["chapter_count"],
     )
     runner = MODULE.LongNovelRun(tmp_path, FakeClient(), checkpoint)
+    repair_calls = 0
 
     async def write_chapter(outline, target_words):
         del target_words
@@ -734,8 +735,15 @@ async def test_run_does_not_advance_canon_when_editorial_gate_blocks(tmp_path):
         analysis["contract_checks"][0]["ok"] = False
         return analysis, {}
 
+    async def revise_chapter_for_editorial_once(outline, prose, target_words, analysis, gate):
+        nonlocal repair_calls
+        del outline, target_words, analysis, gate
+        repair_calls += 1
+        return prose, {}
+
     runner.write_chapter = write_chapter
     runner.analyze_chapter = analyze_chapter
+    runner.revise_chapter_for_editorial_once = revise_chapter_for_editorial_once
 
     try:
         await runner.run(max_chapters=1)
@@ -748,6 +756,64 @@ async def test_run_does_not_advance_canon_when_editorial_gate_blocks(tmp_path):
     assert checkpoint["generated_words"] == 0
     assert checkpoint["chapters"][0]["status"] == "review_blocked"
     assert checkpoint["chapters"][0]["editorial_gate"]["status"] == "blocked"
+    assert checkpoint["chapters"][0]["editorial_repair"]["attempted"] is True
+    assert repair_calls == 1
+
+
+async def test_run_repairs_editorial_failure_once_and_rechecks_all_gates(tmp_path):
+    class FakeClient:
+        retry_count = 0
+        model = "m"
+
+    checkpoint = MODULE.new_checkpoint(target_words=100_000, chapter_words=800, model="m")
+    checkpoint["plan"] = MODULE.build_seed_plan(
+        target_words=checkpoint["target_words"],
+        chapter_count=checkpoint["chapter_count"],
+    )
+    runner = MODULE.LongNovelRun(tmp_path, FakeClient(), checkpoint)
+    original = "\n".join(
+        f"沈砚秋核对第{index}袋粮，赵顺逐项记下经手人和斤两。" for index in range(42)
+    )
+    repaired = original + "\n蓝旗车当场扣住下一笔粮款，赵顺记下车号和经手人。"
+    analysis_calls = 0
+
+    async def write_chapter(outline, target_words):
+        del target_words
+        path = tmp_path / "chapters" / f"0001-{MODULE.safe_filename(outline['title'])}.md"
+        MODULE.atomic_write_text(path, original + "\n")
+        return original, {}
+
+    async def analyze_chapter(outline, prose):
+        nonlocal analysis_calls
+        analysis_calls += 1
+        analysis = _contract_analysis(outline)
+        if prose == original:
+            hook = next(item for item in analysis["contract_checks"] if item["item"] == "hook")
+            hook["ok"] = False
+            hook["evidence"] = "只有车辆接近，粮款尚未被截"
+        return analysis, {}
+
+    async def revise_chapter_for_editorial_once(outline, prose, target_words, analysis, gate):
+        del outline, target_words, analysis
+        assert prose == original
+        assert next(item for item in gate["checks"] if item["id"] == "contract_evidence")[
+            "failed"
+        ] == ["hook"]
+        return repaired, {}
+
+    runner.write_chapter = write_chapter
+    runner.analyze_chapter = analyze_chapter
+    runner.revise_chapter_for_editorial_once = revise_chapter_for_editorial_once
+
+    await runner.run(max_chapters=1)
+
+    record = checkpoint["chapters"][0]
+    assert record["status"] == "accepted"
+    assert record["editorial_repair"]["attempted"] is True
+    assert record["editorial_repair"]["failed_checks"] == ["contract_evidence"]
+    assert record["sha256"] == MODULE.content_sha256(repaired)
+    assert analysis_calls == 2
+    assert "蓝旗车当场扣住" in (tmp_path / record["path"]).read_text(encoding="utf-8")
 
 
 async def test_run_reuses_review_blocked_prose_without_regenerating(tmp_path):
