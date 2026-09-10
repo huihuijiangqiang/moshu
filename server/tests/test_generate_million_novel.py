@@ -637,6 +637,52 @@ async def test_analyze_chapter_retries_deterministic_validation_failures(tmp_pat
     assert usage == {"input_tokens": 20, "output_tokens": 8}
 
 
+async def test_analyze_chapter_repairs_only_numeric_evidence_after_repeated_failure(tmp_path):
+    checkpoint = MODULE.new_checkpoint(target_words=100_000, chapter_words=800, model="m")
+    checkpoint["plan"] = MODULE.build_seed_plan(
+        target_words=checkpoint["target_words"],
+        chapter_count=checkpoint["chapter_count"],
+    )
+    outline = MODULE.build_seed_chapter_outline(1, checkpoint["plan"]["volumes"][0])
+    calls = []
+
+    class FakeClient:
+        async def complete(self, messages, **kwargs):
+            del kwargs
+            prompt = messages[-1]["content"]
+            calls.append(prompt)
+            if "只修复一项审查结果" in prompt:
+                return MODULE.json.dumps(
+                    {"ok": True, "evidence": "正文明确记录30石=300斗，固定换算1斗=100合。"},
+                    ensure_ascii=False,
+                ), {"input_tokens": 5, "output_tokens": 3}
+            value = _contract_analysis(outline)
+            numeric = next(
+                item for item in value["integrity_checks"] if item["id"] == "numeric_continuity"
+            )
+            numeric["evidence"] = "10斗=300斗。"
+            return MODULE.json.dumps(value, ensure_ascii=False), {"input_tokens": 10, "output_tokens": 4}
+
+    class GenerationClient:
+        async def complete(self, *args, **kwargs):
+            del args, kwargs
+            raise AssertionError("chapter analysis must use the dedicated review client")
+
+    runner = MODULE.LongNovelRun(
+        tmp_path,
+        GenerationClient(),
+        checkpoint,
+        review_client=FakeClient(),
+    )
+    analysis, usage = await runner.analyze_chapter(outline, "沈砚秋核对三十石，原文明确记为三百斗。")
+
+    numeric = next(item for item in analysis["integrity_checks"] if item["id"] == "numeric_continuity")
+    assert numeric["ok"] is True
+    assert "30石=300斗" in numeric["evidence"]
+    assert len(calls) == 3
+    assert usage == {"input_tokens": 25, "output_tokens": 11}
+
+
 def test_validate_chapter_analysis_accepts_complete_state_delta():
     value = _valid_analysis()
     assert MODULE.validate_chapter_analysis(value) is value
