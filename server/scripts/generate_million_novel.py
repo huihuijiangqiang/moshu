@@ -165,6 +165,19 @@ def atomic_write_json(path: Path, payload: dict[str, Any]) -> None:
     atomic_write_text(path, json.dumps(payload, ensure_ascii=False, indent=2) + "\n")
 
 
+def quarantine_rejected_chapter(output_dir: Path, chapter_path: Path) -> Path:
+    """Move pre-Canon prose aside so a later run can regenerate the chapter."""
+    root = output_dir.resolve()
+    source = chapter_path.resolve()
+    if root not in source.parents:
+        raise ValueError("rejected chapter path escapes the run directory")
+    rejected_dir = root / "rejected"
+    rejected_dir.mkdir(parents=True, exist_ok=True)
+    target = rejected_dir / f"{source.stem}-{time.time_ns()}{source.suffix}"
+    os.replace(source, target)
+    return target
+
+
 def content_sha256(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
@@ -1327,7 +1340,9 @@ contract_checks 必须恰好逐项覆盖这些 ID，不得缺失、重复或改�
             metrics["chapters_attempted"] = int(metrics.get("chapters_attempted", 0)) + 1
             retries_before = self.client.retry_count
             try:
+                chapter_source = "generated"
                 if record and record.get("status") == "analysis_pending":
+                    chapter_source = "pending"
                     relative_path = str(record.get("path", ""))
                     chapter_path = (self.output_dir / relative_path).resolve()
                     if self.output_dir.resolve() not in chapter_path.parents:
@@ -1339,6 +1354,7 @@ contract_checks 必须恰好逐项覆盖这些 ID，不得缺失、重复或改�
                 else:
                     orphan_matches = sorted((self.output_dir / "chapters").glob(f"{number:04d}-*.md"))
                     if record is None and len(orphan_matches) == 1:
+                        chapter_source = "orphan"
                         prose = orphan_matches[0].read_text(encoding="utf-8").strip()
                         prose_usage = {}
                     else:
@@ -1358,7 +1374,20 @@ contract_checks 必须恰好逐项覆盖这些 ID，不得缺失、重复或改�
                 self.add_usage(prose_usage)
                 if quality["status"] != "ready":
                     metrics["chapters_blocked"] = int(metrics.get("chapters_blocked", 0)) + 1
-                    raise ValueError(f"chapter quality gate blocked: {quality['checks']}")
+                    rejected_path = None
+                    if chapter_source != "pending":
+                        chapter_matches = sorted(
+                            (self.output_dir / "chapters").glob(f"{number:04d}-*.md")
+                        )
+                        if len(chapter_matches) == 1:
+                            rejected_path = quarantine_rejected_chapter(
+                                self.output_dir,
+                                chapter_matches[0],
+                            ).relative_to(self.output_dir).as_posix()
+                    detail = f"chapter quality gate blocked: {quality['checks']}"
+                    if rejected_path:
+                        detail += f"; rejected={rejected_path}"
+                    raise ValueError(detail)
                 chapter_matches = sorted((self.output_dir / "chapters").glob(f"{number:04d}-*.md"))
                 if not chapter_matches:
                     raise ValueError("generated chapter file is missing")

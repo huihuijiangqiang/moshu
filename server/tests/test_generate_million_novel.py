@@ -394,6 +394,43 @@ async def test_run_recovers_and_normalizes_orphan_chapter(tmp_path):
     assert "……" in path.read_text(encoding="utf-8")
 
 
+async def test_run_quarantines_pre_canon_prose_that_fails_quality(tmp_path):
+    class FakeClient:
+        retry_count = 0
+        model = "m"
+
+    checkpoint = MODULE.new_checkpoint(target_words=100_000, chapter_words=800, model="m")
+    checkpoint["plan"] = MODULE.build_seed_plan(
+        target_words=checkpoint["target_words"],
+        chapter_count=checkpoint["chapter_count"],
+    )
+    runner = MODULE.LongNovelRun(tmp_path, FakeClient(), checkpoint)
+
+    async def write_short_chapter(outline, target_words):
+        del target_words
+        prose = "沈砚秋记下一笔短账。"
+        path = tmp_path / "chapters" / f"0001-{MODULE.safe_filename(outline['title'])}.md"
+        MODULE.atomic_write_text(path, prose + "\n")
+        return prose, {}
+
+    runner.write_chapter = write_short_chapter
+
+    try:
+        await runner.run(max_chapters=1)
+    except ValueError as exc:
+        assert "quality gate blocked" in str(exc)
+        assert "rejected=rejected/0001-" in str(exc)
+    else:
+        raise AssertionError("short prose must fail the quality gate")
+
+    assert list((tmp_path / "chapters").glob("0001-*.md")) == []
+    rejected = list((tmp_path / "rejected").glob("0001-*.md"))
+    assert len(rejected) == 1
+    assert rejected[0].read_text(encoding="utf-8").strip() == "沈砚秋记下一笔短账。"
+    assert checkpoint["canon_revision"] == 0
+    assert checkpoint["generated_words"] == 0
+
+
 def test_safe_filename_removes_windows_reserved_characters():
     assert MODULE.safe_filename("账册:谁拿走了?/\\*") == "账册-谁拿走了----"
 
