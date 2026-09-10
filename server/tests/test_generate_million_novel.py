@@ -51,6 +51,13 @@ def test_seed_outlines_use_volume_specific_actions():
     assert "军民分线运输" in military_transport["objective"]
 
 
+def test_review_prompts_pin_the_immediate_previous_chapter():
+    source = SCRIPT.read_text(encoding="utf-8")
+
+    assert source.count("上一章编号硬约束：{int(outline['number']) - 1}") == 2
+    assert "timeline_tail 只补充更早历史" in source
+
+
 def test_seed_outline_upgrade_preserves_canon_and_refreshes_future(tmp_path):
     checkpoint = MODULE.new_checkpoint(
         target_words=1_000_000,
