@@ -683,6 +683,52 @@ async def test_analyze_chapter_repairs_only_numeric_evidence_after_repeated_fail
     assert usage == {"input_tokens": 25, "output_tokens": 11}
 
 
+async def test_analyze_chapter_uses_local_grain_fallback_when_focused_repair_is_invalid(tmp_path):
+    checkpoint = MODULE.new_checkpoint(target_words=100_000, chapter_words=800, model="m")
+    checkpoint["plan"] = MODULE.build_seed_plan(
+        target_words=checkpoint["target_words"],
+        chapter_count=checkpoint["chapter_count"],
+    )
+    outline = MODULE.build_seed_chapter_outline(1, checkpoint["plan"]["volumes"][0])
+
+    class FakeClient:
+        async def complete(self, messages, **kwargs):
+            del kwargs
+            prompt = messages[-1]["content"]
+            if "只修复一项审查结果" in prompt:
+                return MODULE.json.dumps(
+                    {"ok": True, "evidence": "2斗=72斗。"},
+                    ensure_ascii=False,
+                ), {}
+            value = _contract_analysis(outline)
+            numeric = next(
+                item for item in value["integrity_checks"] if item["id"] == "numeric_continuity"
+            )
+            numeric["evidence"] = "10斗=300斗。"
+            return MODULE.json.dumps(value, ensure_ascii=False), {}
+
+    class GenerationClient:
+        async def complete(self, *args, **kwargs):
+            del args, kwargs
+            raise AssertionError("chapter analysis must use the dedicated review client")
+
+    runner = MODULE.LongNovelRun(
+        tmp_path,
+        GenerationClient(),
+        checkpoint,
+        review_client=FakeClient(),
+    )
+    analysis, _ = await runner.analyze_chapter(
+        outline,
+        "正文记三十石、七石二斗、二百二十八斗和二斗。",
+    )
+
+    numeric = next(item for item in analysis["integrity_checks"] if item["id"] == "numeric_continuity")
+    assert numeric["ok"] is True
+    assert "本地确定性容量核验" in numeric["evidence"]
+    assert MODULE.invalid_grain_unit_equations(numeric["evidence"]) == []
+
+
 def test_validate_chapter_analysis_accepts_complete_state_delta():
     value = _valid_analysis()
     assert MODULE.validate_chapter_analysis(value) is value
@@ -728,6 +774,15 @@ def test_validate_chapter_analysis_rejects_false_grain_unit_equations():
 def test_grain_unit_equation_validator_accepts_the_fixed_ladder():
     evidence = "1石=10斗，1斗=10升，1升=10合，2斗=200合。"
     assert MODULE.invalid_grain_unit_equations(evidence) == []
+
+
+def test_deterministic_grain_evidence_is_conservative_and_valid():
+    evidence = MODULE.deterministic_grain_evidence("正文记三十石、七石二斗、二百二十八斗和二斗。")
+
+    assert MODULE.invalid_grain_unit_equations(evidence) == []
+    assert "30石=300斗" in evidence
+    assert "7石=70斗" in evidence
+    assert "不同账册数字之间的相等、转记或亏空关系" in evidence
 
 
 def _valid_chapter_contract(number=1):
