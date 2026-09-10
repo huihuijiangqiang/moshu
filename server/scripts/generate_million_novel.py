@@ -43,6 +43,7 @@ MAX_ACCEPT_RATIO = 1.45
 CANON_MAX_CHARS = 28_000
 DEFAULT_MAX_RETRIES = 3
 DEFAULT_RETRY_BACKOFF_SECONDS = 0.75
+OVERLOAD_RETRY_FLOOR_SECONDS = 10.0
 META_PATTERN = re.compile(
     r"(?:作为(?:AI|人工智能)|以下是(?:本章|正文)|写作(?:说明|思路)|章节执行契约|"
     r"ChapterExecutionContract|我无法完成|(?:前一章|上一章|本章|下一章)(?:中|里|的)?)"
@@ -87,6 +88,13 @@ class GatewayRequestError(RuntimeError):
     @property
     def retryable(self) -> bool:
         return self.status_code is None or self.status_code in {408, 425, 429, 500, 502, 503, 504, 524}
+
+    @property
+    def retry_delay_floor(self) -> float:
+        message = str(self).lower()
+        if self.status_code == 524 or "overloaded" in message:
+            return OVERLOAD_RETRY_FLOOR_SECONDS
+        return 0.0
 
 
 class RunAlreadyActiveError(RuntimeError):
@@ -911,6 +919,7 @@ class CompatibleChatClient:
         so a bad prompt or credential does not burn repeated requests.
         """
         for attempt in range(self.max_retries + 1):
+            retry_delay_floor = 0.0
             try:
                 return await self._complete_once(
                     messages,
@@ -923,11 +932,12 @@ class CompatibleChatClient:
             except GatewayRequestError as exc:
                 if not exc.retryable or attempt >= self.max_retries:
                     raise
+                retry_delay_floor = exc.retry_delay_floor
             except httpx.HTTPError:
                 if attempt >= self.max_retries:
                     raise
             self.retry_count += 1
-            delay = self.retry_backoff_seconds * (2**attempt)
+            delay = max(self.retry_backoff_seconds * (2**attempt), retry_delay_floor)
             if delay:
                 await asyncio.sleep(delay)
         raise AssertionError("retry loop exhausted")

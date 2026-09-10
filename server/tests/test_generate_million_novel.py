@@ -405,12 +405,43 @@ def test_chapter_quality_records_explainable_prose_metrics():
 def test_retry_policy_only_retries_transient_statuses():
     transient = MODULE.GatewayRequestError("busy", status_code=503)
     gateway_timeout = MODULE.GatewayRequestError("upstream timeout", status_code=524)
+    overloaded = MODULE.GatewayRequestError("Our servers are currently overloaded")
     client_error = MODULE.GatewayRequestError("bad request", status_code=400)
     stream_error = MODULE.GatewayRequestError("stream interrupted")
     assert transient.retryable is True
     assert gateway_timeout.retryable is True
+    assert gateway_timeout.retry_delay_floor == MODULE.OVERLOAD_RETRY_FLOOR_SECONDS
+    assert overloaded.retry_delay_floor == MODULE.OVERLOAD_RETRY_FLOOR_SECONDS
+    assert transient.retry_delay_floor == 0
     assert client_error.retryable is False
     assert stream_error.retryable is True
+
+
+def test_client_applies_overload_retry_floor(monkeypatch):
+    client = object.__new__(MODULE.CompatibleChatClient)
+    client.max_retries = 1
+    client.retry_backoff_seconds = 0.01
+    client.retry_count = 0
+    attempts = 0
+    delays = []
+
+    async def complete_once(*_args, **_kwargs):
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise MODULE.GatewayRequestError("Our servers are currently overloaded")
+        return "recovered", {}
+
+    async def record_sleep(delay):
+        delays.append(delay)
+
+    monkeypatch.setattr(client, "_complete_once", complete_once)
+    monkeypatch.setattr(MODULE.asyncio, "sleep", record_sleep)
+    result = MODULE.asyncio.run(client.complete([], max_tokens=32))
+
+    assert result == ("recovered", {})
+    assert delays == [MODULE.OVERLOAD_RETRY_FLOOR_SECONDS]
+    assert client.retry_count == 1
 
 
 def test_run_lock_prevents_duplicate_processes(tmp_path):
