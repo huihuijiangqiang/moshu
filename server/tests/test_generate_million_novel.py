@@ -148,6 +148,7 @@ async def test_write_chapter_prompt_guards_evidence_and_numeric_continuity(tmp_p
             assert "新数字必须能从执行契约或当前权威状态推出" in prompt
             assert "数量乘单价与权威状态中的既有总价不符" in prompt
             assert "把矛盾写成待核差额" in prompt
+            assert "1石=10斗，1斗=10升，1升=10合，因此1斗=100合" in prompt
             assert "不能直接换永久、独占、一年期或跨机构特权" in prompt
             assert "经办人只能承诺自己管辖范围内的事项" in prompt
             return "沈砚秋核完账，把原件重新封好。", {}
@@ -573,6 +574,7 @@ async def test_analyze_chapter_prompt_requires_scoped_proportional_exchange(tmp_
             assert "交通方式和可行耗时" in prompt
             assert "列出本章关键金额、数量、比例或单位换算的算式" in prompt
             assert "指出差额并标为待核时可以通过" in prompt
+            assert "不得把合直接当成斗" in prompt
             return MODULE.json.dumps(_contract_analysis(outline), ensure_ascii=False), {}
 
     runner = MODULE.LongNovelRun(tmp_path, FakeClient(), checkpoint)
