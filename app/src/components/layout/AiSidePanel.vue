@@ -463,6 +463,10 @@ const acceptedDraftContent = computed(() => selectedDraft.value?.segments
   .map((segment) => segment.text)
   .join('\n') ?? '')
 
+const selectedDraftWarnings = computed(() => selectedDraft.value?.coverage?.checks.filter(
+  (check) => check.severity === 'warning' && ['attention', 'author_review'].includes(check.status)
+) ?? [])
+
 async function decideDraftSegments(segmentIds: string[], decision: GenerationDraftDecision) {
   const draft = selectedDraft.value
   if (!draft || draftReviewBusy.value || draft.status === 'streaming' || !segmentIds.length) return
@@ -819,6 +823,19 @@ function forwardReviewDecision(round: ReviewRound, decision: 'approved' | 'chang
           {{ selectedDraft.generatedWords }} 字 · {{ draftTime(selectedDraft.createdAt) }} ·
           {{ selectedDraft.review.accepted }} 接受 / {{ selectedDraft.review.rejected }} 拒绝 / {{ selectedDraft.review.pending }} 待定
         </div>
+        <section v-if="selectedDraftWarnings.length" class="draft-quality" aria-label="采纳前质量检查">
+          <div class="draft-quality-head">
+            <strong>采纳前检查</strong>
+            <span>{{ selectedDraftWarnings.length }} 项需复核</span>
+          </div>
+          <ul>
+            <li v-for="check in selectedDraftWarnings" :key="check.id">
+              <strong>{{ check.label }}</strong>
+              <span>{{ check.message }}</span>
+              <small v-if="check.evidence.length">{{ check.evidence.slice(0, 3).join(' · ') }}</small>
+            </li>
+          </ul>
+        </section>
         <div v-if="selectedDraft.segments.length" class="draft-review-tools">
           <button class="wk-btn wk-btn-xs" type="button" :disabled="draftReviewBusy || selectedDraft.status === 'streaming'" @click="decideAllDraftSegments('accepted')">全部接受</button>
           <button class="wk-btn wk-btn-xs" type="button" :disabled="draftReviewBusy || selectedDraft.status === 'streaming'" @click="decideAllDraftSegments('rejected')">全部拒绝</button>
@@ -1115,6 +1132,15 @@ function forwardReviewDecision(round: ReviewRound, decision: 'approved' | 'chang
 .draft-state { margin: 0; padding: var(--u5) var(--u3); color: var(--ink-3); line-height: 1.7; }
 .draft-state-error { color: var(--alert-ink); }
 .draft-detail { display: grid; gap: var(--u3); padding: var(--u3); }
+.draft-quality { padding: var(--u3); color: var(--alert-ink); background: var(--alert-soft); border-left: 3px solid var(--alert); }
+.draft-quality-head { display: flex; align-items: baseline; justify-content: space-between; gap: var(--u2); }
+.draft-quality-head strong { font-size: var(--fs-sm); }
+.draft-quality-head span { color: var(--ink-3); font: 10px/1.4 var(--font-mono); }
+.draft-quality ul { display: grid; gap: var(--u2); margin: var(--u2) 0 0; padding: 0; list-style: none; }
+.draft-quality li { display: grid; gap: 2px; padding-top: var(--u2); border-top: var(--hair) solid var(--line-strong); }
+.draft-quality li strong { font-size: var(--fs-xs); }
+.draft-quality li span { color: var(--ink-2); font-size: var(--fs-xs); line-height: 1.6; }
+.draft-quality li small { color: var(--ink-4); font: 10px/1.5 var(--font-mono); overflow-wrap: anywhere; }
 .draft-back {
   justify-self: start;
   padding: 0;

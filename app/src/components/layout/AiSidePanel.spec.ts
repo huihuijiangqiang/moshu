@@ -324,6 +324,22 @@ describe('writing reference side panel', () => {
     let detail: GenerationDraftDetail = {
       ...summary,
       content: '甲。\n乙。',
+      coverage: {
+        stage: 'draft', blocking: false, status: 'needs_attention',
+        summary: { total: 2, confirmed: 0, attention: 2, message: '2 项需要作者复核' },
+        checks: [
+          {
+            id: 'quality.procedural_density', checkType: 'quality', sourceType: 'quality', sourceId: null,
+            label: '戏剧张力', status: 'author_review', severity: 'warning',
+            message: '流程说明可能挤占故事篇幅。', expected: [], evidence: ['每千字流程词约 22.0 次']
+          },
+          {
+            id: 'quality.report_ending', checkType: 'quality', sourceType: 'quality', sourceId: null,
+            label: '章末钩子', status: 'author_review', severity: 'warning',
+            message: '章末可能没有落在人物行动上。', expected: [], evidence: []
+          }
+        ]
+      },
       segments: [
         { id: 'p1', text: '甲。', decision: 'pending' },
         { id: 'p2', text: '乙。', decision: 'pending' }
@@ -352,6 +368,11 @@ describe('writing reference side panel', () => {
     await draftsTab.trigger('click')
     await wrapper.get('.draft-row').trigger('click')
     await flushPromises()
+
+    expect(wrapper.get('.draft-quality').text()).toContain('2 项需复核')
+    expect(wrapper.get('.draft-quality').text()).toContain('戏剧张力')
+    expect(wrapper.get('.draft-quality').text()).toContain('每千字流程词约 22.0 次')
+    expect(wrapper.get('.draft-quality').text()).toContain('章末钩子')
 
     const firstAccept = wrapper.findAll('.draft-segment')[0]!.findAll('button').find((button) => button.text() === '接受')
     if (!firstAccept) throw new Error('accept paragraph button not found')

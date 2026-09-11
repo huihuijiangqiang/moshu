@@ -576,8 +576,8 @@ export type GenerationControls = Omit<GenerateOptions, 'chapterId'>
 
 export interface GenerationCoverageCheck {
   id: string
-  checkType: 'input' | 'requirement'
-  sourceType: 'positioning' | 'scene' | 'plan'
+  checkType: 'input' | 'requirement' | 'quality'
+  sourceType: 'positioning' | 'scene' | 'plan' | 'quality'
   sourceId: string | null
   label: string
   status: 'included' | 'attention' | 'evidence_found' | 'author_review'
