@@ -89,6 +89,8 @@ def build_prompt_coverage(
                 "checkType": "requirement",
                 "sourceType": source_type,
                 "sourceId": requirement.get("sourceId"),
+                "semanticType": requirement.get("semanticType"),
+                "sceneOrder": requirement.get("sceneOrder"),
                 "label": requirement["label"],
                 "status": "included" if included else "attention",
                 "severity": "info" if included or applicability == "reference" else "warning",

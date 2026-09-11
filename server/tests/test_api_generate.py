@@ -309,6 +309,13 @@ async def test_positioning_and_scene_coverage_share_preview_generation_and_draft
         "scene.coverage_scene.goal",
         "scene.coverage_scene.turn",
     }
+    semantic_types = {
+        check["id"]: check.get("semanticType")
+        for check in preview_payload["coverage"]["checks"]
+        if check["checkType"] == "requirement"
+    }
+    assert semantic_types["scene.coverage_scene.turn"] == "turn"
+    assert semantic_types["scene.coverage_scene.hook"] == "hook"
 
     fake = FakeGenerationGateway()
     app.dependency_overrides[get_generation_gateway] = lambda: fake
