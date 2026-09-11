@@ -28,6 +28,24 @@ _COMMON_BIGRAMS = {
     "主角",
 }
 
+_PROCEDURAL_TERMS = (
+    "登记",
+    "核验",
+    "复称",
+    "保管",
+    "交接",
+    "凭据",
+    "责任",
+    "封存",
+    "时辰",
+    "费用",
+    "文书",
+    "袋号",
+)
+_CHECKLIST_ENDING = re.compile(
+    r"(?:^|[\n。；])\s*(?:一|二|三|四|五|六|七|八|九|十)[、，.]"
+)
+
 
 def _summary(checks: list[dict[str, Any]], *, stage: str) -> dict[str, int | str]:
     attention = sum(check["status"] in {"attention", "author_review"} for check in checks)
@@ -104,6 +122,75 @@ def _salient_terms(values: list[str]) -> list[str]:
     return unique
 
 
+def _narrative_vitality_checks(content: str) -> list[dict[str, Any]]:
+    """Surface deterministic symptoms of report-like, low-drama prose.
+
+    This is deliberately a review signal rather than an automatic rejection:
+    procedural language can be valid in courtroom or investigation scenes, but
+    a dense cluster gives the author a concrete reason to inspect the draft.
+    """
+    cjk_count = len(re.findall(r"[\u3400-\u9fff]", content or ""))
+    if cjk_count < 600:
+        return []
+
+    term_counts = {term: content.count(term) for term in _PROCEDURAL_TERMS}
+    hits = sum(term_counts.values())
+    density = hits * 1000 / max(cjk_count, 1)
+    used = [term for term, count in term_counts.items() if count]
+    report_like = density >= 18 and len(used) >= 5
+    checks: list[dict[str, Any]] = [
+        {
+            "id": "quality.procedural_density",
+            "checkType": "quality",
+            "sourceType": "quality",
+            "sourceId": None,
+            "label": "戏剧张力",
+            "status": "author_review" if report_like else "evidence_found",
+            "severity": "warning" if report_like else "info",
+            "message": (
+                "候选中过多篇幅用于登记、核验、责任或费用说明，可能读成办事记录；请确认是否有主动对手、"
+                "升级压力、不可逆选择和情绪兑现。"
+                if report_like
+                else "未发现流程词汇明显挤占故事篇幅。"
+            ),
+            "expected": [],
+            "evidence": [
+                f"每千字流程词约 {density:.1f} 次",
+                *[f"{term}×{term_counts[term]}" for term in used[:8]],
+            ],
+        }
+    ]
+
+    thesis_count = content.count("不等于")
+    ending = content[-1600:]
+    checklist_ending = bool(_CHECKLIST_ENDING.search(ending)) and any(
+        term in ending for term in _PROCEDURAL_TERMS
+    )
+    summary_ending = thesis_count >= 3 or checklist_ending
+    checks.append(
+        {
+            "id": "quality.report_ending",
+            "checkType": "quality",
+            "sourceType": "quality",
+            "sourceId": None,
+            "label": "章末钩子",
+            "status": "author_review" if summary_ending else "evidence_found",
+            "severity": "warning" if summary_ending else "info",
+            "message": (
+                "章末出现规则复述、待办清单或反复使用“不等于”，可能没有落在人物选择或对手行动上。"
+                if summary_ending
+                else "未发现明显的报告式章末。"
+            ),
+            "expected": [],
+            "evidence": [
+                f"全文“不等于”×{thesis_count}",
+                f"章末待办清单：{'是' if checklist_ending else '否'}",
+            ],
+        }
+    )
+    return checks
+
+
 def assess_draft_coverage(prompt_coverage: dict[str, Any] | None, content: str) -> dict[str, Any] | None:
     """Turn a stored prompt report into a conservative draft-review report."""
     if not prompt_coverage:
@@ -142,6 +229,7 @@ def assess_draft_coverage(prompt_coverage: dict[str, Any] | None, content: str) 
             )
         checks.append(check)
 
+    checks.extend(_narrative_vitality_checks(content))
     return {
         "stage": "draft",
         "blocking": False,
