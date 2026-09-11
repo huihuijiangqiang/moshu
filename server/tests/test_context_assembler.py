@@ -221,7 +221,14 @@ async def test_context_build_routes_structured_distant_evidence_into_summary(
     assert "她曾在雨夜看见田契上的暗记" in context.layer3_summary.content
     assert any(item["id"] == "chunk:chunk-old" for item in context.layer3_summary.items)
     structured.assert_awaited_once()
-    assert structured.await_args.kwargs["near_window"] == 12
+    assert structured.await_args.kwargs["near_window"] == 6
+
+
+def test_context_policy_keeps_smart_adjacent_prose_focused_but_deep_wide():
+    assert ContextBudgetPolicy.create(mode="fast").adjacent_chapters == 2
+    assert ContextBudgetPolicy.create(mode="standard").adjacent_chapters == 6
+    assert ContextBudgetPolicy.create(mode="smart").adjacent_chapters == 6
+    assert ContextBudgetPolicy.create(mode="deep").adjacent_chapters == 12
 
 
 async def test_context_includes_positioning_and_ordered_scene_cards_in_resident_and_retrieval_layers(

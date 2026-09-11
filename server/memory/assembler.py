@@ -134,7 +134,10 @@ class ContextBudgetPolicy:
 
     @property
     def adjacent_chapters(self) -> int:
-        return {"fast": 2, "standard": 6, "deep": 12, "smart": 12}[self.mode]
+        # Smart mode keeps enough verbatim prose for voice and immediate
+        # continuity without allowing a repetitive recent run to dominate the
+        # prompt. Deep remains available for deliberate wide-range review.
+        return {"fast": 2, "standard": 6, "deep": 12, "smart": 6}[self.mode]
 
 
 @dataclass
