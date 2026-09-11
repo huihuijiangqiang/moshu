@@ -595,7 +595,7 @@ export interface GenerationCoverageReport {
   status: 'ready' | 'needs_attention'
   summary: { total: number; confirmed: number; attention: number; message: string }
   checks: GenerationCoverageCheck[]
-  method?: 'lexical_evidence_v1'
+  method?: 'lexical_evidence_v1' | 'lexical_evidence_v2_dramatic_contract'
   disclaimer?: string
 }
 
