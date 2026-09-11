@@ -667,6 +667,7 @@ def _valid_analysis():
         },
         "faction_updates": {},
         "new_facts": [],
+        "current_state_updates": [],
         "foreshadow_updates": [],
         "timeline_events": [{"event": "船粮票据被公开复核"}],
         "contract_checks": [{"item": "required_outcome", "ok": True, "evidence": "留下差额记录"}],
@@ -719,6 +720,8 @@ async def test_analyze_chapter_prompt_requires_scoped_proportional_exchange(tmp_
             assert "列出本章关键金额、数量、比例或单位换算的算式" in prompt
             assert "指出差额并标为待核时可以通过" in prompt
             assert "不得把合直接当成斗" in prompt
+            assert "current_state_updates 只记录本章已经确定改变" in prompt
+            assert "已有 current_state 项发生变化时必须复用完全相同的 key" in prompt
             assert "对手提出无权请求、越权口信或未经授权的威胁不算正文越权" in prompt
             assert "只有正文实际把未授权请求当成有效批准、交付或收条时才为 false" in prompt
             assert "单纯出现的谈判要求" in prompt
@@ -951,6 +954,31 @@ def test_validate_chapter_analysis_rejects_false_grain_unit_equations():
         assert "2斗=200升" in str(exc)
     else:
         raise AssertionError("false unit equations must not enter Canon")
+
+
+def test_validate_chapter_analysis_rejects_duplicate_or_unstable_state_keys():
+    value = _valid_analysis()
+    value["current_state_updates"] = [
+        {"key": "warehouse.balance", "value": "已用二十五", "reason": "盘点"},
+        {"key": "warehouse.balance", "value": "已用三十", "reason": "入仓"},
+    ]
+    try:
+        MODULE.validate_chapter_analysis(value)
+    except ValueError as exc:
+        assert "duplicate key" in str(exc)
+    else:
+        raise AssertionError("duplicate current-state keys must be rejected")
+
+    value = _valid_analysis()
+    value["current_state_updates"] = [
+        {"key": "仓容余额", "value": "已用二十五", "reason": "盘点"}
+    ]
+    try:
+        MODULE.validate_chapter_analysis(value)
+    except ValueError as exc:
+        assert "invalid key" in str(exc)
+    else:
+        raise AssertionError("state keys must use stable ASCII identifiers")
 
 
 def test_grain_unit_equation_validator_accepts_the_fixed_ladder():
@@ -1507,6 +1535,7 @@ def test_record_current_state_is_audited_and_requires_a_canon_boundary():
     assert checkpoint["canon"]["current_state"]["warehouse.balance"] == {
         "value": "已用二十五，余十五",
         "reason": "人工盘点复核",
+        "source": "reviewed",
         "effective_chapter": 9,
         "at": 123,
     }
@@ -1532,6 +1561,13 @@ def test_apply_analysis_persists_new_facts_in_canon():
             "character_updates": {},
             "faction_updates": {},
             "new_facts": ["船粮票据存在一百二十文差额", {"fact": "县仓封门三日", "evidence": "皂役口谕"}],
+            "current_state_updates": [
+                {
+                    "key": "warehouse.balance",
+                    "value": "已用三十，余十",
+                    "reason": "五袋完成暂收",
+                }
+            ],
             "foreshadow_updates": [],
             "timeline_events": [],
         }
@@ -1539,6 +1575,12 @@ def test_apply_analysis_persists_new_facts_in_canon():
     facts = checkpoint["canon"]["facts"]
     assert len(facts) == 2
     assert any(item["fact"] == "县仓封门三日" and item["evidence"] == "皂役口谕" for item in facts.values())
+    assert checkpoint["canon"]["current_state"]["warehouse.balance"] == {
+        "value": "已用三十，余十",
+        "reason": "五袋完成暂收",
+        "source": "accepted_analysis",
+        "effective_chapter": 1,
+    }
 
 
 def test_compact_canon_remains_valid_json_when_state_is_large():

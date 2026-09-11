@@ -280,6 +280,7 @@ ANALYSIS_REQUIRED_FIELDS = (
     "character_updates",
     "faction_updates",
     "new_facts",
+    "current_state_updates",
     "foreshadow_updates",
     "timeline_events",
     "contract_checks",
@@ -532,6 +533,7 @@ def validate_chapter_analysis(value: dict[str, Any]) -> dict[str, Any]:
             raise ValueError(f"chapter analysis {field} must be an object")
     for field in (
         "new_facts",
+        "current_state_updates",
         "foreshadow_updates",
         "timeline_events",
         "contract_checks",
@@ -548,6 +550,22 @@ def validate_chapter_analysis(value: dict[str, Any]) -> dict[str, Any]:
                 raise ValueError(f"chapter analysis new_facts[{index}] requires a fact string")
         else:
             raise ValueError(f"chapter analysis new_facts[{index}] must be a string or object")
+    state_keys: set[str] = set()
+    for index, update in enumerate(value["current_state_updates"]):
+        if not isinstance(update, dict):
+            raise ValueError(f"chapter analysis current_state_updates[{index}] must be an object")
+        key = update.get("key")
+        state_value = update.get("value")
+        reason = update.get("reason")
+        if not isinstance(key, str) or not re.fullmatch(r"[a-z0-9_.-]{1,120}", key):
+            raise ValueError(f"chapter analysis current_state_updates[{index}] has an invalid key")
+        if key in state_keys:
+            raise ValueError(f"chapter analysis current_state_updates contains duplicate key: {key}")
+        state_keys.add(key)
+        if not isinstance(state_value, str) or not state_value.strip() or len(state_value) > 2_000:
+            raise ValueError(f"chapter analysis current_state_updates[{index}] has an invalid value")
+        if not isinstance(reason, str) or not reason.strip() or len(reason) > 500:
+            raise ValueError(f"chapter analysis current_state_updates[{index}] has an invalid reason")
     if not isinstance(value["quality"], dict):
         raise ValueError("chapter analysis quality must be an object")
     quality = value["quality"]
@@ -983,6 +1001,9 @@ def reject_last_accepted_chapter(
     replay = LongNovelRun(output_dir, None, rebuilt)
     for analysis in analyses:
         replay.apply_analysis(analysis)
+    # Replayed model deltas reconstruct ordinary state. Explicitly reviewed
+    # values remain authoritative at their recorded Canon boundary.
+    rebuilt["canon"]["current_state"].update(retained_current_state)
     rebuilt["generated_words"] = sum(int(item.get("words", 0)) for item in remaining)
     quality_totals = {"visible_chars": 0, "paragraphs": 0, "sentences": 0}
     for record in remaining:
@@ -1289,6 +1310,7 @@ def record_current_state(
     entry = {
         "value": state_value,
         "reason": revision_reason,
+        "source": "reviewed",
         "effective_chapter": int(checkpoint.get("canon_revision", 0)),
         "at": int(time.time() if updated_at is None else updated_at),
     }
@@ -2170,8 +2192,9 @@ authority_scope 补充要求：基层经办人若授予跨机构、长期或排�
         ]
         transition_context = previous_chapter_transition_context(self.checkpoint, self.output_dir)
         prompt = f"""从已完成正文抽取可用于下一章的权威候选状态。只输出 JSON：
-{{"summary":"不超过300字","character_updates":{{"姓名":{{"state":"","knows":[],"does_not_know":[],"public_goal":"","hidden_goal":""}}}},"faction_updates":{{}},"new_facts":["可核验事实"],"foreshadow_updates":[],"timeline_events":[{{"event":"可核验事件"}}],"contract_checks":[{{"item":"","ok":true,"evidence":""}}],"integrity_checks":[{{"id":"","ok":true,"evidence":""}}],"quality":{{"continuity":0,"character":0,"plot":0,"prose":0,"hook":0}}}}
+{{"summary":"不超过300字","character_updates":{{"姓名":{{"state":"","knows":[],"does_not_know":[],"public_goal":"","hidden_goal":""}}}},"faction_updates":{{}},"new_facts":["可核验事实"],"current_state_updates":[{{"key":"稳定英文点分键","value":"本章结束时的最新确定状态","reason":"正文证据"}}],"foreshadow_updates":[],"timeline_events":[{{"event":"可核验事件"}}],"contract_checks":[{{"item":"","ok":true,"evidence":""}}],"integrity_checks":[{{"id":"","ok":true,"evidence":""}}],"quality":{{"continuity":0,"character":0,"plot":0,"prose":0,"hook":0}}}}
 不得把推测写成事实；角色认知必须区分已知与未知。quality 各项必须使用 0.0-10.0 分，禁止百分制。
+current_state_updates 只记录本章已经确定改变且会影响下一章的余额、数量、绝对期限、所在地点、持有状态、排队状态或权限状态；没有变化时输出空数组。已有 current_state 项发生变化时必须复用完全相同的 key，不得另造同义键；value 必须写本章结束时的最新值，reason 必须引用正文中的具体变化。待核、猜测、口头主张和未完成交易不得覆盖已确认状态。
 contract_checks 必须恰好逐项覆盖这些 ID，不得缺失、重复或改名：{json.dumps(contract_check_ids, ensure_ascii=False)}。每项 evidence 必须引用正文中的具体行动、事实或未泄露证据。
 temporal_continuity 必须核对正文开场和事件顺序严格承接当前权威状态的最后事件及上一章正文结尾，不得倒退、重演或跳过已约定行动。其 evidence 必须明确写出“上章末地点/时间 -> 本章开场地点/时间”；地点变化时还必须引用正文中的交通方式和可行耗时。相对期限首次出现时须按当时日历锚点换算并锁定绝对截止点，后续章节不得重新起算；若期限发生变化，evidence 必须引用有权批准者、批准时刻和新的绝对截止点。任一项缺失、矛盾或无法从材料确认都必须 ok=false。
 integrity_checks 必须恰好覆盖这些 ID：{json.dumps(INTEGRITY_CHECK_IDS, ensure_ascii=False)}。numeric_continuity 须同时核对正文数字与当前权威状态，并在 evidence 中列出本章关键金额、数量、比例或单位换算的算式；粮食容量必须按“{GRAIN_VOLUME_CONVERSION}”逐级换算，不得把合直接当成斗。若权威状态本身存在互相矛盾的账面数字，正文明确保留原始记录、指出差额并标为待核时可以通过，照抄错误并声称一致则必须为 false。authority_scope 核对正文中实际签约、盖印、交付、收款或处分资源的角色是否有对应权限；对手提出无权请求、越权口信或未经授权的威胁不算正文越权，只要女主明确记录其来源、拒绝将其写成有效授权并保留待核状态，authority_scope 应为 true。只有正文实际把未授权请求当成有效批准、交付或收条时才为 false。exchange_proportionality 同样核对实际完成的交换，而不是单纯出现的谈判要求；若正文明确金额、期限、覆盖范围、最坏损失尚未谈妥并拒绝交付，不能以未完成的口头压力判定交换失衡，只有正文实际用小额短期对价换取永久、独占或跨机构权利时才为 false。evidence_integrity 核对角色没有制造、仿造、篡改、污染证据或把猜测当事实。任一项存在实际冲突、权限不足、明显失衡或无正文依据时必须 ok=false，不得用完成章节契约或笼统的“有接受动机”代替完整性判断。
@@ -2294,6 +2317,22 @@ authority_scope 补充要求：基层经办人若授予跨机构、长期或排�
         for name, update in (analysis.get("faction_updates") or {}).items():
             if isinstance(update, dict):
                 canon["factions"][str(name)] = update
+        effective_chapter = int(self.checkpoint.get("canon_revision", 0)) + 1
+        current_state = canon.setdefault("current_state", {})
+        for update in analysis.get("current_state_updates") or []:
+            if not isinstance(update, dict):
+                continue
+            key = str(update.get("key", "")).strip()
+            value = str(update.get("value", "")).strip()
+            reason = str(update.get("reason", "")).strip()
+            if not key or not value or not reason:
+                continue
+            current_state[key] = {
+                "value": value,
+                "reason": reason,
+                "source": "accepted_analysis",
+                "effective_chapter": effective_chapter,
+            }
         facts = canon.setdefault("facts", {})
         for item in analysis.get("new_facts") or []:
             if isinstance(item, str):
