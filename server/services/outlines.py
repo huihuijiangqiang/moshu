@@ -153,6 +153,7 @@ async def update_outline(
         },
     )
     await db.flush()
+    await db.refresh(state_row, attribute_names=["updated_at"])
     return _result(chapter, state_row)
 
 
@@ -222,4 +223,5 @@ async def acknowledge_body_revision(
         },
     )
     await db.flush()
+    await db.refresh(state_row, attribute_names=["updated_at"])
     return _result(chapter, state_row)

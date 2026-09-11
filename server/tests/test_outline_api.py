@@ -77,3 +77,38 @@ async def test_outline_update_persists_temporal_anchor(
 
     chapter = await app_client.get("/chapters/ch_temporal", headers=auth_headers("user_a"))
     assert chapter.json()["temporal_anchor"]["end"] == "2024-03-20"
+
+
+async def test_outline_can_be_updated_repeatedly_without_async_timestamp_reload(
+    app_client, seed_project, auth_headers
+):
+    await seed_project(chapter_ids=("ch_repeat",))
+    first = await app_client.put(
+        "/chapters/ch_repeat/outline",
+        headers=auth_headers("user_a"),
+        json={
+            "title": "第一次调整",
+            "nodes": ["对手先落子"],
+            "note": "初稿",
+            "base_outline_revision": 0,
+            "body_policy": "plan_only",
+        },
+    )
+    assert first.status_code == 200
+
+    second = await app_client.put(
+        "/chapters/ch_repeat/outline",
+        headers=auth_headers("user_a"),
+        json={
+            "title": "第二次调整",
+            "nodes": ["主角必须付出代价"],
+            "note": "定稿",
+            "base_outline_revision": 1,
+            "body_policy": "plan_only",
+        },
+    )
+
+    assert second.status_code == 200
+    assert second.json()["outline_revision"] == 2
+    assert second.json()["title"] == "第二次调整"
+    assert second.json()["outline_updated_at"]

@@ -22,6 +22,7 @@ def fake_db(*results):
         execute=AsyncMock(side_effect=[ScalarResult(result) for result in results]),
         add=Mock(),
         flush=AsyncMock(),
+        refresh=AsyncMock(),
     )
 
 
