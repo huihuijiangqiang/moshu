@@ -1,4 +1,4 @@
-from services.generation_coverage import assess_draft_coverage
+from services.generation_coverage import assess_draft_coverage, build_prompt_coverage
 
 
 def _report(text: str) -> dict:
@@ -85,3 +85,73 @@ def test_draft_coverage_recognizes_action_backed_turn_and_opening_hook():
     by_id = {item["id"]: item for item in report["checks"]}
     assert by_id["quality.turning_point"]["status"] == "evidence_found"
     assert by_id["quality.chapter_hook"]["status"] == "evidence_found"
+
+
+def test_prompt_coverage_warns_on_abstract_scene_contract():
+    report = build_prompt_coverage(
+        {
+            "inputChecks": [],
+            "requirements": [
+                {
+                    "id": "scene-1-turn",
+                    "checkType": "requirement",
+                    "sourceType": "scene",
+                    "sourceId": "scene-1",
+                    "semanticType": "turn",
+                    "sceneOrder": 1,
+                    "label": "场景 1 · 转折",
+                    "expected": ["本章推进收束，留下下一章必须回应的具体决定"],
+                },
+                {
+                    "id": "scene-1-hook",
+                    "checkType": "requirement",
+                    "sourceType": "scene",
+                    "sourceId": "scene-1",
+                    "semanticType": "hook",
+                    "sceneOrder": 1,
+                    "label": "场景 1 · 钩子",
+                    "expected": ["章末留下后果"],
+                },
+            ],
+        },
+        included_content="本章推进收束，留下下一章必须回应的具体决定章末留下后果",
+        task="chapter",
+    )
+
+    contract = next(item for item in report["checks"] if item["id"] == "scene.scene-1.dramatic_contract")
+    assert contract["status"] == "author_review"
+    assert contract["severity"] == "warning"
+
+
+def test_prompt_coverage_accepts_concrete_scene_contract():
+    report = build_prompt_coverage(
+        {
+            "inputChecks": [],
+            "requirements": [
+                {
+                    "id": "scene-1-turn",
+                    "checkType": "requirement",
+                    "sourceType": "scene",
+                    "sourceId": "scene-1",
+                    "semanticType": "turn",
+                    "sceneOrder": 1,
+                    "label": "场景 1 · 转折",
+                    "expected": ["巡核使扣下田契，沈砚秋撕掉旧账并当众改押自己的名字"],
+                },
+                {
+                    "id": "scene-1-hook",
+                    "checkType": "requirement",
+                    "sourceType": "scene",
+                    "sourceId": "scene-1",
+                    "semanticType": "hook",
+                    "sceneOrder": 1,
+                    "label": "场景 1 · 钩子",
+                    "expected": ["巡核使点燃香：香灭前要账还是要人"],
+                },
+            ],
+        },
+        included_content="巡核使扣下田契，沈砚秋撕掉旧账并当众改押自己的名字巡核使点燃香：香灭前要账还是要人",
+        task="chapter",
+    )
+
+    assert not any(item["id"] == "scene.scene-1.dramatic_contract" for item in report["checks"])

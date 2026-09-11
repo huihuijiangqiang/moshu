@@ -57,6 +57,10 @@ _HOOK_ACTION_MARKERS = (
     "敲", "撞", "闯", "扣", "拔", "抬", "转", "递", "烧", "撕", "打开", "按住",
     "站起", "回头", "冲进", "落笔", "封", "带走", "逼问", "拔刀", "来信",
 )
+_ABSTRACT_CONTRACT_MARKERS = (
+    "下一章", "下章", "具体决定", "必须回应", "留下后果", "推进收束", "完成阶段",
+    "局势变化", "制造悬念", "埋下伏笔", "引出冲突",
+)
 
 
 def _summary(checks: list[dict[str, Any]], *, stage: str) -> dict[str, int | str]:
@@ -105,6 +109,7 @@ def build_prompt_coverage(
                 "evidence": expected if included else [],
             }
         )
+    checks.extend(_scene_contract_specificity_checks(checks))
     return {
         "stage": "prompt",
         "blocking": False,
@@ -134,6 +139,59 @@ def _salient_terms(values: list[str]) -> list[str]:
         if len(unique) >= 24:
             break
     return unique
+
+
+def _scene_contract_specificity_checks(
+    requirements: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Warn when a scene card describes drama as an abstract writing task."""
+    by_scene: dict[str, dict[str, dict[str, Any]]] = {}
+    for item in requirements:
+        if item.get("checkType") != "requirement" or item.get("semanticType") not in {"turn", "hook"}:
+            continue
+        source_id = str(item.get("sourceId") or "")
+        if source_id:
+            by_scene.setdefault(source_id, {})[str(item["semanticType"])] = item
+
+    checks: list[dict[str, Any]] = []
+    for source_id, fields in by_scene.items():
+        weak_fields: list[str] = []
+        evidence: list[str] = []
+        for semantic_type, item in fields.items():
+            value = " ".join(str(part) for part in item.get("expected", [])).strip()
+            abstract = [marker for marker in _ABSTRACT_CONTRACT_MARKERS if marker in value]
+            has_action = any(marker in value for marker in _HOOK_ACTION_MARKERS)
+            if len(value) < 12 or (abstract and not has_action):
+                weak_fields.append("转折" if semantic_type == "turn" else "钩子")
+                if abstract:
+                    evidence.append(f"{semantic_type}: " + "、".join(abstract[:3]))
+                elif value:
+                    evidence.append(f"{semantic_type}: 内容过短")
+                else:
+                    evidence.append(f"{semantic_type}: 未填写")
+        if weak_fields:
+            order = next((item.get("sceneOrder") for item in fields.values() if item.get("sceneOrder") is not None), None)
+            checks.append(
+                {
+                    "id": f"scene.{source_id}.dramatic_contract",
+                    "checkType": "quality",
+                    "sourceType": "scene",
+                    "sourceId": source_id,
+                    "semanticType": "dramatic_contract",
+                    "sceneOrder": order,
+                    "label": f"场景 {order or '?'} · 戏剧契约具体度",
+                    "status": "author_review",
+                    "severity": "warning",
+                    "applicability": "chapter",
+                    "message": (
+                        "场景卡的" + "、".join(dict.fromkeys(weak_fields)) +
+                        "仍是抽象写作要求；请补成具体人物、动作、阻力和代价，再生成正文。"
+                    ),
+                    "expected": [],
+                    "evidence": evidence,
+                }
+            )
+    return checks
 
 
 def _narrative_vitality_checks(content: str) -> list[dict[str, Any]]:
