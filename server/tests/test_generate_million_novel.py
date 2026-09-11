@@ -420,6 +420,10 @@ def test_reject_last_accepted_chapter_rebuilds_canon_and_quarantines_files(tmp_p
     checkpoint["canon_revision"] = 2
     checkpoint["generated_words"] = sum(item["words"] for item in checkpoint["chapters"])
     checkpoint["metrics"]["chapters_accepted"] = 2
+    checkpoint["canon"]["current_state"] = {
+        "kept": {"value": "第一章后有效", "effective_chapter": 1},
+        "discarded": {"value": "第二章后才有效", "effective_chapter": 2},
+    }
 
     rejection = MODULE.reject_last_accepted_chapter(
         checkpoint,
@@ -436,6 +440,9 @@ def test_reject_last_accepted_chapter_rebuilds_canon_and_quarantines_files(tmp_p
     assert checkpoint["metrics"]["chapters_accepted"] == 1
     assert any(item["fact"] == "第1章事实" for item in checkpoint["canon"]["facts"].values())
     assert not any(item["fact"] == "第2章事实" for item in checkpoint["canon"]["facts"].values())
+    assert checkpoint["canon"]["current_state"] == {
+        "kept": {"value": "第一章后有效", "effective_chapter": 1}
+    }
     assert list((tmp_path / "chapters").glob("0002-*.md")) == []
     assert len(list((tmp_path / "rejected").glob("0002-*.md"))) == 1
     assert (tmp_path / "rejected" / "analysis" / "0002-123.json").exists()
@@ -1458,6 +1465,63 @@ def test_compact_canon_prioritizes_latest_append_only_facts():
     packed = MODULE.compact_canon(checkpoint)
 
     assert "当前盐路预备金余额为八十二文八分" in packed
+
+
+def test_compact_canon_keeps_superseding_current_state_ahead_of_history():
+    checkpoint = MODULE.new_checkpoint(target_words=1_000_000, chapter_words=3_200, model="m")
+    checkpoint["canon"]["facts"] = {
+        f"fact-{index}": {"fact": f"历史仓容{index}-" + "旧" * 180}
+        for index in range(80)
+    }
+    MODULE.record_current_state(
+        checkpoint,
+        "river_port.village_warehouse.east_bay",
+        "东间四十袋位，已用二十五，余十五",
+        reason="复核第九章试运入仓记录",
+        updated_at=123,
+    )
+
+    packed = MODULE.compact_canon(checkpoint, max_chars=1_200)
+    parsed = MODULE.json.loads(packed)
+
+    assert parsed["current_state"]["river_port.village_warehouse.east_bay"]["value"] == (
+        "东间四十袋位，已用二十五，余十五"
+    )
+    assert len(packed) <= 1_200
+
+
+def test_record_current_state_is_audited_and_requires_a_canon_boundary():
+    checkpoint = MODULE.new_checkpoint(target_words=100_000, chapter_words=800, model="m")
+    checkpoint["canon_revision"] = 9
+
+    revision = MODULE.record_current_state(
+        checkpoint,
+        "warehouse.balance",
+        "已用二十五，余十五",
+        reason="人工盘点复核",
+        updated_at=123,
+    )
+
+    assert revision["effective_chapter"] == 9
+    assert revision["previous"] is None
+    assert checkpoint["canon"]["current_state"]["warehouse.balance"] == {
+        "value": "已用二十五，余十五",
+        "reason": "人工盘点复核",
+        "effective_chapter": 9,
+        "at": 123,
+    }
+    checkpoint["chapters"] = [{"number": 10, "status": "analysis_pending"}]
+    try:
+        MODULE.record_current_state(
+            checkpoint,
+            "warehouse.balance",
+            "已用三十，余十",
+            reason="未完成章节不得推进状态",
+        )
+    except ValueError as exc:
+        assert "pending review" in str(exc)
+    else:
+        raise AssertionError("current state changes require a Canon boundary")
 
 
 def test_apply_analysis_persists_new_facts_in_canon():
