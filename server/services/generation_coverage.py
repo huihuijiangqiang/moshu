@@ -45,6 +45,18 @@ _PROCEDURAL_TERMS = (
 _CHECKLIST_ENDING = re.compile(
     r"(?:^|[\n。；])\s*(?:一|二|三|四|五|六|七|八|九|十)[、，.]"
 )
+_TURN_MARKERS = (
+    "却", "但", "没想到", "突然", "直到", "原本", "改口", "拒绝", "答应",
+    "发现", "暴露", "扣住", "拦住", "失去", "转身", "反悔", "被截", "落空",
+)
+_HOOK_MARKERS = (
+    "?", "？", "未完", "还没", "尚未", "却在", "突然", "门外", "脚步", "来人",
+    "明日", "今晚", "必须", "等着", "不敢", "要么", "还是", "倒计时", "期限",
+)
+_HOOK_ACTION_MARKERS = (
+    "敲", "撞", "闯", "扣", "拔", "抬", "转", "递", "烧", "撕", "打开", "按住",
+    "站起", "回头", "冲进", "落笔", "封", "带走", "逼问", "拔刀", "来信",
+)
 
 
 def _summary(checks: list[dict[str, Any]], *, stage: str) -> dict[str, int | str]:
@@ -191,6 +203,84 @@ def _narrative_vitality_checks(content: str) -> list[dict[str, Any]]:
     return checks
 
 
+def _dramatic_contract_checks(content: str, prompt_coverage: dict[str, Any]) -> list[dict[str, Any]]:
+    """Surface weak turn/hook evidence without pretending to judge semantics.
+
+    A model can repeat a scene-card sentence verbatim while keeping the story's
+    state unchanged. These checks therefore inspect *where* evidence appears:
+    a turn should have a late transition plus an action/choice, and a hook should
+    leave a concrete unresolved pressure in the final part of the draft. They
+    remain author-review warnings, never automatic acceptance decisions.
+    """
+    text = content or ""
+    if len(text) < 300:
+        return []
+    checks: list[dict[str, Any]] = []
+    requirements = [
+        item for item in prompt_coverage.get("checks", [])
+        if isinstance(item, dict) and item.get("checkType") == "requirement"
+    ]
+    turn_requirements = [item for item in requirements if item.get("semanticType") == "turn"]
+    hook_requirements = [item for item in requirements if item.get("semanticType") == "hook"]
+
+    if turn_requirements:
+        midpoint = max(1, len(text) // 2)
+        late = text[midpoint:]
+        transitions = [marker for marker in _TURN_MARKERS if marker in late]
+        actions = [marker for marker in _HOOK_ACTION_MARKERS if marker in late]
+        checks.append(
+            {
+                "id": "quality.turning_point",
+                "checkType": "quality",
+                "sourceType": "scene",
+                "sourceId": turn_requirements[0].get("sourceId"),
+                "label": "中段转折落地",
+                "status": "evidence_found" if transitions and actions else "author_review",
+                "severity": "info" if transitions and actions else "warning",
+                "message": (
+                    "后半段同时出现了状态转向和行动证据；仍需确认原策略是否真的失效。"
+                    if transitions and actions
+                    else "后半段缺少成对的状态转向与行动证据；转折可能只是新增信息或旁白宣告。"
+                ),
+                "expected": [],
+                "evidence": [
+                    "转向词：" + "、".join(transitions[:6]) if transitions else "未找到明显转向词",
+                    "行动词：" + "、".join(actions[:6]) if actions else "未找到明显选择/后果行动",
+                ],
+            }
+        )
+
+    if hook_requirements:
+        tail = text[-1200:]
+        unresolved = [marker for marker in _HOOK_MARKERS if marker in tail]
+        actions = [marker for marker in _HOOK_ACTION_MARKERS if marker in tail]
+        has_summary = any(phrase in tail for phrase in ("这一切", "终于明白", "新的篇章", "才刚刚开始"))
+        strong = bool(unresolved and actions and not has_summary)
+        checks.append(
+            {
+                "id": "quality.chapter_hook",
+                "checkType": "quality",
+                "sourceType": "scene",
+                "sourceId": hook_requirements[-1].get("sourceId"),
+                "label": "章尾具体追读问题",
+                "status": "evidence_found" if strong else "author_review",
+                "severity": "info" if strong else "warning",
+                "message": (
+                    "章尾附近同时出现了未决压力和具体行动；请确认下一章问题尚未被提前解决。"
+                    if strong
+                    else "章尾未形成清晰的未决压力+具体动作组合，可能以总结、离场或空泛预告收尾。"
+                ),
+                "expected": [],
+                "evidence": [
+                    "未决信号：" + "、".join(unresolved[:8]) if unresolved else "未找到未决信号",
+                    "动作信号：" + "、".join(actions[:8]) if actions else "未找到章尾动作信号",
+                    "总结式尾声：" + ("是" if has_summary else "否"),
+                ],
+            }
+        )
+    return checks
+
+
 def assess_draft_coverage(prompt_coverage: dict[str, Any] | None, content: str) -> dict[str, Any] | None:
     """Turn a stored prompt report into a conservative draft-review report."""
     if not prompt_coverage:
@@ -230,6 +320,7 @@ def assess_draft_coverage(prompt_coverage: dict[str, Any] | None, content: str) 
         checks.append(check)
 
     checks.extend(_narrative_vitality_checks(content))
+    checks.extend(_dramatic_contract_checks(content, prompt_coverage))
     return {
         "stage": "draft",
         "blocking": False,
@@ -238,6 +329,6 @@ def assess_draft_coverage(prompt_coverage: dict[str, Any] | None, content: str) 
         else "ready",
         "summary": _summary(checks, stage="draft"),
         "checks": checks,
-        "method": "lexical_evidence_v1",
+        "method": "lexical_evidence_v2_dramatic_contract",
         "disclaimer": "字面证据只能辅助复核，不能替代作者对情节兑现和语义一致性的判断。",
     }

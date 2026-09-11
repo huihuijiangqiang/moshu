@@ -523,6 +523,8 @@ class ContextAssembler:
                                 "sourceId": scene.id,
                                 "label": f"场景 {scene.order} · {label}",
                                 "expected": [value],
+                                "semanticType": attr,
+                                "sceneOrder": scene.order,
                             }
                         )
                 items.append(

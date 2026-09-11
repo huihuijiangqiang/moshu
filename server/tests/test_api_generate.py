@@ -335,7 +335,7 @@ async def test_positioning_and_scene_coverage_share_preview_generation_and_draft
     assert detail.status_code == 200
     draft_coverage = detail.json()["coverage"]
     assert draft_coverage["blocking"] is False
-    assert draft_coverage["method"] == "lexical_evidence_v1"
+    assert draft_coverage["method"] == "lexical_evidence_v2_dramatic_contract"
     assert draft_coverage["status"] == "needs_attention"
     statuses = {check["id"]: check["status"] for check in draft_coverage["checks"]}
     assert statuses["scene.coverage_scene.goal"] == "evidence_found"
