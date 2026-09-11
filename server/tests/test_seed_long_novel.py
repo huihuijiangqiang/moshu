@@ -1,4 +1,9 @@
-from scripts.seed_long_novel import build_codex_specs, prose_document, upsert_codex_entries
+from scripts.seed_long_novel import (
+    build_codex_specs,
+    chapter_file_for_number,
+    prose_document,
+    upsert_codex_entries,
+)
 
 
 def test_prose_document_uses_backend_paragraph_pid_contract():
@@ -6,6 +11,19 @@ def test_prose_document_uses_backend_paragraph_pid_contract():
 
     assert 'data-paragraph-id="p-0"' in content_html
     assert [node["attrs"]["pid"] for node in content_json["content"]] == ["p-0", "p-1"]
+
+
+def test_chapter_file_lookup_accepts_zero_padded_and_large_numbers(tmp_path):
+    chapters_dir = tmp_path / "chapters"
+    chapters_dir.mkdir()
+    first = chapters_dir / "0001-开篇.md"
+    later = chapters_dir / "0111-河港争衡.md"
+    first.write_text("第一章", encoding="utf-8")
+    later.write_text("第一百一十一章", encoding="utf-8")
+
+    assert chapter_file_for_number(chapters_dir, 1) == first
+    assert chapter_file_for_number(chapters_dir, 111) == later
+    assert chapter_file_for_number(chapters_dir, 112) is None
 
 
 def sample_plan():

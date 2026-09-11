@@ -37,6 +37,15 @@ def visible_chars(text: str) -> int:
     return len(re.sub(r"\s+", "", text))
 
 
+def chapter_file_for_number(chapters_dir: Path, number: int) -> Path | None:
+    """Find a chapter file by its numeric prefix, independent of zero padding."""
+    for path in sorted(chapters_dir.glob("*.md")):
+        match = re.match(r"^(\d+)-", path.name)
+        if match and int(match.group(1)) == number:
+            return path
+    return None
+
+
 def prose_document(text: str) -> tuple[str, dict[str, Any]]:
     paragraphs = [line.strip() for line in text.splitlines() if line.strip()]
     html_parts: list[str] = []
@@ -323,12 +332,12 @@ async def upsert_novel(output_dir: Path, *, project_id: str, user_id: str) -> in
                 f"章末：{outline['hook']}",
             ]
 
-            matches = sorted((output_dir / "chapters").glob(f"{number:02d}-*.md"))
-            if not matches:
+            chapter_path = chapter_file_for_number(output_dir / "chapters", number)
+            if chapter_path is None:
                 chapter.words = 0
                 continue
 
-            text = matches[0].read_text(encoding="utf-8")
+            text = chapter_path.read_text(encoding="utf-8")
             completed_chapters.append((chapter_id, text))
             content_html, content_json = prose_document(text)
             chapter.words = visible_chars(text)
