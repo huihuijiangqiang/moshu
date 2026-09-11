@@ -1,6 +1,7 @@
 from scripts.seed_long_novel import (
     build_codex_specs,
     chapter_file_for_number,
+    chapter_outlines_from_checkpoint,
     prose_document,
     upsert_codex_entries,
 )
@@ -24,6 +25,24 @@ def test_chapter_file_lookup_accepts_zero_padded_and_large_numbers(tmp_path):
     assert chapter_file_for_number(chapters_dir, 1) == first
     assert chapter_file_for_number(chapters_dir, 111) == later
     assert chapter_file_for_number(chapters_dir, 112) is None
+
+
+def test_checkpoint_outlines_merge_new_volume_schema_in_chapter_order():
+    checkpoint = {
+        "plan": {"chapters": [{"number": 1, "title": "旧标题"}]},
+        "volume_outlines": {
+            "2": [{"number": 33, "title": "第二卷"}],
+            "1": [
+                {"number": 2, "title": "第二章"},
+                {"number": 1, "title": "新标题"},
+            ],
+        },
+    }
+
+    outlines = chapter_outlines_from_checkpoint(checkpoint)
+
+    assert [outline["number"] for outline in outlines] == [1, 2, 33]
+    assert outlines[0]["title"] == "新标题"
 
 
 def sample_plan():
@@ -72,6 +91,36 @@ def test_codex_specs_are_grounded_and_linked_to_completed_chapters():
     assert heroine["attrs"]["relations"][0]["target_id"] == "p1-cx-char-02"
     assert next(spec for spec in specs if spec["name"] == "全书不可违背事实")[
         "resident"
+    ]
+
+
+def test_codex_specs_accept_current_long_novel_plan_schema():
+    plan = {
+        "characters": {
+            "沈砚秋": {
+                "role": "女主/审计师",
+                "personality": "冷静、记账",
+                "skills": "核账",
+                "limits": "缺乏古代身份",
+            }
+        },
+        "locations": [{"name": "沈家村", "description": "临青沅河的旱地村"}],
+        "factions": [
+            {"name": "沈氏宗族", "public_goal": "保田保族", "resources": "土地、乡约"}
+        ],
+        "style_rules": "限知贴近女主",
+        "fixed_facts": ["所有判断必须有证据"],
+    }
+
+    specs = build_codex_specs(
+        plan,
+        [("chapter-1", "沈砚秋回到沈家村，先去沈氏宗族核账。")],
+        project_id="novel",
+    )
+
+    assert {spec["name"] for spec in specs} >= {"沈砚秋", "沈家村", "沈氏宗族"}
+    assert next(spec for spec in specs if spec["name"] == "沈氏宗族")["ref_chapters"] == [
+        "chapter-1"
     ]
 
 

@@ -46,6 +46,36 @@ def chapter_file_for_number(chapters_dir: Path, number: int) -> Path | None:
     return None
 
 
+def chapter_outlines_from_checkpoint(checkpoint: dict[str, Any]) -> list[dict[str, Any]]:
+    """Return the newest outline for every chapter across checkpoint schemas."""
+    outlines: dict[int, dict[str, Any]] = {}
+    for outline in checkpoint.get("plan", {}).get("chapters", []):
+        outlines[int(outline["number"])] = outline
+    for volume_outlines in checkpoint.get("volume_outlines", {}).values():
+        for outline in volume_outlines:
+            outlines[int(outline["number"])] = outline
+    return [outlines[number] for number in sorted(outlines)]
+
+
+def _chapter_outline_lines(outline: dict[str, Any]) -> list[str]:
+    objective = outline.get("objectives", outline.get("objective"))
+    lines = list(objective) if isinstance(objective, list) else [objective]
+    lines.extend(
+        value
+        for value in (
+            outline.get("conflict"),
+            outline.get("turn"),
+            outline.get("required_outcome"),
+        )
+        if value
+    )
+    lines.extend(outline.get("continuity_constraints", []))
+    lines.extend(outline.get("acceptance_criteria", []))
+    if outline.get("hook"):
+        lines.append(f"章末：{outline['hook']}")
+    return [str(line) for line in lines if line]
+
+
 def prose_document(text: str) -> tuple[str, dict[str, Any]]:
     paragraphs = [line.strip() for line in text.splitlines() if line.strip()]
     html_parts: list[str] = []
@@ -82,9 +112,11 @@ def _refs_for_terms(
     ]
 
 
-def _facts(values: dict[str, Any] | list[str]) -> list[dict[str, str]]:
+def _facts(values: dict[str, Any] | list[str] | str) -> list[dict[str, str]]:
     if isinstance(values, dict):
         return [{"label": str(label), "value": str(value)} for label, value in values.items()]
+    if isinstance(values, str):
+        return [{"label": "固定事实 1", "value": values}] if values else []
     return [
         {"label": f"固定事实 {index}", "value": str(value)}
         for index, value in enumerate(values, start=1)
@@ -100,7 +132,12 @@ def build_codex_specs(
     """把小说计划转换为稳定、可重复导入的设定条目。"""
     prefix = _entry_id_prefix(project_id)
     specs: list[dict[str, Any]] = []
-    characters = plan.get("characters", [])
+    raw_characters = plan.get("characters", [])
+    characters = (
+        [{"name": name, **attrs} for name, attrs in raw_characters.items()]
+        if isinstance(raw_characters, dict)
+        else raw_characters
+    )
     character_names = [str(character["name"]) for character in characters]
 
     for index, character in enumerate(characters, start=1):
@@ -152,9 +189,9 @@ def build_codex_specs(
         )
 
     for index, location in enumerate(plan.get("locations", []), start=1):
-        name = str(location["名称"])
-        function = str(location.get("功能", ""))
-        conditions = str(location.get("固定条件", ""))
+        name = str(location.get("名称", location.get("name", "")))
+        function = str(location.get("功能", location.get("description", "")))
+        conditions = str(location.get("固定条件", location.get("conditions", "")))
         specs.append(
             {
                 "id": f"{prefix}-cx-place-{index:02d}",
@@ -167,23 +204,34 @@ def build_codex_specs(
             }
         )
 
-    faction_specs = [
-        (
-            "周氏宗族",
-            str(plan.get("era_rules", {}).get("宗族规则", "")),
-            ["周氏", "宗族", "族长", "祠堂"],
-        ),
-        (
-            "周家食货作坊",
-            str(plan.get("economy_rules", {}).get("经营品类", "")),
-            ["作坊", "晒菜", "腌菜", "分拣"],
-        ),
-        (
-            "青溪县衙",
-            str(plan.get("era_rules", {}).get("司法规则", "")),
-            ["县衙", "户房", "田册", "契税"],
-        ),
-    ]
+    raw_factions = plan.get("factions", [])
+    if raw_factions:
+        faction_specs = [
+            (
+                str(faction["name"]),
+                "；".join(str(value) for key, value in faction.items() if key != "name" and value),
+                [str(faction["name"])],
+            )
+            for faction in raw_factions
+        ]
+    else:
+        faction_specs = [
+            (
+                "周氏宗族",
+                str(plan.get("era_rules", {}).get("宗族规则", "")),
+                ["周氏", "宗族", "族长", "祠堂"],
+            ),
+            (
+                "周家食货作坊",
+                str(plan.get("economy_rules", {}).get("经营品类", "")),
+                ["作坊", "晒菜", "腌菜", "分拣"],
+            ),
+            (
+                "青溪县衙",
+                str(plan.get("era_rules", {}).get("司法规则", "")),
+                ["县衙", "户房", "田册", "契税"],
+            ),
+        ]
     for index, (name, description, terms) in enumerate(faction_specs, start=1):
         specs.append(
             {
@@ -298,20 +346,53 @@ async def upsert_novel(output_dir: Path, *, project_id: str, user_id: str) -> in
         project.status = "ongoing"
         project.target_words_daily = 3300
 
-        volume_id = f"{project_id}-v1"
-        volume = await session.get(Volume, volume_id)
-        if volume is None:
-            volume = Volume(id=volume_id, project_id=project_id, title="立业卷", idx=1)
-            session.add(volume)
-        volume.title = "立业卷"
-        volume.summary = plan.get("premise")
+        outlines = chapter_outlines_from_checkpoint(checkpoint)
+        outlined_numbers = {int(outline["number"]) for outline in outlines}
+        volume_specs = [
+            spec
+            for spec in plan.get("volumes", [])
+            if any(
+                int(spec["chapter_from"]) <= number <= int(spec["chapter_to"])
+                for number in outlined_numbers
+            )
+        ]
+        if not volume_specs:
+            volume_specs = [
+                {
+                    "number": 1,
+                    "title": "立业卷",
+                    "chapter_from": min(outlined_numbers, default=1),
+                    "chapter_to": max(outlined_numbers, default=1),
+                    "objective": plan.get("premise"),
+                }
+            ]
+
+        volume_for_chapter: dict[int, str] = {}
+        for spec in volume_specs:
+            volume_number = int(spec["number"])
+            volume_id = f"{project_id}-v{volume_number}"
+            volume = await session.get(Volume, volume_id)
+            if volume is None:
+                volume = Volume(
+                    id=volume_id,
+                    project_id=project_id,
+                    title=str(spec["title"]),
+                    idx=volume_number,
+                )
+                session.add(volume)
+            volume.title = str(spec["title"])
+            volume.idx = volume_number
+            volume.summary = str(spec.get("objective") or plan.get("premise") or "")
+            for number in range(int(spec["chapter_from"]), int(spec["chapter_to"]) + 1):
+                volume_for_chapter[number] = volume_id
         await session.flush()
 
         imported = 0
         completed_chapters: list[tuple[str, str]] = []
-        for outline in plan["chapters"]:
+        for outline in outlines:
             number = int(outline["number"])
             chapter_id = f"{project_id}-ch{number:02d}"
+            volume_id = volume_for_chapter[number]
             chapter = await session.get(Chapter, chapter_id)
             if chapter is None:
                 chapter = Chapter(
@@ -325,12 +406,7 @@ async def upsert_novel(output_dir: Path, *, project_id: str, user_id: str) -> in
             chapter.volume_id = volume_id
             chapter.title = outline["title"]
             chapter.idx = number
-            chapter.outline = [
-                outline["objectives"],
-                outline["conflict"],
-                *outline.get("continuity_constraints", []),
-                f"章末：{outline['hook']}",
-            ]
+            chapter.outline = _chapter_outline_lines(outline)
 
             chapter_path = chapter_file_for_number(output_dir / "chapters", number)
             if chapter_path is None:
