@@ -44,14 +44,30 @@ BASE = WritingSkill(
     ),
 )
 
+DRAMA = WritingSkill(
+    id="craft.dramatic-motion",
+    version="1.0.0",
+    category="craft",
+    priority=25,
+    prompt=(
+        "小说首先写人，不写办事报告。整章围绕一个人物此刻非赢不可的具体欲望展开；让一个有自身利益的"
+        "对手主动阻拦，并至少两次升级压力。主角必须在损失、关系、名声、利益或原则之间作出选择，"
+        "选择要产生不可撤销的后果。把证据、工序、账目和规则压缩为冲突所需的关键细节，禁止连续多段只做"
+        "登记、核验、复称、解释权限或罗列数字。对白要有隐瞒、试探、威胁、误解或交换，不能人人都像在"
+        "宣读制度。章节中段必须发生一次让原计划失效的变化，高潮要兑现本章核心情绪，章末钩子来自人物"
+        "刚刚作出的选择或对手的新行动，不得用待办清单、规则复述或“不等于”式总结收尾。"
+    ),
+)
+
 GENRE_SKILLS = {
     "farming": WritingSkill(
         "genre.farming",
         "1.0.0",
         "genre",
         20,
-        "种田/经营叙事要让资源、成本、工序、交易与生活改善形成可追踪的因果链。避免凭空暴富，"
-        "成果必须由人物能力、时代条件和前文积累共同支撑。",
+        "种田/经营叙事要让资源、成本、工序、交易与生活改善形成可追踪的因果链。数字只是压力和选择的"
+        "证据，重点写饥饿、尊严、家庭、信任和利益怎样被一笔交易改变。避免凭空暴富，成果必须由人物"
+        "能力、时代条件和前文积累共同支撑；不要把完整操作流程当成剧情本身。",
     ),
     "romance": WritingSkill(
         "genre.romance",
@@ -92,8 +108,9 @@ TASK_SKILLS = {
         "1.0.0",
         "task",
         30,
-        "按章纲节点依次完成整章。每个节点都要发生可识别的情节变化，节点之间自然过渡；章末形成"
-        "阶段性结果或明确牵引，但不要为了钩子突然截断动作。",
+        "完整覆盖章纲，但不要逐条照抄节点或按清单顺序机械展开。先确定本章的情绪承诺与决定性选择，"
+        "再把必要节点编织进同一条冲突链。每个场景都要改变人物关系、风险、信息或资源中的至少一项；"
+        "章末形成阶段性结果和新的迫切问题，但不要为了钩子突然截断动作。",
     ),
     "continue": WritingSkill(
         "task.continue",
@@ -142,6 +159,15 @@ TASK_SKILLS = {
 }
 
 SCENE_SKILLS = {
+    "political": WritingSkill(
+        "scene.political",
+        "1.0.0",
+        "scene",
+        40,
+        "权谋不是比谁更懂手续，而是争夺人、资源、合法性与叙事权。各方都要主动落子并预判对方；每次"
+        "胜负都带交换条件、隐性代价或阵营裂痕。证据可以成为武器，但不能让补齐文书自动解决危机。"
+        "至少让一名盟友动摇、一个对手取得局部胜利，或迫使主角在两种损失之间选择。",
+    ),
     "relationship": WritingSkill(
         "scene.relationship",
         "1.0.0",
@@ -205,6 +231,10 @@ def _genre_keys(genre: str) -> list[str]:
 
 def _scene_key(text: str) -> str:
     rules = (
+        (
+            "political",
+            ("权谋", "派系", "朝堂", "京中", "官府", "县衙", "保护伞", "官场", "夺权"),
+        ),
         ("combat", ("战", "打斗", "追杀", "刺杀", "交锋")),
         ("investigation", ("调查", "查案", "线索", "真相", "追查")),
         ("negotiation", ("谈判", "议价", "条件", "合作", "讨价")),
@@ -221,6 +251,8 @@ def select_writing_skills(*, genre: str | None, task: str, outline: list[str], i
     """Select a stable ordered skill set from explicit story inputs."""
     selected = [BASE]
     selected.extend(GENRE_SKILLS[key] for key in _genre_keys(genre or ""))
+    if task == "chapter":
+        selected.append(DRAMA)
     selected.append(TASK_SKILLS.get(task, TASK_SKILLS["chapter"]))
     scene = _scene_key("\n".join(outline) + "\n" + instruction)
     selected.append(SCENE_SKILLS[scene])
