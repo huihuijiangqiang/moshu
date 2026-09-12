@@ -310,3 +310,12 @@ def test_action_before_an_abstract_final_summary_is_not_a_hook():
     check = next(item for item in report["checks"] if item["id"] == "quality.chapter_hook_presence")
     assert check["status"] == "author_review"
     assert "总结式收尾：是" in check["evidence"]
+
+
+def test_concrete_countdown_after_a_character_realization_remains_a_hook():
+    text = "沈禾沿着粮车留下的辙印追到仓门。" * 50
+    text += "门外的差役已经点燃一炷香。她知道仓门会在香灭时被撞开，只剩一刻钟。"
+    report = assess_draft_coverage({"task": "chapter", "checks": []}, text)
+    check = next(item for item in report["checks"] if item["id"] == "quality.chapter_hook_presence")
+    assert check["status"] == "evidence_found"
+    assert "总结式收尾：否" in check["evidence"]
