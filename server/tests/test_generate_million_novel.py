@@ -32,6 +32,12 @@ def test_seed_outlines_use_unique_titles_and_progressive_phases():
     assert "立规阶段" in contracts[8]["objective"]
     assert "反查阶段" in contracts[16]["objective"]
     assert "结算阶段" in contracts[24]["objective"]
+    assert all(contract[field] for contract in contracts for field in MODULE.DRAMATIC_CONTRACT_STRING_FIELDS)
+    assert all(
+        previous["hook_type"] != current["hook_type"]
+        for previous, current in zip(contracts, contracts[1:])
+    )
+    assert all("留下" not in contract["hook"][-8:] for contract in contracts)
 
 
 def test_repair_legacy_seed_titles_updates_only_exact_legacy_records(tmp_path):
@@ -683,17 +689,7 @@ def _contract_analysis(contract):
     value = _valid_analysis()
     value["contract_checks"] = [
         {"item": item, "ok": True, "evidence": f"正文证据：{item}"}
-        for item in [
-            "required_outcome",
-            *(
-                f"acceptance_criteria:{index}"
-                for index in range(1, len(contract["acceptance_criteria"]) + 1)
-            ),
-            "reveal",
-            "hide",
-            "foreshadow",
-            "hook",
-        ]
+        for item in MODULE.chapter_contract_check_ids(contract)
     ]
     return value
 
@@ -1028,6 +1024,49 @@ def test_validate_chapter_contracts_requires_exact_ordered_coverage():
         assert "number mismatch" in str(exc)
     else:
         raise AssertionError("out-of-order chapter contracts must be rejected")
+
+
+def test_dramatic_contract_validation_rejects_missing_fields_and_adjacent_hook_reuse():
+    plan = MODULE.build_seed_plan(target_words=1_000_000, chapter_count=313)
+    volume = plan["volumes"][0]
+    contracts = [
+        MODULE.build_seed_chapter_outline(number, volume)
+        for number in range(volume["chapter_from"], volume["chapter_to"] + 1)
+    ]
+    assert MODULE.validate_chapter_contracts(
+        contracts,
+        chapter_from=volume["chapter_from"],
+        chapter_to=volume["chapter_to"],
+        require_dramatic_contract=True,
+    ) == contracts
+
+    missing = [dict(item) for item in contracts]
+    missing[0].pop("choice")
+    try:
+        MODULE.validate_chapter_contracts(
+            missing,
+            chapter_from=volume["chapter_from"],
+            chapter_to=volume["chapter_to"],
+            require_dramatic_contract=True,
+        )
+    except ValueError as exc:
+        assert "choice" in str(exc)
+    else:
+        raise AssertionError("dramatic chapter contracts must include a costly choice")
+
+    repeated = [dict(item) for item in contracts]
+    repeated[1]["hook_type"] = repeated[0]["hook_type"]
+    try:
+        MODULE.validate_chapter_contracts(
+            repeated,
+            chapter_from=volume["chapter_from"],
+            chapter_to=volume["chapter_to"],
+            require_dramatic_contract=True,
+        )
+    except ValueError as exc:
+        assert "repeat hook_type" in str(exc)
+    else:
+        raise AssertionError("adjacent chapter contracts must rotate hook types")
 
 
 def test_validate_chapter_contract_rejects_incomplete_acceptance_gate():

@@ -1,4 +1,5 @@
 from scripts.seed_long_novel import (
+    _chapter_outline_lines,
     build_codex_specs,
     chapter_file_for_number,
     chapter_outlines_from_checkpoint,
@@ -43,6 +44,31 @@ def test_checkpoint_outlines_merge_new_volume_schema_in_chapter_order():
 
     assert [outline["number"] for outline in outlines] == [1, 2, 33]
     assert outlines[0]["title"] == "新标题"
+
+
+def test_imported_outline_preserves_dramatic_contract_fields():
+    lines = _chapter_outline_lines(
+        {
+            "objective": "保住粮车",
+            "opening_hook": "粮车先被扣下",
+            "strategy": "公开复称",
+            "turn_trigger": "盟友撤走担保",
+            "turn": "原策略失效",
+            "choice": "保人还是保账",
+            "cost": "押上田契",
+            "state_before": "证据尚在手中",
+            "state_after": "证据公开但田契被扣",
+            "hook_type": "倒计时",
+            "hook": "一炷香燃尽前必须选择",
+            "unresolved_question": "她会保人还是保账？",
+            "acceptance_criteria": [],
+        }
+    )
+
+    assert "策略失效：盟友撤走担保" in lines
+    assert "即时代价：押上田契" in lines
+    assert "章末钩子（倒计时）：一炷香燃尽前必须选择" in lines
+    assert "章末未决问题：她会保人还是保账？" in lines
 
 
 def sample_plan():

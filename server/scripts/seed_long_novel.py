@@ -60,6 +60,20 @@ def chapter_outlines_from_checkpoint(checkpoint: dict[str, Any]) -> list[dict[st
 def _chapter_outline_lines(outline: dict[str, Any]) -> list[str]:
     objective = outline.get("objectives", outline.get("objective"))
     lines = list(objective) if isinstance(objective, list) else [objective]
+    dramatic_fields = (
+        ("opening_hook", "开场压力"),
+        ("strategy", "主角策略"),
+        ("turn_trigger", "策略失效"),
+        ("choice", "两难选择"),
+        ("cost", "即时代价"),
+        ("state_before", "入场状态"),
+        ("state_after", "离场状态"),
+    )
+    lines.extend(
+        f"{label}：{outline[field]}"
+        for field, label in dramatic_fields
+        if outline.get(field)
+    )
     lines.extend(
         value
         for value in (
@@ -72,7 +86,10 @@ def _chapter_outline_lines(outline: dict[str, Any]) -> list[str]:
     lines.extend(outline.get("continuity_constraints", []))
     lines.extend(outline.get("acceptance_criteria", []))
     if outline.get("hook"):
-        lines.append(f"章末：{outline['hook']}")
+        hook_type = str(outline.get("hook_type") or "未分类")
+        lines.append(f"章末钩子（{hook_type}）：{outline['hook']}")
+    if outline.get("unresolved_question"):
+        lines.append(f"章末未决问题：{outline['unresolved_question']}")
     return [str(line) for line in lines if line]
 
 
