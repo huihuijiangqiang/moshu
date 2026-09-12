@@ -740,6 +740,78 @@ async def test_completed_generation_persists_candidate_and_supports_idempotent_a
     ).json()["items"] == []
 
 
+async def test_accept_blocks_unreviewed_chapter_with_weak_dramatic_contract(
+    app_client,
+    async_db_session,
+    seed_project,
+    auth_headers,
+):
+    await seed_project(user_id="quality_gate_writer", project_id="quality_gate_novel", chapter_ids=("quality_gate_ch",))
+    coverage = {
+        "checks": [
+            {
+                "id": "scene.quality.turn",
+                "checkType": "requirement",
+                "sourceType": "scene",
+                "sourceId": "quality-scene",
+                "semanticType": "turn",
+                "expected": ["原策略必须在中段失效"],
+            },
+            {
+                "id": "scene.quality.hook",
+                "checkType": "requirement",
+                "sourceType": "scene",
+                "sourceId": "quality-scene",
+                "semanticType": "hook",
+                "expected": ["章末留下具体未决问题"],
+            },
+        ]
+    }
+    run = GenerationRun(
+        id="quality_gate_run",
+        user_id="quality_gate_writer",
+        project_id="quality_gate_novel",
+        chapter_id="quality_gate_ch",
+        task_type="chapter",
+        model_tier="main",
+        prompt_tokens=100,
+        cached_tokens=0,
+        completion_tokens=100,
+        generated_words=900,
+        accepted_words=0,
+        layer_report={"coverage": coverage},
+    )
+    content = "她把账册收好，说明明日继续核验。" * 100
+    draft = GenerationDraft(
+        id="quality_gate_draft",
+        run_id=run.id,
+        user_id="quality_gate_writer",
+        project_id="quality_gate_novel",
+        chapter_id="quality_gate_ch",
+        kind="chapter",
+        status="ready",
+        content_text=content,
+        generated_words=len(content),
+        request_summary={},
+    )
+    async_db_session.add(run)
+    await async_db_session.flush()
+    async_db_session.add(draft)
+    await async_db_session.commit()
+
+    response = await app_client.post(
+        "/generate/drafts/quality_gate_draft/accept",
+        headers=auth_headers("quality_gate_writer"),
+    )
+
+    assert response.status_code == 409
+    assert response.json()["detail"]["code"] == "DRAFT_QUALITY_REVIEW_REQUIRED"
+    assert {item["id"] for item in response.json()["detail"]["checks"]} >= {
+        "quality.turning_point",
+        "quality.chapter_hook",
+    }
+
+
 async def test_partial_provider_failure_keeps_recoverable_candidate(
     app_client,
     async_db_session,
