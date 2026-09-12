@@ -3,7 +3,7 @@ from types import SimpleNamespace
 
 from sqlalchemy import select
 
-from api.generate import get_generation_gateway
+from api.generate import _merge_continuation_content, get_generation_gateway
 from db.models_core import ChapterBody, Project, User
 from db.models_positioning import ProjectPositioning
 from db.models_scene_cards import ChapterScene
@@ -56,6 +56,20 @@ def parse_sse(text: str) -> list[object]:
         data = frame[6:]
         events.append(data if data == "[DONE]" else json.loads(data))
     return events
+
+
+def test_continuation_merge_removes_replayed_partial_paragraph():
+    assert _merge_continuation_content(
+        "她已经投入的一刻人手收不回来了。\n沈砚秋",
+        "沈砚秋没有立刻回答。",
+    ) == "她已经投入的一刻人手收不回来了。\n沈砚秋没有立刻回答。"
+
+
+def test_continuation_merge_keeps_distinct_paragraphs_separate():
+    assert _merge_continuation_content(
+        "第一段已经完成。\n最后一段停在这里。",
+        "沈禾推开粮铺的门。",
+    ) == "第一段已经完成。\n最后一段停在这里。\n沈禾推开粮铺的门。"
 
 
 async def test_chapter_generation_streams_meta_text_done_and_records_run(

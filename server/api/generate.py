@@ -1315,12 +1315,21 @@ def _continuation_tail(content: str, *, max_chars: int = 12000) -> str:
 
 
 def _merge_continuation_content(prefix: str, generated: str) -> str:
-    """Join a persisted candidate prefix with new output at a paragraph boundary."""
+    """Join persisted output while removing a replayed continuation seam."""
     if not prefix:
         return generated
     if not generated:
         return prefix
-    return f"{prefix.rstrip()}\n{generated.lstrip()}"
+    left = prefix.rstrip()
+    right = generated.lstrip()
+    upper = min(1000, len(left), len(right))
+    overlap = next(
+        (size for size in range(upper, 1, -1) if left.endswith(right[:size])),
+        0,
+    )
+    if overlap:
+        return left + right[overlap:]
+    return f"{left}\n{right}"
 
 
 @router.post("/drafts/{draft_id}/continue")
