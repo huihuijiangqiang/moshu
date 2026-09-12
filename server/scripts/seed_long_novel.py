@@ -422,6 +422,17 @@ async def upsert_novel(output_dir: Path, *, project_id: str, user_id: str) -> in
             volume_id = volume_for_chapter[number]
             chapter = await session.get(Chapter, chapter_id)
             if chapter is None:
+                chapter = await session.scalar(
+                    select(Chapter)
+                    .where(
+                        Chapter.project_id == project_id,
+                        Chapter.idx == number,
+                        Chapter.deleted_at.is_(None),
+                    )
+                    .order_by(Chapter.created_at, Chapter.id)
+                    .limit(1)
+                )
+            if chapter is None:
                 chapter = Chapter(
                     id=chapter_id,
                     project_id=project_id,
