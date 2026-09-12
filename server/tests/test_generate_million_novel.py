@@ -1166,6 +1166,34 @@ def test_editorial_gate_requires_planned_hook_to_land_near_chapter_end():
     assert summary_hook["ok"] is False
 
 
+def test_v5_narrative_gate_blocks_procedural_overload():
+    plan = MODULE.build_seed_plan(target_words=1_000_000, chapter_count=313)
+    contract = MODULE.build_seed_chapter_outline(1, plan["volumes"][0])
+    paragraph = (
+        "沈砚秋继续阅卷，把副本编号写入条款，再请两名见证人复核。"
+        "众人随后翻到下一份文书，重新核验时辰、责任与交接。"
+    )
+
+    report = MODULE.chapter_narrative_vitality(contract, paragraph * 35)
+
+    assert report["ok"] is False
+    assert report["proceduralDensity"] >= 18
+    assert report["expectedSceneMode"] == contract["scene_mode"]
+
+
+def test_v5_narrative_gate_allows_action_driven_scene():
+    plan = MODULE.build_seed_plan(target_words=1_000_000, chapter_count=313)
+    contract = MODULE.build_seed_chapter_outline(1, plan["volumes"][0])
+    paragraph = (
+        "山火越过田埂时，沈砚秋把最后一桶水推给韩三，自己转身去解牛绳。"
+        "粮商拦住去路，要她拿村中水车换粮。她当众砸开木栅，手背也被火星燎伤。"
+    )
+
+    report = MODULE.chapter_narrative_vitality(contract, paragraph * 24)
+
+    assert report["ok"] is True
+
+
 def test_editorial_gate_blocks_failed_integrity_check():
     contract = _valid_chapter_contract()
     analysis = _contract_analysis(contract)

@@ -51,6 +51,18 @@ def test_draft_coverage_warns_when_procedure_replaces_drama():
     assert report["status"] == "needs_attention"
 
 
+def test_draft_coverage_counts_document_workflow_terms():
+    paragraph = (
+        "沈砚秋继续阅卷，把副本编号写入条款，再请两名见证人复核。"
+        "众人随后翻到下一份副本，重新核对编号与见证。"
+    )
+    report = _report(paragraph * 35)
+
+    check = next(item for item in report["checks"] if item["id"] == "quality.procedural_density")
+    assert check["status"] == "author_review"
+    assert any(item.startswith("阅卷×") for item in check["evidence"])
+
+
 def test_draft_coverage_does_not_warn_on_action_and_relationship_scene():
     paragraph = (
         "山火越过田埂时，沈禾把最后一桶水推给嫂子，自己转身去解牛绳。"

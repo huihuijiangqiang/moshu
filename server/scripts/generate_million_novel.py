@@ -295,6 +295,27 @@ INTEGRITY_CHECK_IDS = (
     "exchange_proportionality",
     "evidence_integrity",
 )
+PROCEDURAL_TERMS = (
+    "登记",
+    "核验",
+    "复称",
+    "保管",
+    "交接",
+    "凭据",
+    "责任",
+    "封存",
+    "时辰",
+    "费用",
+    "文书",
+    "袋号",
+    "阅卷",
+    "副本",
+    "条款",
+    "编号",
+    "写入",
+    "复核",
+    "见证",
+)
 REPAIRABLE_QUALITY_CHECK_IDS = frozenset(
     {
         "length",
@@ -481,6 +502,33 @@ def chapter_hook_landing(outline: dict[str, Any], prose: str) -> dict[str, Any]:
     }
 
 
+def chapter_narrative_vitality(outline: dict[str, Any], prose: str) -> dict[str, Any]:
+    """Block report-like drafts when a v5 narrative contract is available."""
+    if not all(str(outline.get(field, "")).strip() for field in (
+        "scene_mode",
+        "conflict_carrier",
+        "emotional_arc",
+        "human_stake",
+    )):
+        return {"id": "narrative_vitality", "ok": True, "applicable": False}
+    cjk_count = len(re.findall(r"[\u3400-\u9fff]", prose or ""))
+    term_counts = {term: (prose or "").count(term) for term in PROCEDURAL_TERMS}
+    hits = sum(term_counts.values())
+    used = [term for term, count in term_counts.items() if count]
+    density = hits * 1000 / max(cjk_count, 1)
+    overloaded = cjk_count >= 600 and density >= 18 and len(used) >= 6
+    return {
+        "id": "narrative_vitality",
+        "ok": not overloaded,
+        "applicable": True,
+        "proceduralDensity": round(density, 1),
+        "terms": [f"{term}x{term_counts[term]}" for term in used[:12]],
+        "expectedSceneMode": outline["scene_mode"],
+        "expectedEmotionalArc": outline["emotional_arc"],
+        "expectedHumanStake": outline["human_stake"],
+    }
+
+
 def chapter_editorial_gate(
     outline: dict[str, Any],
     analysis: dict[str, Any],
@@ -551,6 +599,7 @@ def chapter_editorial_gate(
     ]
     if prose is not None:
         checks.append(chapter_hook_landing(outline, prose))
+        checks.append(chapter_narrative_vitality(outline, prose))
     return {
         "status": "ready" if all(item["ok"] for item in checks) else "blocked",
         "checks": checks,
