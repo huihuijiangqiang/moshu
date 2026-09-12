@@ -469,6 +469,7 @@ class GenerationService:
             ]
             hook_type = ""
             variation_engine = ""
+            scene_engine_hint = ""
             for signal in outline_signals:
                 hook_match = re.search(r"章末钩子[（(]([^）)]+)[）)]", signal)
                 if hook_match and not hook_type:
@@ -477,9 +478,12 @@ class GenerationService:
                     variation_engine = signal.split("：", 1)[1].strip()[:120]
             if not variation_engine and chapter_scenes:
                 # Scene cards have no dedicated engine column yet.  Their first
-                # goal/obstacle is still useful as a stable anti-repetition
-                # signal for the next request.
-                variation_engine = (chapter_scenes[0].goal or chapter_scenes[0].obstacle or "").strip()[:120]
+                # goal/obstacle is useful evidence, but it is not a canonical
+                # engine name. Keep it separately and use the stable catalog
+                # slot below for actual de-duplication.
+                scene_engine_hint = (
+                    chapter_scenes[0].goal or chapter_scenes[0].obstacle or ""
+                ).strip()[:120]
             if not variation_engine:
                 # Legacy chapters may have no scene cards or structural labels.
                 # Give them the stable catalog slot used at generation time so
@@ -509,6 +513,7 @@ class GenerationService:
                     "hooks": [scene.hook[:500] for scene in chapter_scenes if scene.hook.strip()],
                     "outlineSignals": outline_signals[:8],
                     "outlineTail": [str(node)[:500] for node in (item.outline or [])[-3:]],
+                    "sceneEngineHint": scene_engine_hint,
                     "hookType": hook_type,
                     "variationEngine": variation_engine,
                 }
