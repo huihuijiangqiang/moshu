@@ -61,6 +61,10 @@ def _chapter_outline_lines(outline: dict[str, Any]) -> list[str]:
     objective = outline.get("objectives", outline.get("objective"))
     lines = list(objective) if isinstance(objective, list) else [objective]
     dramatic_fields = (
+        ("scene_mode", "冲突场型"),
+        ("conflict_carrier", "冲突载体"),
+        ("emotional_arc", "情绪弧线"),
+        ("human_stake", "人物代价"),
         ("opening_hook", "开场压力"),
         ("strategy", "主角策略"),
         ("turn_trigger", "策略失效"),

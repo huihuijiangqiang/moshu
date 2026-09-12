@@ -50,6 +50,10 @@ def test_imported_outline_preserves_dramatic_contract_fields():
     lines = _chapter_outline_lines(
         {
             "objective": "保住粮车",
+            "scene_mode": "公开场合的限时对峙",
+            "conflict_carrier": "粮车与围观者的判断",
+            "emotional_arc": "沈禾从笃定转为焦急",
+            "human_stake": "车夫一家会失去当日口粮",
             "opening_hook": "粮车先被扣下",
             "strategy": "公开复称",
             "turn_trigger": "盟友撤走担保",
@@ -65,6 +69,10 @@ def test_imported_outline_preserves_dramatic_contract_fields():
         }
     )
 
+    assert "冲突场型：公开场合的限时对峙" in lines
+    assert "冲突载体：粮车与围观者的判断" in lines
+    assert "情绪弧线：沈禾从笃定转为焦急" in lines
+    assert "人物代价：车夫一家会失去当日口粮" in lines
     assert "策略失效：盟友撤走担保" in lines
     assert "即时代价：押上田契" in lines
     assert "章末钩子（倒计时）：一炷香燃尽前必须选择" in lines

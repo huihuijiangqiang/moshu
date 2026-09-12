@@ -37,6 +37,12 @@ def test_seed_outlines_use_unique_titles_and_progressive_phases():
         previous["hook_type"] != current["hook_type"]
         for previous, current in zip(contracts, contracts[1:])
     )
+    assert all(
+        previous["scene_mode"] != current["scene_mode"]
+        for previous, current in zip(contracts, contracts[1:])
+    )
+    assert all("沈砚秋" in contract["emotional_arc"] for contract in contracts)
+    assert all("谁会失去什么" not in contract["human_stake"] for contract in contracts)
     assert all("留下" not in contract["hook"][-8:] for contract in contracts)
 
 
@@ -1067,6 +1073,20 @@ def test_dramatic_contract_validation_rejects_missing_fields_and_adjacent_hook_r
         assert "repeat hook_type" in str(exc)
     else:
         raise AssertionError("adjacent chapter contracts must rotate hook types")
+
+    repeated = [dict(item) for item in contracts]
+    repeated[1]["scene_mode"] = repeated[0]["scene_mode"]
+    try:
+        MODULE.validate_chapter_contracts(
+            repeated,
+            chapter_from=volume["chapter_from"],
+            chapter_to=volume["chapter_to"],
+            require_dramatic_contract=True,
+        )
+    except ValueError as exc:
+        assert "repeat scene_mode" in str(exc)
+    else:
+        raise AssertionError("adjacent chapter contracts must rotate scene modes")
 
 
 def test_validate_chapter_contract_rejects_incomplete_acceptance_gate():
