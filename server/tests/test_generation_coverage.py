@@ -409,3 +409,14 @@ def test_draft_does_not_warn_when_new_chapter_changes_dramatic_engine():
 
     assert report is not None
     assert not any(item["id"] == "quality.recent_chapter_repetition" for item in report["checks"])
+
+
+def test_hook_fingerprint_prefers_relationship_threat_over_incidental_countdown():
+    text = (
+        "张府追骑已经冲进巷口，为首之人拔刀截住唯一出口，"
+        "只给他一刻钟交出保村公函。"
+    ) * 8
+
+    fingerprint = extract_dramatic_fingerprint(text)
+
+    assert fingerprint["hookType"] == "关系威胁"

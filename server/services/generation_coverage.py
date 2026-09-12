@@ -437,6 +437,11 @@ def extract_dramatic_fingerprint(text: str) -> dict[str, Any]:
         hook_type = "抽象总结"
     elif hook["weakRecognition"]:
         hook_type = "识人问句"
+    elif any(
+        marker in visible[-240:]
+        for marker in ("追骑", "追兵", "截住", "交出保村", "保护公函")
+    ):
+        hook_type = "关系威胁"
     elif any(marker in visible[-420:] for marker in ("倒计时", "期限", "一刻钟", "香灭", "之前", "之内")):
         hook_type = "倒计时"
     elif hook["concreteContradiction"]:
