@@ -30,6 +30,7 @@ from db import (  # noqa: E402
     Volume,
 )
 from db.session import AsyncSessionLocal  # noqa: E402
+from scripts.generate_million_novel import build_seed_chapter_outline  # noqa: E402
 from services.body import compute_content_hash  # noqa: E402
 
 
@@ -54,6 +55,11 @@ def chapter_outlines_from_checkpoint(checkpoint: dict[str, Any]) -> list[dict[st
     for volume_outlines in checkpoint.get("volume_outlines", {}).values():
         for outline in volume_outlines:
             outlines[int(outline["number"])] = outline
+    plan = checkpoint.get("plan", {})
+    if plan.get("planning_mode") == "seeded":
+        for volume in plan.get("volumes", []):
+            for number in range(int(volume["chapter_from"]), int(volume["chapter_to"]) + 1):
+                outlines.setdefault(number, build_seed_chapter_outline(number, volume))
     return [outlines[number] for number in sorted(outlines)]
 
 

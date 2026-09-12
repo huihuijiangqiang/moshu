@@ -46,6 +46,25 @@ def test_checkpoint_outlines_merge_new_volume_schema_in_chapter_order():
     assert outlines[0]["title"] == "新标题"
 
 
+def test_seeded_checkpoint_fills_unopened_volumes_without_overwriting_authored_outline():
+    from scripts.generate_million_novel import build_seed_plan
+
+    plan = build_seed_plan(target_words=100_000, chapter_count=20)
+    authored = {"number": 1, "title": "作者保留的第一章", "objective": "保住粮种"}
+    checkpoint = {
+        "plan": {**plan, "chapters": [authored]},
+        "volume_outlines": {},
+    }
+
+    outlines = chapter_outlines_from_checkpoint(checkpoint)
+
+    assert len(outlines) == 20
+    assert outlines[0] is authored
+    assert outlines[-1]["number"] == 20
+    assert outlines[-1]["scene_mode"]
+    assert outlines[-1]["human_stake"]
+
+
 def test_imported_outline_preserves_dramatic_contract_fields():
     lines = _chapter_outline_lines(
         {
