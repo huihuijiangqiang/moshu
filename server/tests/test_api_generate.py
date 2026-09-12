@@ -337,6 +337,15 @@ async def test_positioning_and_scene_coverage_share_preview_generation_and_draft
                 rev=1,
                 outline_rev=0,
             ),
+            ChapterBody(
+                chapter_id="coverage_prev",
+                content_html=(
+                    "<p>沈禾抱着账册到衙门求见主官，门房不肯通报。</p>"
+                    "<p>她改去递状，小吏仍让她按规矩回去等通知。</p>"
+                ),
+                content_json={"type": "doc", "content": []},
+                rev=1,
+            ),
             ChapterScene(
                 id="coverage_scene",
                 chapter_id="coverage_ch",
@@ -373,6 +382,10 @@ async def test_positioning_and_scene_coverage_share_preview_generation_and_draft
     assert '"outlineSignals":["开场压力：粮车在村口被扣"' in preview_prompt
     assert "差役拔刀压住车轴，逼她当场选择" in preview_prompt
     assert '"hasBody":false' in preview_prompt
+    assert '"dominantMotif":"求见受阻"' in preview_prompt
+    assert preview_payload["coverage"]["recentDramaticPatterns"][0]["bodyFingerprint"][
+        "dominantMotif"
+    ] == "求见受阻"
     assert "不作为事实依据" in preview_prompt
     assert "不得复用相同的开场压力、冲突载体、解决手段" in preview_prompt
     assert "沈禾走进粮铺谈判拿到青谷收购契约" in preview_prompt
