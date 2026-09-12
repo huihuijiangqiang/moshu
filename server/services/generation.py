@@ -13,7 +13,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from config import settings
-from db.models_core import Chapter, Project
+from db.models_core import Chapter, ChapterBody, Project
 from db.models_scene_cards import ChapterScene
 from db.models_usage import StyleProfile
 from memory.assembler import (
@@ -23,8 +23,9 @@ from memory.assembler import (
     ContextMode,
 )
 from memory.tokenizer import tokenizer
+from services.chunking import html_to_paragraphs
 from services.embedding import GatewayEmbeddingProvider
-from services.generation_coverage import build_prompt_coverage
+from services.generation_coverage import build_prompt_coverage, extract_dramatic_fingerprint
 from services.model_configs import InvalidModelEndpointError, assert_public_endpoint_resolution
 from services.prompt_security import (
     author_instruction_block,
@@ -289,6 +290,7 @@ class GenerationService:
                 + "\n不得让本章时间早于上一章已确认的结束时间；无法确定时不要擅自编造日期。"
             )
         recent_dramatic_patterns = await self._recent_dramatic_patterns(project, chapter)
+        coverage["recentDramaticPatterns"] = recent_dramatic_patterns
         variation_contract = build_chapter_variation_contract(
             chapter.idx,
             outline=list(chapter.outline or []),
@@ -447,6 +449,17 @@ class GenerationService:
         for scene in scenes:
             scenes_by_chapter.setdefault(scene.chapter_id, []).append(scene)
 
+        body_rows = list(
+            (
+                await self.db.execute(
+                    select(ChapterBody).where(
+                        ChapterBody.chapter_id.in_([item.id for item in recent])
+                    )
+                )
+            ).scalars()
+        )
+        bodies_by_chapter = {row.chapter_id: row for row in body_rows}
+
         patterns: list[dict[str, Any]] = []
         structural_labels = (
             "场景机制：",
@@ -462,6 +475,8 @@ class GenerationService:
         )
         for item in reversed(recent):
             chapter_scenes = scenes_by_chapter.get(item.id, [])
+            body = bodies_by_chapter.get(item.id)
+            body_text = "\n".join(html_to_paragraphs(body.content_html)) if body is not None else ""
             outline_signals = [
                 str(node)[:500]
                 for node in (item.outline or [])
@@ -516,6 +531,7 @@ class GenerationService:
                     "sceneEngineHint": scene_engine_hint,
                     "hookType": hook_type,
                     "variationEngine": variation_engine,
+                    "bodyFingerprint": extract_dramatic_fingerprint(body_text) if body_text else None,
                 }
             )
         return patterns

@@ -1,4 +1,8 @@
-from services.generation_coverage import assess_draft_coverage, build_prompt_coverage
+from services.generation_coverage import (
+    assess_draft_coverage,
+    build_prompt_coverage,
+    extract_dramatic_fingerprint,
+)
 
 
 def _report(text: str) -> dict:
@@ -319,3 +323,69 @@ def test_concrete_countdown_after_a_character_realization_remains_a_hook():
     check = next(item for item in report["checks"] if item["id"] == "quality.chapter_hook_presence")
     assert check["status"] == "evidence_found"
     assert "总结式收尾：否" in check["evidence"]
+
+
+def test_dramatic_fingerprint_reads_actual_access_denial_from_body():
+    text = (
+        "沈禾到衙门求见刘大人，守卫拒绝通报。她改去递状，"
+        "小吏仍让她按规矩回去等通知。"
+    ) * 8
+
+    fingerprint = extract_dramatic_fingerprint(text)
+
+    assert fingerprint["dominantMotif"] == "求见受阻"
+    assert "账证核验" not in fingerprint["motifs"]
+
+
+def test_draft_warns_when_actual_recent_chapters_repeat_same_engine():
+    recent_fingerprint = {
+        "dominantMotif": "求见受阻",
+        "motifs": ["求见受阻", "账证核验"],
+        "hookType": "单独问句",
+    }
+    prompt = {
+        "task": "chapter",
+        "checks": [],
+        "recentDramaticPatterns": [
+            {"chapterIndex": 14, "chapterTitle": "县衙碰壁", "bodyFingerprint": recent_fingerprint},
+            {"chapterIndex": 15, "chapterTitle": "府城递状", "bodyFingerprint": recent_fingerprint},
+        ],
+    }
+    text = (
+        "沈禾抱着账册到衙门求见主官，门房不肯通报。她转去递状，"
+        "小吏翻了翻文书，让她按规矩回去等通知。"
+    ) * 10
+
+    report = assess_draft_coverage(prompt, text)
+
+    assert report is not None
+    check = next(item for item in report["checks"] if item["id"] == "quality.recent_chapter_repetition")
+    assert check["status"] == "author_review"
+    assert "求见受阻" in check["evidence"][0]
+
+
+def test_draft_does_not_warn_when_new_chapter_changes_dramatic_engine():
+    prompt = {
+        "task": "chapter",
+        "checks": [],
+        "recentDramaticPatterns": [
+            {
+                "chapterIndex": 15,
+                "chapterTitle": "府城递状",
+                "bodyFingerprint": {
+                    "dominantMotif": "求见受阻",
+                    "motifs": ["求见受阻", "账证核验"],
+                    "hookType": "单独问句",
+                },
+            }
+        ],
+    }
+    text = (
+        "仓门外的人点火烧毁最后一袋麦种，沈禾冲过去抢粮。"
+        "她放弃田契换下半车种子，代价是全家再无祖宅可回。"
+    ) * 12
+
+    report = assess_draft_coverage(prompt, text)
+
+    assert report is not None
+    assert not any(item["id"] == "quality.recent_chapter_repetition" for item in report["checks"])

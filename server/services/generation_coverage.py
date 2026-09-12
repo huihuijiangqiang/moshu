@@ -94,6 +94,16 @@ _EXPOSITION_LOOP_MARKERS = (
     "因为", "可是", "什么意思", "怎么办", "回去吧", "等通知", "按规矩", "不能接",
     "不行", "没办法", "证据确凿", "你知道", "我不知道",
 )
+_DRAMATIC_MOTIFS: dict[str, tuple[str, ...]] = {
+    "求见受阻": ("求见", "通报", "递状", "等通知", "按规矩", "不能接", "进不了", "回去吧"),
+    "账证核验": ("账册", "核验", "复核", "登记", "凭据", "文书", "副本", "签字"),
+    "利益谈判": ("谈判", "条件", "筹码", "交换", "承诺", "保证书", "答应", "反悔"),
+    "追逐抓捕": ("追上", "追来", "抓住", "抓走", "绑住", "堵住", "逃走", "黑衣人"),
+    "潜入转移": ("混进", "潜入", "藏在", "侧门", "小巷", "出城", "进城", "转移"),
+    "公开对峙": ("当众", "围观", "公堂", "对质", "质问", "众人", "围住", "喝道"),
+    "关系决裂": ("背叛", "决裂", "失信", "不再相信", "断绝", "出卖", "反目", "翻脸"),
+    "资源危机": ("断粮", "被毁", "烧毁", "抢粮", "扣粮", "绝收", "银子用尽", "只剩"),
+}
 _ABSTRACT_CONTRACT_MARKERS = (
     "下一章", "下章", "具体决定", "必须回应", "留下后果", "推进收束", "完成阶段",
     "局势变化", "制造悬念", "埋下伏笔", "引出冲突",
@@ -405,6 +415,101 @@ def _ending_hook_evidence(text: str) -> dict[str, Any]:
     }
 
 
+def extract_dramatic_fingerprint(text: str) -> dict[str, Any]:
+    """Extract bounded structure signals from accepted prose.
+
+    Imported and older chapters often have no scene-card contract. Looking at
+    their prose prevents a rotating catalog label from hiding that several
+    chapters replay the same access, verification, or capture scene.
+    """
+    visible = re.sub(r"\s+", "", text or "")
+    scored: list[tuple[str, int, list[str]]] = []
+    for name, markers in _DRAMATIC_MOTIFS.items():
+        hits = [marker for marker in markers if marker in visible]
+        score = sum(min(3, visible.count(marker)) for marker in hits)
+        if score >= 2:
+            scored.append((name, score, hits[:6]))
+    scored.sort(key=lambda item: (-item[1], item[0]))
+    hook = _ending_hook_evidence(visible)
+    if hook["abstractEnding"]:
+        hook_type = "抽象总结"
+    elif hook["weakRecognition"]:
+        hook_type = "识人问句"
+    elif any(marker in visible[-420:] for marker in ("倒计时", "期限", "一刻钟", "香灭", "之前", "之内")):
+        hook_type = "倒计时"
+    elif hook["concreteContradiction"]:
+        hook_type = "证据或身份矛盾"
+    elif hook["strong"]:
+        hook_type = "已启动威胁"
+    elif hook["question"]:
+        hook_type = "单独问句"
+    else:
+        hook_type = "无有效钩子"
+    return {
+        "dominantMotif": scored[0][0] if scored else "",
+        "motifs": [name for name, _, _ in scored[:3]],
+        "motifEvidence": [
+            {"motif": name, "score": score, "markers": hits}
+            for name, score, hits in scored[:3]
+        ],
+        "hookType": hook_type,
+    }
+
+
+def _recent_chapter_similarity_checks(
+    text: str,
+    prompt_coverage: dict[str, Any],
+) -> list[dict[str, Any]]:
+    recent = prompt_coverage.get("recentDramaticPatterns")
+    if not isinstance(recent, list) or not recent:
+        return []
+    current = extract_dramatic_fingerprint(text)
+    dominant = str(current.get("dominantMotif") or "")
+    if not dominant:
+        return []
+    comparable = [
+        item
+        for item in recent
+        if isinstance(item, dict) and isinstance(item.get("bodyFingerprint"), dict)
+    ]
+    if not comparable:
+        return []
+    current_motifs = set(current.get("motifs") or [])
+    repeated = [
+        item
+        for item in comparable
+        if item["bodyFingerprint"].get("dominantMotif") == dominant
+    ]
+    previous = comparable[-1]
+    previous_motifs = set(previous["bodyFingerprint"].get("motifs") or [])
+    adjacent_overlap = len(current_motifs & previous_motifs)
+    same_adjacent_engine = previous["bodyFingerprint"].get("dominantMotif") == dominant
+    if len(repeated) < 2 and not (same_adjacent_engine and adjacent_overlap >= 2):
+        return []
+    chapter_labels = [
+        f"第{item.get('chapterIndex')}章《{item.get('chapterTitle', '')}》"
+        for item in repeated[-3:]
+    ]
+    return [
+        {
+            "id": "quality.recent_chapter_repetition",
+            "checkType": "quality",
+            "sourceType": "quality",
+            "sourceId": None,
+            "label": "近期章节结构重复",
+            "status": "author_review",
+            "severity": "warning",
+            "message": "候选稿与近期章节复用了同一主要戏剧机制；请更换冲突载体、破局方式或人物代价后再采纳。",
+            "expected": [],
+            "evidence": [
+                f"本章主要机制：{dominant}",
+                "共同机制：" + "、".join(sorted(current_motifs & previous_motifs)),
+                "近期同类：" + "、".join(chapter_labels),
+            ],
+        }
+    ]
+
+
 def _structural_quality_checks(text: str, *, is_chapter: bool) -> list[dict[str, Any]]:
     """Check the minimum dramatic beats that lexical coverage cannot prove."""
     if not is_chapter or len(text) < 300:
@@ -655,6 +760,7 @@ def assess_draft_coverage(prompt_coverage: dict[str, Any] | None, content: str) 
 
     checks.extend(_narrative_vitality_checks(content))
     checks.extend(_dramatic_contract_checks(content, prompt_coverage))
+    checks.extend(_recent_chapter_similarity_checks(content, prompt_coverage))
     return {
         "stage": "draft",
         "blocking": False,
