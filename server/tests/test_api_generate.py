@@ -252,10 +252,11 @@ async def test_positioning_and_scene_coverage_share_preview_generation_and_draft
     chapters = await seed_project(
         user_id="coverage_writer",
         project_id="coverage_novel",
-        chapter_ids=("coverage_ch",),
+        chapter_ids=("coverage_prev", "coverage_ch"),
         genre="女频 · 穿越种田",
     )
-    chapters[0].outline = ["沈禾去粮铺谈青谷收购价"]
+    chapters[0].outline = ["旧章以粮车被扣收尾", "章末必须决定是否交出田契"]
+    chapters[1].outline = ["沈禾去粮铺谈青谷收购价"]
     async_db_session.add_all(
         [
             ProjectPositioning(
@@ -270,6 +271,18 @@ async def test_positioning_and_scene_coverage_share_preview_generation_and_draft
                 long_term_arc="建立不受粮商盘剥的新秩序",
                 revision=1,
                 status="active",
+            ),
+            ChapterScene(
+                id="coverage_prev_scene",
+                chapter_id="coverage_prev",
+                order=1,
+                goal="沈禾必须保住被扣的粮车",
+                obstacle="差役要求交出田契",
+                turn="盟友突然撤走担保",
+                hook="差役拔刀压住车轴，逼她当场选择",
+                status="written",
+                rev=1,
+                outline_rev=0,
             ),
             ChapterScene(
                 id="coverage_scene",
@@ -299,6 +312,10 @@ async def test_positioning_and_scene_coverage_share_preview_generation_and_draft
     preview_prompt = preview_payload["messages"][1]["content"]
     assert "# 作品定位与读者承诺" in preview_prompt
     assert "# 本章场景计划" in preview_prompt
+    assert "# 近期章节结构去重" in preview_prompt
+    assert "盟友突然撤走担保" in preview_prompt
+    assert "差役拔刀压住车轴，逼她当场选择" in preview_prompt
+    assert "不得复用相同的解决手段、转折触发方式或章尾钩子类型" in preview_prompt
     assert "沈禾走进粮铺谈判拿到青谷收购契约" in preview_prompt
     assert preview_payload["scene"] == "negotiation"
     assert preview_payload["coverage"]["blocking"] is False

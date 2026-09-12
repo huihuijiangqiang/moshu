@@ -14,6 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from config import settings
 from db.models_core import Chapter, Project
+from db.models_scene_cards import ChapterScene
 from db.models_usage import StyleProfile
 from memory.assembler import (
     AssembledContext,
@@ -276,6 +277,14 @@ class GenerationService:
                 + untrusted_json_block("temporal_anchors", temporal_data)
                 + "\n不得让本章时间早于上一章已确认的结束时间；无法确定时不要擅自编造日期。"
             )
+        recent_dramatic_patterns = await self._recent_dramatic_patterns(project, chapter)
+        if recent_dramatic_patterns:
+            context_text += (
+                "\n\n# 近期章节结构去重\n"
+                + untrusted_json_block("recent_dramatic_patterns", recent_dramatic_patterns)
+                + "\n上述内容只用于识别近期已经使用过的叙事结构。必须延续其中已经发生的事实，但本章不得复用"
+                "相同的解决手段、转折触发方式或章尾钩子类型；应由本章人物目标和代价产生新的状态变化。"
+            )
         outline_text = untrusted_json_block(
             "chapter_outline",
             {"nodes": list(chapter.outline or [])},
@@ -377,6 +386,61 @@ class GenerationService:
             coverage=coverage,
             preflight=preflight,
         )
+
+    async def _recent_dramatic_patterns(
+        self,
+        project: Project,
+        chapter: Chapter,
+        *,
+        limit: int = 4,
+    ) -> list[dict[str, Any]]:
+        """Expose recent dramatic choices so the prose model can avoid repetition."""
+        recent = list(
+            (
+                await self.db.execute(
+                    select(Chapter)
+                    .where(
+                        Chapter.project_id == project.id,
+                        Chapter.idx < chapter.idx,
+                        Chapter.deleted_at.is_(None),
+                    )
+                    .order_by(Chapter.idx.desc())
+                    .limit(limit)
+                )
+            ).scalars()
+        )
+        if not recent:
+            return []
+
+        scenes = list(
+            (
+                await self.db.execute(
+                    select(ChapterScene)
+                    .where(
+                        ChapterScene.chapter_id.in_([item.id for item in recent]),
+                        ChapterScene.status != "archived",
+                    )
+                    .order_by(ChapterScene.chapter_id, ChapterScene.order)
+                )
+            ).scalars()
+        )
+        scenes_by_chapter: dict[str, list[ChapterScene]] = {}
+        for scene in scenes:
+            scenes_by_chapter.setdefault(scene.chapter_id, []).append(scene)
+
+        patterns: list[dict[str, Any]] = []
+        for item in reversed(recent):
+            chapter_scenes = scenes_by_chapter.get(item.id, [])
+            patterns.append(
+                {
+                    "chapterIndex": item.idx,
+                    "chapterTitle": item.title,
+                    "turns": [scene.turn[:500] for scene in chapter_scenes if scene.turn.strip()],
+                    "hooks": [scene.hook[:500] for scene in chapter_scenes if scene.hook.strip()],
+                    "outlineTail": [str(node)[:500] for node in (item.outline or [])[-3:]],
+                }
+            )
+        return patterns
 
     async def _style_prompt(self, project: Project, enabled: bool) -> str:
         if not enabled or not project.style_profile_id:
