@@ -85,11 +85,15 @@ def build_prompt_coverage(
     *,
     included_content: str,
     task: str,
+    outline_nodes: list[str] | None = None,
+    outline_source_id: str | None = None,
 ) -> dict[str, Any]:
     """Report which planning requirements reached the exact prompt package."""
     checks = [dict(check) for check in guidance.get("inputChecks", [])]
+    outline_requirements = _outline_dramatic_requirements(outline_nodes or [], outline_source_id)
+    all_requirements = [*guidance.get("requirements", []), *outline_requirements]
     applicability = "chapter" if task == "chapter" else "reference"
-    for requirement in guidance.get("requirements", []):
+    for requirement in all_requirements:
         raw_expected = [str(value) for value in requirement.get("expected", []) if str(value).strip()]
         included = bool(raw_expected) and all(value in included_content for value in raw_expected)
         expected = [value if len(value) <= 240 else value[:237] + "..." for value in raw_expected]
@@ -126,6 +130,56 @@ def build_prompt_coverage(
         "summary": _summary(checks, stage="prompt"),
         "checks": checks,
     }
+
+
+def _outline_dramatic_requirements(
+    outline_nodes: list[str],
+    source_id: str | None,
+) -> list[dict[str, Any]]:
+    """Turn legacy structural outline lines into auditable drama contracts.
+
+    Imported projects often predate scene cards.  Their outline still carries
+    the most important dramatic promises, so keep those promises in the same
+    coverage and post-draft checks as scene-card requirements.
+    """
+    if not source_id:
+        return []
+    labels: tuple[tuple[str, str, str], ...] = (
+        ("开场压力：", "opening_pressure", "开场压力"),
+        ("主角策略：", "strategy", "主角策略"),
+        ("策略失效：", "turn", "策略失效"),
+        ("两难选择：", "choice", "两难选择"),
+        ("即时代价：", "cost", "即时代价"),
+        ("章末钩子（", "hook", "章末钩子"),
+        ("章末钩子：", "hook", "章末钩子"),
+        ("章末未决问题：", "unresolved_question", "章末未决问题"),
+    )
+    requirements: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for raw_node in outline_nodes:
+        node = str(raw_node).strip()
+        for prefix, semantic_type, label in labels:
+            if not node.startswith(prefix):
+                continue
+            value = node[len(prefix) :].strip().rstrip("】")
+            if not value:
+                continue
+            key = f"{semantic_type}:{value}"
+            if key in seen:
+                continue
+            seen.add(key)
+            requirements.append(
+                {
+                    "id": f"outline.{source_id}.{semantic_type}",
+                    "sourceType": "outline",
+                    "sourceId": source_id,
+                    "label": label,
+                    "expected": [value],
+                    "semanticType": semantic_type,
+                }
+            )
+            break
+    return requirements
 
 
 def _salient_terms(values: list[str]) -> list[str]:

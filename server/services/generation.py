@@ -223,8 +223,14 @@ class GenerationService:
         )
         coverage = build_prompt_coverage(
             context.guidance,
-            included_content=context.layer1_resident.content,
+            included_content=(
+                context.layer1_resident.content
+                + "\n"
+                + "\n".join(str(node) for node in (chapter.outline or []))
+            ),
             task=task,
+            outline_nodes=list(chapter.outline or []),
+            outline_source_id=chapter.id,
         )
         style_prompt = await self._style_prompt(project, use_style_profile)
         density_prompt = {

@@ -167,3 +167,63 @@ def test_prompt_coverage_accepts_concrete_scene_contract():
     )
 
     assert not any(item["id"] == "scene.scene-1.dramatic_contract" for item in report["checks"])
+
+
+def test_prompt_coverage_audits_legacy_outline_drama_nodes():
+    outline = [
+        "开场压力：粮车在村口被扣",
+        "主角策略：让见证人公开复述扣车经过",
+        "策略失效：差役拿出伪造的县印，见证人当场改口",
+        "两难选择：交出田契换粮车，或保住田契让全村断粮",
+        "即时代价：沈禾撕掉唯一的通行凭据",
+        "章末钩子（倒计时）：香灭前必须决定是否打开粮仓",
+        "章末未决问题：粮仓里是谁提前藏进了官印",
+    ]
+    included = "\n".join(outline)
+    report = build_prompt_coverage(
+        {"inputChecks": [], "requirements": []},
+        included_content=included,
+        task="chapter",
+        outline_nodes=outline,
+        outline_source_id="chapter-legacy",
+    )
+
+    requirements = {
+        check["id"]: check
+        for check in report["checks"]
+        if check["checkType"] == "requirement"
+    }
+    assert requirements["outline.chapter-legacy.turn"]["status"] == "included"
+    assert requirements["outline.chapter-legacy.hook"]["status"] == "included"
+    assert requirements["outline.chapter-legacy.unresolved_question"]["status"] == "included"
+
+
+def test_legacy_outline_weak_hook_is_reviewed_in_draft():
+    outline = ["策略失效：局势变化", "章末钩子：制造悬念"]
+    report = build_prompt_coverage(
+        {"inputChecks": [], "requirements": []},
+        included_content="\n".join(outline),
+        task="chapter",
+        outline_nodes=outline,
+        outline_source_id="chapter-weak",
+    )
+    draft = assess_draft_coverage(report, "她收好账册，明日继续核验。" * 100)
+
+    assert draft is not None
+    by_id = {check["id"]: check for check in draft["checks"]}
+    assert by_id["quality.turning_point"]["status"] == "author_review"
+    assert by_id["quality.chapter_hook"]["status"] == "author_review"
+
+
+def test_legacy_outline_without_drama_nodes_remains_compatible():
+    report = build_prompt_coverage(
+        {"inputChecks": [], "requirements": []},
+        included_content="沈禾去粮铺谈青谷收购价",
+        task="chapter",
+        outline_nodes=["沈禾去粮铺谈青谷收购价"],
+        outline_source_id="chapter-plain",
+    )
+
+    assert not any(
+        check["id"].startswith("outline.chapter-plain.") for check in report["checks"]
+    )
