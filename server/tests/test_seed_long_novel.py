@@ -4,6 +4,7 @@ from scripts.seed_long_novel import (
     chapter_file_for_number,
     chapter_outlines_from_checkpoint,
     prose_document,
+    prose_text_from_document,
     upsert_codex_entries,
 )
 
@@ -13,6 +14,12 @@ def test_prose_document_uses_backend_paragraph_pid_contract():
 
     assert 'data-paragraph-id="p-0"' in content_html
     assert [node["attrs"]["pid"] for node in content_json["content"]] == ["p-0", "p-1"]
+
+
+def test_prose_text_round_trips_structured_document():
+    _, document = prose_document("第一段\n\n第二段有 12 斗粮")
+
+    assert prose_text_from_document(document) == "第一段\n第二段有 12 斗粮"
 
 
 def test_chapter_file_lookup_accepts_zero_padded_and_large_numbers(tmp_path):

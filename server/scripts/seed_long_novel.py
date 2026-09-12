@@ -122,6 +122,24 @@ def prose_document(text: str) -> tuple[str, dict[str, Any]]:
     return "\n".join(html_parts), {"type": "doc", "content": nodes}
 
 
+def prose_text_from_document(document: dict[str, Any]) -> str:
+    """Extract text from the structured editor document without parsing HTML."""
+    parts: list[str] = []
+    stack: list[Any] = [document]
+    while stack:
+        node = stack.pop()
+        if isinstance(node, dict):
+            value = node.get("text")
+            if isinstance(value, str):
+                parts.append(value)
+            children = node.get("content")
+            if isinstance(children, list):
+                stack.extend(reversed(children))
+        elif isinstance(node, list):
+            stack.extend(reversed(node))
+    return "\n".join(parts)
+
+
 def _entry_id_prefix(project_id: str) -> str:
     if len(project_id) <= 10:
         return project_id
@@ -445,14 +463,19 @@ async def upsert_novel(output_dir: Path, *, project_id: str, user_id: str) -> in
             chapter.title = outline["title"]
             chapter.idx = number
             chapter.outline = _chapter_outline_lines(outline)
+            resolved_chapter_id = chapter.id
 
+            body = await session.get(ChapterBody, resolved_chapter_id)
             chapter_path = chapter_file_for_number(output_dir / "chapters", number)
             if chapter_path is None:
-                chapter.words = 0
+                if body is None:
+                    chapter.words = 0
+                elif chapter.words <= 0:
+                    chapter.words = visible_chars(prose_text_from_document(body.content_json or {}))
                 continue
 
             text = chapter_path.read_text(encoding="utf-8")
-            completed_chapters.append((chapter_id, text))
+            completed_chapters.append((resolved_chapter_id, text))
             content_html, content_json = prose_document(text)
             chapter.words = visible_chars(text)
             summary_path = output_dir / "analysis" / f"{number:02d}-summary.txt"
@@ -461,11 +484,10 @@ async def upsert_novel(output_dir: Path, *, project_id: str, user_id: str) -> in
                 if summary_path.exists()
                 else None
             )
-            body = await session.get(ChapterBody, chapter_id)
             content_changed = body is None or body.content_html != content_html or body.content_json != content_json
             if body is None:
                 body = ChapterBody(
-                    chapter_id=chapter_id,
+                    chapter_id=resolved_chapter_id,
                     content_html=content_html,
                     content_json=content_json,
                     rev=1,
@@ -479,7 +501,7 @@ async def upsert_novel(output_dir: Path, *, project_id: str, user_id: str) -> in
             snapshot = (
                 await session.execute(
                     select(ChapterVersion).where(
-                        ChapterVersion.chapter_id == chapter_id,
+                        ChapterVersion.chapter_id == resolved_chapter_id,
                         ChapterVersion.rev == body.rev,
                     )
                 )
@@ -487,7 +509,7 @@ async def upsert_novel(output_dir: Path, *, project_id: str, user_id: str) -> in
             if snapshot is None:
                 session.add(
                     ChapterVersion(
-                        chapter_id=chapter_id,
+                        chapter_id=resolved_chapter_id,
                         content_html=content_html,
                         content_json=content_json,
                         rev=body.rev,
