@@ -3,7 +3,7 @@ from types import SimpleNamespace
 
 from sqlalchemy import select
 
-from api.generate import _merge_continuation_content, get_generation_gateway
+from api.generate import _merge_continuation_content, _quality_review_checks, get_generation_gateway
 from db.models_core import ChapterBody, Project, User
 from db.models_positioning import ProjectPositioning
 from db.models_scene_cards import ChapterScene
@@ -70,6 +70,40 @@ def test_continuation_merge_keeps_distinct_paragraphs_separate():
         "第一段已经完成。\n最后一段停在这里。",
         "沈禾推开粮铺的门。",
     ) == "第一段已经完成。\n最后一段停在这里。\n沈禾推开粮铺的门。"
+
+
+def test_quality_review_checks_only_block_unresolved_warning_signals():
+    assert _quality_review_checks(
+        {
+            "checks": [
+                {
+                    "id": "quality.chapter_hook",
+                    "checkType": "quality",
+                    "severity": "warning",
+                    "status": "author_review",
+                },
+                {
+                    "id": "scene.incomplete",
+                    "checkType": "input",
+                    "severity": "warning",
+                    "status": "author_review",
+                },
+                {
+                    "id": "quality.turning_point",
+                    "checkType": "quality",
+                    "severity": "info",
+                    "status": "evidence_found",
+                },
+            ]
+        }
+    ) == [
+        {
+            "id": "quality.chapter_hook",
+            "checkType": "quality",
+            "severity": "warning",
+            "status": "author_review",
+        }
+    ]
 
 
 async def test_chapter_generation_streams_meta_text_done_and_records_run(

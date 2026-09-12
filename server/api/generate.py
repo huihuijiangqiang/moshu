@@ -1282,6 +1282,25 @@ async def _draft_coverage(db: AsyncSession, draft: GenerationDraft) -> dict | No
     return assess_draft_coverage(raw if isinstance(raw, dict) else None, review_content)
 
 
+def _quality_review_checks(coverage: dict | None) -> list[dict]:
+    """Return unresolved prose-quality warnings that need an author decision.
+
+    Coverage is intentionally conservative and lexical.  It must not silently
+    reject a draft forever, but a chapter with an unresolved dramatic warning
+    should not be promoted to canon without an explicit paragraph review.
+    """
+    if not isinstance(coverage, dict):
+        return []
+    return [
+        check
+        for check in coverage.get("checks", [])
+        if isinstance(check, dict)
+        and check.get("checkType") == "quality"
+        and check.get("severity") == "warning"
+        and check.get("status") in {"attention", "author_review"}
+    ]
+
+
 async def _load_draft(draft_id: str, user: User, db: AsyncSession, *, lock: bool = False) -> GenerationDraft:
     statement = select(GenerationDraft).where(GenerationDraft.id == draft_id)
     if lock:
@@ -1515,6 +1534,25 @@ async def accept_draft(
     if draft.status not in {"ready", "failed"} or not draft.content_text:
         raise HTTPException(status_code=409, detail={"code": "DRAFT_NOT_ACCEPTABLE"})
     segments, _, has_review = _draft_segments(draft)
+    quality_coverage = await _draft_coverage(db, draft)
+    quality_checks = _quality_review_checks(quality_coverage)
+    if draft.kind == "chapter" and quality_checks and not has_review:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "DRAFT_QUALITY_REVIEW_REQUIRED",
+                "message": "候选存在转折、钩子或叙事张力风险，请先逐段审阅后再放入正文。",
+                "checks": [
+                    {
+                        "id": check.get("id"),
+                        "label": check.get("label"),
+                        "message": check.get("message"),
+                        "evidence": check.get("evidence", []),
+                    }
+                    for check in quality_checks
+                ],
+            },
+        )
     if has_review and any(segment["decision"] == "pending" for segment in segments):
         raise HTTPException(
             status_code=409,
