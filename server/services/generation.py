@@ -283,8 +283,9 @@ class GenerationService:
                 "\n\n# 近期章节结构去重\n"
                 + untrusted_json_block("recent_dramatic_patterns", recent_dramatic_patterns)
                 + "\n上述字段只用于识别近期已经使用或规划过的叙事结构，不作为事实依据；事实连续性只以其他前情层中"
-                "已成文的内容为准。本章不得复用相同的解决手段、转折触发方式或章尾钩子类型；应由本章人物目标和"
-                "代价产生新的状态变化。"
+                "已成文的内容为准。本章不得复用相同的开场压力、冲突载体、解决手段、转折触发、人物代价、情绪"
+                "变化路径或章尾钩子类型。即使题材仍涉及账目、契约或核验，也要换成由人物关系、名誉、时间、身体"
+                "风险或资源损失驱动的不同场景机制；应由本章人物目标和代价产生新的状态变化。"
             )
         outline_text = untrusted_json_block(
             "chapter_outline",
@@ -430,15 +431,40 @@ class GenerationService:
             scenes_by_chapter.setdefault(scene.chapter_id, []).append(scene)
 
         patterns: list[dict[str, Any]] = []
+        structural_labels = (
+            "开场压力：",
+            "主角策略：",
+            "策略失效：",
+            "两难选择：",
+            "即时代价：",
+            "入场状态：",
+            "离场状态：",
+            "章末钩子（",
+        )
         for item in reversed(recent):
             chapter_scenes = scenes_by_chapter.get(item.id, [])
+            outline_signals = [
+                str(node)[:500]
+                for node in (item.outline or [])
+                if str(node).startswith(structural_labels)
+            ]
             patterns.append(
                 {
                     "chapterIndex": item.idx,
                     "chapterTitle": item.title,
                     "hasBody": item.words > 0,
+                    "goals": [scene.goal[:500] for scene in chapter_scenes if scene.goal.strip()],
+                    "obstacles": [
+                        scene.obstacle[:500] for scene in chapter_scenes if scene.obstacle.strip()
+                    ],
                     "turns": [scene.turn[:500] for scene in chapter_scenes if scene.turn.strip()],
+                    "emotionShifts": [
+                        scene.emotion_shift[:500]
+                        for scene in chapter_scenes
+                        if scene.emotion_shift.strip()
+                    ],
                     "hooks": [scene.hook[:500] for scene in chapter_scenes if scene.hook.strip()],
+                    "outlineSignals": outline_signals[:8],
                     "outlineTail": [str(node)[:500] for node in (item.outline or [])[-3:]],
                 }
             )

@@ -269,7 +269,11 @@ async def test_positioning_and_scene_coverage_share_preview_generation_and_draft
         chapter_ids=("coverage_prev", "coverage_ch"),
         genre="女频 · 穿越种田",
     )
-    chapters[0].outline = ["旧章以粮车被扣收尾", "章末必须决定是否交出田契"]
+    chapters[0].outline = [
+        "开场压力：粮车在村口被扣",
+        "主角策略：让见证人公开复述扣车经过",
+        "章末钩子（倒计时）：日落前必须决定是否交出田契",
+    ]
     chapters[1].outline = ["沈禾去粮铺谈青谷收购价"]
     async_db_session.add_all(
         [
@@ -293,6 +297,7 @@ async def test_positioning_and_scene_coverage_share_preview_generation_and_draft
                 goal="沈禾必须保住被扣的粮车",
                 obstacle="差役要求交出田契",
                 turn="盟友突然撤走担保",
+                emotion_shift="沈禾从笃定转为担心盟友背叛",
                 hook="差役拔刀压住车轴，逼她当场选择",
                 status="written",
                 rev=1,
@@ -328,10 +333,14 @@ async def test_positioning_and_scene_coverage_share_preview_generation_and_draft
     assert "# 本章场景计划" in preview_prompt
     assert "# 近期章节结构去重" in preview_prompt
     assert "盟友突然撤走担保" in preview_prompt
+    assert "沈禾必须保住被扣的粮车" in preview_prompt
+    assert "差役要求交出田契" in preview_prompt
+    assert "沈禾从笃定转为担心盟友背叛" in preview_prompt
+    assert '"outlineSignals":["开场压力：粮车在村口被扣"' in preview_prompt
     assert "差役拔刀压住车轴，逼她当场选择" in preview_prompt
     assert '"hasBody":false' in preview_prompt
     assert "不作为事实依据" in preview_prompt
-    assert "不得复用相同的解决手段、转折触发方式或章尾钩子类型" in preview_prompt
+    assert "不得复用相同的开场压力、冲突载体、解决手段" in preview_prompt
     assert "沈禾走进粮铺谈判拿到青谷收购契约" in preview_prompt
     assert preview_payload["scene"] == "negotiation"
     assert preview_payload["coverage"]["blocking"] is False
