@@ -123,6 +123,7 @@ def build_prompt_coverage(
     checks.extend(_scene_contract_specificity_checks(checks))
     return {
         "stage": "prompt",
+        "task": task,
         "blocking": False,
         "status": "needs_attention"
         if any(check["status"] == "attention" and check["severity"] == "warning" for check in checks)
@@ -374,7 +375,8 @@ def _dramatic_contract_checks(content: str, prompt_coverage: dict[str, Any]) -> 
     if hook_requirements:
         tail = text[-1200:]
         unresolved = [marker for marker in _HOOK_MARKERS if marker in tail]
-        actions = [marker for marker in _HOOK_ACTION_MARKERS if marker in tail]
+        ending = tail[-420:]
+        actions = [marker for marker in _HOOK_ACTION_MARKERS if marker in ending]
         has_summary = any(phrase in tail for phrase in ("这一切", "终于明白", "新的篇章", "才刚刚开始"))
         strong = bool(unresolved and actions and not has_summary)
         checks.append(
@@ -399,11 +401,14 @@ def _dramatic_contract_checks(content: str, prompt_coverage: dict[str, Any]) -> 
                 ],
             }
         )
-    elif any(
-        item.get("checkType") == "requirement"
-        and item.get("applicability") in {None, "chapter"}
-        for item in prompt_coverage.get("checks", [])
-        if isinstance(item, dict)
+    elif prompt_coverage.get("task") == "chapter" or (
+        "task" not in prompt_coverage
+        and any(
+            item.get("checkType") == "requirement"
+            and item.get("applicability") in {None, "chapter"}
+            for item in prompt_coverage.get("checks", [])
+            if isinstance(item, dict)
+        )
     ):
         # Legacy chapters frequently have no scene-card hook at all.  They
         # still need a visible ending contract; otherwise the model tends to
@@ -415,7 +420,12 @@ def _dramatic_contract_checks(content: str, prompt_coverage: dict[str, Any]) -> 
                 tail,
             )
         )
-        actions = [marker for marker in _HOOK_ACTION_MARKERS if marker in tail]
+        # A marker in the first half of the tail is not enough: report-like
+        # drafts often contain an action, then explain it away in the final
+        # paragraph. Require the concrete action to land in the final 420
+        # characters so the reader is actually left at the new event.
+        ending = tail[-420:]
+        actions = [marker for marker in _HOOK_ACTION_MARKERS if marker in ending]
         has_summary = any(phrase in tail for phrase in ("这一切", "新的篇章", "才刚刚开始", "接下来"))
         strong = question and bool(actions) and not has_summary
         checks.append(

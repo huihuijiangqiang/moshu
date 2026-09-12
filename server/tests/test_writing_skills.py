@@ -22,7 +22,21 @@ def test_explicit_outline_hook_type_wins_over_rotating_default():
         outline=["章末钩子（证据缺口）：账册最后一页被刮掉"],
     )
 
-    assert "建议章尾钩子类型：证据缺口" in contract
+    assert "本章指定章尾钩子类型：证据缺口" in contract
+
+
+def test_variation_contract_skips_recent_engine_and_hook_instead_of_only_warning():
+    contract = build_chapter_variation_contract(
+        1,
+        recent_patterns=[
+            {"variationEngine": "公开对峙", "hookType": "倒计时"},
+            {"variationEngine": "移动追索", "hookType": "未完成动作"},
+        ],
+    )
+
+    assert "本章指定发动机：关系交换" in contract
+    assert "本章指定章尾钩子类型：关系威胁" in contract
+    assert "公开对峙" in contract and "移动追索" in contract
 
 
 def test_skill_selection_combines_genre_task_and_scene_in_stable_order():

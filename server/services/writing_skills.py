@@ -110,7 +110,12 @@ def build_chapter_variation_contract(
         if match:
             explicit_hook = match.group(1).strip()
             break
-    profile = CHAPTER_VARIATION_CATALOG[max(0, chapter_index - 1) % len(CHAPTER_VARIATION_CATALOG)]
+    # Start from the chapter's stable slot, then advance until both the
+    # dramatic engine and the default hook are absent from the recent window.
+    # The old implementation only *mentioned* recent patterns and still used
+    # the modulo slot, so chapters could receive the same contract repeatedly
+    # after an outline was edited or imported.
+    start = max(0, chapter_index - 1) % len(CHAPTER_VARIATION_CATALOG)
     recent = recent_patterns or []
     recent_engines = [
         str(item.get("variationEngine") or "").strip()
@@ -122,6 +127,16 @@ def build_chapter_variation_contract(
         for item in recent
         if str(item.get("hookType") or "").strip()
     ]
+    used_engine_keys = {value.casefold() for value in recent_engines}
+    used_hook_keys = {value.casefold() for value in recent_hooks}
+    profile = CHAPTER_VARIATION_CATALOG[start]
+    for offset in range(len(CHAPTER_VARIATION_CATALOG)):
+        candidate = CHAPTER_VARIATION_CATALOG[(start + offset) % len(CHAPTER_VARIATION_CATALOG)]
+        engine_available = candidate["engine"].casefold() not in used_engine_keys
+        hook_available = explicit_hook or candidate["hook"].casefold() not in used_hook_keys
+        if engine_available and hook_available:
+            profile = candidate
+            break
     hook = explicit_hook or profile["hook"]
     avoid_lines = []
     if recent_engines:
@@ -130,11 +145,11 @@ def build_chapter_variation_contract(
         avoid_lines.append("近期已用章尾钩子类型：" + "、".join(recent_hooks))
     avoid = "\n".join(avoid_lines) if avoid_lines else "近期没有可供去重的结构记录。"
     return (
-        "本章必须有一个与相邻章节可辨认不同的戏剧发动机，不能把同一套查账、核验、解释流程换名重写。\n"
-        f"系统建议的发动机：{profile['engine']}；主要冲突载体：{profile['carrier']}。\n"
-        f"建议章尾钩子类型：{hook}。{profile['instruction']}\n"
+        "本章必须使用下面指定的戏剧发动机，不能把同一套查账、核验、解释流程换名重写。\n"
+        f"本章指定发动机：{profile['engine']}；主要冲突载体：{profile['carrier']}。\n"
+        f"本章指定章尾钩子类型：{hook}。{profile['instruction']}\n"
         f"{avoid}\n"
-        "若近期记录与系统建议冲突，优先换成目录中尚未使用的发动机和钩子；作者在本章章纲中明确写出的类型与事实优先。\n"
+        "上述发动机和钩子是本章的硬约束；近期记录中的结构禁止复用，作者在本章章纲中明确写出的事实优先但不得取消章尾钩子。\n"
         "硬验收：开头150字内发生压力；中段由可见行动使原策略失效；主角作出有代价的选择；最后120到250字只落地一个新动作或发现，"
         "并停在下一章必须回答的具体问题之前。不得用‘接下来/新的篇章/埋下伏笔/局势变化’等总结代替钩子，也不得在章尾提前解决未决问题。"
     )

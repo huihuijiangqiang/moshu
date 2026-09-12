@@ -35,6 +35,7 @@ from services.prompt_security import (
 from services.retrieval import ConsistencyRetrieval
 from services.temporal_anchor import format_temporal_anchor
 from services.writing_skills import (
+    CHAPTER_VARIATION_CATALOG,
     SkillSelection,
     build_chapter_variation_contract,
     select_writing_skills,
@@ -479,6 +480,17 @@ class GenerationService:
                 # goal/obstacle is still useful as a stable anti-repetition
                 # signal for the next request.
                 variation_engine = (chapter_scenes[0].goal or chapter_scenes[0].obstacle or "").strip()[:120]
+            if not variation_engine:
+                # Legacy chapters may have no scene cards or structural labels.
+                # Give them the stable catalog slot used at generation time so
+                # later chapters can still avoid repeating that engine.
+                variation_engine = CHAPTER_VARIATION_CATALOG[
+                    max(0, item.idx - 1) % len(CHAPTER_VARIATION_CATALOG)
+                ]["engine"]
+            if not hook_type:
+                hook_type = CHAPTER_VARIATION_CATALOG[
+                    max(0, item.idx - 1) % len(CHAPTER_VARIATION_CATALOG)
+                ]["hook"]
             patterns.append(
                 {
                     "chapterIndex": item.idx,

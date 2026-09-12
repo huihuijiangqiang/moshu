@@ -247,3 +247,24 @@ def test_legacy_chapter_without_hook_contract_is_flagged_at_ending():
     check = next(item for item in report["checks"] if item["id"] == "quality.chapter_hook_presence")
     assert check["status"] == "author_review"
     assert report["status"] == "needs_attention"
+
+
+def test_chapter_without_any_planning_requirements_still_gets_hook_check():
+    report = assess_draft_coverage(
+        {"task": "chapter", "checks": []},
+        "她把账册收好，明日继续核验。" * 100,
+    )
+
+    check = next(item for item in report["checks"] if item["id"] == "quality.chapter_hook_presence")
+    assert check["status"] == "author_review"
+    assert "具体动作" in check["message"]
+
+
+def test_hook_action_must_land_in_final_part_of_draft():
+    report = assess_draft_coverage(
+        {"task": "chapter", "checks": []},
+        ("她突然推开门，门外有人吗？" + "她继续解释账册。" * 60),
+    )
+
+    check = next(item for item in report["checks"] if item["id"] == "quality.chapter_hook_presence")
+    assert check["status"] == "author_review"
