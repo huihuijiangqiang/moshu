@@ -268,3 +268,27 @@ def test_hook_action_must_land_in_final_part_of_draft():
 
     check = next(item for item in report["checks"] if item["id"] == "quality.chapter_hook_presence")
     assert check["status"] == "author_review"
+
+
+def test_recognition_question_is_not_counted_as_a_real_chapter_hook():
+    text = (
+        "沈禾在府城门外等了一上午，递状子后只得到等通知的答复。"
+        "她回头离开，街上有人撞了她一下。她仔细看了看，忽然认出了那张脸。\n"
+        "是林谨言。\n"
+        "他怎么会在府城？"
+    )
+    report = assess_draft_coverage({"task": "chapter", "checks": []}, text * 8)
+    check = next(item for item in report["checks"] if item["id"] == "quality.chapter_hook_presence")
+    assert check["status"] == "author_review"
+    assert "识人问句：是" in check["evidence"]
+
+
+def test_chapter_without_choice_and_cost_is_flagged_even_when_it_has_questions():
+    text = (
+        "她赶到府城，守卫不让她进去。她解释账册，守卫让她按规矩等通知。"
+        "她又去找另一位大人，得到同样的答复。她站在街上想自己该怎么办？"
+    ) * 12
+    report = assess_draft_coverage({"task": "chapter", "checks": []}, text)
+    checks = {item["id"]: item for item in report["checks"]}
+    assert checks["quality.irreversible_choice"]["status"] == "author_review"
+    assert checks["quality.exposition_loop"]["status"] == "author_review"

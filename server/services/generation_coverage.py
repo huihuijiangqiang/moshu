@@ -64,6 +64,27 @@ _HOOK_ACTION_MARKERS = (
     "敲", "撞", "闯", "扣", "拔", "抬", "转", "递", "烧", "撕", "打开", "按住",
     "站起", "回头", "冲进", "落笔", "封", "带走", "逼问", "拔刀", "来信",
 )
+_HOOK_PRESSURE_MARKERS = (
+    "必须", "期限", "倒计时", "来不及", "之前", "之内", "否则", "要么", "代价",
+    "拔刀", "封门", "追上", "抓住", "带走", "杀", "着火", "断粮", "失踪", "截住",
+    "交出", "撕掉", "烧掉", "扣下", "不见了", "只给",
+)
+_DECISION_MARKERS = (
+    "决定", "答应", "拒绝", "撕掉", "烧掉", "交出", "留下", "放弃", "押上", "签下",
+    "闯入", "拔刀",
+)
+_COST_MARKERS = (
+    "代价", "失去", "换来", "换回", "舍弃", "损失", "暴露", "得罪", "受伤", "欠下",
+    "没有退路", "再也不能", "断粮", "坐牢", "杀头", "被抓", "被扣",
+)
+_RECOGNITION_ONLY_HOOK = re.compile(
+    r"(?:认出|认出了|看清|看到了|想起|是)\s*[^。！？!?]{0,36}"
+    r"(?:怎么会|为何|为什么|怎么可能|竟然在|会在|是谁)\s*[？?]\s*$"
+)
+_EXPOSITION_LOOP_MARKERS = (
+    "因为", "可是", "什么意思", "怎么办", "回去吧", "等通知", "按规矩", "不能接",
+    "不行", "没办法", "证据确凿", "你知道", "我不知道",
+)
 _ABSTRACT_CONTRACT_MARKERS = (
     "下一章", "下章", "具体决定", "必须回应", "留下后果", "推进收束", "完成阶段",
     "局势变化", "制造悬念", "埋下伏笔", "引出冲突",
@@ -325,6 +346,133 @@ def _narrative_vitality_checks(content: str) -> list[dict[str, Any]]:
     return checks
 
 
+def _ending_hook_evidence(text: str) -> dict[str, Any]:
+    """Measure whether the final beat is an actionable story debt.
+
+    A final question is not enough: a character can recognize somebody and ask
+    "how could they be here?" without creating any pressure for the next
+    chapter. Keep this lexical and explainable, but require either an external
+    pressure/decision or a concrete contradiction before calling it strong.
+    """
+    tail = text[-1200:]
+    ending = tail[-420:].strip()
+    unresolved = [marker for marker in _HOOK_MARKERS if marker in tail]
+    actions = [marker for marker in _HOOK_ACTION_MARKERS if marker in ending]
+    pressure = [marker for marker in _HOOK_PRESSURE_MARKERS if marker in ending]
+    weak_recognition = bool(_RECOGNITION_ONLY_HOOK.search(ending)) or bool(
+        re.search(
+            r"(?:认出|认出了|看清|想起)[^！？?]{0,80}(?:是[^。！？!?]{0,24}[。！？!?])?"
+            r"(?:他|她|这人|那人)?[^。！？!?]{0,18}(?:怎么会在|为何在|为什么在)[^。！？!?]{0,18}[？?]$",
+            ending,
+            flags=re.S,
+        )
+    )
+    concrete_contradiction = bool(
+        re.search(
+            r"(?:已故|死去|十年前|多年以前|陌生印|假印|缺页|空白|血迹|密信|名单|尸体)",
+            ending,
+        )
+    )
+    question = bool(re.search(r"[？?]", ending)) or bool(
+        re.search(r"(?:谁会|为何|为什么|怎么(?:办|做)|是否|还没|尚未|来不及|必须在)", ending)
+    )
+    strong = bool(unresolved and actions and question) and (
+        bool(pressure) or concrete_contradiction or not weak_recognition
+    )
+    return {
+        "unresolved": unresolved,
+        "actions": actions,
+        "pressure": pressure,
+        "question": question,
+        "weakRecognition": weak_recognition,
+        "concreteContradiction": concrete_contradiction,
+        "strong": strong,
+    }
+
+
+def _structural_quality_checks(text: str, *, is_chapter: bool) -> list[dict[str, Any]]:
+    """Check the minimum dramatic beats that lexical coverage cannot prove."""
+    if not is_chapter or len(text) < 300:
+        return []
+    visible = re.sub(r"\s+", "", text)
+    opening = visible[:300]
+    opening_pressure = any(marker in opening for marker in (*_HOOK_PRESSURE_MARKERS, *_TURN_MARKERS))
+    midpoint = visible[len(visible) // 2 :]
+    sentences = [item for item in re.split(r"[。！？!?；]", midpoint) if item.strip()]
+    decision_sentences = [
+        sentence
+        for sentence in sentences
+        if any(marker in sentence for marker in _DECISION_MARKERS)
+        or ("选择" in sentence and any(marker in sentence for marker in ("要么", "还是", "或", "换")))
+    ]
+    decision = bool(decision_sentences)
+    cost = any(any(marker in sentence for marker in _COST_MARKERS) for sentence in decision_sentences)
+    decision_evidence = [
+        marker
+        for marker in _DECISION_MARKERS
+        if any(marker in sentence for sentence in decision_sentences)
+    ]
+    cost_evidence = [
+        marker
+        for marker in _COST_MARKERS
+        if any(marker in sentence for sentence in decision_sentences)
+    ]
+    loop_hits = [marker for marker in _EXPOSITION_LOOP_MARKERS if visible.count(marker) >= 2]
+    checks = [
+        {
+            "id": "quality.opening_pressure",
+            "checkType": "quality",
+            "sourceType": "quality",
+            "sourceId": None,
+            "label": "开场压力",
+            "status": "evidence_found" if opening_pressure else "author_review",
+            "severity": "info" if opening_pressure else "warning",
+            "message": (
+                "前300字出现了行动或压力信号。"
+                if opening_pressure
+                else "前300字缺少可见压力或行动，开场可能在复述背景。"
+            ),
+            "expected": [],
+            "evidence": ["开场压力：" + ("是" if opening_pressure else "否")],
+        },
+        {
+            "id": "quality.irreversible_choice",
+            "checkType": "quality",
+            "sourceType": "quality",
+            "sourceId": None,
+            "label": "不可逆选择",
+            "status": "evidence_found" if decision and cost else "author_review",
+            "severity": "info" if decision and cost else "warning",
+            "message": (
+                "后半段同时出现了行动选择和可见代价。"
+                if decision and cost
+                else "后半段没有同时找到具体选择与代价；章节可能只有信息推进，没有真正改变局势。"
+            ),
+            "expected": [],
+            "evidence": [
+                "选择信号：" + ("、".join(decision_evidence) if decision_evidence else "未找到"),
+                "代价信号：" + ("、".join(cost_evidence) if cost_evidence else "未找到"),
+            ],
+        },
+    ]
+    if len(loop_hits) >= 3:
+        checks.append(
+            {
+                "id": "quality.exposition_loop",
+                "checkType": "quality",
+                "sourceType": "quality",
+                "sourceId": None,
+                "label": "解释循环",
+                "status": "author_review",
+                "severity": "warning",
+                "message": "多组拒绝、解释和追问反复出现，可能把一次冲突拆成了几轮同质化说明；请确认每轮是否改变了条件。",
+                "expected": [],
+                "evidence": [f"{marker}×{visible.count(marker)}" for marker in loop_hits],
+            }
+        )
+    return checks
+
+
 def _dramatic_contract_checks(content: str, prompt_coverage: dict[str, Any]) -> list[dict[str, Any]]:
     """Surface weak turn/hook evidence without pretending to judge semantics.
 
@@ -373,12 +521,10 @@ def _dramatic_contract_checks(content: str, prompt_coverage: dict[str, Any]) -> 
         )
 
     if hook_requirements:
-        tail = text[-1200:]
-        unresolved = [marker for marker in _HOOK_MARKERS if marker in tail]
-        ending = tail[-420:]
-        actions = [marker for marker in _HOOK_ACTION_MARKERS if marker in ending]
-        has_summary = any(phrase in tail for phrase in ("这一切", "终于明白", "新的篇章", "才刚刚开始"))
-        strong = bool(unresolved and actions and not has_summary)
+        evidence = _ending_hook_evidence(text)
+        unresolved = evidence["unresolved"]
+        actions = evidence["actions"]
+        strong = evidence["strong"]
         checks.append(
             {
                 "id": "quality.chapter_hook",
@@ -391,13 +537,15 @@ def _dramatic_contract_checks(content: str, prompt_coverage: dict[str, Any]) -> 
                 "message": (
                     "章尾附近同时出现了未决压力和具体行动；请确认下一章问题尚未被提前解决。"
                     if strong
-                    else "章尾未形成清晰的未决压力+具体动作组合，可能以总结、离场或空泛预告收尾。"
+                    else "章尾未形成可执行的追读债；仅有熟人现身或问句不算有效钩子。"
                 ),
                 "expected": [],
                 "evidence": [
                     "未决信号：" + "、".join(unresolved[:8]) if unresolved else "未找到未决信号",
                     "动作信号：" + "、".join(actions[:8]) if actions else "未找到章尾动作信号",
-                    "总结式尾声：" + ("是" if has_summary else "否"),
+                    "外部压力：" + "、".join(evidence["pressure"][:8]) if evidence["pressure"] else "未找到",
+                    "识人问句：" + ("是" if evidence["weakRecognition"] else "否"),
+                    "具体矛盾证据：" + ("是" if evidence["concreteContradiction"] else "否"),
                 ],
             }
         )
@@ -413,21 +561,10 @@ def _dramatic_contract_checks(content: str, prompt_coverage: dict[str, Any]) -> 
         # Legacy chapters frequently have no scene-card hook at all.  They
         # still need a visible ending contract; otherwise the model tends to
         # close with a summary or another round of routine exposition.
-        tail = text[-1200:]
-        question = bool(re.search(r"[？?]", tail)) or bool(
-            re.search(
-                r"(?:谁会|为何|为什么|怎么(?:办|做)|是否|还没|尚未|来不及|即将|门外|脚步|必须在.{0,18}(?:前|内|时))",
-                tail,
-            )
-        )
-        # A marker in the first half of the tail is not enough: report-like
-        # drafts often contain an action, then explain it away in the final
-        # paragraph. Require the concrete action to land in the final 420
-        # characters so the reader is actually left at the new event.
-        ending = tail[-420:]
-        actions = [marker for marker in _HOOK_ACTION_MARKERS if marker in ending]
-        has_summary = any(phrase in tail for phrase in ("这一切", "新的篇章", "才刚刚开始", "接下来"))
-        strong = question and bool(actions) and not has_summary
+        evidence = _ending_hook_evidence(text)
+        question = evidence["question"]
+        actions = evidence["actions"]
+        strong = evidence["strong"]
         checks.append(
             {
                 "id": "quality.chapter_hook_presence",
@@ -440,16 +577,24 @@ def _dramatic_contract_checks(content: str, prompt_coverage: dict[str, Any]) -> 
                 "message": (
                     "章尾有具体动作和未决问题；请确认问题尚未被正文提前回答。"
                     if strong
-                    else "本章没有显式钩子契约，且章尾缺少‘具体动作+未决问题’组合；建议返工章尾后再确认。"
+                    else "本章没有有效的可执行钩子；章尾需要具体动作+未决问题，熟人现身、离场或单独问句不足以推动下一章。"
                 ),
                 "expected": [],
                 "evidence": [
                     "未决问题：" + ("是" if question else "否"),
                     "动作信号：" + "、".join(actions[:8]) if actions else "未找到章尾动作信号",
-                    "总结式尾声：" + ("是" if has_summary else "否"),
+                    "外部压力：" + "、".join(evidence["pressure"][:8]) if evidence["pressure"] else "未找到",
+                    "识人问句：" + ("是" if evidence["weakRecognition"] else "否"),
+                    "具体矛盾证据：" + ("是" if evidence["concreteContradiction"] else "否"),
                 ],
             }
         )
+    checks.extend(
+        _structural_quality_checks(
+            text,
+            is_chapter=prompt_coverage.get("task") == "chapter",
+        )
+    )
     return checks
 
 
