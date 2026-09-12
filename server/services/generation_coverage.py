@@ -83,6 +83,12 @@ _RECOGNITION_ONLY_HOOK = re.compile(
     r"(?:认出|认出了|看清|看到了|想起|是)\s*[^。！？!?]{0,36}"
     r"(?:怎么会|为何|为什么|怎么可能|竟然在|会在|是谁)\s*[？?]\s*$"
 )
+_ABSTRACT_ENDING = re.compile(
+    r"(?:接下来|下一步|从此以后|新的篇章|才刚刚开始|局势(?:已经|将会)?改变|"
+    r"命运(?:将|会)|(?:知道|意识到|明白)[^。！？!?]{0,48}(?:将|会|决定)[^。！？!?]{0,48})"
+    r"[。！？!?]?\s*$",
+    flags=re.S,
+)
 _EXPOSITION_LOOP_MARKERS = (
     "因为", "可是", "什么意思", "怎么办", "回去吧", "等通知", "按规矩", "不能接",
     "不行", "没办法", "证据确凿", "你知道", "我不知道",
@@ -358,6 +364,7 @@ def _ending_hook_evidence(text: str) -> dict[str, Any]:
     """
     tail = text[-1200:]
     ending = tail[-420:].strip()
+    final_beat = ending[-180:]
     unresolved = [marker for marker in _HOOK_MARKERS if marker in tail]
     actions = [marker for marker in _HOOK_ACTION_MARKERS if marker in ending]
     pressure = [marker for marker in _HOOK_PRESSURE_MARKERS if marker in ending]
@@ -369,6 +376,7 @@ def _ending_hook_evidence(text: str) -> dict[str, Any]:
             flags=re.S,
         )
     )
+    abstract_ending = bool(_ABSTRACT_ENDING.search(final_beat))
     concrete_contradiction = bool(
         re.search(
             r"(?:已故|死去|十年前|多年以前|陌生印|假印|缺页|空白|血迹|密信|名单|尸体)",
@@ -378,13 +386,19 @@ def _ending_hook_evidence(text: str) -> dict[str, Any]:
     question = bool(re.search(r"[？?]", ending)) or bool(
         re.search(r"(?:谁会|为何|为什么|怎么(?:办|做)|是否|还没|尚未|来不及|必须在)", ending)
     )
-    strong = bool(actions) and (bool(pressure) or concrete_contradiction) and not weak_recognition
+    strong = (
+        bool(actions)
+        and (bool(pressure) or concrete_contradiction)
+        and not weak_recognition
+        and not abstract_ending
+    )
     return {
         "unresolved": unresolved,
         "actions": actions,
         "pressure": pressure,
         "question": question,
         "weakRecognition": weak_recognition,
+        "abstractEnding": abstract_ending,
         "concreteContradiction": concrete_contradiction,
         "strong": strong,
     }
@@ -545,6 +559,7 @@ def _dramatic_contract_checks(content: str, prompt_coverage: dict[str, Any]) -> 
                     "动作信号：" + "、".join(actions[:8]) if actions else "未找到章尾动作信号",
                     "外部压力：" + "、".join(evidence["pressure"][:8]) if evidence["pressure"] else "未找到",
                     "识人问句：" + ("是" if evidence["weakRecognition"] else "否"),
+                    "总结式收尾：" + ("是" if evidence["abstractEnding"] else "否"),
                     "具体矛盾证据：" + ("是" if evidence["concreteContradiction"] else "否"),
                 ],
             }
@@ -585,6 +600,7 @@ def _dramatic_contract_checks(content: str, prompt_coverage: dict[str, Any]) -> 
                     "动作信号：" + "、".join(actions[:8]) if actions else "未找到章尾动作信号",
                     "外部压力：" + "、".join(evidence["pressure"][:8]) if evidence["pressure"] else "未找到",
                     "识人问句：" + ("是" if evidence["weakRecognition"] else "否"),
+                    "总结式收尾：" + ("是" if evidence["abstractEnding"] else "否"),
                     "具体矛盾证据：" + ("是" if evidence["concreteContradiction"] else "否"),
                 ],
             }

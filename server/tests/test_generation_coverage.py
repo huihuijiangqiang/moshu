@@ -301,3 +301,12 @@ def test_started_threat_is_a_hook_without_forcing_a_question_mark():
     check = next(item for item in report["checks"] if item["id"] == "quality.chapter_hook_presence")
     assert check["status"] == "evidence_found"
     assert "未决问题：否" in check["evidence"]
+
+
+def test_action_before_an_abstract_final_summary_is_not_a_hook():
+    text = "沈禾被官差追进巷子，林谨言拔刀拦住来人。" * 50
+    text += "林谨言盯着沈禾，眼神里的挣扎越来越明显。沈禾知道，接下来他的选择将决定她的生死。"
+    report = assess_draft_coverage({"task": "chapter", "checks": []}, text)
+    check = next(item for item in report["checks"] if item["id"] == "quality.chapter_hook_presence")
+    assert check["status"] == "author_review"
+    assert "总结式收尾：是" in check["evidence"]
