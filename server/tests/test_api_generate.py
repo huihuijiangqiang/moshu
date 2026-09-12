@@ -315,6 +315,8 @@ async def test_positioning_and_scene_coverage_share_preview_generation_and_draft
     assert "# 近期章节结构去重" in preview_prompt
     assert "盟友突然撤走担保" in preview_prompt
     assert "差役拔刀压住车轴，逼她当场选择" in preview_prompt
+    assert '"hasBody":false' in preview_prompt
+    assert "不作为事实依据" in preview_prompt
     assert "不得复用相同的解决手段、转折触发方式或章尾钩子类型" in preview_prompt
     assert "沈禾走进粮铺谈判拿到青谷收购契约" in preview_prompt
     assert preview_payload["scene"] == "negotiation"

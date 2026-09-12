@@ -282,8 +282,9 @@ class GenerationService:
             context_text += (
                 "\n\n# 近期章节结构去重\n"
                 + untrusted_json_block("recent_dramatic_patterns", recent_dramatic_patterns)
-                + "\n上述内容只用于识别近期已经使用过的叙事结构。必须延续其中已经发生的事实，但本章不得复用"
-                "相同的解决手段、转折触发方式或章尾钩子类型；应由本章人物目标和代价产生新的状态变化。"
+                + "\n上述字段只用于识别近期已经使用或规划过的叙事结构，不作为事实依据；事实连续性只以其他前情层中"
+                "已成文的内容为准。本章不得复用相同的解决手段、转折触发方式或章尾钩子类型；应由本章人物目标和"
+                "代价产生新的状态变化。"
             )
         outline_text = untrusted_json_block(
             "chapter_outline",
@@ -435,6 +436,7 @@ class GenerationService:
                 {
                     "chapterIndex": item.idx,
                     "chapterTitle": item.title,
+                    "hasBody": item.words > 0,
                     "turns": [scene.turn[:500] for scene in chapter_scenes if scene.turn.strip()],
                     "hooks": [scene.hook[:500] for scene in chapter_scenes if scene.hook.strip()],
                     "outlineTail": [str(node)[:500] for node in (item.outline or [])[-3:]],
