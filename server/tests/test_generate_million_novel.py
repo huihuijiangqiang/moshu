@@ -146,6 +146,9 @@ def test_seed_outline_upgrade_preserves_canon_and_refreshes_future(tmp_path):
     for number in range(volume["chapter_from"], volume["chapter_to"] + 1):
         contract = MODULE.build_seed_chapter_outline(number, volume)
         contract["title"] = f"legacy-{number}"
+        if number <= 3:
+            for field in MODULE.DRAMATIC_CONTRACT_STRING_FIELDS:
+                contract.pop(field)
         old_contracts.append(contract)
     checkpoint["volume_outlines"]["1"] = old_contracts
     checkpoint["canon_revision"] = 3

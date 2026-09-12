@@ -1942,8 +1942,19 @@ def refresh_unwritten_seed_outlines(checkpoint: dict[str, Any], output_dir: Path
                 refreshed,
                 chapter_from=int(volume["chapter_from"]),
                 chapter_to=int(volume["chapter_to"]),
-                require_dramatic_contract=True,
             )
+            future_from = max(canon_revision + 1, int(volume["chapter_from"]))
+            if future_from <= int(volume["chapter_to"]):
+                validate_chapter_contracts(
+                    [
+                        contract
+                        for contract in validated
+                        if int(contract["number"]) >= future_from
+                    ],
+                    chapter_from=future_from,
+                    chapter_to=int(volume["chapter_to"]),
+                    require_dramatic_contract=True,
+                )
             checkpoint["volume_outlines"][key] = validated
             atomic_write_json(
                 output_dir / "outlines" / f"volume-{int(key):02d}.json",
