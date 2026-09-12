@@ -62,12 +62,14 @@ _HOOK_MARKERS = (
 )
 _HOOK_ACTION_MARKERS = (
     "敲", "撞", "闯", "扣", "拔", "抬", "转", "递", "烧", "撕", "打开", "按住",
-    "站起", "回头", "冲进", "落笔", "封", "带走", "逼问", "拔刀", "来信",
+    "站起", "回头", "冲进", "落笔", "封", "带走", "逼问", "拔刀", "来信", "盯",
+    "追上", "抓住", "围住", "喊叫",
 )
 _HOOK_PRESSURE_MARKERS = (
     "必须", "期限", "倒计时", "来不及", "之前", "之内", "否则", "要么", "代价",
     "拔刀", "封门", "追上", "抓住", "带走", "杀", "着火", "断粮", "失踪", "截住",
-    "交出", "撕掉", "烧掉", "扣下", "不见了", "只给",
+    "交出", "撕掉", "烧掉", "扣下", "不见了", "只给", "门外", "脚步", "盯着",
+    "围住", "喊叫",
 )
 _DECISION_MARKERS = (
     "决定", "答应", "拒绝", "撕掉", "烧掉", "交出", "留下", "放弃", "押上", "签下",
@@ -376,9 +378,7 @@ def _ending_hook_evidence(text: str) -> dict[str, Any]:
     question = bool(re.search(r"[？?]", ending)) or bool(
         re.search(r"(?:谁会|为何|为什么|怎么(?:办|做)|是否|还没|尚未|来不及|必须在)", ending)
     )
-    strong = bool(unresolved and actions and question) and (
-        bool(pressure) or concrete_contradiction or not weak_recognition
-    )
+    strong = bool(actions) and (bool(pressure) or concrete_contradiction) and not weak_recognition
     return {
         "unresolved": unresolved,
         "actions": actions,

@@ -292,3 +292,12 @@ def test_chapter_without_choice_and_cost_is_flagged_even_when_it_has_questions()
     checks = {item["id"]: item for item in report["checks"]}
     assert checks["quality.irreversible_choice"]["status"] == "author_review"
     assert checks["quality.exposition_loop"]["status"] == "author_review"
+
+
+def test_started_threat_is_a_hook_without_forcing_a_question_mark():
+    text = "沈禾撕掉通行证，跟着林谨言走出茶馆。" * 50
+    text += "两名衙役已经围住门口，其中一人拔刀扣住车轴：张侍郎只给他们一刻钟。"
+    report = assess_draft_coverage({"task": "chapter", "checks": []}, text)
+    check = next(item for item in report["checks"] if item["id"] == "quality.chapter_hook_presence")
+    assert check["status"] == "evidence_found"
+    assert "未决问题：否" in check["evidence"]

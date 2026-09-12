@@ -59,6 +59,8 @@ def test_skill_selection_combines_genre_task_and_scene_in_stable_order():
     assert "不擅自改写事实" in selection.prompt()
     assert "小说首先写人" in selection.prompt()
     assert "禁止连续多段只做" in selection.prompt()
+    assert "识人问句" in selection.prompt()
+    assert "换人再解释" in selection.prompt()
 
 
 def test_inline_author_style_skill_is_selected():
