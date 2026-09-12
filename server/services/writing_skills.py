@@ -7,7 +7,9 @@ prompt drift.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
+from typing import Any
 
 
 @dataclass(frozen=True)
@@ -30,6 +32,112 @@ class SkillSelection:
 
     def prompt(self) -> str:
         return "\n\n".join(f"[{skill.category}:{skill.id}@{skill.version}]\n{skill.prompt}" for skill in self.skills)
+
+
+# These are deliberately different story engines, rather than cosmetic scene
+# labels.  A chapter can still use the author's explicit outline; the catalog
+# only supplies a concrete default when a legacy/short outline has no dramatic
+# contract of its own.
+CHAPTER_VARIATION_CATALOG: tuple[dict[str, str], ...] = (
+    {
+        "engine": "公开对峙",
+        "carrier": "名誉与围观者的判断",
+        "hook": "倒计时",
+        "instruction": "让主角在众目睽睽下先占据主动，再被对手把时间压力压到现场；章尾让倒计时真实开始。",
+    },
+    {
+        "engine": "移动追索",
+        "carrier": "正在转移的人、物或路线",
+        "hook": "未完成动作",
+        "instruction": "让线索随着人物移动而改变，主角必须边追边舍弃一项资源；章尾停在一个已经启动、却无法收回的动作上。",
+    },
+    {
+        "engine": "关系交换",
+        "carrier": "盟友的援手与附带条件",
+        "hook": "关系威胁",
+        "instruction": "让双方都握有底线和筹码，关系变化由一次具体选择造成；章尾让援手撤回、变质或提出更高代价。",
+    },
+    {
+        "engine": "资源争夺",
+        "carrier": "正在减少的粮、钱、位置或时间",
+        "hook": "两难选择",
+        "instruction": "让稀缺资源在场景中被看见并持续减少，主角只能保住一端；章尾明确呈现必须二选一的损失。",
+    },
+    {
+        "engine": "身份错位",
+        "carrier": "一件与身份或旧记录矛盾的证物",
+        "hook": "身份偏差",
+        "instruction": "先让主角依据既有身份行动，再用可见证物击穿判断；章尾留下一个身份矛盾，不能当场解释完。",
+    },
+    {
+        "engine": "密室调查",
+        "carrier": "受限空间里的证据缺口",
+        "hook": "证据缺口",
+        "instruction": "限制人物的进出和信息来源，按观察、假设、验证推进；章尾让关键证据被刮掉、转移或落入他人手中。",
+    },
+    {
+        "engine": "对手先手",
+        "carrier": "对手已经执行的不可逆行动",
+        "hook": "对手新行动",
+        "instruction": "不要等主角安排好再出事，先让对手完成一项改变局面的行动；章尾展示后果正在扩散。",
+    },
+    {
+        "engine": "情绪决裂",
+        "carrier": "亲密关系中的信任边界",
+        "hook": "突然揭示",
+        "instruction": "用一次失信、隐瞒或越界推动情绪转向，避免靠旁白解释感情；章尾揭出一条会重新定义关系的新事实。",
+    },
+)
+
+
+def build_chapter_variation_contract(
+    chapter_index: int,
+    *,
+    outline: list[str] | None = None,
+    recent_patterns: list[dict[str, Any]] | None = None,
+) -> str:
+    """Build a concrete anti-homogenization contract for chapter generation.
+
+    Older projects often contain only one-line chapter outlines.  In that case
+    a model sees the same generic task every time and defaults to exposition.
+    This contract gives it a rotating dramatic engine while preserving any
+    explicit hook type written by the author.
+    """
+    nodes = [str(node).strip() for node in (outline or []) if str(node).strip()]
+    explicit_hook = ""
+    for node in nodes:
+        match = re.search(r"章末钩子[（(]([^）)]+)[）)]", node)
+        if match:
+            explicit_hook = match.group(1).strip()
+            break
+    profile = CHAPTER_VARIATION_CATALOG[max(0, chapter_index - 1) % len(CHAPTER_VARIATION_CATALOG)]
+    recent = recent_patterns or []
+    recent_engines = [
+        str(item.get("variationEngine") or "").strip()
+        for item in recent
+        if str(item.get("variationEngine") or "").strip()
+    ]
+    recent_hooks = [
+        str(item.get("hookType") or "").strip()
+        for item in recent
+        if str(item.get("hookType") or "").strip()
+    ]
+    hook = explicit_hook or profile["hook"]
+    avoid_lines = []
+    if recent_engines:
+        avoid_lines.append("近期已用叙事发动机：" + "、".join(recent_engines))
+    if recent_hooks:
+        avoid_lines.append("近期已用章尾钩子类型：" + "、".join(recent_hooks))
+    avoid = "\n".join(avoid_lines) if avoid_lines else "近期没有可供去重的结构记录。"
+    return (
+        "本章必须有一个与相邻章节可辨认不同的戏剧发动机，不能把同一套查账、核验、解释流程换名重写。\n"
+        f"系统建议的发动机：{profile['engine']}；主要冲突载体：{profile['carrier']}。\n"
+        f"建议章尾钩子类型：{hook}。{profile['instruction']}\n"
+        f"{avoid}\n"
+        "若近期记录与系统建议冲突，优先换成目录中尚未使用的发动机和钩子；作者在本章章纲中明确写出的类型与事实优先。\n"
+        "硬验收：开头150字内发生压力；中段由可见行动使原策略失效；主角作出有代价的选择；最后120到250字只落地一个新动作或发现，"
+        "并停在下一章必须回答的具体问题之前。不得用‘接下来/新的篇章/埋下伏笔/局势变化’等总结代替钩子，也不得在章尾提前解决未决问题。"
+    )
 
 
 BASE = WritingSkill(

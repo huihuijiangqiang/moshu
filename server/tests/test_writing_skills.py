@@ -1,4 +1,28 @@
-from services.writing_skills import select_writing_skills
+from services.writing_skills import build_chapter_variation_contract, select_writing_skills
+
+
+def test_chapter_variation_contract_rotates_story_engine_and_hook():
+    contract = build_chapter_variation_contract(
+        2,
+        outline=["沈禾去粮铺谈价"],
+        recent_patterns=[
+            {"variationEngine": "公开对峙", "hookType": "倒计时"},
+        ],
+    )
+
+    assert "移动追索" in contract
+    assert "未完成动作" in contract
+    assert "近期已用叙事发动机：公开对峙" in contract
+    assert "最后120到250字" in contract
+
+
+def test_explicit_outline_hook_type_wins_over_rotating_default():
+    contract = build_chapter_variation_contract(
+        1,
+        outline=["章末钩子（证据缺口）：账册最后一页被刮掉"],
+    )
+
+    assert "建议章尾钩子类型：证据缺口" in contract
 
 
 def test_skill_selection_combines_genre_task_and_scene_in_stable_order():

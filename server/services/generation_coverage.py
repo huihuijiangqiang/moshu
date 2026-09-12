@@ -399,6 +399,47 @@ def _dramatic_contract_checks(content: str, prompt_coverage: dict[str, Any]) -> 
                 ],
             }
         )
+    elif any(
+        item.get("checkType") == "requirement"
+        and item.get("applicability") in {None, "chapter"}
+        for item in prompt_coverage.get("checks", [])
+        if isinstance(item, dict)
+    ):
+        # Legacy chapters frequently have no scene-card hook at all.  They
+        # still need a visible ending contract; otherwise the model tends to
+        # close with a summary or another round of routine exposition.
+        tail = text[-1200:]
+        question = bool(re.search(r"[？?]", tail)) or bool(
+            re.search(
+                r"(?:谁会|为何|为什么|怎么(?:办|做)|是否|还没|尚未|来不及|即将|门外|脚步|必须在.{0,18}(?:前|内|时))",
+                tail,
+            )
+        )
+        actions = [marker for marker in _HOOK_ACTION_MARKERS if marker in tail]
+        has_summary = any(phrase in tail for phrase in ("这一切", "新的篇章", "才刚刚开始", "接下来"))
+        strong = question and bool(actions) and not has_summary
+        checks.append(
+            {
+                "id": "quality.chapter_hook_presence",
+                "checkType": "quality",
+                "sourceType": "quality",
+                "sourceId": None,
+                "label": "章尾钩子存在性",
+                "status": "evidence_found" if strong else "author_review",
+                "severity": "info" if strong else "warning",
+                "message": (
+                    "章尾有具体动作和未决问题；请确认问题尚未被正文提前回答。"
+                    if strong
+                    else "本章没有显式钩子契约，且章尾缺少‘具体动作+未决问题’组合；建议返工章尾后再确认。"
+                ),
+                "expected": [],
+                "evidence": [
+                    "未决问题：" + ("是" if question else "否"),
+                    "动作信号：" + "、".join(actions[:8]) if actions else "未找到章尾动作信号",
+                    "总结式尾声：" + ("是" if has_summary else "否"),
+                ],
+            }
+        )
     return checks
 
 

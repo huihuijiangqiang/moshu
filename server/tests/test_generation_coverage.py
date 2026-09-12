@@ -227,3 +227,23 @@ def test_legacy_outline_without_drama_nodes_remains_compatible():
     assert not any(
         check["id"].startswith("outline.chapter-plain.") for check in report["checks"]
     )
+
+
+def test_legacy_chapter_without_hook_contract_is_flagged_at_ending():
+    report = assess_draft_coverage(
+        {
+            "checks": [
+                {
+                    "id": "positioning.selling_point",
+                    "checkType": "requirement",
+                    "applicability": "chapter",
+                    "expected": ["靠种田救村"],
+                }
+            ]
+        },
+        "她把账册收好，明日继续核验。" * 100,
+    )
+
+    check = next(item for item in report["checks"] if item["id"] == "quality.chapter_hook_presence")
+    assert check["status"] == "author_review"
+    assert report["status"] == "needs_attention"

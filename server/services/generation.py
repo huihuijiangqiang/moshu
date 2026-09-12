@@ -34,7 +34,11 @@ from services.prompt_security import (
 )
 from services.retrieval import ConsistencyRetrieval
 from services.temporal_anchor import format_temporal_anchor
-from services.writing_skills import SkillSelection, select_writing_skills
+from services.writing_skills import (
+    SkillSelection,
+    build_chapter_variation_contract,
+    select_writing_skills,
+)
 
 
 class GenerationProviderError(RuntimeError):
@@ -284,6 +288,12 @@ class GenerationService:
                 + "\n不得让本章时间早于上一章已确认的结束时间；无法确定时不要擅自编造日期。"
             )
         recent_dramatic_patterns = await self._recent_dramatic_patterns(project, chapter)
+        variation_contract = build_chapter_variation_contract(
+            chapter.idx,
+            outline=list(chapter.outline or []),
+            recent_patterns=recent_dramatic_patterns,
+        )
+        context_text += "\n\n# 本章差异化戏剧契约\n" + variation_contract
         if recent_dramatic_patterns:
             context_text += (
                 "\n\n# 近期章节结构去重\n"
@@ -438,6 +448,8 @@ class GenerationService:
 
         patterns: list[dict[str, Any]] = []
         structural_labels = (
+            "场景机制：",
+            "场景模式：",
             "开场压力：",
             "主角策略：",
             "策略失效：",
@@ -454,6 +466,19 @@ class GenerationService:
                 for node in (item.outline or [])
                 if str(node).startswith(structural_labels)
             ]
+            hook_type = ""
+            variation_engine = ""
+            for signal in outline_signals:
+                hook_match = re.search(r"章末钩子[（(]([^）)]+)[）)]", signal)
+                if hook_match and not hook_type:
+                    hook_type = hook_match.group(1).strip()
+                if signal.startswith("场景机制：") or signal.startswith("场景模式："):
+                    variation_engine = signal.split("：", 1)[1].strip()[:120]
+            if not variation_engine and chapter_scenes:
+                # Scene cards have no dedicated engine column yet.  Their first
+                # goal/obstacle is still useful as a stable anti-repetition
+                # signal for the next request.
+                variation_engine = (chapter_scenes[0].goal or chapter_scenes[0].obstacle or "").strip()[:120]
             patterns.append(
                 {
                     "chapterIndex": item.idx,
@@ -472,6 +497,8 @@ class GenerationService:
                     "hooks": [scene.hook[:500] for scene in chapter_scenes if scene.hook.strip()],
                     "outlineSignals": outline_signals[:8],
                     "outlineTail": [str(node)[:500] for node in (item.outline or [])[-3:]],
+                    "hookType": hook_type,
+                    "variationEngine": variation_engine,
                 }
             )
         return patterns
