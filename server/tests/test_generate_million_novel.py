@@ -1116,6 +1116,36 @@ def test_editorial_gate_blocks_failed_evidence_and_low_scores():
     assert scores["lowScores"] == {"continuity": 6.5}
 
 
+def test_editorial_gate_requires_planned_hook_to_land_near_chapter_end():
+    contract = _valid_chapter_contract()
+    contract["hook_type"] = "证据缺口"
+    contract["unresolved_question"] = "陌生私印是谁留下的？"
+    analysis = _contract_analysis(contract)
+    filler = "沈砚秋继续清点粮袋，众人依次离开。" * 120
+
+    missing = MODULE.chapter_editorial_gate(contract, analysis, prose=filler)
+    missing_hook = next(item for item in missing["checks"] if item["id"] == "hook_landing")
+    assert missing_hook["ok"] is False
+    assert missing["status"] == "blocked"
+
+    landed = MODULE.chapter_editorial_gate(
+        contract,
+        analysis,
+        prose=filler + "\n账簿最后一页露出一枚陌生私印。这个私印究竟是谁留下的？",
+    )
+    landed_hook = next(item for item in landed["checks"] if item["id"] == "hook_landing")
+    assert landed_hook["ok"] is True
+    assert landed["status"] == "ready"
+
+    summarized = MODULE.chapter_editorial_gate(
+        contract,
+        analysis,
+        prose=filler + "\n账簿最后一页露出一枚陌生私印。她终于明白，这一切才刚刚开始。",
+    )
+    summary_hook = next(item for item in summarized["checks"] if item["id"] == "hook_landing")
+    assert summary_hook["ok"] is False
+
+
 def test_editorial_gate_blocks_failed_integrity_check():
     contract = _valid_chapter_contract()
     analysis = _contract_analysis(contract)
@@ -1367,6 +1397,7 @@ async def test_run_recovers_and_normalizes_orphan_chapter(tmp_path):
             f"她把第{index}袋粮重新称量，赵顺逐项记下经手人和斤两。"
             for index in range(41)
         ]
+        + [outline["hook"]]
     )
     path = tmp_path / "chapters" / f"0001-{MODULE.safe_filename(outline['title'])}.md"
     MODULE.atomic_write_text(path, prose + "\n")

@@ -424,11 +424,44 @@ def chapter_contract_check_ids(outline: dict[str, Any]) -> list[str]:
     ]
 
 
+def _hook_terms(value: str) -> list[str]:
+    common = {"本章", "主角", "沈砚秋", "什么", "一个", "必须", "如何", "还是"}
+    terms: list[str] = []
+    for run in re.findall(r"[\u3400-\u9fff]+", value or ""):
+        terms.extend(run[index : index + 2] for index in range(max(0, len(run) - 1)))
+    return [term for term in dict.fromkeys(terms) if term not in common][:40]
+
+
+def chapter_hook_landing(outline: dict[str, Any], prose: str) -> dict[str, Any]:
+    """Require planned hook evidence near the ending, not merely somewhere in prose."""
+    expected = " ".join(
+        str(outline.get(field, "")) for field in ("hook", "unresolved_question")
+    ).strip()
+    if not expected:
+        return {"id": "hook_landing", "ok": True, "matches": [], "tailChars": 0}
+    tail_chars = min(1_200, max(400, len(prose) // 4))
+    tail = (prose or "")[-tail_chars:]
+    matches = [term for term in _hook_terms(expected) if term in tail]
+    summary_ending = any(
+        phrase in tail[-240:]
+        for phrase in ("新的篇章", "才刚刚开始", "一切都会好起来", "她终于明白", "这一切")
+    )
+    return {
+        "id": "hook_landing",
+        "ok": len(matches) >= 3 and not summary_ending,
+        "matches": matches[:12],
+        "tailChars": tail_chars,
+        "summaryEnding": summary_ending,
+        "expectedHookType": outline.get("hook_type"),
+    }
+
+
 def chapter_editorial_gate(
     outline: dict[str, Any],
     analysis: dict[str, Any],
     *,
     minimum_score: float = 7.0,
+    prose: str | None = None,
 ) -> dict[str, Any]:
     """Require complete, evidenced contract compliance before Canon changes."""
     expected_items = chapter_contract_check_ids(outline)
@@ -491,6 +524,8 @@ def chapter_editorial_gate(
             "lowScores": low_scores,
         },
     ]
+    if prose is not None:
+        checks.append(chapter_hook_landing(outline, prose))
     return {
         "status": "ready" if all(item["ok"] for item in checks) else "blocked",
         "checks": checks,
@@ -2591,7 +2626,6 @@ authority_scope 补充要求：基层经办人若授予跨机构、长期或排�
                     else None
                 )
                 blocked_analysis: dict[str, Any] | None = None
-                blocked_editorial_gate: dict[str, Any] | None = None
                 if record and record.get("status") == "review_blocked":
                     blocked_analysis_path = self.output_dir / "analysis" / f"{number:04d}.json"
                     if not blocked_analysis_path.exists():
@@ -2600,9 +2634,6 @@ authority_scope 补充要求：基层经办人若授予跨机构、长期或排�
                     if not isinstance(loaded_analysis, dict):
                         raise ValueError("review-blocked chapter analysis is invalid")
                     blocked_analysis = validate_chapter_analysis(loaded_analysis)
-                    blocked_editorial_gate = chapter_editorial_gate(outline, blocked_analysis)
-                    if blocked_editorial_gate["status"] != "blocked":
-                        raise ValueError("review-blocked chapter no longer has failing analysis evidence")
                 # Editorial review can fail after prose and analysis have both
                 # been persisted. Reuse that immutable draft on retry instead
                 # of paying for a second prose generation.
@@ -2706,13 +2737,15 @@ authority_scope 补充要求：基层经办人若授予跨机构、长期或排�
                     record.clear()
                     record.update(pending)
                 self.save()
-                if blocked_analysis is not None and blocked_editorial_gate is not None:
+                if blocked_analysis is not None:
                     analysis = blocked_analysis
-                    editorial_gate = blocked_editorial_gate
+                    editorial_gate = chapter_editorial_gate(outline, analysis, prose=prose)
+                    if editorial_gate["status"] != "blocked":
+                        raise ValueError("review-blocked chapter no longer has failing analysis evidence")
                 else:
                     analysis, analysis_usage = await self.analyze_chapter(outline, prose)
                     self.add_usage(analysis_usage)
-                    editorial_gate = chapter_editorial_gate(outline, analysis)
+                    editorial_gate = chapter_editorial_gate(outline, analysis, prose=prose)
                 if editorial_gate["status"] != "ready" and not editorial_repair:
                     failed_checks = [
                         str(item.get("id", "unknown"))
@@ -2766,7 +2799,7 @@ authority_scope 补充要求：基层经办人若授予跨机构、长期或排�
                     if quality["status"] == "ready":
                         analysis, analysis_usage = await self.analyze_chapter(outline, prose)
                         self.add_usage(analysis_usage)
-                        editorial_gate = chapter_editorial_gate(outline, analysis)
+                        editorial_gate = chapter_editorial_gate(outline, analysis, prose=prose)
                     else:
                         editorial_gate = {
                             "status": "blocked",
