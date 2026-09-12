@@ -62,14 +62,14 @@ _HOOK_MARKERS = (
 )
 _HOOK_ACTION_MARKERS = (
     "敲", "撞", "闯", "扣", "拔", "抬", "转", "递", "烧", "撕", "打开", "按住",
-    "站起", "回头", "冲进", "落笔", "封", "带走", "逼问", "拔刀", "来信", "盯",
-    "追上", "抓住", "围住", "喊叫",
+    "站起", "回头", "冲进", "落笔", "封", "带走", "逼问", "拔刀", "来信",
+    "追上", "抓住", "围住", "喊叫", "点燃",
 )
 _HOOK_PRESSURE_MARKERS = (
     "必须", "期限", "倒计时", "来不及", "之前", "之内", "否则", "要么", "代价",
     "拔刀", "封门", "追上", "抓住", "带走", "杀", "着火", "断粮", "失踪", "截住",
-    "交出", "撕掉", "烧掉", "扣下", "不见了", "只给", "门外", "脚步", "盯着",
-    "围住", "喊叫",
+    "交出", "撕掉", "烧掉", "扣下", "不见了", "只给", "只剩", "香灭", "一刻钟",
+    "门外", "脚步", "围住", "喊叫",
 )
 _DECISION_MARKERS = (
     "决定", "答应", "拒绝", "撕掉", "烧掉", "交出", "留下", "放弃", "押上", "签下",
@@ -375,10 +375,12 @@ def _ending_hook_evidence(text: str) -> dict[str, Any]:
     """
     tail = text[-1200:]
     ending = tail[-420:].strip()
-    final_beat = ending[-180:]
+    ending_sentences = [item for item in re.findall(r"[^。！？!?]+[。！？!?]?", ending) if item.strip()]
+    final_sentence = ending_sentences[-1] if ending_sentences else ending
+    final_beat = "".join(ending_sentences[-2:])[-240:] if ending_sentences else ending[-240:]
     unresolved = [marker for marker in _HOOK_MARKERS if marker in tail]
-    actions = [marker for marker in _HOOK_ACTION_MARKERS if marker in ending]
-    pressure = [marker for marker in _HOOK_PRESSURE_MARKERS if marker in ending]
+    actions = [marker for marker in _HOOK_ACTION_MARKERS if marker in final_beat]
+    pressure = [marker for marker in _HOOK_PRESSURE_MARKERS if marker in final_sentence]
     weak_recognition = bool(_RECOGNITION_ONLY_HOOK.search(ending)) or bool(
         re.search(
             r"(?:认出|认出了|看清|想起)[^！？?]{0,80}(?:是[^。！？!?]{0,24}[。！？!?])?"

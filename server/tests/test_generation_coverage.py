@@ -325,6 +325,26 @@ def test_concrete_countdown_after_a_character_realization_remains_a_hook():
     assert "总结式收尾：否" in check["evidence"]
 
 
+def test_a_stare_without_consequence_is_not_a_hook():
+    text = "沈禾撕掉旧契，放弃退路，代价是祖宅被扣。" * 50
+    text += "林谨言站在门边，盯着她。"
+
+    report = assess_draft_coverage({"task": "chapter", "checks": []}, text)
+
+    check = next(item for item in report["checks"] if item["id"] == "quality.chapter_hook_presence")
+    assert check["status"] == "author_review"
+
+
+def test_old_threat_before_a_neutral_ending_does_not_count_as_hook():
+    text = "差役拔刀围住院门，要她一刻钟内交出账册。" * 45
+    text += "沈禾回到房里，把白日听见的每句话重新想了一遍。她吹灭灯，躺下睡了。"
+
+    report = assess_draft_coverage({"task": "chapter", "checks": []}, text)
+
+    check = next(item for item in report["checks"] if item["id"] == "quality.chapter_hook_presence")
+    assert check["status"] == "author_review"
+
+
 def test_dramatic_fingerprint_reads_actual_access_denial_from_body():
     text = (
         "沈禾到衙门求见刘大人，守卫拒绝通报。她改去递状，"
