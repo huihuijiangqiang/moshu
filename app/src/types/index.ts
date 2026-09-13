@@ -155,6 +155,44 @@ export interface Chapter {
   rev?: number
 }
 
+export type StoryHookStatus = 'open' | 'deferred' | 'resolved' | 'abandoned'
+
+export interface StoryHook {
+  id: string
+  projectId: string
+  sourceChapterId: string
+  payoffChapterId?: string
+  hookType: string
+  concreteEvent: string
+  unresolvedQuestion: string
+  payoffByChapter?: number
+  status: StoryHookStatus
+  noveltySignature: string
+  resolution: string
+  revision: number
+  createdAt: string
+  updatedAt: string
+}
+
+export interface StoryHookCreate {
+  sourceChapterId: string
+  hookType: string
+  concreteEvent: string
+  unresolvedQuestion: string
+  payoffByChapter?: number
+}
+
+export interface StoryHookPatch {
+  expectedRevision: number
+  hookType?: string
+  concreteEvent?: string
+  unresolvedQuestion?: string
+  payoffByChapter?: number | null
+  payoffChapterId?: string | null
+  status?: StoryHookStatus
+  resolution?: string
+}
+
 export interface CharacterChapterStatistics {
   chapterId: string
   chapterIndex: number

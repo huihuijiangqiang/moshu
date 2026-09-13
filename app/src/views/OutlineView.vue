@@ -9,6 +9,7 @@ import { scenesApi, type ChapterScene, type SceneBodyPolicy, type ScenePatch } f
 import { positioningApi, type PositioningPatch, type ProjectPositioning, type TargetPlatform } from '@/api/positioning'
 import { useProjectNavigation } from '@/composables/use-project-navigation'
 import AppIcon from '@/components/ui/AppIcon.vue'
+import StoryHookLedger from '@/components/outline/StoryHookLedger.vue'
 
 interface PlanDraft {
   title: string
@@ -23,7 +24,7 @@ const codex = useCodexStore()
 const shell = useShellStore()
 const { toProject } = useProjectNavigation()
 const view = ref<'grid' | 'list'>('grid')
-const outlineMode = ref<'positioning' | 'chapters' | 'scenes'>('chapters')
+const outlineMode = ref<'positioning' | 'chapters' | 'scenes' | 'hooks'>('chapters')
 const selectedVolumeId = ref<string | null>(null)
 const selectedId = ref<string | null>(null)
 const drafts = ref<Record<string, PlanDraft>>({})
@@ -136,7 +137,7 @@ async function loadScenes(chapter: Chapter) {
 watch(
   () => route.query.mode,
   (mode) => {
-    if (mode === 'positioning' || mode === 'chapters' || mode === 'scenes') outlineMode.value = mode
+    if (mode === 'positioning' || mode === 'chapters' || mode === 'scenes' || mode === 'hooks') outlineMode.value = mode
   },
   { immediate: true }
 )
@@ -735,12 +736,13 @@ async function removeTrashItem(kind: 'volumes' | 'chapters', id: string, title: 
       >{{ v === 'grid' ? '网格' : '列表' }}</button>
       <button class="topbar-btn" type="button" :data-primary="outlineMode === 'chapters'" @click="outlineMode = 'chapters'">章纲</button>
       <button class="topbar-btn" type="button" :data-primary="outlineMode === 'scenes'" @click="outlineMode = 'scenes'">场景卡片</button>
+      <button class="topbar-btn" type="button" :data-primary="outlineMode === 'hooks'" @click="outlineMode = 'hooks'">伏笔台账</button>
       <button class="topbar-btn" type="button" :data-primary="outlineMode === 'positioning'" @click="outlineMode = 'positioning'">作品定位</button>
       <button class="topbar-btn" type="button" @click="openVolumeEditor('create')"><AppIcon name="plus" />新建卷</button>
       <button class="topbar-btn" type="button" @click="showTrash"><AppIcon name="trash" />回收站</button>
     </Teleport>
 
-    <section v-if="outlineMode !== 'positioning'" class="rule-b outline-structure">
+    <section v-if="outlineMode === 'chapters' || outlineMode === 'scenes'" class="rule-b outline-structure">
       <div class="kicker" :style="{ marginBottom: '16px' }">分卷结构</div>
       <div class="outline-volume-track" :style="{ gridTemplateColumns: `repeat(${Math.max(store.byVolume.length, 1)}, minmax(190px, 1fr))` }">
         <div
@@ -879,6 +881,13 @@ async function removeTrashItem(kind: 'volumes' | 'chapters', id: string, title: 
         <div v-else class="scene-empty"><strong>这章还没有场景卡片</strong><p>先建立第一场，明确人物此刻要什么，以及什么在挡路。</p><button class="wk-btn" data-primary="true" type="button" @click="newScene"><AppIcon name="plus" />建立第一场</button></div>
       </main>
 
+      <StoryHookLedger
+        v-else-if="outlineMode === 'hooks' && store.loadedProjectId"
+        :project-id="store.loadedProjectId"
+        :chapters="store.chapters"
+        :focus-chapter-id="selected?.id"
+      />
+
       <main v-else class="pane positioning-workbench">
         <header class="positioning-head">
           <div><span class="kicker">PLATFORM PROMISE</span><h2>作品承诺</h2><p>这里记录读者点进来以后会持续得到什么。它约束简介、开篇和长线推进，但不会锁死具体剧情。</p></div>
@@ -1006,7 +1015,7 @@ async function removeTrashItem(kind: 'volumes' | 'chapters', id: string, title: 
         </template>
         <div v-else class="scene-editor-empty"><strong>选择或新建一张场景卡片</strong><p>章节仍可只使用原有章纲；场景卡片适合精细控制节奏。</p></div>
       </aside>
-      <aside v-else class="pane pane-right positioning-aside">
+      <aside v-else-if="outlineMode === 'positioning'" class="pane pane-right positioning-aside">
         <span class="kicker">兑现检查</span>
         <h3>{{ positioningDraft.titleCandidates?.[0] || store.project?.title || '未命名作品' }}</h3>
         <dl>

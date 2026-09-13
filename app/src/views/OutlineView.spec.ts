@@ -235,4 +235,17 @@ describe('continuous outline editing', () => {
     expect(store.project?.positioning?.sellingPoint).toContain('空村重新养活')
     wrapper.unmount()
   })
+
+  it('opens the project hook ledger from the outline toolbar', async () => {
+    const { wrapper } = await mountOutline()
+    const hookMode = Array.from(document.querySelectorAll<HTMLButtonElement>('#topbar-actions button'))
+      .find((button) => button.textContent?.trim() === '伏笔台账')
+    hookMode?.click()
+    await new Promise((resolve) => setTimeout(resolve, 100))
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('伏笔台账')
+    expect(wrapper.text()).toContain('当前没有未兑现伏笔')
+    wrapper.unmount()
+  })
 })
