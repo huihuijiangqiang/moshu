@@ -123,9 +123,9 @@ def build_chapter_variation_contract(
         if str(item.get("variationEngine") or "").strip()
     ]
     recent_hooks = [
-        str(item.get("hookType") or "").strip()
+        str(item.get("actualHookType") or item.get("hookType") or "").strip()
         for item in recent
-        if str(item.get("hookType") or "").strip()
+        if str(item.get("actualHookType") or item.get("hookType") or "").strip()
     ]
     used_engine_keys = {value.casefold() for value in recent_engines}
     used_hook_keys = {value.casefold() for value in recent_hooks}

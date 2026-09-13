@@ -477,6 +477,7 @@ class GenerationService:
             chapter_scenes = scenes_by_chapter.get(item.id, [])
             body = bodies_by_chapter.get(item.id)
             body_text = "\n".join(html_to_paragraphs(body.content_html)) if body is not None else ""
+            body_fingerprint = extract_dramatic_fingerprint(body_text) if body_text else None
             outline_signals = [
                 str(node)[:500]
                 for node in (item.outline or [])
@@ -531,7 +532,8 @@ class GenerationService:
                     "sceneEngineHint": scene_engine_hint,
                     "hookType": hook_type,
                     "variationEngine": variation_engine,
-                    "bodyFingerprint": extract_dramatic_fingerprint(body_text) if body_text else None,
+                    "bodyFingerprint": body_fingerprint,
+                    "actualHookType": body_fingerprint["hookType"] if body_fingerprint else None,
                 }
             )
         return patterns

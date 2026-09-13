@@ -411,6 +411,35 @@ def test_draft_does_not_warn_when_new_chapter_changes_dramatic_engine():
     assert not any(item["id"] == "quality.recent_chapter_repetition" for item in report["checks"])
 
 
+def test_draft_warns_when_actual_hook_repeats_despite_different_scene_engine():
+    prompt = {
+        "task": "chapter",
+        "checks": [],
+        "recentDramaticPatterns": [
+            {
+                "chapterIndex": 15,
+                "chapterTitle": "断粮",
+                "bodyFingerprint": {
+                    "dominantMotif": "资源危机",
+                    "motifs": ["资源危机"],
+                    "hookType": "倒计时",
+                },
+            }
+        ],
+    }
+    text = (
+        "沈禾在公堂上逼粮商交出私契，围观村民齐声作证。" * 40
+        + "差役已经点燃一炷香，香灭前她必须交出田契，只剩一刻钟。"
+    )
+
+    report = assess_draft_coverage(prompt, text)
+
+    assert report is not None
+    check = next(item for item in report["checks"] if item["id"] == "quality.recent_hook_repetition")
+    assert check["status"] == "author_review"
+    assert "倒计时" in check["evidence"][0]
+
+
 def test_hook_fingerprint_prefers_relationship_threat_over_incidental_countdown():
     text = (
         "张府追骑已经冲进巷口，为首之人拔刀截住唯一出口，"

@@ -471,9 +471,6 @@ def _recent_chapter_similarity_checks(
     if not isinstance(recent, list) or not recent:
         return []
     current = extract_dramatic_fingerprint(text)
-    dominant = str(current.get("dominantMotif") or "")
-    if not dominant:
-        return []
     comparable = [
         item
         for item in recent
@@ -481,6 +478,8 @@ def _recent_chapter_similarity_checks(
     ]
     if not comparable:
         return []
+    checks: list[dict[str, Any]] = []
+    dominant = str(current.get("dominantMotif") or "")
     current_motifs = set(current.get("motifs") or [])
     repeated = [
         item
@@ -490,31 +489,67 @@ def _recent_chapter_similarity_checks(
     previous = comparable[-1]
     previous_motifs = set(previous["bodyFingerprint"].get("motifs") or [])
     adjacent_overlap = len(current_motifs & previous_motifs)
-    same_adjacent_engine = previous["bodyFingerprint"].get("dominantMotif") == dominant
-    if len(repeated) < 2 and not (same_adjacent_engine and adjacent_overlap >= 2):
-        return []
-    chapter_labels = [
-        f"第{item.get('chapterIndex')}章《{item.get('chapterTitle', '')}》"
-        for item in repeated[-3:]
-    ]
-    return [
-        {
-            "id": "quality.recent_chapter_repetition",
-            "checkType": "quality",
-            "sourceType": "quality",
-            "sourceId": None,
-            "label": "近期章节结构重复",
-            "status": "author_review",
-            "severity": "warning",
-            "message": "候选稿与近期章节复用了同一主要戏剧机制；请更换冲突载体、破局方式或人物代价后再采纳。",
-            "expected": [],
-            "evidence": [
-                f"本章主要机制：{dominant}",
-                "共同机制：" + "、".join(sorted(current_motifs & previous_motifs)),
-                "近期同类：" + "、".join(chapter_labels),
-            ],
-        }
-    ]
+    same_adjacent_engine = bool(dominant) and previous["bodyFingerprint"].get("dominantMotif") == dominant
+    if dominant and (len(repeated) >= 2 or (same_adjacent_engine and adjacent_overlap >= 2)):
+        chapter_labels = [
+            f"第{item.get('chapterIndex')}章《{item.get('chapterTitle', '')}》"
+            for item in repeated[-3:]
+        ]
+        checks.append(
+            {
+                "id": "quality.recent_chapter_repetition",
+                "checkType": "quality",
+                "sourceType": "quality",
+                "sourceId": None,
+                "label": "近期章节结构重复",
+                "status": "author_review",
+                "severity": "warning",
+                "message": "候选稿与近期章节复用了同一主要戏剧机制；请更换冲突载体、破局方式或人物代价后再采纳。",
+                "expected": [],
+                "evidence": [
+                    f"本章主要机制：{dominant}",
+                    "共同机制：" + "、".join(sorted(current_motifs & previous_motifs)),
+                    "近期同类：" + "、".join(chapter_labels),
+                ],
+            }
+        )
+
+    # A rotating outline label can hide that the prose repeatedly lands on the
+    # same kind of story debt. Use the accepted body fingerprint as the source
+    # of truth and make adjacent reuse reviewable even when the surrounding
+    # scene motif changed.
+    weak_hook_types = {"", "无有效钩子", "单独问句", "识人问句", "抽象总结"}
+    current_hook = str(current.get("hookType") or "")
+    if current_hook not in weak_hook_types:
+        same_hook = [
+            item
+            for item in comparable
+            if str(item["bodyFingerprint"].get("hookType") or "") == current_hook
+        ]
+        previous_hook = str(previous["bodyFingerprint"].get("hookType") or "")
+        if previous_hook == current_hook or len(same_hook) >= 2:
+            hook_labels = [
+                f"第{item.get('chapterIndex')}章《{item.get('chapterTitle', '')}》"
+                for item in same_hook[-3:]
+            ]
+            checks.append(
+                {
+                    "id": "quality.recent_hook_repetition",
+                    "checkType": "quality",
+                    "sourceType": "quality",
+                    "sourceId": None,
+                    "label": "近期章尾钩子重复",
+                    "status": "author_review",
+                    "severity": "warning",
+                    "message": "候选稿与近期正文形成了同一种章尾追读债；请改换由不同人物选择、对手行动或损失触发的钩子。",
+                    "expected": [],
+                    "evidence": [
+                        f"本章实际钩子：{current_hook}",
+                        "近期同类：" + "、".join(hook_labels),
+                    ],
+                }
+            )
+    return checks
 
 
 def _structural_quality_checks(text: str, *, is_chapter: bool) -> list[dict[str, Any]]:

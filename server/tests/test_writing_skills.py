@@ -39,6 +39,23 @@ def test_variation_contract_skips_recent_engine_and_hook_instead_of_only_warning
     assert "公开对峙" in contract and "移动追索" in contract
 
 
+def test_variation_contract_prefers_actual_prose_hook_over_outline_label():
+    contract = build_chapter_variation_contract(
+        1,
+        recent_patterns=[
+            {
+                "variationEngine": "公开对峙",
+                "hookType": "倒计时",
+                "actualHookType": "关系威胁",
+            }
+        ],
+    )
+
+    assert "近期已用章尾钩子类型：关系威胁" in contract
+    assert "本章指定发动机：移动追索" in contract
+    assert "本章指定章尾钩子类型：未完成动作" in contract
+
+
 def test_skill_selection_combines_genre_task_and_scene_in_stable_order():
     selection = select_writing_skills(
         genre="女频 · 穿越种田",
