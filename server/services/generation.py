@@ -9,7 +9,7 @@ from dataclasses import dataclass, field
 from typing import Any, AsyncIterator, Optional
 
 import httpx
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from config import settings
@@ -289,10 +289,15 @@ class GenerationService:
                 + untrusted_json_block("temporal_anchors", temporal_data)
                 + "\n不得让本章时间早于上一章已确认的结束时间；无法确定时不要擅自编造日期。"
             )
-        recent_dramatic_patterns = await self._recent_dramatic_patterns(project, chapter)
+        chapter_number = await self._chapter_number(project.id, chapter)
+        recent_dramatic_patterns = await self._recent_dramatic_patterns(
+            project,
+            chapter,
+            chapter_number=chapter_number,
+        )
         coverage["recentDramaticPatterns"] = recent_dramatic_patterns
         variation_contract = build_chapter_variation_contract(
-            chapter.idx,
+            chapter_number,
             outline=list(chapter.outline or []),
             recent_patterns=recent_dramatic_patterns,
         )
@@ -344,7 +349,7 @@ class GenerationService:
             {
                 "title": project.title,
                 "genre": project.genre or "未设置",
-                "chapter_index": chapter.idx,
+                "chapter_index": chapter_number,
                 "chapter_title": chapter.title,
             },
         )
@@ -420,6 +425,7 @@ class GenerationService:
         project: Project,
         chapter: Chapter,
         *,
+        chapter_number: int | None = None,
         limit: int = 8,
     ) -> list[dict[str, Any]]:
         """Expose recent dramatic choices so the prose model can avoid repetition."""
@@ -467,6 +473,8 @@ class GenerationService:
         )
         bodies_by_chapter = {row.chapter_id: row for row in body_rows}
 
+        current_number = chapter_number or await self._chapter_number(project.id, chapter)
+        first_recent_number = current_number - len(recent)
         patterns: list[dict[str, Any]] = []
         structural_labels = (
             "场景机制：",
@@ -480,7 +488,8 @@ class GenerationService:
             "离场状态：",
             "章末钩子（",
         )
-        for item in reversed(recent):
+        for recent_offset, item in enumerate(reversed(recent)):
+            item_number = first_recent_number + recent_offset
             chapter_scenes = scenes_by_chapter.get(item.id, [])
             body = bodies_by_chapter.get(item.id)
             body_text = "\n".join(html_to_paragraphs(body.content_html)) if body is not None else ""
@@ -512,15 +521,15 @@ class GenerationService:
                 # Give them the stable catalog slot used at generation time so
                 # later chapters can still avoid repeating that engine.
                 variation_engine = CHAPTER_VARIATION_CATALOG[
-                    max(0, item.idx - 1) % len(CHAPTER_VARIATION_CATALOG)
+                    max(0, item_number - 1) % len(CHAPTER_VARIATION_CATALOG)
                 ]["engine"]
             if not hook_type:
                 hook_type = CHAPTER_VARIATION_CATALOG[
-                    max(0, item.idx - 1) % len(CHAPTER_VARIATION_CATALOG)
+                    max(0, item_number - 1) % len(CHAPTER_VARIATION_CATALOG)
                 ]["hook"]
             patterns.append(
                 {
-                    "chapterIndex": item.idx,
+                    "chapterIndex": item_number,
                     "chapterTitle": item.title,
                     "hasBody": item.words > 0,
                     "goals": [scene.goal[:500] for scene in chapter_scenes if scene.goal.strip()],
@@ -544,6 +553,19 @@ class GenerationService:
                 }
             )
         return patterns
+
+    async def _chapter_number(self, project_id: str, chapter: Chapter) -> int:
+        """Return the visible one-based chapter number, not the sparse sort key."""
+        return int(
+            await self.db.scalar(
+                select(func.count(Chapter.id)).where(
+                    Chapter.project_id == project_id,
+                    Chapter.idx <= chapter.idx,
+                    Chapter.deleted_at.is_(None),
+                )
+            )
+            or 1
+        )
 
     async def _style_prompt(self, project: Project, enabled: bool) -> str:
         if not enabled or not project.style_profile_id:
