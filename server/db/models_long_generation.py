@@ -31,7 +31,9 @@ class StoryArc(Base, TimestampMixin):
     version: Mapped[int] = mapped_column(Integer, default=1, server_default="1")
 
     __table_args__ = (
-        CheckConstraint("status IN ('planned', 'active', 'completed', 'paused', 'archived')", name="ck_story_arc_status"),
+        CheckConstraint(
+            "status IN ('planned', 'active', 'completed', 'paused', 'archived')", name="ck_story_arc_status"
+        ),
         CheckConstraint("version > 0", name="ck_story_arc_version_positive"),
         CheckConstraint("start_chapter_idx IS NULL OR start_chapter_idx > 0", name="ck_story_arc_start_positive"),
         CheckConstraint("end_chapter_idx IS NULL OR end_chapter_idx >= start_chapter_idx", name="ck_story_arc_range"),
@@ -44,7 +46,9 @@ class PlotThread(Base, TimestampMixin):
 
     id: Mapped[str] = mapped_column(String(32), primary_key=True)
     project_id: Mapped[str] = mapped_column(String(32), ForeignKey("projects.id", ondelete="CASCADE"), index=True)
-    arc_id: Mapped[Optional[str]] = mapped_column(String(32), ForeignKey("story_arcs.id", ondelete="SET NULL"), nullable=True, index=True)
+    arc_id: Mapped[Optional[str]] = mapped_column(
+        String(32), ForeignKey("story_arcs.id", ondelete="SET NULL"), nullable=True, index=True
+    )
     title: Mapped[str] = mapped_column(String(200))
     thread_type: Mapped[str] = mapped_column(String(30), default="main", server_default="main")
     priority: Mapped[int] = mapped_column(Integer, default=50, server_default="50")
@@ -55,7 +59,10 @@ class PlotThread(Base, TimestampMixin):
     state: Mapped[dict] = mapped_column(JSONB, default=dict, nullable=False)
 
     __table_args__ = (
-        CheckConstraint("thread_type IN ('main', 'subplot', 'mystery', 'political', 'romance', 'character')", name="ck_plot_thread_type"),
+        CheckConstraint(
+            "thread_type IN ('main', 'subplot', 'mystery', 'political', 'romance', 'character')",
+            name="ck_plot_thread_type",
+        ),
         CheckConstraint("status IN ('open', 'resolved', 'dormant', 'abandoned')", name="ck_plot_thread_status"),
         CheckConstraint("priority BETWEEN 0 AND 100", name="ck_plot_thread_priority"),
         Index("ix_plot_threads_project_priority", "project_id", "priority"),
@@ -68,7 +75,9 @@ class PlotBeat(Base, TimestampMixin):
     id: Mapped[str] = mapped_column(String(32), primary_key=True)
     project_id: Mapped[str] = mapped_column(String(32), ForeignKey("projects.id", ondelete="CASCADE"), index=True)
     thread_id: Mapped[str] = mapped_column(String(32), ForeignKey("plot_threads.id", ondelete="CASCADE"), index=True)
-    chapter_id: Mapped[Optional[str]] = mapped_column(String(32), ForeignKey("chapters.id", ondelete="SET NULL"), nullable=True, index=True)
+    chapter_id: Mapped[Optional[str]] = mapped_column(
+        String(32), ForeignKey("chapters.id", ondelete="SET NULL"), nullable=True, index=True
+    )
     beat_order: Mapped[int] = mapped_column(Integer)
     beat_type: Mapped[str] = mapped_column(String(30), default="turn", server_default="turn")
     description: Mapped[str] = mapped_column(Text, default="", server_default="")
@@ -91,7 +100,9 @@ class GenerationSegment(Base, TimestampMixin):
     id: Mapped[str] = mapped_column(String(32), primary_key=True)
     project_id: Mapped[str] = mapped_column(String(32), ForeignKey("projects.id", ondelete="CASCADE"), index=True)
     chapter_id: Mapped[str] = mapped_column(String(32), ForeignKey("chapters.id", ondelete="CASCADE"), index=True)
-    run_id: Mapped[Optional[str]] = mapped_column(String(32), ForeignKey("generation_runs.id", ondelete="SET NULL"), nullable=True, index=True)
+    run_id: Mapped[Optional[str]] = mapped_column(
+        String(32), ForeignKey("generation_runs.id", ondelete="SET NULL"), nullable=True, index=True
+    )
     segment_index: Mapped[int] = mapped_column(Integer)
     target_words: Mapped[int] = mapped_column(Integer)
     status: Mapped[str] = mapped_column(String(20), default="pending", server_default="pending")
@@ -112,10 +123,50 @@ class GenerationSegment(Base, TimestampMixin):
         UniqueConstraint("chapter_id", "segment_index", name="uq_generation_segment_chapter_index"),
         CheckConstraint("segment_index >= 0", name="ck_generation_segment_index_nonnegative"),
         CheckConstraint("target_words BETWEEN 100 AND 32000", name="ck_generation_segment_target_words"),
-        CheckConstraint("status IN ('pending', 'running', 'ready', 'failed', 'accepted', 'skipped')", name="ck_generation_segment_status"),
+        CheckConstraint(
+            "status IN ('pending', 'running', 'ready', 'failed', 'accepted', 'skipped')",
+            name="ck_generation_segment_status",
+        ),
         CheckConstraint("generated_words >= 0", name="ck_generation_segment_generated_words"),
         Index("ix_generation_segments_chapter_status", "chapter_id", "status", "segment_index"),
     )
 
 
-__all__ = ["StoryArc", "PlotThread", "PlotBeat", "GenerationSegment"]
+class StoryHook(Base, TimestampMixin):
+    """Durable story debt created by a chapter ending and paid off later."""
+
+    __tablename__ = "story_hooks"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True)
+    project_id: Mapped[str] = mapped_column(String(32), ForeignKey("projects.id", ondelete="CASCADE"), index=True)
+    source_chapter_id: Mapped[str] = mapped_column(
+        String(32), ForeignKey("chapters.id", ondelete="CASCADE"), index=True
+    )
+    payoff_chapter_id: Mapped[Optional[str]] = mapped_column(
+        String(32), ForeignKey("chapters.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    hook_type: Mapped[str] = mapped_column(String(50))
+    concrete_event: Mapped[str] = mapped_column(Text)
+    unresolved_question: Mapped[str] = mapped_column(Text)
+    payoff_by_chapter: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    status: Mapped[str] = mapped_column(String(20), default="open", server_default="open")
+    novelty_signature: Mapped[str] = mapped_column(String(64))
+    resolution: Mapped[str] = mapped_column(Text, default="", server_default="")
+    revision: Mapped[int] = mapped_column(Integer, default=1, server_default="1")
+
+    __table_args__ = (
+        UniqueConstraint("project_id", "novelty_signature", name="uq_story_hook_signature"),
+        CheckConstraint(
+            "status IN ('open', 'deferred', 'resolved', 'abandoned')",
+            name="ck_story_hook_status",
+        ),
+        CheckConstraint(
+            "payoff_by_chapter IS NULL OR payoff_by_chapter > 0",
+            name="ck_story_hook_payoff_positive",
+        ),
+        CheckConstraint("revision > 0", name="ck_story_hook_revision_positive"),
+        Index("ix_story_hooks_project_status_due", "project_id", "status", "payoff_by_chapter"),
+    )
+
+
+__all__ = ["StoryArc", "PlotThread", "PlotBeat", "GenerationSegment", "StoryHook"]

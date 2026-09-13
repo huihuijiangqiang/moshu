@@ -23,8 +23,8 @@ from api import (
     agent,
     auth,
     billing,
-    chapters,
     chapter_chunks,
+    chapters,
     codex,
     consistency,
     deconstruct,
@@ -38,9 +38,10 @@ from api import (
     provenance,
     reviews,
     scenes,
+    story_hooks,
     styles,
-    text_replacement,
     tasks,
+    text_replacement,
     tools,
     usage,
 )
@@ -113,9 +114,7 @@ async def readiness():
         async with engine.connect() as connection:
             migration_result = await connection.execute(text("SELECT version_num FROM alembic_version"))
         checks["postgres"] = "ok"
-        checks["migrations"] = (
-            "ok" if migration_result.scalar_one_or_none() == MIGRATION_HEAD else "outdated"
-        )
+        checks["migrations"] = "ok" if migration_result.scalar_one_or_none() == MIGRATION_HEAD else "outdated"
     except Exception:
         checks["postgres"] = "failed"
         checks["migrations"] = "unknown"
@@ -171,5 +170,6 @@ app.include_router(text_replacement.router, prefix="/projects", tags=["全书校
 app.include_router(tools.router, prefix="/projects", tags=["写作工具"])
 app.include_router(reviews.router, prefix="/reviews", tags=["章节审稿"])
 app.include_router(scenes.router, tags=["场景卡片"])
+app.include_router(story_hooks.router, tags=["章尾悬念"])
 app.include_router(agent.router, prefix="/agent", tags=["AI 助手"])
 app.include_router(tasks.router, prefix="/tasks", tags=["任务中心"])

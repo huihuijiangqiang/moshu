@@ -3,9 +3,11 @@
 """
 
 from db.base import Base, TimestampMixin
+from db.models_adaptation import Adaptation, Episode, Scene, Shot, VisualProfile
 from db.models_admin import AdminAuditLog, AuthSession, SystemSetting
-from db.models_auth_security import PasswordResetToken
 from db.models_agent import AgentAction, AgentMessage, AgentSession
+from db.models_auth_security import PasswordResetToken
+from db.models_chapter_chunks import ChapterChunk
 from db.models_codex import CodexAlias, CodexEntry, CodexRef, CodexRelation, CodexStateChange
 from db.models_consistency import (
     ChapterOutlineRevision,
@@ -23,14 +25,16 @@ from db.models_consistency_extended import (
     StoryEvent,
 )
 from db.models_core import Chapter, ChapterBody, ChapterVersion, Project, ProjectNote, User, Volume
-from db.models_chapter_chunks import ChapterChunk
 from db.models_editing import TextReplacementRun
 from db.models_embedding import CodexEmbeddingJob
 from db.models_guard import Foreshadow, GuardIssue
+from db.models_long_generation import GenerationSegment, PlotBeat, PlotThread, StoryArc, StoryHook
 from db.models_model_config import UserModelConfig
+from db.models_naturalization import NaturalizationFinding, NaturalizationRun
 from db.models_org import ChapterAssignment, Org, OrgMember
 from db.models_positioning import ProjectPositioning, ProjectPositioningRevision
 from db.models_review import ChapterReviewRound, ReviewComment
+from db.models_scene_cards import ChapterScene
 from db.models_timeline import TimelineEntry
 from db.models_usage import (
     BillingOrder,
@@ -44,10 +48,6 @@ from db.models_usage import (
     UsageLog,
 )
 from db.models_writing import ProjectDailyWriting
-from db.models_adaptation import Adaptation, Episode, Scene, Shot, VisualProfile
-from db.models_scene_cards import ChapterScene
-from db.models_naturalization import NaturalizationFinding, NaturalizationRun
-from db.models_long_generation import GenerationSegment, PlotBeat, PlotThread, StoryArc
 
 __all__ = [
     "Base",
@@ -125,4 +125,5 @@ __all__ = [
     "PlotThread",
     "PlotBeat",
     "GenerationSegment",
+    "StoryHook",
 ]
