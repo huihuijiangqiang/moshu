@@ -345,6 +345,36 @@ def test_old_threat_before_a_neutral_ending_does_not_count_as_hook():
     assert check["status"] == "author_review"
 
 
+def test_started_route_action_with_unresolved_destination_counts_as_hook():
+    text = (
+        "沈禾盯着北仓后墙，发现护院已经把赈粮装上马车。"
+        "刘崇正压低声音：不能在庄门动手。差役翻身上马，四个人跟上运粮车，"
+        "马车拐进夜色，看不出要把粮食运到哪里。"
+    )
+    report = assess_draft_coverage({"task": "chapter", "checks": []}, text * 8)
+    check = next(item for item in report["checks"] if item["id"] == "quality.chapter_hook_presence")
+    assert check["status"] == "evidence_found"
+    assert "动作已启动：是" in check["evidence"]
+
+
+def test_plan_only_route_does_not_count_as_hook():
+    text = (
+        "沈禾收好证据，准备跟上运粮车，想看看他们会把粮食运到哪里。"
+        "她打算明日再查清楚。"
+    )
+    report = assess_draft_coverage({"task": "chapter", "checks": []}, text * 8)
+    check = next(item for item in report["checks"] if item["id"] == "quality.chapter_hook_presence")
+    assert check["status"] == "author_review"
+    assert "仅计划表达：是" in check["evidence"]
+
+
+def test_intent_before_action_does_not_count_as_started_hook():
+    text = "她准备跟上运粮车，想看看他们会把粮食运到哪里。" * 16
+    report = assess_draft_coverage({"task": "chapter", "checks": []}, text)
+    check = next(item for item in report["checks"] if item["id"] == "quality.chapter_hook_presence")
+    assert check["status"] == "author_review"
+
+
 def test_dramatic_fingerprint_reads_actual_access_denial_from_body():
     text = (
         "沈禾到衙门求见刘大人，守卫拒绝通报。她改去递状，"

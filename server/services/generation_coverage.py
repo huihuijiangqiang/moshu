@@ -59,18 +59,21 @@ _TURN_MARKERS = (
 _HOOK_MARKERS = (
     "?", "？", "未完", "还没", "尚未", "却在", "突然", "门外", "脚步", "来人",
     "明日", "今晚", "必须", "等着", "不敢", "要么", "还是", "倒计时", "期限",
+    "哪里", "哪儿", "何处", "去哪", "去向", "转移", "追踪", "盯梢",
 )
 _HOOK_ACTION_MARKERS = (
     "敲", "撞", "闯", "扣", "拔", "抬", "转", "递", "烧", "撕", "打开", "按住",
     "站起", "回头", "冲进", "落笔", "封", "带走", "逼问", "拔刀", "来信",
-    "追上", "抓住", "围住", "喊叫", "点燃",
+    "追上", "追踪", "跟上", "抓住", "围住", "喊叫", "点燃", "转移", "运往",
+    "押走", "锁住", "封住", "掀开", "掏出", "撬开", "截住", "盯梢",
 )
 _HOOK_PRESSURE_MARKERS = (
     "必须", "期限", "倒计时", "来不及", "之前", "之内", "否则", "要么", "代价",
     "拔刀", "封门", "追上", "抓住", "带走", "杀", "着火", "断粮", "失踪", "截住",
     "交出", "撕掉", "烧掉", "扣下", "不见了", "只给", "只剩", "香灭", "一刻钟",
-    "门外", "脚步", "围住", "喊叫",
+    "门外", "脚步", "围住", "喊叫", "转移", "运往", "追踪", "盯梢", "去向",
 )
+_HOOK_INTENT_MARKERS = ("准备", "打算", "想要", "将要", "计划", "看看", "再去")
 _DECISION_MARKERS = (
     "决定", "答应", "拒绝", "撕掉", "烧掉", "交出", "留下", "放弃", "押上", "签下",
     "闯入", "拔刀",
@@ -397,11 +400,41 @@ def _ending_hook_evidence(text: str) -> dict[str, Any]:
         )
     )
     question = bool(re.search(r"[？?]", ending)) or bool(
-        re.search(r"(?:谁会|为何|为什么|怎么(?:办|做)|是否|还没|尚未|来不及|必须在)", ending)
+        re.search(r"(?:谁会|为何|为什么|怎么(?:办|做)|是否|还没|尚未|来不及|必须在|哪里|哪儿|何处|去哪)", ending)
     )
+    # Distinguish an action already in motion from a plan.  This is the key
+    # failure mode in otherwise polished chapters: "跟上去看看" describes an
+    # intention, while "马车已经转向" creates an immediate story debt.
+    final_actions = [marker for marker in _HOOK_ACTION_MARKERS if marker in final_sentence]
+    intent_in_final = any(marker in final_sentence for marker in _HOOK_INTENT_MARKERS)
+    intent_before_action = bool(
+        re.search(
+            r"(?:准备|打算|想要|将要|计划|想看看|再去)[^。！？!?]{0,24}"
+            r"(?:跟上|追踪|转移|运往|追上|截住|盯梢|打开|闯入)",
+            final_sentence,
+        )
+    )
+    started_action = bool(actions) and (
+        (
+            bool(final_actions)
+            and any(marker in final_sentence for marker in ("已经", "正在", "刚", "冲", "跟上", "追", "转移", "运往", "截住"))
+        )
+        or any(marker in final_sentence for marker in _HOOK_PRESSURE_MARKERS)
+        # A preceding sentence may launch the action, but the last sentence
+        # must then carry the unresolved pressure and cannot be plan-only.
+        or (not intent_in_final and any(marker in final_beat for marker in ("已经", "正在", "刚", "冲", "跟上", "追", "转移", "运往", "截住")))
+    )
+    plan_only = intent_before_action or (
+        intent_in_final
+        and not final_actions
+        and not any(marker in final_sentence for marker in _HOOK_PRESSURE_MARKERS)
+    )
+    if intent_before_action and not any(marker in final_sentence for marker in _HOOK_PRESSURE_MARKERS):
+        started_action = False
     strong = (
-        bool(actions)
-        and (bool(pressure) or concrete_contradiction)
+        started_action
+        and (bool(pressure) or concrete_contradiction or question)
+        and not plan_only
         and not weak_recognition
         and not abstract_ending
     )
@@ -413,6 +446,8 @@ def _ending_hook_evidence(text: str) -> dict[str, Any]:
         "weakRecognition": weak_recognition,
         "abstractEnding": abstract_ending,
         "concreteContradiction": concrete_contradiction,
+        "startedAction": started_action,
+        "planOnly": plan_only,
         "strong": strong,
     }
 
@@ -709,6 +744,8 @@ def _dramatic_contract_checks(content: str, prompt_coverage: dict[str, Any]) -> 
                     "识人问句：" + ("是" if evidence["weakRecognition"] else "否"),
                     "总结式收尾：" + ("是" if evidence["abstractEnding"] else "否"),
                     "具体矛盾证据：" + ("是" if evidence["concreteContradiction"] else "否"),
+                    "动作已启动：" + ("是" if evidence["startedAction"] else "否"),
+                    "仅计划表达：" + ("是" if evidence["planOnly"] else "否"),
                 ],
             }
         )
@@ -750,6 +787,8 @@ def _dramatic_contract_checks(content: str, prompt_coverage: dict[str, Any]) -> 
                     "识人问句：" + ("是" if evidence["weakRecognition"] else "否"),
                     "总结式收尾：" + ("是" if evidence["abstractEnding"] else "否"),
                     "具体矛盾证据：" + ("是" if evidence["concreteContradiction"] else "否"),
+                    "动作已启动：" + ("是" if evidence["startedAction"] else "否"),
+                    "仅计划表达：" + ("是" if evidence["planOnly"] else "否"),
                 ],
             }
         )

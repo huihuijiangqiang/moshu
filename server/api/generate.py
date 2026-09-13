@@ -488,6 +488,7 @@ def _generation_response(
 
             generated_prose = "".join(chunks)
             prose = _merge_continuation_content(initial_content, generated_prose)
+            draft_quality = assess_draft_coverage(package.coverage, prose)
             completion_tokens = int(usage.get("completion_tokens") or tokenizer.count(generated_prose))
             prompt_tokens = int(usage.get("prompt_tokens") or package.prompt_tokens)
             cached = usage.get("prompt_tokens_details") or {}
@@ -505,6 +506,7 @@ def _generation_response(
                 accepted_words=0,
                 layer_report={
                     **package.layer_report,
+                    "draftQuality": draft_quality,
                     "provenance": {
                         "algorithm": PROVENANCE_ALGORITHM,
                         "paragraph_hashes": generated_paragraph_hashes(prose),
@@ -553,6 +555,12 @@ def _generation_response(
                         "completionTokens": completion_tokens,
                         "cachedTokens": run.cached_tokens,
                         "credits": charged,
+                    },
+                    "quality": {
+                        "status": draft_quality.get("status") if draft_quality else "unknown",
+                        "attention": draft_quality.get("summary", {}).get("attention", 0)
+                        if draft_quality
+                        else 0,
                     },
                 }
             )

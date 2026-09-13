@@ -296,6 +296,13 @@ class GenerationService:
             outline=list(chapter.outline or []),
             recent_patterns=recent_dramatic_patterns,
         )
+        # Keep the chapter-specific contract in the high-priority system
+        # message as well as the auditable context block.  Putting it only in
+        # the reference context allowed some providers to follow the setting
+        # while dropping the anti-repetition and ending requirements.
+        system_parts.append(
+            "本次生成的章节结构硬约束（优先级高于一般写作习惯）：\n" + variation_contract
+        )
         context_text += "\n\n# 本章差异化戏剧契约\n" + variation_contract
         if recent_dramatic_patterns:
             context_text += (
@@ -413,7 +420,7 @@ class GenerationService:
         project: Project,
         chapter: Chapter,
         *,
-        limit: int = 4,
+        limit: int = 8,
     ) -> list[dict[str, Any]]:
         """Expose recent dramatic choices so the prose model can avoid repetition."""
         recent = list(

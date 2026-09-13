@@ -56,6 +56,23 @@ def test_variation_contract_prefers_actual_prose_hook_over_outline_label():
     assert "本章指定章尾钩子类型：未完成动作" in contract
 
 
+def test_variation_contract_avoids_most_frequent_profile_in_long_recent_window():
+    recent = [
+        {"variationEngine": "公开对峙", "hookType": "倒计时"},
+        {"variationEngine": "公开对峙", "hookType": "倒计时"},
+        {"variationEngine": "移动追索", "hookType": "未完成动作"},
+        {"variationEngine": "关系交换", "hookType": "关系威胁"},
+        {"variationEngine": "资源争夺", "hookType": "两难选择"},
+        {"variationEngine": "身份错位", "hookType": "身份偏差"},
+        {"variationEngine": "密室调查", "hookType": "证据缺口"},
+        {"variationEngine": "对手先手", "hookType": "对手新行动"},
+    ]
+    contract = build_chapter_variation_contract(9, recent_patterns=recent)
+
+    assert "本章指定发动机：情绪决裂" in contract
+    assert "本章指定章尾钩子类型：突然揭示" in contract
+
+
 def test_skill_selection_combines_genre_task_and_scene_in_stable_order():
     selection = select_writing_skills(
         genre="女频 · 穿越种田",

@@ -110,11 +110,10 @@ def build_chapter_variation_contract(
         if match:
             explicit_hook = match.group(1).strip()
             break
-    # Start from the chapter's stable slot, then advance until both the
-    # dramatic engine and the default hook are absent from the recent window.
-    # The old implementation only *mentioned* recent patterns and still used
-    # the modulo slot, so chapters could receive the same contract repeatedly
-    # after an outline was edited or imported.
+    # Start from the chapter's stable slot, then choose the least-used
+    # compatible profile in the recent window.  A pure modulo rotation repeats
+    # every eight chapters; that is especially visible in long serials where
+    # the outline is sparse and the model falls back to its favourite scene.
     start = max(0, chapter_index - 1) % len(CHAPTER_VARIATION_CATALOG)
     recent = recent_patterns or []
     recent_engines = [
@@ -129,14 +128,41 @@ def build_chapter_variation_contract(
     ]
     used_engine_keys = {value.casefold() for value in recent_engines}
     used_hook_keys = {value.casefold() for value in recent_hooks}
-    profile = CHAPTER_VARIATION_CATALOG[start]
+    # Prefer profiles that have not appeared recently. If all profiles have
+    # appeared, pick the least frequent one and avoid the immediately previous
+    # profile, which gives long runs a deterministic but non-cyclic rhythm.
+    engine_counts = {
+        candidate["engine"].casefold(): sum(
+            value.casefold() == candidate["engine"].casefold() for value in recent_engines
+        )
+        for candidate in CHAPTER_VARIATION_CATALOG
+    }
+    hook_counts = {
+        candidate["hook"].casefold(): sum(
+            value.casefold() == candidate["hook"].casefold() for value in recent_hooks
+        )
+        for candidate in CHAPTER_VARIATION_CATALOG
+    }
+    previous_engine = recent_engines[-1].casefold() if recent_engines else ""
+    ranked: list[tuple[tuple[int, int, int], dict[str, str]]] = []
     for offset in range(len(CHAPTER_VARIATION_CATALOG)):
         candidate = CHAPTER_VARIATION_CATALOG[(start + offset) % len(CHAPTER_VARIATION_CATALOG)]
-        engine_available = candidate["engine"].casefold() not in used_engine_keys
-        hook_available = explicit_hook or candidate["hook"].casefold() not in used_hook_keys
-        if engine_available and hook_available:
-            profile = candidate
-            break
+        engine_key = candidate["engine"].casefold()
+        hook_key = candidate["hook"].casefold()
+        same_explicit_hook = bool(explicit_hook)
+        ranked.append(
+            (
+                (
+                    int(engine_key in used_engine_keys)
+                    + int(not same_explicit_hook and hook_key in used_hook_keys),
+                    engine_counts[engine_key] + (0 if same_explicit_hook else hook_counts[hook_key]),
+                    int(engine_key == previous_engine),
+                ),
+                candidate,
+            )
+        )
+    ranked.sort(key=lambda item: item[0])
+    profile = ranked[0][1]
     hook = explicit_hook or profile["hook"]
     avoid_lines = []
     if recent_engines:
@@ -151,7 +177,9 @@ def build_chapter_variation_contract(
         f"{avoid}\n"
         "上述发动机和钩子是本章的硬约束；近期记录中的结构禁止复用，作者在本章章纲中明确写出的事实优先但不得取消章尾钩子。\n"
         "硬验收：开头150字内发生压力；中段由可见行动使原策略失效；主角作出有代价的选择；最后120到250字只落地一个新动作或发现，"
-        "并停在下一章必须回答的具体问题之前。不得用‘接下来/新的篇章/埋下伏笔/局势变化’等总结代替钩子，也不得在章尾提前解决未决问题。"
+        "并停在下一章必须回答的具体问题之前。章尾必须写出‘谁/什么对象 + 已经发生或正在发生的动作 + 尚未解决的后果’，"
+        "例如门已被撞开、货车已经转向、证物落入对手手中、期限正在减少；‘准备、打算、想要、将要、跟上去看看’等计划式表达不能单独算钩子。"
+        "不得用‘接下来/新的篇章/埋下伏笔/局势变化’等总结代替钩子，也不得在章尾提前解决未决问题。"
     )
 
 
