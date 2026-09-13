@@ -511,7 +511,7 @@ watch(
   <div class="wizard-page">
     <header class="wizard-header">
       <button class="wizard-brand" type="button" @click="router.push('/')">
-        <img src="/brand/moshu-icon.svg" alt="" />
+        <img :src="'/brand/moshu-icon.svg'" alt="" />
         <span>墨枢 · 开新书</span>
       </button>
       <span>草稿已自动保留</span>
