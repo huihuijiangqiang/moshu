@@ -233,6 +233,27 @@ def test_chapter_quality_accepts_substantial_prose():
     assert result["status"] == "ready"
 
 
+def test_chapter_quality_blocks_truncated_markdown_leak():
+    text = "\n".join(
+        f"沈砚秋清点第{index}袋粮，赵顺在仓门旁记下斤两。" for index in range(60)
+    ) + "\n**西山军屯，主账在沈家。**"
+
+    result = MODULE.chapter_quality(text, 1_000)
+    checks = {item["id"]: item for item in result["checks"]}
+
+    assert checks["no_markdown_artifacts"]["ok"] is False
+    assert checks["complete_ending"]["ok"] is False
+    assert result["status"] == "blocked"
+
+
+def test_chapter_quality_blocks_stream_without_sentence_ending():
+    result = MODULE.chapter_quality("她沿着车辙追向西仓。" * 100 + "仓门后传来脚步", 1_000)
+
+    check = next(item for item in result["checks"] if item["id"] == "complete_ending")
+    assert check["ok"] is False
+    assert result["status"] == "blocked"
+
+
 async def test_write_chapter_prompt_guards_evidence_and_numeric_continuity(tmp_path):
     class FakeClient:
         async def complete(self, messages, **kwargs):
@@ -1169,6 +1190,42 @@ def test_editorial_gate_requires_planned_hook_to_land_near_chapter_end():
     assert summary_hook["ok"] is False
 
 
+def test_dramatic_execution_blocks_flat_chapter_and_reused_hook():
+    plan = MODULE.build_seed_plan(target_words=1_000_000, chapter_count=313)
+    contract = MODULE.build_seed_chapter_outline(1, plan["volumes"][0])
+    prose = (
+        "仓门突然被差役撞开，最后一车麦种被拖到院中。"
+        + "孩子们抱着空碗等粮。" * 30
+        + "里正却当众改口，差役转身封住后门，原先的办法彻底落空。"
+        + "沈砚秋决定撕掉祖宅田契换回麦种，代价是全家无屋可归。"
+        + "差役点燃一炷香，香灭前她必须送走麦种，只剩一刻钟。"
+    )
+    recent = [{
+        "chapterIndex": 7,
+        "chapterTitle": "仓门点香",
+        "bodyFingerprint": {"dominantMotif": "资源危机", "motifs": ["资源危机"], "hookType": "倒计时"},
+    }]
+
+    repeated = MODULE.chapter_dramatic_execution(contract, prose, recent_patterns=recent)
+    flat = MODULE.chapter_dramatic_execution(contract, "她把账册收好，说明明日继续核验。" * 80)
+
+    assert "quality.recent_hook_repetition" in {item["id"] for item in repeated["failed"]}
+    assert {"quality.irreversible_choice", "quality.chapter_hook"}.issubset(
+        {item["id"] for item in flat["failed"]}
+    )
+
+
+def _dramatic_test_prose(body, outline):
+    return (
+        "仓门突然被差役撞开，最后一车麦种被拖到院中。\n"
+        + body
+        + "\n里正却当众改口，差役转身封住后门，原先的办法彻底落空。"
+        + "\n沈砚秋决定撕掉祖宅田契换回麦种，代价是全家从此无屋可归。"
+        + "\n" + outline["hook"]
+        + "\n差役点燃一炷香，香灭前她必须把麦种送出仓门，只剩一刻钟。"
+    )
+
+
 def test_v5_narrative_gate_blocks_procedural_overload():
     plan = MODULE.build_seed_plan(target_words=1_000_000, chapter_count=313)
     contract = MODULE.build_seed_chapter_outline(1, plan["volumes"][0])
@@ -1280,7 +1337,10 @@ async def test_run_repairs_editorial_failure_once_and_rechecks_all_gates(tmp_pat
     original = "\n".join(
         f"沈砚秋核对第{index}袋粮，赵顺逐项记下经手人和斤两。" for index in range(42)
     )
-    repaired = original + "\n蓝旗车当场扣住下一笔粮款，赵顺记下车号和经手人。"
+    repaired = _dramatic_test_prose(
+        original + "\n蓝旗车当场扣住下一笔粮款，赵顺记下车号和经手人。",
+        MODULE.build_seed_chapter_outline(1, checkpoint["plan"]["volumes"][0]),
+    )
     analysis_calls = 0
 
     async def write_chapter(outline, target_words):
@@ -1316,7 +1376,11 @@ async def test_run_repairs_editorial_failure_once_and_rechecks_all_gates(tmp_pat
     record = checkpoint["chapters"][0]
     assert record["status"] == "accepted"
     assert record["editorial_repair"]["attempted"] is True
-    assert record["editorial_repair"]["failed_checks"] == ["contract_evidence"]
+    assert record["editorial_repair"]["failed_checks"] == [
+        "contract_evidence",
+        "hook_landing",
+        "dramatic_execution",
+    ]
     assert record["sha256"] == MODULE.content_sha256(repaired)
     assert analysis_calls == 2
     assert "蓝旗车当场扣住" in (tmp_path / record["path"]).read_text(encoding="utf-8")
@@ -1333,10 +1397,10 @@ async def test_run_reuses_analysis_pending_prose_without_regenerating(tmp_path):
         chapter_count=checkpoint["chapter_count"],
     )
     outline = MODULE.build_seed_chapter_outline(1, checkpoint["plan"]["volumes"][0])
-    prose = "\n".join(
+    prose = _dramatic_test_prose("\n".join(
         f"沈砚秋把第{index}袋粮重新称量，赵顺逐项记下经手人和斤两。"
         for index in range(42)
-    )
+    ), outline)
     path = tmp_path / "chapters" / f"0001-{MODULE.safe_filename(outline['title'])}.md"
     MODULE.atomic_write_text(path, prose + "\n")
     checkpoint["chapters"] = [
@@ -1383,7 +1447,10 @@ async def test_run_repairs_resumed_review_blocked_prose_from_persisted_failure(t
         f"沈砚秋把第{index}袋粮重新称量，赵顺逐项记下经手人和斤两。"
         for index in range(42)
     )
-    repaired = prose + "\n蓝旗车当场扣住下一笔粮款，赵顺记下车号和经手人。"
+    repaired = _dramatic_test_prose(
+        prose + "\n蓝旗车当场扣住下一笔粮款，赵顺记下车号和经手人。",
+        outline,
+    )
     path = tmp_path / "chapters" / f"0001-{MODULE.safe_filename(outline['title'])}.md"
     MODULE.atomic_write_text(path, prose + "\n")
     failed_analysis = _contract_analysis(outline)
@@ -1442,14 +1509,13 @@ async def test_run_recovers_and_normalizes_orphan_chapter(tmp_path):
         chapter_count=checkpoint["chapter_count"],
     )
     outline = MODULE.build_seed_chapter_outline(1, checkpoint["plan"]["volumes"][0])
-    prose = "\n".join(
+    prose = _dramatic_test_prose("\n".join(
         ["“账还没核完——”沈砚秋按住被风吹起的纸角。"]
         + [
             f"她把第{index}袋粮重新称量，赵顺逐项记下经手人和斤两。"
             for index in range(41)
         ]
-        + [outline["hook"]]
-    )
+    ), outline)
     path = tmp_path / "chapters" / f"0001-{MODULE.safe_filename(outline['title'])}.md"
     MODULE.atomic_write_text(path, prose + "\n")
     runner = MODULE.LongNovelRun(tmp_path, FakeClient(), checkpoint)
@@ -1522,9 +1588,9 @@ async def test_run_repairs_overlong_style_failure_once_before_quarantine(tmp_pat
     original = "\n".join(
         f"她查的不是第{index}袋粮，而是第{index}张经手票据和收条。" for index in range(80)
     )
-    repaired = "\n".join(
+    repaired = _dramatic_test_prose("\n".join(
         f"沈砚秋核对第{index}袋粮，赵顺逐项记下经手人和斤两。" for index in range(42)
-    )
+    ), MODULE.build_seed_chapter_outline(1, checkpoint["plan"]["volumes"][0]))
     repair_calls = 0
 
     async def write_chapter(chapter_outline, target_words):

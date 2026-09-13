@@ -392,7 +392,7 @@ def _ending_hook_evidence(text: str) -> dict[str, Any]:
     abstract_ending = bool(_ABSTRACT_ENDING.search(final_beat))
     concrete_contradiction = bool(
         re.search(
-            r"(?:已故|死去|十年前|多年以前|陌生印|假印|缺页|空白|血迹|密信|名单|尸体)",
+            r"(?:已故|死去|十年前|多年以前|陌生(?:私)?印|假印|缺页|空白|血迹|密信|名单|尸体)",
             ending,
         )
     )

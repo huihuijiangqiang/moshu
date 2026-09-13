@@ -35,6 +35,10 @@ sys.path.insert(0, str(SERVER_DIR))
 
 from config import settings  # noqa: E402
 from services.generation import count_generated_words, provider_error_detail  # noqa: E402
+from services.generation_coverage import (  # noqa: E402
+    assess_draft_coverage,
+    extract_dramatic_fingerprint,
+)
 
 CHECKPOINT_SCHEMA = "moshu-private-long-novel/v2"
 SEED_OUTLINE_VERSION = 5
@@ -86,6 +90,11 @@ EVIDENCE_TAMPERING_PATTERN = re.compile(
     r")"
 )
 EM_DASH_PATTERN = re.compile(r"[—–]")
+MARKDOWN_ARTIFACT_PATTERN = re.compile(
+    r"(?:^|\n)\s*(?:#{1,6}\s++|```|[-*]\s+)|\*\*[^*\n]+\*\*",
+    flags=re.M,
+)
+COMPLETE_ENDING_PATTERN = re.compile(r"[。！？!?…][\"”’」』】）)]?\s*$")
 STYLE_QUOTE_PATTERN = re.compile(
     r"“[^”\n]*”|「[^」\n]*」|『[^』\n]*』|【[^】\n]*】|\"[^\"\n]*\"|‘[^’\n]*’"
 )
@@ -492,13 +501,16 @@ def chapter_hook_landing(outline: dict[str, Any], prose: str) -> dict[str, Any]:
         phrase in tail[-240:]
         for phrase in ("新的篇章", "才刚刚开始", "一切都会好起来", "她终于明白", "这一切")
     )
+    actual_hook_type = str(extract_dramatic_fingerprint(prose).get("hookType") or "")
+    invalid_hook_types = {"", "无有效钩子", "单独问句", "识人问句", "抽象总结"}
     return {
         "id": "hook_landing",
-        "ok": len(matches) >= 3 and not summary_ending,
+        "ok": len(matches) >= 3 and not summary_ending and actual_hook_type not in invalid_hook_types,
         "matches": matches[:12],
         "tailChars": tail_chars,
         "summaryEnding": summary_ending,
         "expectedHookType": outline.get("hook_type"),
+        "actualHookType": actual_hook_type,
     }
 
 
@@ -529,12 +541,58 @@ def chapter_narrative_vitality(outline: dict[str, Any], prose: str) -> dict[str,
     }
 
 
+def chapter_dramatic_execution(
+    outline: dict[str, Any],
+    prose: str,
+    *,
+    recent_patterns: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    """Use deterministic draft evidence as a hard gate for unattended runs."""
+    required = ("scene_mode", "turn_trigger", "choice", "cost", "hook", "unresolved_question")
+    if not all(str(outline.get(field, "")).strip() for field in required):
+        return {"id": "dramatic_execution", "ok": True, "applicable": False, "failed": []}
+    coverage = {
+        "task": "chapter",
+        "checks": [
+            {"id": "contract.turn", "checkType": "requirement", "semanticType": "turn"},
+            {"id": "contract.hook", "checkType": "requirement", "semanticType": "hook"},
+        ],
+        "recentDramaticPatterns": recent_patterns or [],
+    }
+    report = assess_draft_coverage(coverage, prose)
+    blocking_ids = {
+        "quality.procedural_density", "quality.report_ending",
+        "quality.turning_point", "quality.chapter_hook",
+        "quality.opening_pressure", "quality.irreversible_choice",
+        "quality.exposition_loop", "quality.recent_chapter_repetition",
+        "quality.recent_hook_repetition",
+    }
+    failed = [
+        {
+            "id": str(item.get("id", "")),
+            "message": str(item.get("message", "")),
+            "evidence": list(item.get("evidence") or [])[:4],
+        }
+        for item in (report or {}).get("checks", [])
+        if item.get("id") in blocking_ids
+        and item.get("status") in {"attention", "author_review"}
+    ]
+    return {
+        "id": "dramatic_execution",
+        "ok": not failed,
+        "applicable": True,
+        "failed": failed,
+        "fingerprint": extract_dramatic_fingerprint(prose),
+    }
+
+
 def chapter_editorial_gate(
     outline: dict[str, Any],
     analysis: dict[str, Any],
     *,
     minimum_score: float = 7.0,
     prose: str | None = None,
+    recent_patterns: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Require complete, evidenced contract compliance before Canon changes."""
     expected_items = chapter_contract_check_ids(outline)
@@ -600,6 +658,7 @@ def chapter_editorial_gate(
     if prose is not None:
         checks.append(chapter_hook_landing(outline, prose))
         checks.append(chapter_narrative_vitality(outline, prose))
+        checks.append(chapter_dramatic_execution(outline, prose, recent_patterns=recent_patterns))
     return {
         "status": "ready" if all(item["ok"] for item in checks) else "blocked",
         "checks": checks,
@@ -779,6 +838,15 @@ def chapter_quality(
             "target": target_words,
         },
         {"id": "no_model_meta", "ok": META_PATTERN.search(text) is None},
+        {"id": "complete_ending", "ok": bool(COMPLETE_ENDING_PATTERN.search(text.strip()))},
+        {
+            "id": "no_markdown_artifacts",
+            "ok": MARKDOWN_ARTIFACT_PATTERN.search(text) is None,
+            "matches": [
+                match.group(0).strip()
+                for match in list(MARKDOWN_ARTIFACT_PATTERN.finditer(text))[:8]
+            ],
+        },
         {"id": "has_dialogue_or_action", "ok": '"' in text or "“" in text or len(text.splitlines()) >= 8},
         {
             "id": "no_em_dash",
@@ -2217,6 +2285,35 @@ class LongNovelRun:
         for key in ("prompt_tokens", "completion_tokens", "total_tokens"):
             totals[key] = int(totals.get(key, 0)) + int(usage.get(key, 0))
 
+    def recent_dramatic_patterns(
+        self,
+        chapter_number: int,
+        *,
+        limit: int = 4,
+    ) -> list[dict[str, Any]]:
+        """Read accepted prose, not plan labels, for rolling structure de-duplication."""
+        accepted = sorted(
+            (
+                item for item in self.checkpoint.get("chapters", [])
+                if item.get("status") == "accepted"
+                and int(item.get("number", 0)) < chapter_number
+            ),
+            key=lambda item: int(item.get("number", 0)),
+        )[-max(1, limit):]
+        root = self.output_dir.resolve()
+        patterns: list[dict[str, Any]] = []
+        for item in accepted:
+            chapter_path = (root / str(item.get("path", ""))).resolve()
+            if root not in chapter_path.parents or not chapter_path.is_file():
+                continue
+            prose = chapter_path.read_text(encoding="utf-8").strip()
+            patterns.append({
+                "chapterIndex": int(item.get("number", 0)),
+                "chapterTitle": str(item.get("title", "")),
+                "bodyFingerprint": extract_dramatic_fingerprint(prose),
+            })
+        return patterns
+
     async def ensure_plan(self) -> None:
         if self.checkpoint.get("plan"):
             return
@@ -2848,15 +2945,20 @@ authority_scope 补充要求：基层经办人若授予跨机构、长期或排�
                     record.clear()
                     record.update(pending)
                 self.save()
+                recent_patterns = self.recent_dramatic_patterns(number)
                 if blocked_analysis is not None:
                     analysis = blocked_analysis
-                    editorial_gate = chapter_editorial_gate(outline, analysis, prose=prose)
+                    editorial_gate = chapter_editorial_gate(
+                        outline, analysis, prose=prose, recent_patterns=recent_patterns
+                    )
                     if editorial_gate["status"] != "blocked":
                         raise ValueError("review-blocked chapter no longer has failing analysis evidence")
                 else:
                     analysis, analysis_usage = await self.analyze_chapter(outline, prose)
                     self.add_usage(analysis_usage)
-                    editorial_gate = chapter_editorial_gate(outline, analysis, prose=prose)
+                    editorial_gate = chapter_editorial_gate(
+                        outline, analysis, prose=prose, recent_patterns=recent_patterns
+                    )
                 if editorial_gate["status"] != "ready" and not editorial_repair:
                     failed_checks = [
                         str(item.get("id", "unknown"))
@@ -2910,7 +3012,9 @@ authority_scope 补充要求：基层经办人若授予跨机构、长期或排�
                     if quality["status"] == "ready":
                         analysis, analysis_usage = await self.analyze_chapter(outline, prose)
                         self.add_usage(analysis_usage)
-                        editorial_gate = chapter_editorial_gate(outline, analysis, prose=prose)
+                        editorial_gate = chapter_editorial_gate(
+                            outline, analysis, prose=prose, recent_patterns=recent_patterns
+                        )
                     else:
                         editorial_gate = {
                             "status": "blocked",
