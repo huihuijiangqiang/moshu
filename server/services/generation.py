@@ -14,6 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from config import settings
 from db.models_core import Chapter, ChapterBody, Project
+from db.models_long_generation import StoryHook
 from db.models_scene_cards import ChapterScene
 from db.models_usage import StyleProfile
 from memory.assembler import (
@@ -296,6 +297,11 @@ class GenerationService:
             chapter_number=chapter_number,
         )
         coverage["recentDramaticPatterns"] = recent_dramatic_patterns
+        active_hook_debts = await self._active_hook_debts(
+            project.id,
+            chapter_number=chapter_number,
+        )
+        coverage["activeHookDebts"] = active_hook_debts
         variation_contract = build_chapter_variation_contract(
             chapter_number,
             outline=list(chapter.outline or []),
@@ -308,6 +314,17 @@ class GenerationService:
         system_parts.append(
             "本次生成的章节结构硬约束（优先级高于一般写作习惯）：\n" + variation_contract
         )
+        if active_hook_debts:
+            system_parts.append(
+                "作品存在尚未兑现的章尾悬念。已到期悬念必须在本章以人物行动和可见后果承接；"
+                "尚未到期的悬念不得被遗忘、提前用旁白解决或改写成另一件事。"
+            )
+            context_text += (
+                "\n\n# 未兑现的章尾悬念\n"
+                + untrusted_json_block("active_story_hooks", active_hook_debts)
+                + "\nurgency=due 或 overdue 的项目必须进入本章因果链；若本章不能完整兑现，至少让相关人物"
+                "采取动作并留下可观察进展。不要只复述问题，也不要未经作者确认把悬念标成已解决。"
+            )
         context_text += "\n\n# 本章差异化戏剧契约\n" + variation_contract
         if recent_dramatic_patterns:
             context_text += (
@@ -566,6 +583,77 @@ class GenerationService:
             )
             or 1
         )
+
+    async def _active_hook_debts(
+        self,
+        project_id: str,
+        *,
+        chapter_number: int,
+        limit: int = 20,
+    ) -> list[dict[str, Any]]:
+        """Return bounded, author-managed hook debts for the generation prompt."""
+        hooks = list(
+            (
+                await self.db.execute(
+                    select(StoryHook, Chapter)
+                    .join(Chapter, Chapter.id == StoryHook.source_chapter_id)
+                    .where(
+                        StoryHook.project_id == project_id,
+                        StoryHook.status.in_(["open", "deferred"]),
+                        Chapter.deleted_at.is_(None),
+                    )
+                    .order_by(
+                        StoryHook.payoff_by_chapter.is_(None),
+                        StoryHook.payoff_by_chapter,
+                        StoryHook.created_at,
+                    )
+                    .limit(limit)
+                )
+            ).all()
+        )
+        if not hooks:
+            return []
+        active_chapters = list(
+            (
+                await self.db.execute(
+                    select(Chapter.id)
+                    .where(
+                        Chapter.project_id == project_id,
+                        Chapter.deleted_at.is_(None),
+                    )
+                    .order_by(Chapter.idx)
+                )
+            ).scalars()
+        )
+        chapter_numbers = {
+            chapter_id: number for number, chapter_id in enumerate(active_chapters, start=1)
+        }
+        result: list[dict[str, Any]] = []
+        for hook, source in hooks:
+            due = hook.payoff_by_chapter
+            urgency = (
+                "overdue"
+                if due is not None and due < chapter_number
+                else "due"
+                if due == chapter_number
+                else "upcoming"
+                if due is not None
+                else "open_ended"
+            )
+            result.append(
+                {
+                    "id": hook.id,
+                    "sourceChapter": chapter_numbers.get(source.id),
+                    "sourceTitle": source.title,
+                    "hookType": hook.hook_type,
+                    "concreteEvent": hook.concrete_event,
+                    "unresolvedQuestion": hook.unresolved_question,
+                    "payoffByChapter": due,
+                    "urgency": urgency,
+                    "status": hook.status,
+                }
+            )
+        return result
 
     async def _style_prompt(self, project: Project, enabled: bool) -> str:
         if not enabled or not project.style_profile_id:
