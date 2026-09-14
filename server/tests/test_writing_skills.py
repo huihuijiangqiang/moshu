@@ -135,5 +135,5 @@ def test_dramatic_blueprint_requires_distinct_beats_and_concrete_hook():
     assert "1. 入场压力" in blueprint
     assert "3. 策略失效" in blueprint
     assert "4. 选择与代价" in blueprint
-    assert "关键证据被刮掉" in blueprint or "证据缺口" in blueprint
+    assert "已注入的本章章纲" in blueprint
     assert "不得输出‘开场压力、策略失效、钩子’等工程标签" in blueprint

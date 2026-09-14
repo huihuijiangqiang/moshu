@@ -253,7 +253,10 @@ def build_chapter_dramatic_blueprint(
         for item in recent[-4:]
         if isinstance(item, dict)
     ) or "无"
-    outline_anchor = "；".join(nodes[:4]) or "以本章章纲中的具体人物、地点和目标为准"
+    # The full outline is already passed through the prompt-security boundary
+    # by the generation service. Do not echo raw author text here: a chapter
+    # outline can contain angle brackets or forged role markers.
+    outline_anchor = "以已注入的本章章纲中的具体人物、地点和目标为事实锚点"
     return (
         "【本章五拍戏剧蓝图｜只用于写作前内部规划，不得把拍名或自评写进正文】\n"
         f"章节功能：{profile['engine']}；冲突载体：{profile['carrier']}。\n"
