@@ -43,6 +43,7 @@ services:
       interval: 10s
       timeout: 5s
       retries: 12
+    restart: unless-stopped
     mem_limit: 320m
     cpus: 0.75
     security_opt:
@@ -65,6 +66,7 @@ services:
       interval: 10s
       timeout: 3s
       retries: 12
+    restart: unless-stopped
     mem_limit: 96m
     cpus: 0.25
     security_opt:
