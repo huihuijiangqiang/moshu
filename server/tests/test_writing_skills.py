@@ -1,4 +1,8 @@
-from services.writing_skills import build_chapter_variation_contract, select_writing_skills
+from services.writing_skills import (
+    build_chapter_dramatic_blueprint,
+    build_chapter_variation_contract,
+    select_writing_skills,
+)
 
 
 def test_chapter_variation_contract_rotates_story_engine_and_hook():
@@ -119,3 +123,17 @@ def test_political_intrigue_is_not_flattened_into_a_generic_investigation():
     assert selection.scene == "political"
     assert selection.ids[-1] == "scene.political"
     assert "权谋不是比谁更懂手续" in selection.prompt()
+
+
+def test_dramatic_blueprint_requires_distinct_beats_and_concrete_hook():
+    blueprint = build_chapter_dramatic_blueprint(
+        4,
+        outline=["主角必须保住粮契", "章末钩子（证据缺口）：关键印记被人刮掉"],
+        recent_patterns=[{"variationEngine": "公开对峙", "actualHookType": "倒计时"}],
+    )
+
+    assert "1. 入场压力" in blueprint
+    assert "3. 策略失效" in blueprint
+    assert "4. 选择与代价" in blueprint
+    assert "关键证据被刮掉" in blueprint or "证据缺口" in blueprint
+    assert "不得输出‘开场压力、策略失效、钩子’等工程标签" in blueprint
