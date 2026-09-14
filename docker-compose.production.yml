@@ -155,6 +155,7 @@ services:
         condition: service_healthy
     networks:
       - backend
+      - edge
     read_only: true
     tmpfs:
       - /tmp:rw,noexec,nosuid,size=16m
@@ -183,3 +184,4 @@ volumes:
 networks:
   backend:
     internal: true
+  edge:
