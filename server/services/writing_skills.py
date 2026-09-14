@@ -43,51 +43,126 @@ CHAPTER_VARIATION_CATALOG: tuple[dict[str, str], ...] = (
         "engine": "公开对峙",
         "carrier": "名誉与围观者的判断",
         "hook": "倒计时",
+        "hook_shape": "让一个有权力的人当众启动期限或处罚，章尾停在期限已经开始减少的瞬间。",
         "instruction": "让主角在众目睽睽下先占据主动，再被对手把时间压力压到现场；章尾让倒计时真实开始。",
     },
     {
         "engine": "移动追索",
         "carrier": "正在转移的人、物或路线",
         "hook": "未完成动作",
+        "hook_shape": "让目标已经离开原位并进入一条未知路线，章尾停在追踪动作已经启动、去向尚未确认的瞬间。",
         "instruction": "让线索随着人物移动而改变，主角必须边追边舍弃一项资源；章尾停在一个已经启动、却无法收回的动作上。",
     },
     {
         "engine": "关系交换",
         "carrier": "盟友的援手与附带条件",
         "hook": "关系威胁",
+        "hook_shape": "让盟友或亲近者当场撤回援手、提出交换或转向对手，章尾停在关系代价已经落下的动作上。",
         "instruction": "让双方都握有底线和筹码，关系变化由一次具体选择造成；章尾让援手撤回、变质或提出更高代价。",
     },
     {
         "engine": "资源争夺",
         "carrier": "正在减少的粮、钱、位置或时间",
         "hook": "两难选择",
+        "hook_shape": "让两种损失同时变成眼前事实，章尾停在主角必须立刻舍弃其中一项的选择前。",
         "instruction": "让稀缺资源在场景中被看见并持续减少，主角只能保住一端；章尾明确呈现必须二选一的损失。",
     },
     {
         "engine": "身份错位",
         "carrier": "一件与身份或旧记录矛盾的证物",
         "hook": "身份偏差",
+        "hook_shape": "让一件可触摸、可核对的证物与已知身份冲突，章尾停在证物被翻出或落入他人手中的瞬间。",
         "instruction": "先让主角依据既有身份行动，再用可见证物击穿判断；章尾留下一个身份矛盾，不能当场解释完。",
     },
     {
         "engine": "密室调查",
         "carrier": "受限空间里的证据缺口",
         "hook": "证据缺口",
+        "hook_shape": "让关键证据被刮掉、转移或被别人先拿走，章尾停在缺口已经造成且无法立即补回的瞬间。",
         "instruction": "限制人物的进出和信息来源，按观察、假设、验证推进；章尾让关键证据被刮掉、转移或落入他人手中。",
     },
     {
         "engine": "对手先手",
         "carrier": "对手已经执行的不可逆行动",
         "hook": "对手新行动",
+        "hook_shape": "让对手先完成一项不可逆行动并产生现场后果，章尾停在后果扩散到主角面前的瞬间。",
         "instruction": "不要等主角安排好再出事，先让对手完成一项改变局面的行动；章尾展示后果正在扩散。",
     },
     {
         "engine": "情绪决裂",
         "carrier": "亲密关系中的信任边界",
         "hook": "突然揭示",
+        "hook_shape": "让一条会重写关系的事实通过动作、证物或一句话落地，章尾停在对方已经做出回应但真相未尽的瞬间。",
         "instruction": "用一次失信、隐瞒或越界推动情绪转向，避免靠旁白解释感情；章尾揭出一条会重新定义关系的新事实。",
     },
 )
+
+
+def _select_variation_profile(
+    chapter_index: int,
+    *,
+    explicit_hook: str = "",
+    recent_patterns: list[dict[str, Any]] | None = None,
+) -> dict[str, str]:
+    """Choose a least-recently-used story engine and hook pair.
+
+    Keeping the choice in one place is important: the prompt contract and the
+    internal five-beat blueprint must describe the same chapter, otherwise a
+    model can satisfy one and accidentally ignore the other.
+    """
+    start = max(0, chapter_index - 1) % len(CHAPTER_VARIATION_CATALOG)
+    recent = recent_patterns or []
+    recent_engines = [
+        str(item.get("variationEngine") or "").strip()
+        for item in recent
+        if str(item.get("variationEngine") or "").strip()
+    ]
+    recent_hooks = [
+        str(item.get("actualHookType") or item.get("hookType") or "").strip()
+        for item in recent
+        if str(item.get("actualHookType") or item.get("hookType") or "").strip()
+    ]
+    engine_counts = {
+        candidate["engine"].casefold(): sum(
+            value.casefold() == candidate["engine"].casefold() for value in recent_engines
+        )
+        for candidate in CHAPTER_VARIATION_CATALOG
+    }
+    hook_counts = {
+        candidate["hook"].casefold(): sum(
+            value.casefold() == candidate["hook"].casefold() for value in recent_hooks
+        )
+        for candidate in CHAPTER_VARIATION_CATALOG
+    }
+    previous_engine = recent_engines[-1].casefold() if recent_engines else ""
+    used_engine_keys = {value.casefold() for value in recent_engines}
+    used_hook_keys = {value.casefold() for value in recent_hooks}
+    ranked: list[tuple[tuple[int, int, int], dict[str, str]]] = []
+    for offset in range(len(CHAPTER_VARIATION_CATALOG)):
+        candidate = CHAPTER_VARIATION_CATALOG[(start + offset) % len(CHAPTER_VARIATION_CATALOG)]
+        engine_key = candidate["engine"].casefold()
+        hook_key = candidate["hook"].casefold()
+        ranked.append(
+            (
+                (
+                    int(engine_key in used_engine_keys)
+                    + int(not explicit_hook and hook_key in used_hook_keys),
+                    engine_counts[engine_key]
+                    + (0 if explicit_hook else hook_counts[hook_key]),
+                    int(engine_key == previous_engine),
+                ),
+                candidate,
+            )
+        )
+    ranked.sort(key=lambda item: item[0])
+    selected = dict(ranked[0][1])
+    if explicit_hook:
+        selected["hook"] = explicit_hook
+        selected["hook_shape"] = (
+            "严格兑现作者指定的钩子类型，但必须通过具体人物、对象和已启动动作落地，"
+            "不能只用旁白宣布悬念。"
+        )
+    return selected
 
 
 def build_chapter_variation_contract(
@@ -110,11 +185,12 @@ def build_chapter_variation_contract(
         if match:
             explicit_hook = match.group(1).strip()
             break
-    # Start from the chapter's stable slot, then choose the least-used
-    # compatible profile in the recent window.  A pure modulo rotation repeats
-    # every eight chapters; that is especially visible in long serials where
-    # the outline is sparse and the model falls back to its favourite scene.
-    start = max(0, chapter_index - 1) % len(CHAPTER_VARIATION_CATALOG)
+    profile = _select_variation_profile(
+        chapter_index,
+        explicit_hook=explicit_hook,
+        recent_patterns=recent_patterns,
+    )
+    hook = profile["hook"]
     recent = recent_patterns or []
     recent_engines = [
         str(item.get("variationEngine") or "").strip()
@@ -126,44 +202,6 @@ def build_chapter_variation_contract(
         for item in recent
         if str(item.get("actualHookType") or item.get("hookType") or "").strip()
     ]
-    used_engine_keys = {value.casefold() for value in recent_engines}
-    used_hook_keys = {value.casefold() for value in recent_hooks}
-    # Prefer profiles that have not appeared recently. If all profiles have
-    # appeared, pick the least frequent one and avoid the immediately previous
-    # profile, which gives long runs a deterministic but non-cyclic rhythm.
-    engine_counts = {
-        candidate["engine"].casefold(): sum(
-            value.casefold() == candidate["engine"].casefold() for value in recent_engines
-        )
-        for candidate in CHAPTER_VARIATION_CATALOG
-    }
-    hook_counts = {
-        candidate["hook"].casefold(): sum(
-            value.casefold() == candidate["hook"].casefold() for value in recent_hooks
-        )
-        for candidate in CHAPTER_VARIATION_CATALOG
-    }
-    previous_engine = recent_engines[-1].casefold() if recent_engines else ""
-    ranked: list[tuple[tuple[int, int, int], dict[str, str]]] = []
-    for offset in range(len(CHAPTER_VARIATION_CATALOG)):
-        candidate = CHAPTER_VARIATION_CATALOG[(start + offset) % len(CHAPTER_VARIATION_CATALOG)]
-        engine_key = candidate["engine"].casefold()
-        hook_key = candidate["hook"].casefold()
-        same_explicit_hook = bool(explicit_hook)
-        ranked.append(
-            (
-                (
-                    int(engine_key in used_engine_keys)
-                    + int(not same_explicit_hook and hook_key in used_hook_keys),
-                    engine_counts[engine_key] + (0 if same_explicit_hook else hook_counts[hook_key]),
-                    int(engine_key == previous_engine),
-                ),
-                candidate,
-            )
-        )
-    ranked.sort(key=lambda item: item[0])
-    profile = ranked[0][1]
-    hook = explicit_hook or profile["hook"]
     avoid_lines = []
     if recent_engines:
         avoid_lines.append("近期已用叙事发动机：" + "、".join(recent_engines))
@@ -174,12 +212,60 @@ def build_chapter_variation_contract(
         "本章必须使用下面指定的戏剧发动机，不能把同一套查账、核验、解释流程换名重写。\n"
         f"本章指定发动机：{profile['engine']}；主要冲突载体：{profile['carrier']}。\n"
         f"本章指定章尾钩子类型：{hook}。{profile['instruction']}\n"
+        f"钩子落地形状：{profile['hook_shape']}\n"
         f"{avoid}\n"
         "上述发动机和钩子是本章的硬约束；近期记录中的结构禁止复用，作者在本章章纲中明确写出的事实优先但不得取消章尾钩子。\n"
         "硬验收：开头150字内发生压力；中段由可见行动使原策略失效；主角作出有代价的选择；最后120到250字只落地一个新动作或发现，"
         "并停在下一章必须回答的具体问题之前。章尾必须写出‘谁/什么对象 + 已经发生或正在发生的动作 + 尚未解决的后果’，"
         "例如门已被撞开、货车已经转向、证物落入对手手中、期限正在减少；‘准备、打算、想要、将要、跟上去看看’等计划式表达不能单独算钩子。"
         "不得用‘接下来/新的篇章/埋下伏笔/局势变化’等总结代替钩子，也不得在章尾提前解决未决问题。"
+    )
+
+
+def build_chapter_dramatic_blueprint(
+    chapter_index: int,
+    *,
+    outline: list[str] | None = None,
+    recent_patterns: list[dict[str, Any]] | None = None,
+) -> str:
+    """Return an explicit five-beat plan for the prose model.
+
+    The old contract described good intentions but left the model to invent
+    scene order.  This blueprint makes every chapter carry a state change and
+    a concrete ending action while still allowing the author's outline to
+    decide the actual facts.
+    """
+    nodes = [str(node).strip() for node in (outline or []) if str(node).strip()]
+    explicit_hook = ""
+    for node in nodes:
+        match = re.search(r"章末钩子[（(]([^）)]+)[）)]", node)
+        if match:
+            explicit_hook = match.group(1).strip()
+            break
+    profile = _select_variation_profile(
+        chapter_index,
+        explicit_hook=explicit_hook,
+        recent_patterns=recent_patterns,
+    )
+    recent = recent_patterns or []
+    recent_summary = "、".join(
+        f"第{item.get('chapterIndex')}章:{item.get('variationEngine') or item.get('hookType') or '未知'}"
+        for item in recent[-4:]
+        if isinstance(item, dict)
+    ) or "无"
+    outline_anchor = "；".join(nodes[:4]) or "以本章章纲中的具体人物、地点和目标为准"
+    return (
+        "【本章五拍戏剧蓝图｜只用于写作前内部规划，不得把拍名或自评写进正文】\n"
+        f"章节功能：{profile['engine']}；冲突载体：{profile['carrier']}。\n"
+        f"章纲锚点：{outline_anchor}\n"
+        f"近期已用结构：{recent_summary}\n"
+        "1. 入场压力（前10%）：让具体人物在正在做的事上立刻遇到可见阻力，禁止先讲背景。\n"
+        "2. 对手升级（约25%-45%）：有自身利益的对手主动加码，改变条件或夺走一项资源。\n"
+        "3. 策略失效（约55%-70%）：用一个可观察事件击穿主角原计划，不能只靠‘却/突然’宣布变化。\n"
+        "4. 选择与代价（约70%-90%）：主角亲自选择较坏的两个选项之一，立即失去关系、资源、名誉、时间或安全中的至少一项。\n"
+        f"5. 章尾追读债（最后一小段）：{profile['hook_shape']} 只留下一个下一章必须回答的具体问题；不总结、不预告、不把钩子解释完。\n"
+        "去重要求：不能复用近期章节的开场压力、冲突载体、破局方式、代价来源或钩子落点；即使事实相近，也要换人物关系或行动机制。\n"
+        "落笔前默写五拍的具体人物/对象/动作，正文只呈现故事，不得输出‘开场压力、策略失效、钩子’等工程标签。"
     )
 
 

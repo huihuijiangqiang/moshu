@@ -39,6 +39,7 @@ from services.temporal_anchor import format_temporal_anchor
 from services.writing_skills import (
     CHAPTER_VARIATION_CATALOG,
     SkillSelection,
+    build_chapter_dramatic_blueprint,
     build_chapter_variation_contract,
     select_writing_skills,
 )
@@ -307,12 +308,21 @@ class GenerationService:
             outline=list(chapter.outline or []),
             recent_patterns=recent_dramatic_patterns,
         )
+        dramatic_blueprint = build_chapter_dramatic_blueprint(
+            chapter_number,
+            outline=list(chapter.outline or []),
+            recent_patterns=recent_dramatic_patterns,
+        )
         # Keep the chapter-specific contract in the high-priority system
         # message as well as the auditable context block.  Putting it only in
         # the reference context allowed some providers to follow the setting
         # while dropping the anti-repetition and ending requirements.
         system_parts.append(
             "本次生成的章节结构硬约束（优先级高于一般写作习惯）：\n" + variation_contract
+        )
+        system_parts.append(
+            "本次生成必须先在内部完成以下五拍蓝图，再将其自然写成正文；不得输出蓝图标签：\n"
+            + dramatic_blueprint
         )
         if active_hook_debts:
             system_parts.append(
@@ -326,6 +336,7 @@ class GenerationService:
                 "采取动作并留下可观察进展。不要只复述问题，也不要未经作者确认把悬念标成已解决。"
             )
         context_text += "\n\n# 本章差异化戏剧契约\n" + variation_contract
+        context_text += "\n\n# 本章五拍戏剧蓝图\n" + dramatic_blueprint
         if recent_dramatic_patterns:
             context_text += (
                 "\n\n# 近期章节结构去重\n"

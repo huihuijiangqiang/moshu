@@ -66,6 +66,9 @@ _HOOK_ACTION_MARKERS = (
     "站起", "回头", "冲进", "落笔", "封", "带走", "逼问", "拔刀", "来信",
     "追上", "追踪", "跟上", "抓住", "围住", "喊叫", "点燃", "转移", "运往",
     "押走", "锁住", "封住", "掀开", "掏出", "撬开", "截住", "盯梢",
+    "落锁", "锁死", "砸碎", "碎裂", "倒下", "塌落", "断裂", "割断", "点着",
+    "熄灭", "亮起", "响起", "传来", "逼近", "追来", "失踪", "夺走", "撕开",
+    "掐住", "拽住", "拦下", "封死", "烧着", "坠落", "翻倒", "冲出", "闯入",
 )
 _HOOK_PRESSURE_MARKERS = (
     "必须", "期限", "倒计时", "来不及", "之前", "之内", "否则", "要么", "代价",
@@ -110,6 +113,13 @@ _DRAMATIC_MOTIFS: dict[str, tuple[str, ...]] = {
 _ABSTRACT_CONTRACT_MARKERS = (
     "下一章", "下章", "具体决定", "必须回应", "留下后果", "推进收束", "完成阶段",
     "局势变化", "制造悬念", "埋下伏笔", "引出冲突",
+)
+_CONCRETE_HOOK_EVENT = re.compile(
+    r"(?:已经|正在|刚(?:刚)?|忽然|猛地|突然|此刻|门外|身后|楼下|远处|夜色里)"
+    r"[^。！？!?]{0,32}"
+    r"(?:落锁|锁死|封死|砸碎|碎裂|倒下|塌落|断裂|割断|点燃|点着|熄灭|响起|传来|"
+    r"逼近|追来|失踪|夺走|撕开|掐住|拽住|拦下|烧着|坠落|翻倒|冲出|闯入|截住)"
+    r"[^。！？!?]{0,48}[。！？!?]?$"
 )
 
 
@@ -414,6 +424,7 @@ def _ending_hook_evidence(text: str) -> dict[str, Any]:
             final_sentence,
         )
     )
+    concrete_event = bool(_CONCRETE_HOOK_EVENT.search(final_sentence))
     started_action = bool(actions) and (
         (
             bool(final_actions)
@@ -423,6 +434,7 @@ def _ending_hook_evidence(text: str) -> dict[str, Any]:
         # A preceding sentence may launch the action, but the last sentence
         # must then carry the unresolved pressure and cannot be plan-only.
         or (not intent_in_final and any(marker in final_beat for marker in ("已经", "正在", "刚", "冲", "跟上", "追", "转移", "运往", "截住")))
+        or concrete_event
     )
     plan_only = intent_before_action or (
         intent_in_final
@@ -447,6 +459,7 @@ def _ending_hook_evidence(text: str) -> dict[str, Any]:
         "abstractEnding": abstract_ending,
         "concreteContradiction": concrete_contradiction,
         "startedAction": started_action,
+        "concreteEvent": concrete_event,
         "planOnly": plan_only,
         "strong": strong,
     }
