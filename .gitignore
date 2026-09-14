@@ -6,6 +6,10 @@ server/.local/
 !.env.example
 !.env.preview
 
+# Production deployment secrets live outside the repository.
+deploy/production/*.env
+!deploy/production/moshu.production.env.example
+
 # Frontend dependencies and build output
 node_modules/
 dist/

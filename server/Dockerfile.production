@@ -1,0 +1,34 @@
+FROM python:3.12-slim
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    TIKTOKEN_CACHE_DIR=/opt/tiktoken-cache
+
+WORKDIR /app
+
+COPY pyproject.toml /tmp/pyproject.toml
+RUN python - <<'PY'
+import subprocess
+import sys
+import tomllib
+
+with open('/tmp/pyproject.toml', 'rb') as source:
+    dependencies = tomllib.load(source)['project']['dependencies']
+subprocess.check_call([sys.executable, '-m', 'pip', 'install', '--no-cache-dir', *dependencies])
+
+import os
+os.makedirs(os.environ['TIKTOKEN_CACHE_DIR'], exist_ok=True)
+import tiktoken
+tiktoken.get_encoding('cl100k_base')
+PY
+
+COPY . /app
+
+# All runtime processes, including migrations and Celery, run without root.
+RUN addgroup --system --gid 10001 moshu \
+    && adduser --system --uid 10001 --ingroup moshu --home /nonexistent --no-create-home moshu \
+    && chown -R moshu:moshu /app /opt/tiktoken-cache
+
+USER moshu
+
+CMD ["gunicorn", "main:app", "--worker-class", "uvicorn.workers.UvicornWorker", "--workers", "1", "--bind", "0.0.0.0:8000", "--timeout", "660", "--graceful-timeout", "30", "--access-logfile", "-", "--error-logfile", "-"]

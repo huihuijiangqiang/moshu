@@ -1,0 +1,183 @@
+x-server-environment: &server-environment
+  DATABASE_URL: ${DATABASE_URL:?Set DATABASE_URL in the external production env file}
+  REDIS_URL: ${REDIS_URL:?Set REDIS_URL in the external production env file}
+  CELERY_BROKER_URL: ${CELERY_BROKER_URL:?Set CELERY_BROKER_URL in the external production env file}
+  CELERY_RESULT_BACKEND: ${CELERY_RESULT_BACKEND:?Set CELERY_RESULT_BACKEND in the external production env file}
+  BUILD_REVISION: ${BUILD_REVISION:-production}
+
+x-server-base: &server-base
+  build:
+    context: ./server
+    dockerfile: Dockerfile.production
+  env_file:
+    - ${MOSHU_PRODUCTION_ENV_FILE:?Set MOSHU_PRODUCTION_ENV_FILE to an external env file}
+  environment: *server-environment
+  networks:
+    - backend
+  security_opt:
+    - no-new-privileges:true
+  read_only: true
+  tmpfs:
+    - /tmp:rw,noexec,nosuid,size=64m
+  logging:
+    driver: json-file
+    options:
+      max-size: 10m
+      max-file: "3"
+
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    env_file:
+      - ${MOSHU_PRODUCTION_ENV_FILE:?Set MOSHU_PRODUCTION_ENV_FILE to an external env file}
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:?Set POSTGRES_DB in the external production env file}
+      POSTGRES_USER: ${POSTGRES_USER:?Set POSTGRES_USER in the external production env file}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in the external production env file}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    networks:
+      - backend
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+    mem_limit: 320m
+    cpus: 0.75
+    security_opt:
+      - no-new-privileges:true
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"
+
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "yes", "--save", "60", "1000", "--maxmemory", "64mb", "--maxmemory-policy", "noeviction"]
+    volumes:
+      - redis-data:/data
+    networks:
+      - backend
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 12
+    mem_limit: 96m
+    cpus: 0.25
+    security_opt:
+      - no-new-privileges:true
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"
+
+  migration:
+    <<: *server-base
+    command: ["alembic", "upgrade", "head"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+    mem_limit: 192m
+    cpus: 0.5
+
+  api:
+    <<: *server-base
+    command: ["gunicorn", "main:app", "--worker-class", "uvicorn.workers.UvicornWorker", "--workers", "1", "--bind", "0.0.0.0:8000", "--timeout", "660", "--graceful-timeout", "30", "--access-logfile", "-", "--error-logfile", "-"]
+    depends_on:
+      migration:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health/ready', timeout=3)"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 15s
+    restart: unless-stopped
+    mem_limit: 320m
+    cpus: 0.75
+
+  worker:
+    <<: *server-base
+    command: ["celery", "-A", "celery_app:celery_app", "worker", "--loglevel=INFO", "--concurrency=1", "--max-tasks-per-child=50", "--queues=consistency,celery"]
+    depends_on:
+      migration:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+    mem_limit: 320m
+    cpus: 0.75
+
+  dispatcher:
+    <<: *server-base
+    command: ["celery", "-A", "celery_app:celery_app", "worker", "--loglevel=INFO", "--concurrency=1", "--max-tasks-per-child=50", "--queues=outbox", "--hostname=outbox@%h"]
+    depends_on:
+      migration:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+    mem_limit: 96m
+    cpus: 0.25
+
+  beat:
+    <<: *server-base
+    command: ["celery", "-A", "celery_app:celery_app", "beat", "--loglevel=INFO", "--schedule=/tmp/celerybeat-schedule"]
+    depends_on:
+      migration:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+    mem_limit: 96m
+    cpus: 0.25
+
+  frontend:
+    build:
+      context: ./app
+      dockerfile: Dockerfile.production
+      args:
+        VITE_API_BASE: /api
+        VITE_USE_MOCK: "false"
+    ports:
+      - "127.0.0.1:5180:8080"
+    depends_on:
+      api:
+        condition: service_healthy
+    networks:
+      - backend
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=16m
+      - /var/cache/nginx:rw,noexec,nosuid,size=16m
+      - /var/run:rw,noexec,nosuid,size=1m
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://127.0.0.1:8080/"]
+      interval: 10s
+      timeout: 3s
+      retries: 12
+    restart: unless-stopped
+    mem_limit: 64m
+    cpus: 0.25
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"
+
+volumes:
+  postgres-data:
+  redis-data:
+
+networks:
+  backend:
+    internal: true
