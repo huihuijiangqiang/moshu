@@ -72,6 +72,13 @@ app = FastAPI(
     description="AI 网文写作平台后端",
     version="0.1.0",
     lifespan=lifespan,
+    # Interactive API documentation is useful in local development but exposes
+    # the entire route/schema surface in production.  Production deployments
+    # set DEBUG=false; keep the endpoints available only for explicit local
+    # debugging instead of relying on a reverse-proxy rule to hide them.
+    docs_url="/docs" if settings.debug else None,
+    redoc_url="/redoc" if settings.debug else None,
+    openapi_url="/openapi.json" if settings.debug else None,
 )
 
 # CORS
