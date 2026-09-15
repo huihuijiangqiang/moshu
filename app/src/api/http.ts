@@ -1,7 +1,9 @@
 import { clearSession, getAccessToken, getRefreshToken, setSession, type SessionTokens } from './session'
 
 const BASE = import.meta.env.VITE_API_BASE ?? '/api'
-export const USE_MOCK = import.meta.env.MODE === 'test' || (import.meta.env.VITE_USE_MOCK ?? 'true') === 'true'
+// Real HTTP is the safe default. Demo data remains available only when the
+// caller explicitly opts in with VITE_USE_MOCK=true (tests still use mocks).
+export const USE_MOCK = import.meta.env.MODE === 'test' || import.meta.env.VITE_USE_MOCK === 'true'
 let refreshInFlight: Promise<string | null> | null = null
 
 async function refreshAccessToken(): Promise<string | null> {

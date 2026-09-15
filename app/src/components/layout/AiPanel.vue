@@ -1,6 +1,6 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
-import { mockApi } from '@/api/mock'
+import { computed, onMounted, ref, watch } from 'vue'
+import { contentApi } from '@/api/content'
 import { useProjectStore } from '@/stores/project'
 import { useGuardStore } from '@/stores/guard'
 import { useUsageStore } from '@/stores/usage'
@@ -16,10 +16,25 @@ const styles = useStylesStore()
 const layers = ref<ContextLayer[]>([])
 const tab = ref<'ai' | 'refs' | 'notes'>('ai')
 
+async function loadContext() {
+  const chapterId = store.activeId
+  const projectId = store.project?.id
+  if (!chapterId || !projectId) {
+    layers.value = []
+    return
+  }
+  try {
+    layers.value = await contentApi.getContextLayers(projectId, chapterId, 'smart')
+  } catch {
+    layers.value = []
+  }
+}
+
 onMounted(async () => {
-  const [context] = await Promise.all([mockApi.getContextLayers(), styles.load()])
-  layers.value = context
+  await Promise.all([loadContext(), styles.load()])
 })
+
+watch([() => store.activeId, () => store.project?.id], () => { void loadContext() })
 
 const total = computed(() => layers.value.reduce((s, l) => s + l.tokens, 0))
 const fmt = (n: number) => (n / 1000).toFixed(1) + 'k'

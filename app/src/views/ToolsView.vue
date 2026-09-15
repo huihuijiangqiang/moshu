@@ -22,53 +22,28 @@ const mapSeed = ref('柳溪')
 const mapVersion = ref(0)
 const mapSaved = ref(false)
 const generatedRegions = ref<Array<{ name: string; x: number; y: number }> | null>(null)
-
-const familyNames = ['许', '沈', '顾', '周', '陆', '谢', '裴', '苏', '林', '秦', '程', '姜']
-const femaleGiven = ['知微', '照棠', '明昭', '云岫', '青禾', '令仪', '晚晴', '栖月', '南枝', '见山', '初霁', '绾宁']
-const maleGiven = ['砚川', '长庚', '景行', '怀瑾', '承安', '闻舟', '修远', '既白', '庭深', '昭野', '观澜', '行之']
-const neutralGiven = ['知微', '砚川', '清和', '照野', '明川', '长宁', '栖迟', '怀远', '青衡', '听澜', '山止', '云开']
-const exoticFamily = ['阿', '伊', '洛', '赫', '塔', '乌', '赛', '迦']
-const exoticGiven = ['弥娅', '岚歌', '萨恩', '诺娅', '迦南', '维洛', '星遥', '阿岚']
+const namesLoading = ref(false)
+const mapLoading = ref(false)
+const mapSaving = ref(false)
+const toolError = ref('')
 
 const mapRegions = computed(() => {
-  if (generatedRegions.value) return generatedRegions.value
-  const result = []
-  const count = Math.max(4, Math.min(10, regionCount.value))
-  for (let i = 0; i < count; i += 1) {
-    const angle = (i / count) * Math.PI * 2
-    const wobble = ((mapSeed.value.charCodeAt(i % Math.max(1, mapSeed.value.length)) || 7) % 17) - 8
-    result.push({
-      x: 50 + Math.cos(angle) * (28 + wobble / 2),
-      y: 48 + Math.sin(angle) * (25 + wobble / 3),
-      name: ['柳溪', '青溪县', '白沙渡', '南岭', '望潮港', '鹤鸣原', '长风关', '照雪城', '镜湖', '栖霞镇'][i],
-    })
-  }
-  return result
+  return generatedRegions.value ?? []
 })
 
-function seededIndex(seed: string, index: number, length: number) {
-  let value = 0
-  for (const char of `${seed}-${index}`) value = (value * 31 + char.charCodeAt(0)) % 1000003
-  return value % length
-}
-
 async function generateNames() {
-  const given = nameStyle.value === '异域'
-    ? exoticGiven
-    : nameGender.value === '女' ? femaleGiven : nameGender.value === '男' ? maleGiven : neutralGiven
-  const surnames = nameStyle.value === '异域' ? exoticFamily : familyNames
-  const localNames = Array.from({ length: nameCount.value }, (_, index) => {
-    const surname = surnames[seededIndex(nameSeed.value, index, surnames.length)]
-    const first = given[seededIndex(nameSeed.value, index + 17, given.length)]
-    return `${surname}${first}`
-  }).filter((value, index, list) => list.indexOf(value) === index)
+  namesLoading.value = true
+  toolError.value = ''
   try {
     const response = await request<{ names: string[] }>(`/projects/${projectId.value}/tools/names`, {
       method: 'POST', body: JSON.stringify({ style: nameStyle.value, gender: nameGender.value, seed: nameSeed.value || '春山', count: nameCount.value })
     })
     names.value = response.names
-  } catch {
-    names.value = localNames
+  } catch (error) {
+    names.value = []
+    toolError.value = error instanceof Error && error.message ? error.message : '取名服务暂时不可用，请稍后重试。'
+  } finally {
+    namesLoading.value = false
   }
 }
 
@@ -81,33 +56,43 @@ async function copyName(name: string) {
 async function regenerateMap() {
   mapVersion.value += 1
   mapSaved.value = false
+  mapLoading.value = true
+  toolError.value = ''
   try {
     const draft = await request<{ regions: Array<{ name: string; x: number; y: number }> }>(`/projects/${projectId.value}/tools/maps`, {
       method: 'POST',
       body: JSON.stringify({ seed: mapSeed.value || '柳溪', terrain: terrain.value, region_count: regionCount.value }),
     })
     generatedRegions.value = draft.regions
-  } catch {
+  } catch (error) {
     generatedRegions.value = null
+    toolError.value = error instanceof Error && error.message ? error.message : '地图服务暂时不可用，请稍后重试。'
+  } finally {
+    mapLoading.value = false
   }
 }
 
 async function saveToCodex() {
+  if (!mapRegions.value.length) {
+    toolError.value = '请先通过地图接口生成草图，再保存到设定库。'
+    return
+  }
   const payload = {
     seed: mapSeed.value,
     terrain: terrain.value,
     regions: mapRegions.value,
   }
-  localStorage.setItem(`moshu-map-draft:${projectId.value}`, JSON.stringify(payload))
+  mapSaving.value = true
+  toolError.value = ''
   try {
     await request(`/projects/${projectId.value}/tools/map-draft`, { method: 'PUT', body: JSON.stringify(payload) })
-  } catch {
-    // 本地草稿仍然保留，网络恢复后可再次保存。
+    mapSaved.value = true
+  } catch (error) {
+    mapSaved.value = false
+    toolError.value = error instanceof Error && error.message ? error.message : '地图草稿保存失败，请重试。'
+  } finally {
+    mapSaving.value = false
   }
-  mapSaved.value = true
-  window.dispatchEvent(new CustomEvent('moshu:tool-codex-draft', {
-    detail: { projectId: projectId.value, kind: 'location', name: `${mapSeed.value}地图草图`, terrain: terrain.value, regions: mapRegions.value },
-  }))
 }
 
 generateNames()
@@ -119,8 +104,8 @@ onMounted(async () => {
     terrain.value = draft.terrain
     regionCount.value = draft.regions.length
     generatedRegions.value = draft.regions
-  } catch {
-    // 默认草图可直接使用。
+  } catch (error) {
+    toolError.value = error instanceof Error && error.message ? error.message : '地图草稿加载失败，请重试。'
   }
 })
 </script>
@@ -133,7 +118,7 @@ onMounted(async () => {
         <h1>写作工具箱</h1>
         <p class="tools-subtitle">把灵感快速变成可继续使用的素材，不打断正文节奏。</p>
       </div>
-      <div class="tools-stamp"><span>本地生成</span><b>不消耗额度</b></div>
+      <div class="tools-stamp"><span>服务端工具</span><b>不消耗额度</b></div>
     </header>
 
     <nav class="tools-tabs" aria-label="工具分类">
@@ -157,8 +142,8 @@ onMounted(async () => {
         <label>生成数量 <output>{{ nameCount }}</output>
           <input v-model.number="nameCount" type="range" min="3" max="12" />
         </label>
-        <button class="tool-primary" type="button" @click="generateNames"><AppIcon name="plus" :size="15" />生成一组名字</button>
-        <p class="panel-note">名字由本地词库组合，不会上传人物设定。满意后可复制，再到设定库补充人物档案。</p>
+        <button class="tool-primary" type="button" :disabled="namesLoading" @click="generateNames"><AppIcon name="plus" :size="15" />{{ namesLoading ? '生成中…' : '生成一组名字' }}</button>
+        <p class="panel-note">名字由服务端工具接口生成。满意后可复制，再到设定库补充人物档案。</p>
       </aside>
 
       <div class="tool-panel results-panel">
@@ -185,8 +170,8 @@ onMounted(async () => {
         <label>区域数量 <output>{{ regionCount }}</output>
           <input v-model.number="regionCount" type="range" min="4" max="10" />
         </label>
-        <button class="tool-primary" type="button" @click="regenerateMap"><AppIcon name="grid" :size="15" />重新生成草图</button>
-        <button class="tool-secondary" type="button" @click="saveToCodex"><AppIcon name="codex" :size="15" />{{ mapSaved ? '已保存到本地草稿' : '保存为设定库草稿' }}</button>
+        <button class="tool-primary" type="button" :disabled="mapLoading" @click="regenerateMap"><AppIcon name="grid" :size="15" />{{ mapLoading ? '生成中…' : '重新生成草图' }}</button>
+        <button class="tool-secondary" type="button" :disabled="mapSaving || !mapRegions.length" @click="saveToCodex"><AppIcon name="codex" :size="15" />{{ mapSaving ? '保存中…' : mapSaved ? '已保存地图草稿' : '保存地图草稿' }}</button>
         <p class="panel-note">这是空间关系草图，不是最终地图。拖拽编辑和章节引用会在后续版本接入。</p>
       </aside>
 
@@ -206,6 +191,7 @@ onMounted(async () => {
         </svg>
       </div>
     </div>
+    <p v-if="toolError" class="tool-error" role="alert">{{ toolError }}</p>
   </section>
 </template>
 
@@ -242,6 +228,7 @@ onMounted(async () => {
 .name-row strong { font: 600 25px var(--font-prose); letter-spacing: .12em; }
 .name-row span { color: var(--ink-4); font-size: 11px; }
 .empty-tip { margin-top: 18px; color: var(--ink-4); font-size: 12px; line-height: 1.7; }
+.tool-error { max-width: 1120px; margin: 14px auto 0; padding: 10px 12px; border: 1px solid color-mix(in srgb, #a5483b 30%, var(--line)); background: color-mix(in srgb, #a5483b 7%, var(--panel)); color: #8f3f35; font-size: 12px; }
 .map-canvas { display: block; width: 100%; min-height: 480px; background: #e9efed; color: #315c5b; border: 1px solid var(--line); }
 .map-node { fill: var(--primary); stroke: var(--panel); stroke-width: .9; }
 .map-label, .map-scale { fill: currentColor; font-family: var(--font-ui); font-size: 3px; }
