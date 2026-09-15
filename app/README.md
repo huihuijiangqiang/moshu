@@ -1,6 +1,6 @@
 # 墨枢 · AI 网文创作平台（前端脚手架）
 
-Vue 3 + TypeScript + Vite。开箱即跑，无需后端 —— 所有接口默认走 `src/api/mock`。
+Vue 3 + TypeScript + Vite。默认通过 `/api` 访问真实后端；需要无后端演示时，显式设置 `VITE_USE_MOCK=true` 才会启用 `src/api/mock`。
 
 ```bash
 cd app
@@ -60,8 +60,8 @@ src/
 
 ## 接后端要改的地方
 
-1. `.env` 里 `VITE_USE_MOCK=false`，`vite.config.ts` 打开 proxy。
-2. `src/api/mock/index.ts` 的每个方法换成 `request()` 调用，签名不变，上层不用动。
+1. `.env` 里保持 `VITE_USE_MOCK=false`，`vite.config.ts` 打开 proxy。
+2. 如果只想启动独立演示，将 `VITE_USE_MOCK` 改为 `true`；该模式不会访问或写入真实后端。
 3. `/api/generate/chapter` 按 SSE 推 `data: {"text":"…"}` / `data: {"node":2}` / `data: [DONE]`，`generation.ts` 里的解析已经写好。
 4. 上下文装配（`getContextLayers` 返回的四层）在服务端完成，前端只负责展示预算与上限。
 
