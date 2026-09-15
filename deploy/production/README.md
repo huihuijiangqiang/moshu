@@ -21,6 +21,8 @@
 
 生产 Compose 只发布 `127.0.0.1:5180` 的前端端口。API、PostgreSQL 和 Redis 没有宿主端口映射，只能通过内部网络访问；Cloudflare Tunnel 应指向服务器本机的 `http://127.0.0.1:5180`。
 
+网络分为三层：`backend` 只承载前端到 API、API 到 PostgreSQL/Redis 的内部流量；`edge` 只给前端提供宿主机端口；API 和异步 worker 额外接入不发布端口的 `egress` 网络，用于访问模型、嵌入、对象存储和支付服务。数据库与 Redis 不接入 `egress`。
+
 ## 首个管理员
 
 `BOOTSTRAP_TOKEN` 仅用于空库首次调用 `POST /auth/bootstrap`。创建 `super_admin` 后，立即从服务器 env 文件删除该变量并重启 API；之后使用正常登录和管理员界面，不要长期开放 bootstrap 令牌。

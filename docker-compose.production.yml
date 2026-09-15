@@ -89,6 +89,9 @@ services:
 
   api:
     <<: *server-base
+    networks:
+      - backend
+      - egress
     command: ["gunicorn", "main:app", "--worker-class", "uvicorn.workers.UvicornWorker", "--workers", "1", "--bind", "0.0.0.0:8000", "--timeout", "660", "--graceful-timeout", "30", "--access-logfile", "-", "--error-logfile", "-"]
     depends_on:
       migration:
@@ -107,6 +110,9 @@ services:
 
   worker:
     <<: *server-base
+    networks:
+      - backend
+      - egress
     command: ["celery", "-A", "celery_app:celery_app", "worker", "--loglevel=INFO", "--concurrency=1", "--max-tasks-per-child=50", "--queues=consistency,celery"]
     depends_on:
       migration:
@@ -119,6 +125,9 @@ services:
 
   dispatcher:
     <<: *server-base
+    networks:
+      - backend
+      - egress
     command: ["celery", "-A", "celery_app:celery_app", "worker", "--loglevel=INFO", "--concurrency=1", "--max-tasks-per-child=50", "--queues=outbox", "--hostname=outbox@%h"]
     depends_on:
       migration:
@@ -131,6 +140,9 @@ services:
 
   beat:
     <<: *server-base
+    networks:
+      - backend
+      - egress
     command: ["celery", "-A", "celery_app:celery_app", "beat", "--loglevel=INFO", "--schedule=/tmp/celerybeat-schedule"]
     depends_on:
       migration:
@@ -185,3 +197,6 @@ networks:
   backend:
     internal: true
   edge:
+  # Outbound-only bridge for model, embedding, storage, and payment APIs.
+  # No service publishes a port on this network.
+  egress:
