@@ -368,8 +368,11 @@ class GenerationService:
                     "\n\n选区附近正文（只作衔接参考）：\n"
                     + _reference_block("nearby_text", nearby_text)
                 )
-            if instruction:
-                current_instruction += "\n\n作者补充要求：\n" + author_instruction_block(instruction)
+        # Chapter generation needs the same author intent as inline edits. Keep
+        # it in its escaped user-level boundary, never in reference or system data.
+        if instruction:
+            current_instruction += "\n\n作者补充要求：\n" + author_instruction_block(instruction)
+        if task != "chapter":
             current_instruction += f"\n\n输出约{target_words}字，只输出替换或续写正文。"
 
         project_metadata = untrusted_json_block(

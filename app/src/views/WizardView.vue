@@ -41,6 +41,7 @@ interface ChapterDraft {
 
 const DRAFT_KEY = 'moshu:new-project-draft'
 const router = useRouter()
+const wizardMain = ref<HTMLElement | null>(null)
 const step = ref(1)
 const highestStep = ref(1)
 const inspiration = ref('')
@@ -210,7 +211,7 @@ const selectedTemplate = computed(() => templates.find((item) => item.id === tem
 const audienceLabel = computed(() => audience.value === 'male' ? '男频' : audience.value === 'female' ? '女频' : '通用')
 const planSignature = computed(() => JSON.stringify({ inspiration: inspiration.value.trim(), audience: audienceLabel.value, genre: selectedGenre.value?.label ?? '', tags: selectedTags.value.map((tag) => tag.label), template: selectedTemplate.value?.label ?? '' }))
 const inspirationValid = computed(() => inspiration.value.trim().length >= 8)
-const choicesValid = computed(() => !!selectedGenre.value && !!templateId.value)
+const choicesValid = computed(() => !!selectedGenre.value && !!selectedTemplate.value)
 const skeletonValid = computed(() =>
   !!bookTitle.value.trim() && !!protagonist.value.trim() && !!coreHook.value.trim() && !!synopsis.value.trim() && chapters.value.length === 3
 )
@@ -247,6 +248,7 @@ function chooseInspiration(value: string) {
 }
 
 function chooseGenreGroup(groupId: string) {
+  if (genreGroupId.value === groupId) return
   genreGroupId.value = groupId
   genreId.value = ''
 }
@@ -350,24 +352,28 @@ function regenerateHook() {
   coreHook.value = `${hook?.[0]}\n${hook?.[1]}`
 }
 
+function canGoToStep(target: number) {
+  if (planning.value || creating.value) return false
+  if (target <= step.value) return true
+  if (!inspirationValid.value) return false
+  if (target >= 3 && !choicesValid.value) return false
+  return target < 4 || (skeletonValid.value && lastPlanSignature.value === planSignature.value)
+}
+
 async function next() {
-  if (step.value === 1 && !inspirationValid.value) return
-  if (step.value === 2 && !choicesValid.value) return
-  if (step.value === 2) {
-    await buildSkeleton()
-    if (planningError.value || !skeletonValid.value) return
-  }
-  if (step.value === 3 && !skeletonValid.value) return
-  step.value = Math.min(4, step.value + 1)
-  highestStep.value = Math.max(highestStep.value, step.value)
+  await goToStep(Math.min(4, step.value + 1))
 }
 
-function previous() {
-  step.value = Math.max(1, step.value - 1)
+async function previous() {
+  await goToStep(Math.max(1, step.value - 1))
 }
 
-function goToStep(target: number) {
-  if (target <= highestStep.value) step.value = target
+async function goToStep(target: number) {
+  if (!canGoToStep(target)) return
+  step.value = target
+  highestStep.value = Math.max(highestStep.value, target)
+  // Show progress and failures on the editing step as soon as generation starts.
+  if (target === 3) await buildSkeleton()
 }
 
 function resetDraft() {
@@ -389,11 +395,16 @@ function resetDraft() {
   chapters.value = []
   generatedSnapshot.value = null
   lastPlanSignature.value = ''
+  planningError.value = ''
   planningNotice.value = ''
   expandedOutline.value = false
   variant.value = 0
   localStorage.removeItem(DRAFT_KEY)
 }
+
+watch(step, () => {
+  if (wizardMain.value) wizardMain.value.scrollTop = 0
+}, { flush: 'post' })
 
 async function createProject() {
   if (creating.value || !skeletonValid.value || !selectedGenre.value) return
@@ -469,13 +480,31 @@ onMounted(() => {
     synopsis.value = typeof draft.synopsis === 'string' ? draft.synopsis : ''
     volumes.value = Array.isArray(draft.volumes) ? draft.volumes : []
     chapters.value = Array.isArray(draft.chapters)
-      ? draft.chapters.filter((item: unknown): item is ChapterDraft => {
-        if (!item || typeof item !== 'object') return false
-        const value = item as { title?: unknown; outline?: unknown }
-        return typeof value.title === 'string' && Array.isArray(value.outline)
-          && value.outline.every((beat: unknown) => typeof beat === 'string')
-      }).slice(0, 3).map((item: { title: string; outline: string[] }) => ({ title: item.title, outline: item.outline.join('\n') }))
+      ? draft.chapters.flatMap((item: unknown): ChapterDraft[] => {
+        if (!item || typeof item !== 'object') return []
+        const value = item as { title?: unknown; outline?: unknown; volumeIndex?: unknown }
+        if (typeof value.title !== 'string') return []
+        const outline = typeof value.outline === 'string' ? value.outline
+          : Array.isArray(value.outline) && value.outline.every((beat: unknown) => typeof beat === 'string')
+            ? value.outline.join('\n') : null
+        if (outline === null) return []
+        return [{
+          title: value.title,
+          outline,
+          ...(typeof value.volumeIndex === 'number' && Number.isInteger(value.volumeIndex) && value.volumeIndex >= 0
+            ? { volumeIndex: value.volumeIndex } : {})
+        }]
+      }).slice(0, 3)
       : []
+    lastPlanSignature.value = typeof draft.lastPlanSignature === 'string'
+      ? draft.lastPlanSignature : skeletonValid.value ? planSignature.value : ''
+    // A draft saved while a request was in flight must remain recoverable.
+    if (!inspirationValid.value) step.value = 1
+    else if (!choicesValid.value) step.value = Math.min(step.value, 2)
+    else if (step.value >= 3 && !skeletonValid.value) {
+      step.value = 3
+      planningError.value = '故事骨架尚未完成，请重试生成。'
+    }
     variant.value = Number(draft.variant) || 0
   } catch {
     localStorage.removeItem(DRAFT_KEY)
@@ -500,6 +529,7 @@ watch(
     synopsis: synopsis.value,
     volumes: volumes.value,
     chapters: chapters.value,
+    lastPlanSignature: lastPlanSignature.value,
     variant: variant.value
   }),
   (draft) => localStorage.setItem(DRAFT_KEY, JSON.stringify(draft)),
@@ -515,7 +545,7 @@ watch(
         <span>墨枢 · 开新书</span>
       </button>
       <span>草稿已自动保留</span>
-      <button class="wk-btn wk-btn-xs" type="button" @click="resetDraft">重新开始</button>
+      <button class="wk-btn wk-btn-xs" type="button" :disabled="planning || creating" @click="resetDraft">重新开始</button>
     </header>
 
     <nav class="wizard-steps" aria-label="创建作品步骤">
@@ -523,7 +553,7 @@ watch(
         v-for="item in steps"
         :key="item.n"
         type="button"
-        :disabled="item.n > highestStep"
+        :disabled="!canGoToStep(item.n)"
         :aria-current="item.n === step ? 'step' : undefined"
         :data-complete="item.n < highestStep"
         @click="goToStep(item.n)"
@@ -534,7 +564,7 @@ watch(
     </nav>
 
     <div class="wizard-workspace">
-      <main class="wizard-main">
+      <main ref="wizardMain" class="wizard-main">
         <section v-if="step === 1" class="wizard-stage" aria-labelledby="inspiration-title">
           <header class="wizard-stage-head">
             <span class="wk-label">故事起点</span>
@@ -655,43 +685,45 @@ watch(
           </div>
           <div v-else-if="planningNotice" class="wizard-plan-status" role="status">{{ planningNotice }}</div>
 
-          <label class="wizard-field wizard-field-short"><span>暂定书名</span><input v-model="bookTitle" type="text"></label>
+          <fieldset class="wizard-skeleton-fields" :disabled="planning">
+            <label class="wizard-field wizard-field-short"><span>暂定书名</span><input v-model="bookTitle" type="text"></label>
 
-          <div class="wizard-edit-section">
-            <div class="wizard-edit-head"><span>主角</span><button type="button" @click="regenerateLead">换一个</button></div>
-            <textarea v-model="protagonist" rows="4" aria-label="主角设定" />
-          </div>
-
-          <div class="wizard-edit-section wizard-chapter-plans">
-            <div class="wizard-edit-head"><span>前三章章纲</span><small>创建后可在大纲页持续修改</small></div>
-            <label v-for="(chapter, index) in chapters" :key="index" class="wizard-chapter-plan">
-              <span>{{ String(index + 1).padStart(2, '0') }}</span>
-              <input v-model="chapter.title" :aria-label="`第 ${index + 1} 章标题`">
-              <textarea v-model="chapter.outline" rows="3" :aria-label="`第 ${index + 1} 章章纲`" />
-            </label>
-          </div>
-
-          <div class="wizard-edit-section">
-            <div class="wizard-edit-head"><span>核心机制</span><button type="button" @click="regenerateHook">换一个</button></div>
-            <textarea v-model="coreHook" rows="4" aria-label="核心机制" />
-          </div>
-
-          <label class="wizard-field"><span>故事总述</span><textarea v-model="synopsis" rows="5" /></label>
-
-          <div class="wizard-edit-section">
-            <div class="wizard-edit-head">
-              <span>四卷总纲</span>
-              <button type="button" @click="expandedOutline = !expandedOutline">{{ expandedOutline ? '收起细纲' : '展开细纲' }}</button>
+            <div class="wizard-edit-section">
+              <div class="wizard-edit-head"><span>主角</span><button type="button" @click="regenerateLead">换一个</button></div>
+              <textarea v-model="protagonist" rows="4" aria-label="主角设定" />
             </div>
-            <div class="wizard-volumes">
-              <label v-for="(volume, index) in volumes" :key="index">
+
+            <div class="wizard-edit-section wizard-chapter-plans">
+              <div class="wizard-edit-head"><span>前三章章纲</span><small>创建后可在大纲页持续修改</small></div>
+              <label v-for="(chapter, index) in chapters" :key="index" class="wizard-chapter-plan">
                 <span>{{ String(index + 1).padStart(2, '0') }}</span>
-                <input v-model="volume.title" :aria-label="`第 ${index + 1} 卷标题`">
-                <textarea v-if="expandedOutline" v-model="volume.summary" rows="2" :aria-label="`第 ${index + 1} 卷细纲`" />
-                <p v-else>{{ volume.summary }}</p>
+                <input v-model="chapter.title" :aria-label="`第 ${index + 1} 章标题`">
+                <textarea v-model="chapter.outline" rows="3" :aria-label="`第 ${index + 1} 章章纲`" />
               </label>
             </div>
-          </div>
+
+            <div class="wizard-edit-section">
+              <div class="wizard-edit-head"><span>核心机制</span><button type="button" @click="regenerateHook">换一个</button></div>
+              <textarea v-model="coreHook" rows="4" aria-label="核心机制" />
+            </div>
+
+            <label class="wizard-field"><span>故事总述</span><textarea v-model="synopsis" rows="5" /></label>
+
+            <div class="wizard-edit-section">
+              <div class="wizard-edit-head">
+                <span>四卷总纲</span>
+                <button type="button" @click="expandedOutline = !expandedOutline">{{ expandedOutline ? '收起细纲' : '展开细纲' }}</button>
+              </div>
+              <div class="wizard-volumes">
+                <label v-for="(volume, index) in volumes" :key="index">
+                  <span>{{ String(index + 1).padStart(2, '0') }}</span>
+                  <input v-model="volume.title" :aria-label="`第 ${index + 1} 卷标题`">
+                  <textarea v-if="expandedOutline" v-model="volume.summary" rows="2" :aria-label="`第 ${index + 1} 卷细纲`" />
+                  <p v-else>{{ volume.summary }}</p>
+                </label>
+              </div>
+            </div>
+          </fieldset>
         </section>
 
         <section v-else class="wizard-stage wizard-review" aria-labelledby="review-title">
@@ -724,15 +756,15 @@ watch(
         </section>
 
         <footer class="wizard-actions">
-          <button v-if="step > 1" class="btn btn-secondary" type="button" @click="previous">上一步</button>
-          <button v-if="step === 3" class="btn btn-secondary" type="button" @click="regenerateAll">重新生成骨架</button>
+          <button v-if="step > 1" class="btn btn-secondary" type="button" :disabled="planning || creating" @click="previous">上一步</button>
+          <button v-if="step === 3" class="btn btn-secondary" type="button" :disabled="planning" @click="regenerateAll">重新生成骨架</button>
           <button
             v-if="step < 4"
             class="btn btn-primary"
             type="button"
-            :disabled="planning || (step === 1 ? !inspirationValid : step === 2 ? !choicesValid : !skeletonValid)"
+            :disabled="!canGoToStep(step + 1)"
             @click="next"
-          >{{ step === 3 ? '确认故事骨架' : '继续' }}</button>
+          >{{ planning ? '正在生成…' : step === 3 ? '确认故事骨架' : '继续' }}</button>
         </footer>
       </main>
 
@@ -843,6 +875,7 @@ watch(
 .wizard-template-list small { color: var(--primary); font-size: 10px; }
 .wizard-template-list p { margin: 0; color: var(--ink-3); font-size: var(--fs-sm); line-height: 1.55; }
 .wizard-edit-section { margin-top: var(--u4); border-top: var(--hair) solid var(--line-strong); }
+.wizard-skeleton-fields { min-width: 0; margin: 0; padding: 0; border: 0; }
 .wizard-plan-status { margin: -10px 0 var(--u4); padding: 10px 12px; border-left: 3px solid var(--primary); color: var(--primary); background: var(--primary-soft); font-size: var(--fs-sm); }
 .wizard-plan-status[data-error] { display: flex; align-items: center; justify-content: space-between; gap: var(--u3); color: var(--alert-ink); border-left-color: var(--alert); background: var(--alert-soft); }
 .wizard-plan-status button { flex: none; padding: 0; color: inherit; border: 0; background: transparent; font-weight: 700; cursor: pointer; }
