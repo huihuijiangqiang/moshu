@@ -8,7 +8,8 @@ import secrets
 from datetime import UTC, datetime, timedelta
 from enum import StrEnum
 
-from fastapi import APIRouter, Depends, HTTPException, status
+import httpx
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from jose import JWTError, jwt
 from pydantic import BaseModel, Field, field_validator
@@ -23,6 +24,11 @@ from db.models_org import ChapterAssignment, OrgMember
 from db.session import get_db
 from services.usage import next_month_start
 
+try:
+    import redis.asyncio as redis
+except ModuleNotFoundError:  # pragma: no cover - production dependencies include redis
+    redis = None
+
 router = APIRouter()
 security = HTTPBearer(auto_error=False)
 _PASSWORD_ITERATIONS = 210_000
@@ -30,6 +36,14 @@ _PASSWORD_ITERATIONS = 210_000
 # bootstrap endpoint safe in the supported single-process SQLite deployment;
 # PostgreSQL uses pg_advisory_xact_lock below for multi-worker safety.
 _BOOTSTRAP_SQLITE_LOCK = asyncio.Lock()
+_AUTH_FAILURE_KEY_PREFIX = "moshu:auth:failures:"
+_CAPTCHA_CHALLENGE_KEY_PREFIX = "moshu:auth:captcha:"
+_REDIS_GETDEL_SCRIPT = "local value = redis.call('GET', KEYS[1]); if value then redis.call('DEL', KEYS[1]); end; return value"
+_REDIS_FAILURE_SCRIPT = "local n = redis.call('INCR', KEYS[1]); if n == 1 then redis.call('EXPIRE', KEYS[1], ARGV[1]); end; return n"
+
+
+class AuthProtectionUnavailableError(RuntimeError):
+    """Raised when fail-closed auth protection cannot reach Redis."""
 
 
 class UserOut(BaseModel):
@@ -45,6 +59,8 @@ class RegisterRequest(BaseModel):
     name: str = Field(min_length=1, max_length=100)
     email: str = Field(min_length=3, max_length=255)
     password: str = Field(min_length=8, max_length=128)
+    captcha_token: str | None = Field(default=None, max_length=4096)
+    captcha_challenge: str | None = Field(default=None, max_length=256)
 
     @field_validator("email")
     @classmethod
@@ -61,9 +77,23 @@ class BootstrapRequest(RegisterRequest):
     bootstrap_token: str = Field(min_length=16, max_length=512)
 
 
+class CaptchaConfigOut(BaseModel):
+    mode: str
+    site_key: str | None = None
+    challenge_required: bool
+
+
+class CaptchaChallengeOut(BaseModel):
+    challenge_id: str
+    site_key: str
+    expires_in: int
+
+
 class LoginRequest(BaseModel):
     email: str
     password: str
+    captcha_token: str | None = Field(default=None, max_length=4096)
+    captcha_challenge: str | None = Field(default=None, max_length=256)
 
 
 class RefreshRequest(BaseModel):
@@ -95,6 +125,8 @@ class PasswordChangeRequest(BaseModel):
 
 class PasswordResetRequest(BaseModel):
     email: str = Field(min_length=3, max_length=255)
+    captcha_token: str | None = Field(default=None, max_length=4096)
+    captcha_challenge: str | None = Field(default=None, max_length=256)
 
 
 class PasswordResetConfirmRequest(BaseModel):
@@ -325,7 +357,25 @@ async def _run_bootstrap_locked(db: AsyncSession, operation):
 
 
 @router.post("/register", response_model=TokenResponse, status_code=201)
-async def register(request: RegisterRequest, db: AsyncSession = Depends(get_db)) -> TokenResponse:
+async def register(
+    http_request: Request,
+    request: RegisterRequest,
+    db: AsyncSession = Depends(get_db),
+) -> TokenResponse:
+    email = request.email.strip().lower()
+    identities = (f"email:{email}", f"ip:{_request_ip(http_request)}")
+    try:
+        current_failures = await _max_failure_count(*identities)
+    except AuthProtectionUnavailableError as error:
+        raise HTTPException(status_code=503, detail={"code": "AUTH_RATE_LIMIT_UNAVAILABLE"}) from error
+    if current_failures >= settings.auth_failure_limit:
+        raise HTTPException(status_code=429, detail={"code": "AUTH_RATE_LIMITED"})
+    await _verify_captcha(
+        http_request,
+        captcha_token=request.captcha_token,
+        captcha_challenge=request.captcha_challenge,
+        failure_count=current_failures,
+    )
     # Once a deployment exposes the bootstrap endpoint, ordinary registration
     # cannot race it for the empty database.  After the first admin exists,
     # registration continues under the same lock and retains its old policy.
@@ -336,8 +386,14 @@ async def register(request: RegisterRequest, db: AsyncSession = Depends(get_db))
                 raise HTTPException(status_code=409, detail={"code": "BOOTSTRAP_REQUIRED"})
             return await _register_user(request, db)
 
-        return await _run_bootstrap_locked(db, guarded_register)
-    return await _register_user(request, db)
+        response = await _run_bootstrap_locked(db, guarded_register)
+    else:
+        response = await _register_user(request, db)
+    try:
+        await _clear_failures(*identities)
+    except AuthProtectionUnavailableError as error:
+        raise HTTPException(status_code=503, detail={"code": "AUTH_RATE_LIMIT_UNAVAILABLE"}) from error
+    return response
 
 
 async def _bootstrap_user(request: BootstrapRequest, db: AsyncSession) -> TokenResponse:
@@ -397,13 +453,193 @@ async def bootstrap(request: BootstrapRequest, db: AsyncSession = Depends(get_db
     return await _run_bootstrap_locked(db, lambda: _bootstrap_user(request, db))
 
 
+def _request_ip(request: Request) -> str:
+    """Use the socket peer address; forwarded headers are caller-controlled."""
+    return request.client.host if request.client and request.client.host else "unknown"
+
+
+def _auth_key(identity: str) -> str:
+    # Email/IP values must never become raw Redis key fragments.
+    return hashlib.sha256(identity.encode("utf-8", "ignore")).hexdigest()
+
+
+async def _redis_command(operation):
+    if redis is None:
+        if settings.auth_rate_limit_fail_closed:
+            raise RuntimeError("redis package is unavailable")
+        return None
+    client = redis.from_url(settings.redis_url, decode_responses=True)
+    try:
+        return await operation(client)
+    except Exception:
+        if settings.auth_rate_limit_fail_closed:
+            raise AuthProtectionUnavailableError("authentication protection is unavailable")
+        return None
+    finally:
+        close = getattr(client, "aclose", None) or getattr(client, "close", None)
+        if close:
+            result = close()
+            if asyncio.iscoroutine(result):
+                await result
+
+
+async def _failure_count(identity: str) -> int:
+    key = _AUTH_FAILURE_KEY_PREFIX + _auth_key(identity)
+
+    async def read(client):
+        value = await client.get(key)
+        return int(value or 0)
+
+    return int(await _redis_command(read) or 0)
+
+
+async def _max_failure_count(*identities: str) -> int:
+    counts = await asyncio.gather(*(_failure_count(identity) for identity in identities))
+    return max(counts, default=0)
+
+
+async def _record_failure(*identities: str) -> None:
+    async def increment(client):
+        for identity in identities:
+            key = _AUTH_FAILURE_KEY_PREFIX + _auth_key(identity)
+            await client.eval(_REDIS_FAILURE_SCRIPT, 1, key, settings.auth_failure_window_seconds)
+
+    await _redis_command(increment)
+
+
+async def _clear_failures(*identities: str) -> None:
+    async def clear(client):
+        keys = [_AUTH_FAILURE_KEY_PREFIX + _auth_key(identity) for identity in identities]
+        if keys:
+            await client.delete(*keys)
+
+    await _redis_command(clear)
+
+
+async def _consume_captcha_challenge(challenge_id: str | None) -> bool:
+    if not challenge_id:
+        return False
+    key = _CAPTCHA_CHALLENGE_KEY_PREFIX + _auth_key(challenge_id)
+
+    async def consume(client):
+        return await client.eval(_REDIS_GETDEL_SCRIPT, 1, key)
+
+    try:
+        return bool(await _redis_command(consume))
+    except AuthProtectionUnavailableError as error:
+        raise HTTPException(status_code=503, detail={"code": "CAPTCHA_UNAVAILABLE"}) from error
+
+
+def _captcha_required(failure_count: int) -> bool:
+    mode = settings.auth_captcha_mode
+    if mode == "always":
+        return True
+    if mode == "adaptive":
+        return failure_count >= settings.auth_captcha_adaptive_threshold
+    return False
+
+
+async def _verify_captcha(
+    request: Request,
+    *,
+    captcha_token: str | None,
+    captcha_challenge: str | None,
+    failure_count: int,
+) -> None:
+    if not _captcha_required(failure_count):
+        return
+    if not captcha_token or not captcha_challenge:
+        raise HTTPException(status_code=403, detail={"code": "CAPTCHA_REQUIRED"})
+    if not settings.auth_captcha_site_key or not settings.auth_captcha_secret_key:
+        raise HTTPException(status_code=503, detail={"code": "CAPTCHA_NOT_CONFIGURED"})
+    # Consume before verification: each challenge can be used exactly once,
+    # including failed verification attempts.
+    if not await _consume_captcha_challenge(captcha_challenge):
+        raise HTTPException(status_code=403, detail={"code": "CAPTCHA_INVALID"})
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            response = await client.post(
+                settings.auth_captcha_verify_url,
+                data={
+                    "secret": settings.auth_captcha_secret_key,
+                    "response": captcha_token,
+                    "remoteip": _request_ip(request),
+                },
+            )
+            payload = response.json()
+    except (httpx.HTTPError, ValueError):
+        raise HTTPException(status_code=503, detail={"code": "CAPTCHA_UNAVAILABLE"})
+    if response.status_code >= 400 or not isinstance(payload, dict) or not payload.get("success"):
+        raise HTTPException(status_code=403, detail={"code": "CAPTCHA_INVALID"})
+
+
+@router.get("/captcha/config", response_model=CaptchaConfigOut)
+async def captcha_config() -> CaptchaConfigOut:
+    return CaptchaConfigOut(
+        mode=settings.auth_captcha_mode,
+        site_key=settings.auth_captcha_site_key,
+        challenge_required=settings.auth_captcha_mode == "always",
+    )
+
+
+@router.post("/captcha/challenge", response_model=CaptchaChallengeOut)
+async def captcha_challenge() -> CaptchaChallengeOut:
+    if settings.auth_captcha_mode == "off":
+        raise HTTPException(status_code=404, detail={"code": "CAPTCHA_DISABLED"})
+    if not settings.auth_captcha_site_key or not settings.auth_captcha_secret_key:
+        raise HTTPException(status_code=503, detail={"code": "CAPTCHA_NOT_CONFIGURED"})
+    challenge_id = secrets.token_urlsafe(32)
+    key = _CAPTCHA_CHALLENGE_KEY_PREFIX + _auth_key(challenge_id)
+
+    async def issue(client):
+        return await client.set(
+            key,
+            "pending",
+            ex=settings.auth_captcha_challenge_ttl_seconds,
+            nx=True,
+        )
+
+    try:
+        issued = await _redis_command(issue)
+    except AuthProtectionUnavailableError as error:
+        raise HTTPException(status_code=503, detail={"code": "CAPTCHA_UNAVAILABLE"}) from error
+    if not issued:
+        raise HTTPException(status_code=503, detail={"code": "CAPTCHA_UNAVAILABLE"})
+    return CaptchaChallengeOut(
+        challenge_id=challenge_id,
+        site_key=settings.auth_captcha_site_key,
+        expires_in=settings.auth_captcha_challenge_ttl_seconds,
+    )
+
+
 @router.post("/login", response_model=TokenResponse)
-async def login(request: LoginRequest, db: AsyncSession = Depends(get_db)) -> TokenResponse:
+async def login(http_request: Request, request: LoginRequest, db: AsyncSession = Depends(get_db)) -> TokenResponse:
     email = request.email.strip().lower()
+    identities = (f"email:{email}", f"ip:{_request_ip(http_request)}")
+    try:
+        current_failures = await _max_failure_count(*identities)
+    except AuthProtectionUnavailableError as error:
+        raise HTTPException(status_code=503, detail={"code": "AUTH_RATE_LIMIT_UNAVAILABLE"}) from error
+    if current_failures >= settings.auth_failure_limit:
+        raise HTTPException(status_code=429, detail={"code": "AUTH_RATE_LIMITED"})
+    await _verify_captcha(
+        http_request,
+        captcha_token=request.captcha_token,
+        captcha_challenge=request.captcha_challenge,
+        failure_count=current_failures,
+    )
     result = await db.execute(select(User).where(User.email == email))
     user = result.scalar_one_or_none()
     if user is None or not user.is_active or not verify_password(request.password, user.password_hash):
+        try:
+            await _record_failure(*identities)
+        except AuthProtectionUnavailableError as error:
+            raise HTTPException(status_code=503, detail={"code": "AUTH_RATE_LIMIT_UNAVAILABLE"}) from error
         raise HTTPException(status_code=401, detail={"code": "INVALID_CREDENTIALS"})
+    try:
+        await _clear_failures(*identities)
+    except AuthProtectionUnavailableError as error:
+        raise HTTPException(status_code=503, detail={"code": "AUTH_RATE_LIMIT_UNAVAILABLE"}) from error
     return await _token_response(user, db)
 
 
@@ -585,11 +821,25 @@ async def _deliver_password_reset_token(email: str, token: str, expires_at: date
 
 @router.post("/password-reset/request", response_model=PasswordResetRequestOut, status_code=202)
 async def request_password_reset(
+    http_request: Request,
     request: PasswordResetRequest,
     db: AsyncSession = Depends(get_db),
 ) -> PasswordResetRequestOut:
     """Start reset flow with a generic response to prevent email enumeration."""
     email = request.email.strip().lower()
+    identities = (f"reset-email:{email}", f"ip:{_request_ip(http_request)}")
+    try:
+        current_failures = await _max_failure_count(*identities)
+    except AuthProtectionUnavailableError as error:
+        raise HTTPException(status_code=503, detail={"code": "AUTH_RATE_LIMIT_UNAVAILABLE"}) from error
+    if current_failures >= settings.auth_failure_limit:
+        raise HTTPException(status_code=429, detail={"code": "AUTH_RATE_LIMITED"})
+    await _verify_captcha(
+        http_request,
+        captcha_token=request.captcha_token,
+        captcha_challenge=request.captcha_challenge,
+        failure_count=current_failures,
+    )
     user = await db.scalar(
         select(User)
         .where(User.email == email, User.is_active.is_(True))
@@ -616,6 +866,10 @@ async def request_password_reset(
         await _deliver_password_reset_token(email, token, expires_at)
     else:
         await db.rollback()
+    try:
+        await _record_failure(*identities)
+    except AuthProtectionUnavailableError as error:
+        raise HTTPException(status_code=503, detail={"code": "AUTH_RATE_LIMIT_UNAVAILABLE"}) from error
     return PasswordResetRequestOut()
 
 

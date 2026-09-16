@@ -46,6 +46,19 @@ class Settings(BaseSettings):
     # 不设置时不会开放 bootstrap API；普通注册流程不受影响。
     bootstrap_token: Optional[str] = None
 
+    # Authentication protection. ``off`` is convenient for local development;
+    # production can require Turnstile on every auth attempt (``always``), or
+    # only after repeated failures (``adaptive``).
+    auth_captcha_mode: str = "off"
+    auth_captcha_site_key: Optional[str] = None
+    auth_captcha_secret_key: Optional[str] = None
+    auth_captcha_verify_url: str = "https://challenges.cloudflare.com/turnstile/v0/siteverify"
+    auth_captcha_challenge_ttl_seconds: int = Field(default=300, ge=30, le=3600)
+    auth_captcha_adaptive_threshold: int = Field(default=3, ge=1, le=100)
+    auth_failure_limit: int = Field(default=8, ge=1, le=100)
+    auth_failure_window_seconds: int = Field(default=900, ge=60, le=86400)
+    auth_rate_limit_fail_closed: bool = False
+
     # Model Gateway
     model_gateway_cheap_url: str
     model_gateway_cheap_key: str
@@ -134,6 +147,14 @@ class Settings(BaseSettings):
                 "embedding_dimensions must be 2048 for the HALFVEC(2048) schema"
             )
         return value
+
+    @field_validator("auth_captcha_mode")
+    @classmethod
+    def validate_auth_captcha_mode(cls, value: str) -> str:
+        normalized = value.strip().lower()
+        if normalized not in {"off", "adaptive", "always"}:
+            raise ValueError("auth_captcha_mode must be off, adaptive or always")
+        return normalized
 
     @model_validator(mode="after")
     def validate_context_budget(self) -> "Settings":

@@ -17,9 +17,12 @@ const realAccountSecurityApi = {
     method: 'POST',
     body: JSON.stringify({ current_password: currentPassword, new_password: newPassword })
   }),
-  requestPasswordReset: (email: string) => request<{ accepted: boolean }>('/auth/password-reset/request', {
+  requestPasswordReset: (email: string, captcha?: { token: string; challenge: string }) => request<{ accepted: boolean }>('/auth/password-reset/request', {
     method: 'POST',
-    body: JSON.stringify({ email })
+    body: JSON.stringify({
+      email,
+      ...(captcha ? { captcha_token: captcha.token, captcha_challenge: captcha.challenge } : {})
+    })
   }, false),
   confirmPasswordReset: (token: string, newPassword: string) => request<void>('/auth/password-reset/confirm', {
     method: 'POST',

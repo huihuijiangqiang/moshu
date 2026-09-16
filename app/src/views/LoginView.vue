@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, nextTick, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { authApi } from '@/api/auth'
 import { ApiError } from '@/api/http'
@@ -16,18 +16,97 @@ const password = ref('')
 const submitting = ref(false)
 const errorMessage = ref('')
 const successMessage = ref('')
+const captchaConfig = ref<Awaited<ReturnType<typeof authApi.captchaConfig>> | null>(null)
+const captchaVisible = ref(false)
+const captchaToken = ref('')
+const captchaChallenge = ref('')
+const captchaContainer = ref<HTMLElement | null>(null)
+let captchaWidgetId: string | number | null = null
+
+declare global {
+  interface Window {
+    turnstile?: {
+      render: (container: HTMLElement, options: Record<string, unknown>) => string | number
+      reset: (widgetId?: string | number) => void
+    }
+  }
+}
 
 const canSubmit = computed(() => {
   const emailValid = email.value.trim().includes('@')
-  if (mode.value === 'forgot') return emailValid && !submitting.value
+  if (mode.value === 'forgot') {
+    const captchaValid = !captchaVisible.value || (!!captchaToken.value && !!captchaChallenge.value)
+    return emailValid && captchaValid && !submitting.value
+  }
   const credentialsValid = emailValid && password.value.length >= 8
-  return credentialsValid && (mode.value === 'login' || !!name.value.trim()) && !submitting.value
+  const captchaValid = !captchaVisible.value || (!!captchaToken.value && !!captchaChallenge.value)
+  return credentialsValid && (mode.value === 'login' || !!name.value.trim()) && captchaValid && !submitting.value
 })
+
+function errorCode(error: unknown): string | null {
+  if (!(error instanceof ApiError)) return null
+  try {
+    const parsed = JSON.parse(error.message) as { detail?: { code?: string } }
+    return parsed.detail?.code ?? null
+  } catch {
+    return null
+  }
+}
+
+async function loadTurnstileScript() {
+  if (window.turnstile) return
+  const existing = document.querySelector<HTMLScriptElement>('script[data-moshu-turnstile]')
+  if (existing) {
+    await new Promise<void>((resolve, reject) => {
+      existing.addEventListener('load', () => resolve(), { once: true })
+      existing.addEventListener('error', () => reject(new Error('turnstile script failed')), { once: true })
+    })
+    return
+  }
+  await new Promise<void>((resolve, reject) => {
+    const script = document.createElement('script')
+    script.src = 'https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit'
+    script.async = true
+    script.defer = true
+    script.dataset.moshuTurnstile = 'true'
+    script.onload = () => resolve()
+    script.onerror = () => reject(new Error('turnstile script failed'))
+    document.head.appendChild(script)
+  })
+}
+
+async function prepareCaptcha() {
+  if (!captchaConfig.value?.site_key || captchaConfig.value.mode === 'off') return
+  try {
+    const challenge = await authApi.captchaChallenge()
+    captchaChallenge.value = challenge.challenge_id
+    captchaToken.value = ''
+    captchaVisible.value = true
+    await loadTurnstileScript()
+    await nextTick()
+    if (captchaContainer.value && window.turnstile) {
+      if (captchaWidgetId !== null) window.turnstile.reset(captchaWidgetId)
+      captchaWidgetId = window.turnstile.render(captchaContainer.value, {
+        sitekey: challenge.site_key,
+        theme: 'light',
+        callback: (token: string) => { captchaToken.value = token },
+        'expired-callback': () => { captchaToken.value = '' },
+        'error-callback': () => { captchaToken.value = '' }
+      })
+    }
+  } catch {
+    errorMessage.value = '验证码服务暂时不可用，请稍后重试。'
+  }
+}
 
 function switchMode(next: Mode) {
   mode.value = next
   errorMessage.value = ''
   successMessage.value = ''
+  captchaToken.value = ''
+  captchaChallenge.value = ''
+  captchaVisible.value = captchaConfig.value?.mode === 'always'
+  if (captchaVisible.value) void prepareCaptcha()
 }
 
 async function submit() {
@@ -36,24 +115,44 @@ async function submit() {
   errorMessage.value = ''
   try {
     if (mode.value === 'forgot') {
-      await accountSecurityApi.requestPasswordReset(email.value)
+      const captcha = captchaVisible.value
+        ? { token: captchaToken.value, challenge: captchaChallenge.value }
+        : undefined
+      await accountSecurityApi.requestPasswordReset(email.value, captcha)
       successMessage.value = '如果该邮箱已注册，邮件服务会发送一次性重置链接。请检查收件箱。'
       return
     }
-    if (mode.value === 'login') await authApi.login(email.value, password.value)
-    else await authApi.register(name.value, email.value, password.value)
+    const captcha = captchaVisible.value
+      ? { token: captchaToken.value, challenge: captchaChallenge.value }
+      : undefined
+    if (mode.value === 'login') await authApi.login(email.value, password.value, captcha)
+    else await authApi.register(name.value, email.value, password.value, captcha)
     const redirect = typeof route.query.redirect === 'string' && route.query.redirect.startsWith('/')
       ? route.query.redirect
       : '/'
     await router.replace(redirect)
   } catch (error) {
-    if (error instanceof ApiError && error.status === 401) errorMessage.value = '邮箱或密码不正确。'
+    const code = errorCode(error)
+    if (code === 'CAPTCHA_REQUIRED' || code === 'CAPTCHA_INVALID') {
+      errorMessage.value = code === 'CAPTCHA_INVALID' ? '验证码已失效，请重新完成验证。' : '请先完成验证码。'
+      await prepareCaptcha()
+    } else if (error instanceof ApiError && error.status === 429) errorMessage.value = '尝试次数过多，请稍后再试。'
+    else if (error instanceof ApiError && error.status === 401) errorMessage.value = '邮箱或密码不正确。'
     else if (error instanceof ApiError && error.status === 409) errorMessage.value = '这个邮箱已经注册，请直接登录。'
     else errorMessage.value = '暂时无法完成登录，请检查服务连接后重试。'
   } finally {
     submitting.value = false
   }
 }
+
+onMounted(async () => {
+  try {
+    captchaConfig.value = await authApi.captchaConfig()
+    if (captchaConfig.value.mode === 'always') await prepareCaptcha()
+  } catch {
+    // Authentication still works when the optional captcha endpoint is unavailable.
+  }
+})
 </script>
 
 <template>
@@ -91,6 +190,11 @@ async function submit() {
           <span>密码</span>
           <input v-model="password" autocomplete="current-password" type="password" placeholder="至少 8 位">
         </label>
+
+        <div v-if="captchaVisible" class="auth-captcha" aria-label="安全验证">
+          <div ref="captchaContainer"></div>
+          <small>请完成安全验证后继续。</small>
+        </div>
 
         <p v-if="errorMessage" class="auth-error" role="alert">{{ errorMessage }}</p>
         <p v-if="successMessage" class="auth-success" role="status">{{ successMessage }}</p>
@@ -149,6 +253,8 @@ async function submit() {
 .auth-form label { display: grid; gap: 8px; margin-bottom: 18px; font-size: 12px; font-weight: 700; }
 .auth-form input { height: 44px; min-width: 0; border: 1px solid var(--color-divider); padding: 0 13px; background: var(--color-bg); color: var(--color-text); font: inherit; }
 .auth-form input:focus-visible, .auth-mode button:focus-visible, .auth-submit:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 2px; }
+.auth-captcha { display: grid; gap: 7px; margin: 2px 0 18px; min-height: 66px; }
+.auth-captcha small { color: var(--color-neutral-800); font-size: 11px; font-weight: 400; }
 .auth-error { margin: 0 0 14px; padding: 10px 12px; border-left: 3px solid var(--alert); background: color-mix(in srgb, var(--alert) 8%, transparent); color: var(--color-text); }
 .auth-success { margin: 0 0 14px; padding: 10px 12px; border-left: 3px solid var(--color-accent); background: color-mix(in srgb, var(--color-accent) 8%, transparent); color: var(--color-text); line-height: 1.5; }
 .auth-submit { height: 44px; border: 0; background: var(--color-accent); color: #fff; font-weight: 800; cursor: pointer; }
