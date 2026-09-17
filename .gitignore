@@ -25,6 +25,11 @@ coverage/
 /.release-artifacts/
 /launcher/bin/
 /launcher/obj/
+/local-story-output/
+/docs/research/
+/前端实现分析报告.md
+/前端问题与开源小说软件调研.md
+/.claude/
 
 # Python environments and generated files
 .venv/

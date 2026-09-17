@@ -126,6 +126,22 @@ describe('AiDraft', () => {
     editor.destroy()
   })
 
+  it('采纳时用服务端筛选后的正文替换旧候选，拒绝段落不会回流', () => {
+    const editor = makeEditor()
+    editor.commands.insertPersistedDraft({ id: 'draft-reviewed', runId: 'run-reviewed', content: '保留段落\n已拒绝段落' })
+
+    // The side-panel review can finish after the streamed full candidate has
+    // already been mounted in the editor. The accept response contains only
+    // the paragraphs the author kept; passing it to the command must replace
+    // the node in one transaction instead of unwrapping the stale candidate.
+    expect(editor.commands.acceptDraftById('draft-reviewed', '保留段落')).toBe(true)
+    const body = canonicalBody(editor).html
+    expect(body).toContain('保留段落')
+    expect(body).not.toContain('已拒绝段落')
+    expect(body).toContain('data-ai-run-id="run-reviewed"')
+    editor.destroy()
+  })
+
   it('采纳作为单次事务，可一次撤销回到采纳前正文', () => {
     const editor = makeEditor()
     const before = canonicalBody(editor).html

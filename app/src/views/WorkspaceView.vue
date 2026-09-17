@@ -723,8 +723,15 @@ async function handleDraftAction(event: Event) {
   }
   if (detail.action !== 'accept') return
   try {
-    await generationDraftApi.accept(detail.draftId)
-    editor.value?.commands.acceptDraftById(detail.draftId)
+    const accepted = await generationDraftApi.accept(detail.draftId)
+    // The editor can still contain the original streamed candidate when the
+    // author reviewed paragraphs in the side panel. The server response is
+    // the source of truth: replace the candidate atomically with its accepted
+    // content before saving, so rejected paragraphs cannot flow back in.
+    if (accepted.id !== detail.draftId || typeof accepted.content !== 'string') {
+      throw new Error('候选采纳响应缺少可写入的正文')
+    }
+    editor.value?.commands.acceptDraftById(detail.draftId, accepted.content)
     await nextTick()
     if (store.activeId) await flush(store.activeId)
     await loadGenerationDrafts()

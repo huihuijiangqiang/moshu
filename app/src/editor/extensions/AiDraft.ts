@@ -14,8 +14,8 @@ declare module '@tiptap/core' {
       setDraftStatus: (status: DraftStatus) => ReturnType
       setDraftRunId: (runId: string) => ReturnType
       setDraftCandidateId: (draftId: string) => ReturnType
-      acceptDraftAt: (pos: number) => ReturnType
-      acceptDraftById: (draftId: string) => ReturnType
+      acceptDraftAt: (pos: number, content?: string) => ReturnType
+      acceptDraftById: (draftId: string, content?: string) => ReturnType
       rejectDraftAt: (pos: number) => ReturnType
       rejectDraftById: (draftId: string) => ReturnType
       rejectAllDrafts: () => ReturnType
@@ -171,12 +171,24 @@ export const AiDraft = Node.create({
 
       /** 解包：草稿内容原地成为正文，一次事务完成 */
       acceptDraftAt:
-        (pos) =>
+        (pos, acceptedContent) =>
         ({ state, tr, dispatch }) => {
           const node = state.doc.nodeAt(pos)
           if (!node || node.type.name !== 'aiDraft') return false
           const runId = typeof node.attrs.runId === 'string' ? node.attrs.runId : null
-          const content = node.content.content.map((child) => {
+          // When the persisted candidate has been reviewed in the side panel,
+          // the editor may still contain the original full stream. Build the
+          // replacement from the API's accepted content in that case so
+          // rejected paragraphs cannot flow back into the manuscript.
+          const sourceContent = typeof acceptedContent === 'string'
+            ? acceptedContent.replace(/\r\n?/g, '\n').split('\n').map((text) =>
+                node.type.schema.nodes.paragraph.create(
+                  null,
+                  text ? node.type.schema.text(text) : undefined
+                )
+              )
+            : node.content.content
+          const content = sourceContent.map((child) => {
             if (!runId || child.type.name !== 'paragraph') return child
             return child.type.create(
               { ...child.attrs, aiRunId: runId, aiSourceHash: provenanceHash(child.textContent) },
@@ -190,10 +202,10 @@ export const AiDraft = Node.create({
         },
 
       acceptDraftById:
-        (draftId) =>
+        (draftId, acceptedContent) =>
         ({ state, commands }) => {
           const found = findDraftById(state, draftId)
-          return found ? commands.acceptDraftAt(found.pos) : false
+          return found ? commands.acceptDraftAt(found.pos, acceptedContent) : false
         },
 
       rejectDraftAt:
