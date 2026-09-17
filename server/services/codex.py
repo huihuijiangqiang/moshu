@@ -125,9 +125,11 @@ async def create_entry(
     db.add(entry)
     await db.flush()
 
-    for alias in normalize_aliases(aliases):
+    normalized_aliases = normalize_aliases(aliases)
+    for alias in normalized_aliases:
         db.add(CodexAlias(entry_id=entry.id, alias=alias))
-    await db.flush()
+    if normalized_aliases:
+        await db.flush()
     return entry
 
 

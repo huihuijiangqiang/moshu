@@ -2,6 +2,8 @@ import { delay } from '../http'
 
 export interface ShelfBook {
   id: string
+  /** 首章 ID 由创建接口返回，避免创建后再次拉取整本章节列表。 */
+  firstChapterId?: string
   title: string
   genre: string
   status: 'ongoing' | 'finished' | 'planning' | 'archived'
@@ -136,6 +138,7 @@ export const shelfApi = {
       draftVolumes,
       draftChapters
     }
+    book.firstChapterId = book.id + '-ch1'
     writeCreatedBooks([book, ...readCreatedBooks()])
     return structuredClone(book)
   },

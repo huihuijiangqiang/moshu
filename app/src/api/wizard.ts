@@ -49,10 +49,11 @@ export function buildMockPlan(input: WizardPlanInput): WizardPlan {
   }
 }
 
-export async function planWizard(input: WizardPlanInput): Promise<WizardPlan> {
+export async function planWizard(input: WizardPlanInput, signal?: AbortSignal): Promise<WizardPlan> {
   if (USE_MOCK) return buildMockPlan(input)
   return request<WizardPlan>('/projects/wizard/plan', {
     method: 'POST',
-    body: JSON.stringify(input)
+    body: JSON.stringify(input),
+    signal
   })
 }

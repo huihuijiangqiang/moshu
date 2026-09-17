@@ -368,6 +368,7 @@ async def test_create_project_persists_plan_first_chapter_and_initial_codex(
     assert project.owner_id == "user_a"
     assert len(volumes) == 2
     assert len(chapters) == 1
+    assert payload["first_chapter_id"] == chapters[0].id
     assert chapters[0].volume_id == volumes[0].id
     assert chapters[0].outline == ["她带着一本账册穿越到荒年。", "从修水渠开始重建村庄。"]
     assert {(entry.kind, entry.name) for entry in entries} == {("character", "许知微"), ("rule", "功德账")}

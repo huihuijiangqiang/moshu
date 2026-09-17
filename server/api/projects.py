@@ -88,6 +88,12 @@ class ProjectOut(BaseModel):
     target_platform: Literal["fanqie", "qimao", "qidian", "general"] = "general"
     positioning: ProjectPositioningOut | None = None
 
+
+class ProjectCreateOut(ProjectOut):
+    """创建响应额外返回首章 ID，避免客户端创建后再拉取整本章节列表。"""
+
+    first_chapter_id: str | None = None
+
 class ChapterListItem(BaseModel):
     """章节列表项 - 不含正文"""
 
@@ -558,7 +564,7 @@ async def plan_project(
     return plan
 
 
-@router.post("", response_model=ProjectOut, status_code=201)
+@router.post("", response_model=ProjectCreateOut, status_code=201)
 async def create_project(
     request: ProjectCreate,
     user: User = Depends(get_current_user),
@@ -598,19 +604,21 @@ async def create_project(
         },
     )
     db.add(project)
-    await db.flush()
-    db.add(
-        ProjectPositioning(
-            id=f"pp_{secrets.token_hex(12)}",
-            project_id=project.id,
-            platform=request.target_platform,
-            synopsis=request.synopsis.strip(),
-            tags=[tag.strip() for tag in request.tags if tag.strip()],
-            protagonist_dilemma=request.inspiration.strip(),
-            selling_point=request.core_hook.strip(),
-        )
+    positioning = ProjectPositioning(
+        id=f"pp_{secrets.token_hex(12)}",
+        project_id=project.id,
+        platform=request.target_platform,
+        title_candidates=[],
+        synopsis=request.synopsis.strip(),
+        tags=[tag.strip() for tag in request.tags if tag.strip()],
+        protagonist_dilemma=request.inspiration.strip(),
+        selling_point=request.core_hook.strip(),
+        first_payoff="",
+        long_term_arc="",
+        revision=0,
+        status="draft",
     )
-    await db.flush()
+    db.add(positioning)
 
     volume_drafts = request.volumes or [VolumeCreate(title="第一卷 · 开篇")]
     volumes: list[Volume] = []
@@ -624,7 +632,6 @@ async def create_project(
         )
         db.add(volume)
         volumes.append(volume)
-    await db.flush()
 
     default_outline = [
         value for value in (request.inspiration.strip(), request.synopsis.strip()) if value
@@ -636,6 +643,7 @@ async def create_project(
     chapter_plans = request.chapters or [
         ProjectChapterPlan(title="第 1 章 · 开篇", outline=default_outline)
     ]
+    first_chapter_id: str | None = None
     for index, chapter_plan in enumerate(chapter_plans, start=1):
         # ``volumeIndex`` is intentionally zero-based to match the array index
         # used by the wizard UI.  Omitted values retain legacy first-volume
@@ -645,9 +653,12 @@ async def create_project(
             target_volume = volumes[0]
         else:
             target_volume = volumes[volume_index]
+        chapter_id = f"ch_{secrets.token_hex(12)}"
+        if first_chapter_id is None:
+            first_chapter_id = chapter_id
         db.add(
             Chapter(
-                id=f"ch_{secrets.token_hex(12)}",
+                id=chapter_id,
                 project_id=project.id,
                 volume_id=target_volume.id,
                 title=chapter_plan.title.strip(),
@@ -684,7 +695,27 @@ async def create_project(
         )
 
     await db.commit()
-    return await _project_out(db, project)
+    return ProjectCreateOut(
+        id=project.id,
+        org_id=project.org_id,
+        title=project.title,
+        genre=project.genre,
+        status=project.status,
+        target_words_daily=project.target_words_daily,
+        today_words=0,
+        style_profile_id=project.style_profile_id,
+        inspiration=project.inspiration,
+        synopsis=project.synopsis,
+        story_settings=project.story_settings or {},
+        created_at=project.created_at.isoformat(),
+        volumes=[
+            VolumeOut(id=volume.id, title=volume.title, idx=volume.idx, summary=volume.summary)
+            for volume in volumes
+        ],
+        target_platform=positioning.platform,
+        positioning=_positioning_out(positioning),
+        first_chapter_id=first_chapter_id,
+    )
 
 
 @router.get("/{project_id}", response_model=ProjectOut)

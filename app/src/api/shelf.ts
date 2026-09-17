@@ -46,6 +46,7 @@ interface ProjectCreateDto {
   genre: string | null
   target_words_daily: number
   volumes: Array<{ id: string; title: string; idx: number }>
+  first_chapter_id?: string | null
 }
 
 const coverTones: ShelfBook['coverTone'][] = ['mountain', 'city', 'river', 'spring', 'space']
@@ -108,6 +109,7 @@ const realShelfApi = {
     })
     return {
       id: project.id,
+      firstChapterId: project.first_chapter_id ?? undefined,
       title: project.title,
       genre: project.genre ?? '题材待补充',
       status: 'planning',

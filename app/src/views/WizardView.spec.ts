@@ -85,6 +85,7 @@ describe('new project wizard', () => {
     await nextTick()
     expect(buttonByText(wrapper, '继续')?.attributes('disabled')).toBeUndefined()
     await buttonByText(wrapper, '继续')?.trigger('click')
+    await flushPromises()
 
     expect(wrapper.text()).toContain('这是根据你的选择搭出的骨架')
     expect((wrapper.get('input[type="text"]').element as HTMLInputElement).value).toContain('架空历史')
@@ -162,6 +163,26 @@ describe('new project wizard', () => {
     expect(buttonByText(wrapper, '确认故事骨架')?.attributes('disabled')).toBeUndefined()
   })
 
+  it('prefetches a stable story plan once and reuses it on the settings step', async () => {
+    vi.useFakeTimers()
+    try {
+      const planning = vi.spyOn(wizardApi, 'planWizard').mockResolvedValue(storyPlan())
+      const wrapper = await mountWizard()
+
+      await vi.advanceTimersByTimeAsync(650)
+      await flushPromises()
+      expect(planning).toHaveBeenCalledTimes(1)
+
+      await buttonByText(wrapper, '继续')?.trigger('click')
+      await flushPromises()
+      expect(planning).toHaveBeenCalledTimes(1)
+      expect(wrapper.get('input[type="text"]').element).toHaveProperty('value', storyPlan().title)
+      wrapper.unmount()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it('shows planning failures on the current step and lets the author retry', async () => {
     const planning = vi.spyOn(wizardApi, 'planWizard')
       .mockRejectedValueOnce(new Error('upstream unavailable'))
@@ -224,7 +245,10 @@ describe('new project wizard', () => {
     const planning = vi.spyOn(wizardApi, 'planWizard')
     await wrapper.get('.wizard-steps button:nth-child(3)').trigger('click')
     await flushPromises()
-    expect(planning).toHaveBeenCalledWith(expect.objectContaining({ genre: '战争军事' }))
+    expect(planning).toHaveBeenCalledWith(
+      expect.objectContaining({ genre: '战争军事' }),
+      expect.anything()
+    )
     expect(wrapper.get('.wizard-steps button:nth-child(4)').attributes('disabled')).toBeUndefined()
   })
 

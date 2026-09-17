@@ -1,8 +1,7 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { projectPath } from '@/router/project-route'
-import { contentApi } from '@/api/content'
 import { shelfApi } from '@/api/shelf'
 import { planWizard, type WizardPlan } from '@/api/wizard'
 import type { TargetPlatform } from '@/api/positioning'
@@ -75,6 +74,10 @@ type SkeletonSnapshot = {
 }
 const generatedSnapshot = ref<SkeletonSnapshot | null>(null)
 const lastPlanSignature = ref('')
+const planCache = new Map<string, WizardPlan>()
+let planRequest: { signature: string; promise: Promise<WizardPlan>; controller: AbortController } | null = null
+let planRequestSequence = 0
+let prefetchTimer: ReturnType<typeof setTimeout> | null = null
 
 const inspirations = [
   '她穿越成荒年农家的长女，先要保住一亩薄田，再把一家人的日子过成自己的选择。',
@@ -253,28 +256,76 @@ function chooseGenreGroup(groupId: string) {
   genreId.value = ''
 }
 
+function planInput(): Parameters<typeof planWizard>[0] {
+  return {
+    inspiration: inspiration.value.trim(),
+    audience: audienceLabel.value,
+    genre: selectedGenre.value?.label ?? '',
+    tags: selectedTags.value.map((tag) => tag.label),
+    template: selectedTemplate.value?.label ?? ''
+  }
+}
+
+function isAbortError(error: unknown) {
+  return error instanceof DOMException && error.name === 'AbortError'
+}
+
+function requestPlan(signature: string, force = false): Promise<WizardPlan> {
+  if (!force) {
+    const cached = planCache.get(signature)
+    if (cached) return Promise.resolve(cached)
+    if (planRequest?.signature === signature) return planRequest.promise
+  }
+
+  planRequest?.controller.abort()
+  const controller = new AbortController()
+  const sequence = ++planRequestSequence
+  const promise = planWizard(planInput(), controller.signal)
+    .then((plan) => {
+      if (sequence === planRequestSequence && !controller.signal.aborted) planCache.set(signature, plan)
+      return plan
+    })
+    .finally(() => {
+      if (planRequest?.promise === promise) planRequest = null
+    })
+  planRequest = { signature, promise, controller }
+  return promise
+}
+
 async function buildSkeleton(force = false) {
   if (!force && skeletonValid.value && lastPlanSignature.value === planSignature.value) return
   if (planning.value || !selectedGenre.value || !selectedTemplate.value) return
+  if (prefetchTimer) clearTimeout(prefetchTimer)
+  prefetchTimer = null
+  const signature = planSignature.value
   planning.value = true
   planningError.value = ''
   planningNotice.value = ''
   try {
-    const signature = planSignature.value
-    const plan = await planWizard({
-      inspiration: inspiration.value.trim(),
-      audience: audienceLabel.value,
-      genre: selectedGenre.value.label,
-      tags: selectedTags.value.map((tag) => tag.label),
-      template: selectedTemplate.value.label
-    })
+    const plan = await requestPlan(signature, force)
+    // A late response must never overwrite a newer set of author choices.
+    if (signature !== planSignature.value) return
     applyPlan(plan, force)
     lastPlanSignature.value = signature
-  } catch {
-    planningError.value = '故事骨架生成失败，选择“重试生成”再试一次。'
+  } catch (error) {
+    if (!isAbortError(error)) planningError.value = '故事骨架生成失败，选择“重试生成”再试一次。'
   } finally {
     planning.value = false
   }
+}
+
+function schedulePlanPrefetch() {
+  if (prefetchTimer) clearTimeout(prefetchTimer)
+  const signature = planSignature.value
+  if (planRequest && planRequest.signature !== signature) planRequest.controller.abort()
+  if (step.value !== 2 || !inspirationValid.value || !choicesValid.value) return
+  if (planCache.has(signature) || planRequest?.signature === signature) return
+
+  prefetchTimer = setTimeout(() => {
+    prefetchTimer = null
+    requestPlan(signature)
+      .catch(() => undefined)
+  }, 650)
 }
 
 function applyPlan(plan: WizardPlan, preserveEdits = false) {
@@ -399,12 +450,19 @@ function resetDraft() {
   planningNotice.value = ''
   expandedOutline.value = false
   variant.value = 0
+  planCache.clear()
+  planRequest?.controller.abort()
+  planRequest = null
+  if (prefetchTimer) clearTimeout(prefetchTimer)
+  prefetchTimer = null
   localStorage.removeItem(DRAFT_KEY)
 }
 
 watch(step, () => {
   if (wizardMain.value) wizardMain.value.scrollTop = 0
 }, { flush: 'post' })
+
+watch([step, planSignature], schedulePlanPrefetch)
 
 async function createProject() {
   if (creating.value || !skeletonValid.value || !selectedGenre.value) return
@@ -430,13 +488,7 @@ async function createProject() {
       targetPlatform: targetPlatform.value
     })
     localStorage.removeItem(DRAFT_KEY)
-    let firstChapterId: string | undefined
-    try {
-      const createdChapters = await contentApi.listChapters(book.id)
-      firstChapterId = [...createdChapters].sort((a, b) => a.index - b.index)[0]?.id
-    } catch {
-      // The project already exists. Enter it instead of letting a retry create a duplicate.
-    }
+    const firstChapterId = book.firstChapterId
     await router.push({
       path: projectPath(book.id, 'write'),
       query: firstChapterId ? { chapter: firstChapterId, autoGenerate: '1' } : undefined
@@ -447,6 +499,12 @@ async function createProject() {
     creating.value = false
   }
 }
+
+onBeforeUnmount(() => {
+  if (prefetchTimer) clearTimeout(prefetchTimer)
+  planRequest?.controller.abort()
+  planRequest = null
+})
 
 onMounted(() => {
   const saved = localStorage.getItem(DRAFT_KEY)
