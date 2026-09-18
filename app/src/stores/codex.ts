@@ -28,6 +28,7 @@ export const useCodexStore = defineStore('codex', () => {
   const query = ref('')
   const loaded = ref(false)
   const loadedProjectId = ref<string | null>(null)
+  let loadGeneration = 0
 
   const byId = computed(() => new Map(entries.value.map((e) => [e.id, e])))
   const resident = computed(() => entries.value.filter((e) => e.resident))
@@ -60,7 +61,15 @@ export const useCodexStore = defineStore('codex', () => {
 
   async function load(projectId = 'p1', force = false) {
     if (!force && loaded.value && loadedProjectId.value === projectId) return
-    entries.value = await contentApi.listCodex(projectId)
+    const generation = ++loadGeneration
+    if (loadedProjectId.value !== projectId) {
+      entries.value = []
+      loaded.value = false
+      loadedProjectId.value = projectId
+    }
+    const nextEntries = await contentApi.listCodex(projectId)
+    if (generation !== loadGeneration || loadedProjectId.value !== projectId) return
+    entries.value = nextEntries
     loadedProjectId.value = projectId
     loaded.value = true
   }

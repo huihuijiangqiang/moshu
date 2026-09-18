@@ -63,4 +63,36 @@ describe('project store editor content', () => {
 
     expect(store.chapters[0]).toMatchObject({ content: '<p>云端正文</p>', rev: 9 })
   })
+
+  it('ignores a slower project load after navigation moved to another project', async () => {
+    const store = useProjectStore()
+    let resolveFirst!: (value: Awaited<ReturnType<typeof contentApi.getProject>>) => void
+    const firstProject = new Promise<Awaited<ReturnType<typeof contentApi.getProject>>>((resolve) => {
+      resolveFirst = resolve
+    })
+    vi.spyOn(contentApi, 'getProject')
+      .mockImplementationOnce(() => firstProject)
+      .mockResolvedValueOnce({
+        id: 'p-2', title: '第二本', genre: '悬疑', status: 'ongoing', dailyGoal: 2000,
+        dailyWords: 0, styleProfile: null, volumes: [{ id: 'v-2', index: 1, title: '第一卷' }]
+      })
+    vi.spyOn(contentApi, 'listChapters')
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([{
+        id: 'ch-2', volumeId: 'v-2', index: 1, title: '第一章', words: 0,
+        status: 'outlined', outline: [], outlineNote: ''
+      }])
+
+    const firstLoad = store.load('p-1')
+    const secondLoad = store.load('p-2')
+    resolveFirst({
+      id: 'p-1', title: '第一本', genre: '种田', status: 'ongoing', dailyGoal: 2000,
+      dailyWords: 0, styleProfile: null, volumes: [{ id: 'v-1', index: 1, title: '第一卷' }]
+    })
+    await Promise.all([firstLoad, secondLoad])
+
+    expect(store.loadedProjectId).toBe('p-2')
+    expect(store.project?.title).toBe('第二本')
+    expect(store.chapters[0]?.id).toBe('ch-2')
+  })
 })

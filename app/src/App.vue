@@ -32,9 +32,14 @@ watch(
   () => route.params.projectId,
   async (value) => {
     if (typeof value !== 'string' || route.meta.scope !== 'project') return
+    const codexLoad = codex.load(value)
+    const guardLoad = guard.load(value)
     try {
-      await Promise.all([project.load(value), codex.load(value), guard.load(value)])
+      // The editor only needs the project structure and active body for first paint.
+      // Sidebar counts and guard data continue in the background.
+      await project.load(value)
       if (project.activeId) await project.openChapter(project.activeId)
+      await Promise.allSettled([codexLoad, guardLoad])
     } catch (error) {
       if (error instanceof ApiError && error.status === 404) {
         await router.replace({ name: 'shelf' })

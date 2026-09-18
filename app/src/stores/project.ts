@@ -9,6 +9,7 @@ export const useProjectStore = defineStore('project', () => {
   const activeId = ref<string | null>(null)
   const loadedProjectId = ref<string | null>(null)
   const loading = ref(false)
+  let loadGeneration = 0
 
   const active = computed(() => chapters.value.find((c) => c.id === activeId.value) ?? null)
 
@@ -24,9 +25,17 @@ export const useProjectStore = defineStore('project', () => {
 
   async function load(projectId = 'p1') {
     if (loadedProjectId.value === projectId && project.value) return
+    const generation = ++loadGeneration
     loading.value = true
+    if (loadedProjectId.value !== projectId) {
+      project.value = null
+      chapters.value = []
+      activeId.value = null
+      loadedProjectId.value = null
+    }
     try {
       const [p, list] = await Promise.all([contentApi.getProject(projectId), contentApi.listChapters(projectId)])
+      if (generation !== loadGeneration) return
       p.wordCount = list.reduce((sum, chapter) => sum + chapter.words, 0)
       p.chapterCount = list.length
       project.value = p
@@ -34,7 +43,7 @@ export const useProjectStore = defineStore('project', () => {
       loadedProjectId.value = projectId
       activeId.value = list.find((c) => c.status === 'drafting')?.id ?? list.at(-1)?.id ?? null
     } finally {
-      loading.value = false
+      if (generation === loadGeneration) loading.value = false
     }
   }
 
