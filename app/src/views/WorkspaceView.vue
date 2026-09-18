@@ -886,6 +886,13 @@ function openActiveSceneGuard() {
 
     <!-- 中：正文。这一栏永不卸载 -->
     <main class="wk-pane wk-pane-paper">
+      <div v-if="store.loading && !store.active" class="workspace-loading" role="status" aria-live="polite">
+        <span class="workspace-loading-mark" aria-hidden="true" />
+        <div>
+          <strong>正在打开作品</strong>
+          <span>正文先加载，设定库与守卫随后同步。</span>
+        </div>
+      </div>
       <div class="paper-bar">
         <button class="paper-panel-toggle paper-panel-toggle-left" type="button" title="打开章节" @click="openPanel('left')">
           章节
@@ -1135,6 +1142,13 @@ function openActiveSceneGuard() {
 .mobile-readonly-banner button:hover { color: var(--paper); background: var(--primary); }
 .workspace-action-error { display: flex; align-items: center; justify-content: space-between; gap: var(--u3); padding: 7px var(--u4); color: var(--alert-ink); background: var(--alert-soft); border-bottom: var(--hair) solid var(--alert-line); font-size: var(--fs-sm); line-height: 1.5; }
 .workspace-action-error button { flex: none; padding: 2px 6px; color: var(--alert-ink); background: transparent; border: var(--hair) solid var(--alert); border-radius: 3px; font-size: var(--fs-xs); cursor: pointer; }
+.workspace-loading { position: absolute; inset: 0; z-index: 4; display: flex; align-items: center; justify-content: center; gap: 12px; color: var(--ink-2); background: color-mix(in srgb, var(--paper) 94%, transparent); pointer-events: none; }
+.workspace-loading > div { display: grid; gap: 4px; }
+.workspace-loading strong { color: var(--ink); font-size: var(--fs-sm); }
+.workspace-loading span { color: var(--ink-3); font-size: var(--fs-xs); }
+.workspace-loading-mark { width: 15px; height: 15px; border: 2px solid var(--line-strong); border-top-color: var(--primary); border-radius: 50%; animation: workspace-loading-spin 720ms linear infinite; }
+@keyframes workspace-loading-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .workspace-loading-mark { animation: none; } }
 @media (max-width: 1100px) {
   .scene-context-strip { grid-template-columns: auto minmax(0, 1fr) auto; }
   .scene-context-turn { display: none; }
