@@ -51,6 +51,7 @@ const mobileReadOnly = ref(false)
 const activeScene = ref<ChapterScene | null>(null)
 let abort: (() => void) | null = null
 let disposed = false
+let chapterLoadSequence = 0
 let draftLoadSequence = 0
 let reviewLoadSequence = 0
 let stoppedDraftTimer: ReturnType<typeof setTimeout> | null = null
@@ -120,18 +121,19 @@ watch(
   async ([activeId, , requestedId, requestedScene]) => {
     if (route.path !== toProject('write')) return
     if (suppressRouteCleanupWatch && !requestedId) return
+    const sequence = ++chapterLoadSequence
     const id = requestedId && store.chapters.some((chapter) => chapter.id === requestedId)
       ? requestedId
       : activeId
     if (!id) return
     const sentenceTarget = requestedId === id ? sentenceRouteTarget() : null
     await store.openChapter(id)
-    if (disposed || route.path !== toProject('write') || store.activeId !== id) return
+    if (disposed || sequence !== chapterLoadSequence || route.path !== toProject('write') || store.activeId !== id) return
 
     if (requestedScene && requestedId === id) {
       try {
         const sceneCards = await scenesApi.list(id)
-        if (disposed || route.path !== toProject('write') || store.activeId !== id) return
+        if (disposed || sequence !== chapterLoadSequence || route.path !== toProject('write') || store.activeId !== id) return
         activeScene.value = sceneCards.find((scene) => scene.id === requestedScene) ?? null
         paneTab.value = 'body'
       } catch {
@@ -143,7 +145,7 @@ watch(
 
     const content = store.chapters.find((chapter) => chapter.id === id)?.content ?? ''
     await prepareChapter(id, content)
-    if (disposed || route.path !== toProject('write') || store.activeId !== id) return
+    if (disposed || sequence !== chapterLoadSequence || route.path !== toProject('write') || store.activeId !== id) return
     const currentEditor = editor.value
     if (!currentEditor || currentEditor.isDestroyed) return
     currentEditor.commands.setContent(content, { emitUpdate: false })
@@ -192,9 +194,10 @@ watch(
       } finally {
         suppressRouteCleanupWatch = false
       }
+      if (disposed || sequence !== chapterLoadSequence || route.path !== toProject('write') || store.activeId !== id) return
       if (rewriteSelection) runInline('改写语气')
       else if (shouldAutoGenerate) {
-        generate({
+        void generateWhenEditorReady({
           targetWords: 3000,
           model: 'basic',
           useStyleProfile: false,
@@ -772,6 +775,24 @@ function generate(options: GenerationControls) {
       }
     }
   )
+}
+
+/**
+ * The new-book route can arrive before EditorContent has mounted its TipTap
+ * view. Starting the stream in that gap silently drops every chunk because
+ * there is no mounted AI draft node to receive it.
+ */
+async function generateWhenEditorReady(options: GenerationControls) {
+  for (let attempt = 0; attempt < 12; attempt += 1) {
+    await nextTick()
+    const current = editor.value
+    if (!disposed && current && !current.isDestroyed && current.view.dom.isConnected) {
+      generate(options)
+      return
+    }
+    await new Promise<void>((resolve) => window.setTimeout(resolve, 16))
+  }
+  if (!disposed) generationError.value = '编辑器仍在加载，未启动自动生成；请点击“按章纲生成整章”重试。'
 }
 
 function stop() {

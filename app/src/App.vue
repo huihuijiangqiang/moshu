@@ -32,13 +32,24 @@ watch(
   () => route.params.projectId,
   async (value) => {
     if (typeof value !== 'string' || route.meta.scope !== 'project') return
+    // WorkspaceView consumes the chapter query after it positions the
+    // editor, so capture the deep-link target before any async preload can
+    // let that query disappear.
+    const requestedChapterId = typeof route.query.chapter === 'string' ? route.query.chapter : null
     const codexLoad = codex.load(value)
     const guardLoad = guard.load(value)
     try {
       // The editor only needs the project structure and active body for first paint.
       // Sidebar counts and guard data continue in the background.
       await project.load(value)
-      if (project.activeId) await project.openChapter(project.activeId)
+      // A deep link may target a specific chapter (new-book creation does
+      // this for the first chapter). Respect it so the app-level preload does
+      // not race WorkspaceView and replace the requested body with the last
+      // chapter chosen by the project list.
+      const requestedChapter = requestedChapterId && project.chapters.some((chapter) => chapter.id === requestedChapterId)
+        ? requestedChapterId
+        : project.activeId
+      if (requestedChapter) await project.openChapter(requestedChapter)
       await Promise.allSettled([codexLoad, guardLoad])
     } catch (error) {
       if (error instanceof ApiError && error.status === 404) {
