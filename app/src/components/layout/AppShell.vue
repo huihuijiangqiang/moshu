@@ -94,12 +94,23 @@ const remaining = computed(() =>
 )
 
 const refreshUsage = () => { void usage.load(true).catch(() => undefined) }
+let disposed = false
 onMounted(() => {
-  void usage.load().catch(() => undefined)
-  void orgs.load().catch(() => undefined)
-  window.addEventListener('moshu:usage-changed', refreshUsage)
+  // The shell can mount for one render before the router resolves a public
+  // landing route. Wait for the final route before touching private APIs;
+  // otherwise a normal anonymous 401 redirects the public homepage to login.
+  void (async () => {
+    await router.isReady()
+    if (disposed || route.meta.public === true || route.meta.bare === true) return
+    void usage.load().catch(() => undefined)
+    void orgs.load().catch(() => undefined)
+    window.addEventListener('moshu:usage-changed', refreshUsage)
+  })()
 })
-onUnmounted(() => window.removeEventListener('moshu:usage-changed', refreshUsage))
+onUnmounted(() => {
+  disposed = true
+  window.removeEventListener('moshu:usage-changed', refreshUsage)
+})
 
 function isCurrent(to: string) {
   return route.path === to || route.path.startsWith(to + '/')
