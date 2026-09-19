@@ -18,6 +18,7 @@ coverage/
 *.tsbuildinfo
 
 # Generated research/design exports and local test output
+.test-artifacts/
 *.dc.html
 /support.js
 /.thumbnail
