@@ -368,6 +368,21 @@ class ConsistencyProvider:
             max_chunks=settings.consistency_max_chunks,
         )
 
+    async def complete_streaming(
+        self,
+        client: httpx.AsyncClient,
+        payload: dict[str, Any],
+        *,
+        context: str,
+    ) -> tuple[str, Optional[dict]]:
+        """Run one OpenAI-compatible chat completion through the shared SSE path.
+
+        Structured generation features such as the new-project wizard can use
+        the same timeout, retry, usage, and incomplete-stream guarantees as the
+        consistency pipeline without depending on its private implementation.
+        """
+        return await self._call_with_retry(client, payload, context=context)
+
     async def _call_with_retry(
         self,
         client: httpx.AsyncClient,

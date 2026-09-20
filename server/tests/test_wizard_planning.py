@@ -49,11 +49,17 @@ class FakePlanner:
 
 
 async def test_wizard_planner_parses_strict_plan_and_tracks_usage():
+    requests = []
     response = {
         "choices": [{"message": {"content": f"```json\n{json.dumps(PLAN, ensure_ascii=False)}\n```"}}],
         "usage": {"prompt_tokens": 100, "completion_tokens": 200},
     }
-    transport = httpx.MockTransport(lambda request: httpx.Response(200, json=response))
+
+    def handler(request):
+        requests.append(json.loads(request.content))
+        return httpx.Response(200, json=response)
+
+    transport = httpx.MockTransport(handler)
     async with httpx.AsyncClient(transport=transport) as client:
         planner = WizardPlanner(client)
         result = await planner.plan(
@@ -67,6 +73,8 @@ async def test_wizard_planner_parses_strict_plan_and_tracks_usage():
     assert result.title == "禾下新朝"
     assert len(result.chapters) == 3
     assert planner.usage_events[0]["prompt_tokens"] == 100
+    assert requests[0]["stream"] is True
+    assert requests[0]["stream_options"] == {"include_usage": True}
 
 
 async def test_wizard_planner_rejects_incomplete_model_output():
@@ -86,6 +94,23 @@ async def test_wizard_planner_rejects_incomplete_model_output():
             pass
         else:
             raise AssertionError("incomplete model response was accepted")
+
+
+def test_wizard_plan_flattens_structured_editable_fields():
+    structured = {
+        **PLAN,
+        "protagonist": {
+            "姓名": "沈青禾",
+            "身份": "穿越后的农家长女",
+            "目标": ["守住薄田", "养活家人"],
+        },
+        "coreHook": {"机制": "辨认土壤", "代价": "每次使用都会高烧"},
+    }
+
+    plan = WizardStoryPlan.model_validate(structured)
+
+    assert plan.protagonist == "姓名：沈青禾；身份：穿越后的农家长女；目标：守住薄田、养活家人"
+    assert plan.core_hook == "机制：辨认土壤；代价：每次使用都会高烧"
 
 
 async def test_wizard_plan_api_is_authenticated_and_records_platform_usage(
