@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import uuid
@@ -24,7 +25,7 @@ from config import settings
 from db.models_core import Chapter, ChapterBody, Project, User
 from db.models_long_generation import GenerationSegment
 from db.models_usage import GenerationDraft, GenerationRun
-from db.session import get_db
+from db.session import AsyncSessionLocal, get_db
 from memory.assembler import ContextBudgetPolicy
 from memory.tokenizer import tokenizer
 from services.generation import (
@@ -419,9 +420,15 @@ def _generation_response(
             )
             return
 
-        async def persist_failed_draft(error_code: str) -> None:
-            await db.rollback()
-            failed_draft = await db.get(GenerationDraft, draft_id)
+        async def persist_failed_draft(session: AsyncSession, error_code: str) -> None:
+            """Persist a recoverable draft using the supplied session.
+
+            The request session is fine while the client is connected. A
+            cancelled ASGI stream can invalidate that connection, though, so
+            disconnect cleanup passes a fresh session here.
+            """
+            await session.rollback()
+            failed_draft = await session.get(GenerationDraft, draft_id)
             if failed_draft is None:
                 return
             generated_prose = "".join(chunks)
@@ -449,8 +456,8 @@ def _generation_response(
                         "incomplete": True,
                     },
                 )
-                db.add(run)
-                await db.flush()
+                session.add(run)
+                await session.flush()
                 failed_draft.run_id = run.id
             failed_draft.status = "failed"
             failed_draft.content_text = prose
@@ -567,7 +574,7 @@ def _generation_response(
             yield "data: [DONE]\n\n"
         except GenerationProviderError as exc:
             error_code = "stream_interrupted" if exc.code == "STREAM_INTERRUPTED" else "generation_provider_error"
-            await persist_failed_draft(error_code)
+            await persist_failed_draft(db, error_code)
             if reservation is not None:
                 await release_reservation(
                     db,
@@ -584,7 +591,7 @@ def _generation_response(
                 }
             )
         except Exception:
-            await persist_failed_draft("generation_internal_error")
+            await persist_failed_draft(db, "generation_internal_error")
             if reservation is not None:
                 await release_reservation(db, reservation, reason="internal_error")
             await db.commit()
@@ -598,10 +605,33 @@ def _generation_response(
             )
         finally:
             if not finalized:
-                await persist_failed_draft("stream_interrupted")
-                if reservation is not None:
-                    await release_reservation(db, reservation, reason="stream_interrupted")
-                await db.commit()
+                async def persist_cancelled_generation() -> None:
+                    """Finish cancellation cleanup outside the request session."""
+                    async with AsyncSessionLocal() as cleanup_db:
+                        try:
+                            await persist_failed_draft(cleanup_db, "stream_interrupted")
+                            if reservation is not None:
+                                await release_reservation(
+                                    cleanup_db, reservation, reason="stream_interrupted"
+                                )
+                            await cleanup_db.commit()
+                        except BaseException:
+                            await cleanup_db.rollback()
+                            raise
+
+                cleanup_task = asyncio.create_task(persist_cancelled_generation())
+                try:
+                    await asyncio.shield(cleanup_task)
+                except asyncio.CancelledError:
+                    # The first cancellation interrupts the response task;
+                    # shield the already-running DB task and wait once more so
+                    # the candidate and reservation cannot be left half-open.
+                    try:
+                        await asyncio.shield(cleanup_task)
+                    except asyncio.CancelledError:
+                        cleanup_task.cancel()
+                        await asyncio.gather(cleanup_task, return_exceptions=True)
+                        raise
 
     return StreamingResponse(
         event_stream(),

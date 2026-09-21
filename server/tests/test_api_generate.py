@@ -1,10 +1,18 @@
+import asyncio
 import json
 from types import SimpleNamespace
 
 import pytest
 from sqlalchemy import select
 
-from api.generate import _merge_continuation_content, _quality_review_checks, get_generation_gateway
+import api.generate as generate_module
+from api.generate import (
+    ChapterGenerationRequest,
+    _merge_continuation_content,
+    _quality_review_checks,
+    generate_chapter,
+    get_generation_gateway,
+)
 from db.models_core import ChapterBody, Project, User
 from db.models_positioning import ProjectPositioning
 from db.models_scene_cards import ChapterScene
@@ -48,6 +56,19 @@ class EchoingCredentialGateway:
     async def stream(self, package):
         raise GenerationProviderError(f"provider reflected credential {package.route.api_key}")
         yield
+
+
+class BlockingGenerationGateway:
+    """Yield one chunk, then hold the stream until the caller disconnects."""
+
+    def __init__(self):
+        self.chunk_sent = asyncio.Event()
+        self.release = asyncio.Event()
+
+    async def stream(self, package):
+        yield StreamEvent("chunk", text="断线前已经保存的一段正文。")
+        self.chunk_sent.set()
+        await self.release.wait()
 
 
 def parse_sse(text: str) -> list[object]:
@@ -759,6 +780,51 @@ async def test_generation_provider_failure_releases_reserved_credits(
     user = await async_db_session.get(User, "refund_writer")
     log = (await async_db_session.execute(select(UsageLog))).scalar_one()
     assert user.quota_remaining == 1000
+    assert log.status == "released"
+
+
+async def test_cancelled_stream_uses_independent_session_to_finalize_draft_and_reservation(
+    async_db_engine,
+    async_db_session,
+    seed_project,
+    monkeypatch,
+):
+    """A client disconnect must not leave streaming/reserved rows behind."""
+    await seed_project(
+        user_id="cancel_writer",
+        project_id="cancel_novel",
+        chapter_ids=("cancel_ch",),
+        genre="女频 · 穿越种田",
+    )
+    user = await async_db_session.get(User, "cancel_writer")
+    assert user is not None
+    from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+
+    cleanup_sessions = async_sessionmaker(async_db_engine, class_=AsyncSession, expire_on_commit=False)
+    monkeypatch.setattr(generate_module, "AsyncSessionLocal", cleanup_sessions)
+    gateway = BlockingGenerationGateway()
+    response = await generate_chapter(
+        ChapterGenerationRequest(chapterId="cancel_ch", targetWords=1200, model="basic"),
+        user=user,
+        db=async_db_session,
+        gateway=gateway,
+    )
+
+    iterator = response.body_iterator
+    await iterator.__anext__()  # meta
+    await iterator.__anext__()  # first chunk
+    pending = asyncio.create_task(iterator.__anext__())
+    await gateway.chunk_sent.wait()
+    pending.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await pending
+
+    await async_db_session.rollback()
+    draft = (await async_db_session.execute(select(GenerationDraft))).scalar_one()
+    log = (await async_db_session.execute(select(UsageLog))).scalar_one()
+    assert draft.status == "failed"
+    assert draft.error_code == "stream_interrupted"
+    assert draft.content_text == "断线前已经保存的一段正文。"
     assert log.status == "released"
 
 
