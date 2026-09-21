@@ -6,7 +6,12 @@
      canvas / paper / panel / line / ink-*  浅色工作区
    规则：任何颜色都必须是变量。深色模式的钩子已经预留在文件末尾，
    届时只改这些变量的值，组件不需要动。 */
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;700&family=Noto+Sans+SC:wght@400;500;700&family=Noto+Serif+SC:wght@400;600&family=JetBrains+Mono:wght@400;500&display=swap');
+/* Local OFL-1.1 fonts keep the writing workspace usable without a third-party
+   font request. The imports are bundled by Vite and served from this origin. */
+@import '@fontsource-variable/inter';
+@import '@fontsource-variable/noto-sans-sc';
+@import '@fontsource-variable/noto-serif-sc';
+@import '@fontsource-variable/jetbrains-mono';
 
 
 :root {
