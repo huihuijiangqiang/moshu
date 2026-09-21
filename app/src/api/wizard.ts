@@ -5,6 +5,8 @@ export interface WizardPlan {
   protagonist: string
   coreHook: string
   synopsis: string
+  firstPayoff: string
+  longTermArc: string
   volumes: Array<{ title: string; summary: string }>
   chapters: Array<{ title: string; outline: string[]; volumeIndex?: number }>
 }
@@ -35,6 +37,8 @@ export function buildMockPlan(input: WizardPlanInput): WizardPlan {
     protagonist: `${audience}主角 ${leadName} · 灵感起点「${seed}」\n她/他必须在「${genre}」的规则中完成选择，初始目标来自：${inspiration}`,
     coreHook: `${template}的核心钩子\n围绕「${inspiration}」展开，重点兑现${tags}；每次推进都要付出会改变人物关系的代价。`,
     synopsis: `这是一个${audience}向的${genre}故事，采用“${template}”推进。灵感起点：${inspiration}。内容标签：${tags}。主角先处理眼前的具体困境，再逐层发现个人选择与更大秩序之间的联系。`,
+    firstPayoff: `前三章内，主角用一次不可撤回的选择换来可见的阶段性回报，同时让核心代价落到身上。`,
+    longTermArc: `从眼前困境出发，持续推动主角的目标、重要关系与${genre}中的秩序发生变化。`,
     volumes: [
       { title: '第一卷 · 起因', summary: `从「${seed}」切入，建立${audience}读者期待和${genre}规则，抛出第一道必须回应的难题。` },
       { title: '第二卷 · 试错', summary: `沿${template}推进，兑现${tags}带来的第一个阶段回报，同时让主角承担选择的直接后果。` },

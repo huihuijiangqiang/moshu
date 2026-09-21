@@ -160,6 +160,8 @@ class ProjectChapterPlan(WizardChapterPlan):
 
 
 class ProjectCreate(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
     title: str = Field(min_length=1, max_length=200)
     genre: str | None = Field(default=None, max_length=100)
     target_words_daily: int = Field(default=3000, ge=100, le=100_000)
@@ -167,6 +169,8 @@ class ProjectCreate(BaseModel):
     synopsis: str = Field(default="", max_length=50_000)
     protagonist: str = Field(default="", max_length=20_000)
     core_hook: str = Field(default="", max_length=20_000)
+    first_payoff: str = Field(default="", alias="firstPayoff", max_length=20_000)
+    long_term_arc: str = Field(default="", alias="longTermArc", max_length=20_000)
     audience: str = Field(default="", max_length=50)
     template: str = Field(default="", max_length=100)
     tags: list[str] = Field(default_factory=list, max_length=20)
@@ -564,6 +568,30 @@ async def plan_project(
     return plan
 
 
+def _first_payoff_for_project(request: ProjectCreate) -> str:
+    """Keep the platform promise useful even when an older client omits it."""
+    explicit = request.first_payoff.strip()
+    if explicit:
+        return explicit
+    first = request.chapters[0] if request.chapters else None
+    if first is not None and first.outline:
+        return first.outline[-1].strip()
+    hook = request.core_hook.strip()
+    return f"围绕核心机制“{hook[:180]}”完成首个可见回报。" if hook else "首章完成一次可见的阶段性回报。"
+
+
+def _long_term_arc_for_project(request: ProjectCreate) -> str:
+    """Persist a durable arc from the plan instead of an empty positioning card."""
+    explicit = request.long_term_arc.strip()
+    if explicit:
+        return explicit
+    summaries = [volume.summary.strip() for volume in request.volumes if volume.summary.strip()]
+    if summaries:
+        return "；".join(summaries)[:20_000]
+    synopsis = request.synopsis.strip()
+    return synopsis or "从当前困境出发，持续推动人物目标、关系与秩序发生变化。"
+
+
 @router.post("", response_model=ProjectCreateOut, status_code=201)
 async def create_project(
     request: ProjectCreate,
@@ -613,8 +641,8 @@ async def create_project(
         tags=[tag.strip() for tag in request.tags if tag.strip()],
         protagonist_dilemma=request.inspiration.strip(),
         selling_point=request.core_hook.strip(),
-        first_payoff="",
-        long_term_arc="",
+        first_payoff=_first_payoff_for_project(request),
+        long_term_arc=_long_term_arc_for_project(request),
         revision=0,
         status="draft",
     )

@@ -19,6 +19,8 @@ PLAN = {
     "protagonist": "沈青禾，农学研究员，想让全村熬过荒年，却不愿信任任何合作者。",
     "coreHook": "随身种植实验室；每次调用都会消耗她在现代的一段记忆。",
     "synopsis": "沈青禾穿越荒年，从改良土壤开始组织村民自救，并逐步触碰旧有粮权。",
+    "firstPayoff": "她用残种救活第一畦麦苗，却因此暴露了粮种来源。",
+    "longTermArc": "从守住一亩薄田走向重建村庄粮权与互助秩序。",
     "volumes": [
         {"title": "第一卷 · 荒年落脚", "summary": "活下来并建立第一支互助队。"},
         {"title": "第二卷 · 水渠新约", "summary": "围绕水权建立新的村庄秩序。"},
@@ -172,6 +174,8 @@ async def test_project_creation_persists_three_generated_chapter_plans(
             "synopsis": PLAN["synopsis"],
             "protagonist": PLAN["protagonist"],
             "core_hook": PLAN["coreHook"],
+            "first_payoff": PLAN["firstPayoff"],
+            "long_term_arc": PLAN["longTermArc"],
             "audience": "女频",
             "template": "群像经营",
             "tags": ["经营"],
@@ -180,6 +184,9 @@ async def test_project_creation_persists_three_generated_chapter_plans(
         },
     )
     assert response.status_code == 201
+    positioning = response.json()["positioning"]
+    assert positioning["first_payoff"] == PLAN["firstPayoff"]
+    assert positioning["long_term_arc"] == PLAN["longTermArc"]
     chapters = list(
         (
             await async_db_session.execute(

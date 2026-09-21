@@ -10,6 +10,8 @@ export interface CreateBookInput {
   synopsis: string
   protagonist: string
   coreHook: string
+  firstPayoff: string
+  longTermArc: string
   audience: string
   template: string
   tags: string[]
@@ -99,6 +101,8 @@ const realShelfApi = {
         synopsis: input.synopsis,
         protagonist: input.protagonist,
         core_hook: input.coreHook,
+        first_payoff: input.firstPayoff,
+        long_term_arc: input.longTermArc,
         audience: input.audience,
         template: input.template,
         tags: input.tags,

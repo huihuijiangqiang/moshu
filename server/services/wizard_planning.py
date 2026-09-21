@@ -49,6 +49,8 @@ class WizardStoryPlan(BaseModel):
     protagonist: str = Field(min_length=1, max_length=4_000)
     core_hook: str = Field(alias="coreHook", min_length=1, max_length=4_000)
     synopsis: str = Field(min_length=1, max_length=12_000)
+    first_payoff: str = Field(default="", alias="firstPayoff", max_length=4_000)
+    long_term_arc: str = Field(default="", alias="longTermArc", max_length=8_000)
     volumes: list[WizardVolumePlan] = Field(min_length=2, max_length=8)
     chapters: list[WizardChapterPlan] = Field(min_length=3, max_length=3)
 
@@ -112,7 +114,9 @@ class WizardPlanner:
                 "role": "user",
                 "content": (
                     "根据 <request> 中的数据生成一份可编辑开书方案。必须包含：title；protagonist（姓名、身份、"
-                    "目标、缺陷）；coreHook（核心机制与明确代价）；synopsis；2-6 个 volumes（title, summary）；"
+                    "目标、缺陷）；coreHook（核心机制与明确代价）；synopsis；firstPayoff（前 3 章内明确兑现的"
+                    "第一个回报或阶段性胜利）；longTermArc（贯穿中后期的目标、关系或秩序变化）；"
+                    "2-6 个 volumes（title, summary）；"
                     "恰好 3 个 chapters（title, outline），每章 outline 包含 3-6 个按顺序可执行的剧情节点，"
                     "第三章结尾形成继续阅读的钩子。title、protagonist、coreHook、synopsis、卷标题、卷摘要和"
                     "章节标题必须是 JSON 字符串，不得把 protagonist 或 coreHook 写成嵌套对象。"

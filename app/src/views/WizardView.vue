@@ -55,6 +55,8 @@ const bookTitle = ref('')
 const protagonist = ref('')
 const coreHook = ref('')
 const synopsis = ref('')
+const firstPayoff = ref('')
+const longTermArc = ref('')
 const volumes = ref<VolumeDraft[]>([])
 const expandedOutline = ref(false)
 const variant = ref(0)
@@ -69,6 +71,8 @@ type SkeletonSnapshot = {
   protagonist: string
   coreHook: string
   synopsis: string
+  firstPayoff: string
+  longTermArc: string
   volumes: VolumeDraft[]
   chapters: ChapterDraft[]
 }
@@ -216,7 +220,8 @@ const planSignature = computed(() => JSON.stringify({ inspiration: inspiration.v
 const inspirationValid = computed(() => inspiration.value.trim().length >= 8)
 const choicesValid = computed(() => !!selectedGenre.value && !!selectedTemplate.value)
 const skeletonValid = computed(() =>
-  !!bookTitle.value.trim() && !!protagonist.value.trim() && !!coreHook.value.trim() && !!synopsis.value.trim() && chapters.value.length === 3
+  !!bookTitle.value.trim() && !!protagonist.value.trim() && !!coreHook.value.trim() && !!synopsis.value.trim() &&
+  !!firstPayoff.value.trim() && !!longTermArc.value.trim() && chapters.value.length === 3
 )
 
 const steps = computed(() => [
@@ -336,15 +341,21 @@ function applyPlan(plan: WizardPlan, preserveEdits = false) {
     outline: chapter.outline.join('\n'),
     ...(chapter.volumeIndex === undefined ? {} : { volumeIndex: chapter.volumeIndex })
   }))
+  const fallbackFirstPayoff = plan.chapters[0]?.outline.at(-1) ?? ''
+  const fallbackLongTermArc = plan.volumes.map((volume) => volume.summary).join('；')
   const keep = (current: string, original: string | undefined) => preserveEdits && original !== undefined && current !== original
   const keptTitle = keep(bookTitle.value, previous?.title)
   const keptProtagonist = keep(protagonist.value, previous?.protagonist)
   const keptCoreHook = keep(coreHook.value, previous?.coreHook)
   const keptSynopsis = keep(synopsis.value, previous?.synopsis)
+  const keptFirstPayoff = keep(firstPayoff.value, previous?.firstPayoff)
+  const keptLongTermArc = keep(longTermArc.value, previous?.longTermArc)
   bookTitle.value = keptTitle ? bookTitle.value : plan.title
   protagonist.value = keptProtagonist ? protagonist.value : plan.protagonist
   coreHook.value = keptCoreHook ? coreHook.value : plan.coreHook
   synopsis.value = keptSynopsis ? synopsis.value : plan.synopsis
+  firstPayoff.value = keptFirstPayoff ? firstPayoff.value : (plan.firstPayoff?.trim() || fallbackFirstPayoff)
+  longTermArc.value = keptLongTermArc ? longTermArc.value : (plan.longTermArc?.trim() || fallbackLongTermArc)
   const volumesEdited = preserveEdits && previous && JSON.stringify(volumes.value) !== JSON.stringify(previous.volumes)
   const chaptersEdited = preserveEdits && previous && JSON.stringify(chapters.value) !== JSON.stringify(previous.chapters)
   if (!volumesEdited) volumes.value = nextVolumes
@@ -354,10 +365,12 @@ function applyPlan(plan: WizardPlan, preserveEdits = false) {
     protagonist: plan.protagonist,
     coreHook: plan.coreHook,
     synopsis: plan.synopsis,
+    firstPayoff: firstPayoff.value,
+    longTermArc: longTermArc.value,
     volumes: nextVolumes,
     chapters: nextChapters
   }
-  if (preserveEdits && (keptTitle || keptProtagonist || keptCoreHook || keptSynopsis || volumesEdited || chaptersEdited)) {
+  if (preserveEdits && (keptTitle || keptProtagonist || keptCoreHook || keptSynopsis || keptFirstPayoff || keptLongTermArc || volumesEdited || chaptersEdited)) {
     planningNotice.value = '已重新生成；你手动修改过的字段已保留。'
   }
 }
@@ -373,6 +386,8 @@ function buildLocalSkeleton() {
   protagonist.value = `${lead?.[0]}\n${lead?.[1]}`
   coreHook.value = `${hook?.[0]}\n${hook?.[1]}`
   synopsis.value = `${inspiration.value.trim()} 故事采用“${structure}”推进${tagDescription}：主角先因一次无法回避的选择被卷入冲突，再发现个人困境与更大的秩序有关。${genre}题材的规则会服务于人物选择，而不是单独堆砌说明。`
+  firstPayoff.value = '前三章内，主角用第一次选择换来一个看得见的阶段性回报，同时付出会改变关系的代价。'
+  longTermArc.value = '从眼前的生存或身份困境出发，持续推动主角的目标、关系与所处秩序发生变化。'
   volumes.value = [
     { title: '第一卷 · 入局', summary: '用一次具体失败立住人物缺陷，抛出核心谜面，并让主角失去原本的退路。' },
     { title: '第二卷 · 试锋', summary: '外部对手开始主动施压，能力代价第一次造成不可逆后果，旧线索出现矛盾。' },
@@ -442,6 +457,8 @@ function resetDraft() {
   protagonist.value = ''
   coreHook.value = ''
   synopsis.value = ''
+  firstPayoff.value = ''
+  longTermArc.value = ''
   volumes.value = []
   chapters.value = []
   generatedSnapshot.value = null
@@ -476,6 +493,8 @@ async function createProject() {
       synopsis: synopsis.value,
       protagonist: protagonist.value,
       coreHook: coreHook.value,
+      firstPayoff: firstPayoff.value,
+      longTermArc: longTermArc.value,
       audience: audienceLabel.value,
       template: selectedTemplate.value?.label ?? '',
       tags: selectedTags.value.map((tag) => tag.label),
@@ -536,6 +555,8 @@ onMounted(() => {
     protagonist.value = typeof draft.protagonist === 'string' ? draft.protagonist : ''
     coreHook.value = typeof draft.coreHook === 'string' ? draft.coreHook : ''
     synopsis.value = typeof draft.synopsis === 'string' ? draft.synopsis : ''
+    firstPayoff.value = typeof draft.firstPayoff === 'string' ? draft.firstPayoff : ''
+    longTermArc.value = typeof draft.longTermArc === 'string' ? draft.longTermArc : ''
     volumes.value = Array.isArray(draft.volumes) ? draft.volumes : []
     chapters.value = Array.isArray(draft.chapters)
       ? draft.chapters.flatMap((item: unknown): ChapterDraft[] => {
@@ -585,6 +606,8 @@ watch(
     protagonist: protagonist.value,
     coreHook: coreHook.value,
     synopsis: synopsis.value,
+    firstPayoff: firstPayoff.value,
+    longTermArc: longTermArc.value,
     volumes: volumes.value,
     chapters: chapters.value,
     lastPlanSignature: lastPlanSignature.value,
@@ -764,6 +787,10 @@ watch(
               <div class="wizard-edit-head"><span>核心机制</span><button type="button" @click="regenerateHook">换一个</button></div>
               <textarea v-model="coreHook" rows="4" aria-label="核心机制" />
             </div>
+
+            <label class="wizard-field"><span>首个兑现点</span><textarea v-model="firstPayoff" rows="3" placeholder="前三章内，主角最早拿到什么具体回报，又付出了什么代价？" /></label>
+
+            <label class="wizard-field"><span>长线承诺</span><textarea v-model="longTermArc" rows="3" placeholder="中后期持续升级的目标、关系或秩序变化是什么？" /></label>
 
             <label class="wizard-field"><span>故事总述</span><textarea v-model="synopsis" rows="5" /></label>
 
