@@ -92,6 +92,12 @@ const requestedSceneId = computed(() => typeof route.query.scene === 'string' ? 
 const autoGenerateRequested = computed(() => route.query.autoGenerate === '1')
 const projectId = computed(() => store.project?.id)
 
+function hasRenderableChapterContent(content: string) {
+  const body = new DOMParser().parseFromString(content, 'text/html').body
+  const text = body.textContent?.replace(/\u00a0/g, ' ').trim() ?? ''
+  return Boolean(text || body.querySelector('img, video, audio, iframe, table, hr'))
+}
+
 function sentenceRouteTarget() {
   const paragraphId = typeof route.query.paragraph === 'string' ? route.query.paragraph : ''
   const start = typeof route.query.start === 'string' ? Number(route.query.start) : Number.NaN
@@ -177,7 +183,7 @@ watch(
     // 查询参数只负责一次跨页定位，消费后移除，避免用户在章节栏切换时被拉回旧章节。
     if (requestedId === id) {
       const shouldAutoGenerate = autoGenerateRequested.value
-        && !content.trim()
+        && !hasRenderableChapterContent(content)
         && (store.chapters.find((chapter) => chapter.id === id)?.outline.length ?? 0) > 0
       const query = { ...route.query }
       delete query.chapter

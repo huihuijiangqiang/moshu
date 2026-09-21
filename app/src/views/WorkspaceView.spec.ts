@@ -119,7 +119,11 @@ describe('mobile writing workspace', () => {
     })
     await router.push('/projects/p1/write?chapter=ch88&autoGenerate=1')
     await router.isReady()
-    await Promise.all([useProjectStore().load('p1'), useCodexStore().load('p1')])
+    const store = useProjectStore()
+    await Promise.all([store.load('p1'), useCodexStore().load('p1')])
+    const chapter = store.chapters.find((item) => item.id === 'ch88')
+    if (!chapter) throw new Error('chapter not found')
+    chapter.content = '<p data-paragraph-id="empty-first-paragraph"></p>'
     vi.spyOn(contentApi, 'getContextLayers').mockResolvedValue([])
     vi.spyOn(contentApi, 'listProjectNotes').mockResolvedValue([])
 
