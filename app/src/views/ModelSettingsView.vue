@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref } from 'vue'
-import { modelConfigApi, type UserModelConfig } from '@/api/model-config'
+import { modelConfigApi, type ModelCapabilities, type UserModelConfig } from '@/api/model-config'
 import { useShellStore } from '@/stores/shell'
 
 const shell = useShellStore()
@@ -31,6 +31,23 @@ const testLabel = computed(() => {
   if (!configured.value || config.value?.lastTestStatus === 'untested') return '尚未测试'
   return config.value?.lastTestStatus === 'ok' ? '连接正常' : '连接失败'
 })
+const capabilityLabels: Record<string, string> = {
+  modelsEndpoint: '模型列表',
+  chatCompletions: '对话接口',
+  systemMessage: 'System 消息',
+  streaming: '流式输出',
+  jsonMode: 'JSON 输出',
+  toolCalling: '工具调用'
+}
+const capabilityState = (value: string | undefined) => {
+  if (value === 'supported') return '支持'
+  if (value === 'unsupported') return '不支持'
+  return '未探测'
+}
+const capabilityValue = (key: string) => {
+  const capabilities = config.value?.capabilities as ModelCapabilities | undefined
+  return capabilities?.[key as keyof ModelCapabilities]
+}
 
 function apply(value: UserModelConfig) {
   config.value = value
@@ -105,8 +122,8 @@ async function testConnection() {
   try {
     apply(await modelConfigApi.test(config.value.revision))
     message.value = config.value.lastTestStatus === 'ok'
-      ? '连接测试通过'
-      : '服务已响应，但认证或模型列表接口不可用'
+      ? '连接测试通过，已记录模型能力'
+      : '连接测试未通过，请查看错误提示和能力状态'
   } catch (reason) {
     error.value = readableError(reason, '连接测试失败，请检查服务是否可访问。')
   } finally {
@@ -223,6 +240,17 @@ onMounted(() => {
             <div><dt>上下文窗口</dt><dd class="mono">{{ config.contextWindowTokens.toLocaleString() }}</dd></div>
             <div><dt>配置版本</dt><dd class="mono">{{ config.revision || '—' }}</dd></div>
           </dl>
+          <div v-if="configured" class="capability-list">
+            <div class="section-title"><h2>能力探测</h2><span>最近一次测试</span></div>
+            <dl>
+              <div v-for="(label, key) in capabilityLabels" :key="key">
+                <dt>{{ label }}</dt>
+                <dd :data-capability="capabilityValue(key) ?? 'unknown'">
+                  {{ capabilityState(capabilityValue(key)) }}
+                </dd>
+              </div>
+            </dl>
+          </div>
           <p class="security-note">密钥加密保存，之后不会再次显示。更换密钥时直接输入新值并保存。</p>
           <div v-if="configured" class="danger-zone">
             <button type="button" :disabled="busy" @click="remove">
@@ -276,6 +304,11 @@ onMounted(() => {
 .model-audit dd[data-status='failed'] { color: var(--alert-ink); }
 .mono { font-family: var(--font-mono); font-size: var(--fs-xs); }
 .security-note { margin: 18px 0 0; color: var(--ink-3); font-size: var(--fs-xs); line-height: 1.7; }
+.capability-list { margin-top: 28px; }
+.capability-list dl > div { min-height: 38px; }
+.capability-list dd[data-capability='supported'] { color: var(--primary); }
+.capability-list dd[data-capability='unsupported'] { color: var(--alert-ink); }
+.capability-list dd[data-capability='unknown'] { color: var(--ink-4); }
 .danger-zone { display: flex; align-items: center; gap: 14px; margin-top: 34px; padding-top: 14px; border-top: var(--hair) solid var(--line-strong); }
 .danger-zone button { padding: 0; color: var(--alert-ink); background: transparent; border: 0; cursor: pointer; font-size: var(--fs-xs); }
 .danger-zone button + button { color: var(--ink-3); }

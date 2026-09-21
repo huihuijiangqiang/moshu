@@ -1,3 +1,6 @@
+from types import SimpleNamespace
+
+import httpx
 import pytest
 from pydantic import ValidationError
 from sqlalchemy import select
@@ -10,6 +13,7 @@ from main import app
 from services.model_configs import (
     CredentialDecryptionError,
     InvalidModelEndpointError,
+    ModelConfigProbe,
     ProbeResult,
     assert_public_endpoint_resolution,
     decrypt_api_key,
@@ -23,7 +27,15 @@ class SuccessfulProbe:
         assert decrypt_api_key(
             config.api_key_ciphertext, user_id=config.user_id, config_id=config.id
         ) == "sk-personal-secret"
-        return ProbeResult(True, "ok")
+        return ProbeResult(
+            True,
+            "ok",
+            {
+                "modelsEndpoint": "unsupported",
+                "chatCompletions": "supported",
+                "systemMessage": "supported",
+            },
+        )
 
 
 async def _users(async_db_session):
@@ -237,6 +249,7 @@ async def test_model_config_probe_and_delete_use_current_revision(
     assert tested.status_code == 200
     assert tested.json()["lastTestStatus"] == "ok"
     assert tested.json()["lastErrorCode"] is None
+    assert tested.json()["capabilities"]["chatCompletions"] == "supported"
     assert "sk-personal-secret" not in tested.text
 
     stale = await app_client.delete(
@@ -279,3 +292,42 @@ async def test_endpoint_resolution_rejects_dns_answers_in_private_networks(monke
         pass
     else:
         raise AssertionError("private DNS answer was accepted")
+
+
+@pytest.mark.asyncio
+async def test_model_probe_uses_chat_endpoint_when_models_endpoint_is_missing(monkeypatch):
+    calls: list[tuple[str, str]] = []
+
+    async def no_dns_check(_value):
+        return None
+
+    monkeypatch.setattr("services.model_configs.assert_public_endpoint_resolution", no_dns_check)
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        calls.append((request.method, request.url.path))
+        if request.method == "GET":
+            return httpx.Response(404, request=request)
+        return httpx.Response(
+            200,
+            request=request,
+            json={"choices": [{"message": {"content": "好"}}]},
+        )
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    config = SimpleNamespace(
+        base_url="https://gateway.example.com/v1",
+        model="novel-model",
+        user_id="owner",
+        id="config",
+        api_key_ciphertext=encrypt_api_key("sk-secret-value", user_id="owner", config_id="config"),
+    )
+    try:
+        result = await ModelConfigProbe(client).test(config)
+    finally:
+        await client.aclose()
+
+    assert result.ok is True
+    assert result.code == "ok"
+    assert result.capabilities["modelsEndpoint"] == "unsupported"
+    assert result.capabilities["chatCompletions"] == "supported"
+    assert calls == [("GET", "/v1/models"), ("POST", "/v1/chat/completions")]

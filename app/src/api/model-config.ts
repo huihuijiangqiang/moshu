@@ -1,6 +1,16 @@
 import { USE_MOCK, delay, request, requestResponse } from './http'
 
 export type ModelTestStatus = 'untested' | 'ok' | 'failed'
+export type ModelCapabilityStatus = 'supported' | 'unsupported' | 'unknown'
+
+export interface ModelCapabilities {
+  modelsEndpoint?: ModelCapabilityStatus
+  chatCompletions?: ModelCapabilityStatus
+  systemMessage?: ModelCapabilityStatus
+  streaming?: ModelCapabilityStatus
+  jsonMode?: ModelCapabilityStatus
+  toolCalling?: ModelCapabilityStatus
+}
 
 export interface UserModelConfig {
   configured: boolean
@@ -16,6 +26,7 @@ export interface UserModelConfig {
   lastTestStatus: ModelTestStatus
   lastTestedAt: string | null
   lastErrorCode: string | null
+  capabilities?: ModelCapabilities
 }
 
 export interface UserModelConfigWrite {
@@ -43,7 +54,8 @@ const emptyConfig = (): UserModelConfig => ({
   revision: 0,
   lastTestStatus: 'untested',
   lastTestedAt: null,
-  lastErrorCode: null
+  lastErrorCode: null,
+  capabilities: {}
 })
 
 const realApi = {
@@ -77,7 +89,8 @@ const mockApi = {
       revision: mockConfig.revision + 1,
       lastTestStatus: 'untested',
       lastTestedAt: null,
-      lastErrorCode: null
+      lastErrorCode: null,
+      capabilities: {}
     }
     return { ...mockConfig }
   },

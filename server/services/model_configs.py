@@ -44,6 +44,8 @@ class UserGenerationRoute:
 class ProbeResult:
     ok: bool
     code: str
+    capabilities: dict[str, str] = field(default_factory=dict)
+    detail: str | None = None
 
 
 def _encryption_key() -> bytes:
@@ -183,25 +185,63 @@ class ModelConfigProbe:
         )
         try:
             await assert_public_endpoint_resolution(config.base_url)
+            api_key = decrypt_api_key(
+                config.api_key_ciphertext,
+                user_id=config.user_id,
+                config_id=config.id,
+            )
             response = await client.get(
                 models_url(config.base_url),
                 headers={
-                    "Authorization": "Bearer "
-                    + decrypt_api_key(
-                        config.api_key_ciphertext,
-                        user_id=config.user_id,
-                        config_id=config.id,
-                    ),
+                    "Authorization": "Bearer " + api_key,
                     "Accept": "application/json",
                 },
             )
             if response.status_code in {401, 403}:
-                return ProbeResult(False, "authentication_failed")
-            if response.status_code == 404:
-                return ProbeResult(False, "models_endpoint_not_found")
-            if response.is_error:
-                return ProbeResult(False, "provider_error")
-            return ProbeResult(True, "ok")
+                return ProbeResult(False, "authentication_failed", {"chatCompletions": "unknown"})
+
+            models_endpoint = "supported" if response.status_code < 400 else "unsupported"
+            # A number of OpenAI-compatible gateways intentionally omit GET
+            # /models. Probe the actual selected model instead of treating that
+            # optional endpoint as the provider contract.
+            chat_response = await client.post(
+                chat_completions_url(config.base_url),
+                headers={
+                    "Authorization": "Bearer " + api_key,
+                    "Content-Type": "application/json",
+                    "Accept": "application/json",
+                },
+                json={
+                    "model": config.model,
+                    "messages": [
+                        {"role": "system", "content": "你是连接测试。"},
+                        {"role": "user", "content": "只回复：好"},
+                    ],
+                    "max_tokens": 1,
+                    "temperature": 0,
+                    "stream": False,
+                },
+            )
+            capabilities = {
+                "modelsEndpoint": models_endpoint,
+                "chatCompletions": "supported" if chat_response.status_code < 400 else "unsupported",
+                "systemMessage": "supported" if chat_response.status_code < 400 else "unknown",
+                "streaming": "unknown",
+                "jsonMode": "unknown",
+                "toolCalling": "unknown",
+            }
+            if chat_response.status_code in {401, 403}:
+                return ProbeResult(False, "authentication_failed", capabilities)
+            if chat_response.status_code == 404:
+                return ProbeResult(False, "chat_endpoint_not_found", capabilities)
+            if chat_response.is_error:
+                return ProbeResult(
+                    False,
+                    "model_request_failed",
+                    capabilities,
+                    detail=_provider_error(chat_response),
+                )
+            return ProbeResult(True, "ok", capabilities)
         except InvalidModelEndpointError:
             return ProbeResult(False, "endpoint_not_allowed")
         except (httpx.TimeoutException, httpx.TransportError):
@@ -209,6 +249,22 @@ class ModelConfigProbe:
         finally:
             if self._client is None:
                 await client.aclose()
+
+
+def _provider_error(response: httpx.Response) -> str | None:
+    """Return a bounded provider message without reflecting credentials."""
+    try:
+        payload = response.json()
+    except ValueError:
+        return None
+    if not isinstance(payload, dict):
+        return None
+    error = payload.get("error")
+    if isinstance(error, dict):
+        value = error.get("message") or error.get("type") or error.get("code")
+    else:
+        value = error
+    return str(value)[:240] if value else None
 
 
 def new_config_id() -> str:

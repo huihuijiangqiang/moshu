@@ -3,7 +3,7 @@
 from datetime import datetime
 from typing import Optional
 
-from sqlalchemy import Boolean, CheckConstraint, DateTime, ForeignKey, Integer, String, Text, UniqueConstraint
+from sqlalchemy import JSON, Boolean, CheckConstraint, DateTime, ForeignKey, Integer, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
 from db.base import Base, TimestampMixin
@@ -64,3 +64,6 @@ class UserModelConfig(Base, TimestampMixin):
         DateTime(timezone=True), nullable=True
     )
     last_error_code: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
+    # Provider capabilities discovered by the last connection probe. Values are
+    # deliberately tri-state strings (supported/unsupported/unknown).
+    capabilities: Mapped[dict] = mapped_column(JSON, default=dict, server_default="{}")

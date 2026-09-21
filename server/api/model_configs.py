@@ -101,6 +101,7 @@ def _payload(config: UserModelConfig | None) -> dict:
             "lastTestStatus": "untested",
             "lastTestedAt": None,
             "lastErrorCode": None,
+            "capabilities": {},
         }
     return {
         "configured": True,
@@ -116,6 +117,7 @@ def _payload(config: UserModelConfig | None) -> dict:
         "lastTestStatus": config.last_test_status,
         "lastTestedAt": config.last_tested_at.isoformat() if config.last_tested_at else None,
         "lastErrorCode": config.last_error_code,
+        "capabilities": config.capabilities or {},
     }
 
 
@@ -234,6 +236,7 @@ async def test_model_config(
         raise _conflict(current)
     current.last_test_status = "ok" if result.ok else "failed"
     current.last_error_code = None if result.ok else result.code
+    current.capabilities = result.capabilities or {}
     current.last_tested_at = datetime.now(UTC)
     await db.commit()
     await db.refresh(current)
