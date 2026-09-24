@@ -5,7 +5,8 @@ from sqlalchemy.exc import IntegrityError
 
 from db.models_adaptation import Adaptation
 from db.models_codex import CodexEntry
-from db.models_core import ChapterBody
+from db.models_core import ChapterBody, Project
+from db.models_org import Org, OrgMember
 
 
 def codex_entry(entry_id: str, project_id: str, kind: str, name: str, status: str = "confirmed") -> CodexEntry:
@@ -284,3 +285,24 @@ async def test_production_package_reports_blockers_and_requires_export_permissio
     final = (await app_client.get(path, headers=headers)).json()
     assert final["readiness"]["ready"]
     assert [item["code"] for item in final["readiness"]["issues"]] == ["duration_mismatch"]
+
+
+@pytest.mark.asyncio
+async def test_production_package_viewer_can_see_adaptation_but_cannot_export(
+    app_client, async_db_session, seed_project, make_user, auth_headers,
+):
+    await seed_project(project_id="project-a", chapter_ids=("chapter-a",))
+    async_db_session.add_all([make_user("viewer"), Org(id="org-a", name="制作团队")])
+    await async_db_session.flush()
+    project = await async_db_session.get(Project, "project-a")
+    project.org_id = "org-a"
+    async_db_session.add(OrgMember(org_id="org-a", user_id="viewer", role="viewer"))
+    async_db_session.add(Adaptation(id="adaptation-a", project_id="project-a", title="第一季"))
+    await async_db_session.commit()
+    episode = (await app_client.post("/adaptations/adaptation-a/episodes", headers=auth_headers("user_a"), json={
+        "number": 1, "title": "第一集", "source_chapter_ids": ["chapter-a"],
+    })).json()
+    assert (await app_client.get("/projects/project-a/adaptations", headers=auth_headers("viewer"))).status_code == 200
+    assert (await app_client.get(
+        f"/episodes/{episode['id']}/production-package", headers=auth_headers("viewer")
+    )).status_code == 403

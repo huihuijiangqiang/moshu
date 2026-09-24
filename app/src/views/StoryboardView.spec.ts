@@ -69,4 +69,27 @@ describe('storyboard static editing workflow', () => {
     wrapper.unmount()
     await flushPromises()
   })
+
+  it('shows actionable readiness issues and requires a fresh check after editing', async () => {
+    const pinia = createPinia()
+    setActivePinia(pinia)
+    const router = createRouter({
+      history: createMemoryHistory(),
+      routes: [{ path: '/projects/:projectId/storyboard', component: StoryboardView }]
+    })
+    await router.push('/projects/p1/storyboard')
+    await router.isReady()
+    const wrapper = mount(StoryboardView, { attachTo: document.body, global: { plugins: [pinia, router] } })
+    await vi.waitFor(() => expect(wrapper.find('.storyboard-production').exists()).toBe(true))
+
+    await wrapper.get('.storyboard-production-actions button:first-child').trigger('click')
+    await vi.waitFor(() => expect(wrapper.get('.storyboard-production-result').text()).toContain('镜头'))
+    expect(wrapper.get('.storyboard-production-actions button:last-child').attributes('disabled')).toBeUndefined()
+    expect(wrapper.findAll('.storyboard-production-issues li').length).toBeGreaterThan(0)
+
+    await wrapper.get('.storyboard-editor-grid textarea[placeholder^="人物、环境"]').setValue('新的画面锚点')
+    await vi.waitFor(() => expect(wrapper.find('.storyboard-production-result').exists()).toBe(false))
+    expect(wrapper.get('.storyboard-production-actions button:last-child').attributes('disabled')).toBeDefined()
+    wrapper.unmount()
+  })
 })

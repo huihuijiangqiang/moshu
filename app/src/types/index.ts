@@ -775,6 +775,73 @@ export interface StoryboardAdaptation {
   visualProfiles: VisualProfile[]
 }
 
+export interface ProductionPackageIssue {
+  code: string
+  severity: 'blocking' | 'warning'
+  entity_type: 'episode' | 'scene' | 'shot' | 'character'
+  entity_id: string
+  message: string
+}
+
+export interface ProductionPackage {
+  schema_version: 1
+  project_id: string
+  adaptation: {
+    id: string
+    title: string
+    aspect_ratio: '9:16' | '16:9'
+    style_profile: Record<string, string>
+  }
+  episode: {
+    id: string
+    number: number
+    title: string
+    target_duration: number
+    status: AdaptationStatus
+  }
+  source_chapters: { id: string; title: string | null }[]
+  visual_profiles: {
+    id: string
+    codex_entry_id: string
+    display_name: string
+    version: number
+    locked: boolean
+    style: string
+    appearance: string
+    costume: string
+    palette: string[]
+    reference_asset_ids: string[]
+  }[]
+  scenes: {
+    id: string
+    order: number
+    purpose: string
+    summary: string
+    time_anchor: string
+    location_entry_id: string | null
+    character_entry_ids: string[]
+    shots: {
+      id: string
+      order: number
+      shot_type: StoryboardShot['shotType']
+      camera: string
+      duration_target: number
+      action: string
+      dialogue: string
+      narration: string
+      visual_prompt: string
+      reference_asset_ids: string[]
+      status: StoryboardStatus
+    }[]
+  }[]
+  readiness: {
+    ready: boolean
+    total_duration: number
+    target_duration: number
+    issues: ProductionPackageIssue[]
+  }
+}
+
 export interface TimelineEvent {
   id: string
   projectId: string

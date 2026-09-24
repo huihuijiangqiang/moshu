@@ -3,7 +3,7 @@ import { computed, ref } from 'vue'
 import { mockApi } from '@/api/mock'
 import { USE_MOCK } from '@/api/http'
 import { storyboardApi } from '@/api/storyboard'
-import type { StoryboardAdaptation, StoryboardEpisode, StoryboardScene, StoryboardShot, VisualProfile } from '@/types'
+import type { ProductionPackage, StoryboardAdaptation, StoryboardEpisode, StoryboardScene, StoryboardShot, VisualProfile } from '@/types'
 
 export const useStoryboardStore = defineStore('storyboard', () => {
   const api = USE_MOCK ? mockApi : storyboardApi
@@ -14,7 +14,10 @@ export const useStoryboardStore = defineStore('storyboard', () => {
   const selectedShotId = ref<string | null>(null)
   const loading = ref(false)
   const saving = ref(false)
+  const checking = ref(false)
+  const productionPackage = ref<ProductionPackage | null>(null)
   const error = ref('')
+  let packageRevision = 0
 
   const selectedEpisode = computed(() => adaptation.value?.episodes.find((episode) => episode.id === selectedEpisodeId.value) ?? adaptation.value?.episodes[0] ?? null)
   const selectedScene = computed(() => selectedEpisode.value?.scenes.find((scene) => scene.id === selectedSceneId.value) ?? selectedEpisode.value?.scenes[0] ?? null)
@@ -27,12 +30,18 @@ export const useStoryboardStore = defineStore('storyboard', () => {
     selectedShotId.value = selectedShotId.value ?? selectedScene.value?.shots[0]?.id ?? null
   }
 
+  function invalidateProductionPackage() {
+    packageRevision += 1
+    productionPackage.value = null
+  }
+
   async function load(projectId: string) {
     if (loadedProjectId.value === projectId && adaptation.value) return
     loading.value = true
     error.value = ''
     try {
       adaptation.value = await api.getStoryboard(projectId)
+      invalidateProductionPackage()
       loadedProjectId.value = projectId
       selectedEpisodeId.value = null
       selectedSceneId.value = null
@@ -48,6 +57,7 @@ export const useStoryboardStore = defineStore('storyboard', () => {
 
   async function mutate<T>(action: () => Promise<T>, fallback: string): Promise<T | null> {
     if (saving.value) return null
+    invalidateProductionPackage()
     saving.value = true
     error.value = ''
     try {
@@ -62,6 +72,26 @@ export const useStoryboardStore = defineStore('storyboard', () => {
 
   function clearError() {
     error.value = ''
+  }
+
+  async function checkProductionPackage(projectId: string) {
+    const episodeId = selectedEpisode.value?.id
+    if (!episodeId || checking.value || saving.value) return null
+    const revision = ++packageRevision
+    checking.value = true
+    error.value = ''
+    try {
+      const result = await api.getProductionPackage(projectId, episodeId)
+      if (revision === packageRevision && selectedEpisode.value?.id === episodeId) {
+        productionPackage.value = result
+      }
+      return result
+    } catch (caught) {
+      if (revision === packageRevision) error.value = caught instanceof Error && caught.message ? caught.message : '制作检查失败'
+      return null
+    } finally {
+      checking.value = false
+    }
   }
 
   async function createEpisode(projectId: string, input: Pick<StoryboardEpisode, 'title' | 'sourceChapterIds' | 'targetDuration'>) {
@@ -133,6 +163,7 @@ export const useStoryboardStore = defineStore('storyboard', () => {
   }
 
   function selectEpisode(id: string) {
+    invalidateProductionPackage()
     selectedEpisodeId.value = id
     selectedSceneId.value = adaptation.value?.episodes.find((episode) => episode.id === id)?.scenes[0]?.id ?? null
     selectedShotId.value = selectedScene.value?.shots[0]?.id ?? null
@@ -142,5 +173,5 @@ export const useStoryboardStore = defineStore('storyboard', () => {
     selectedShotId.value = selectedScene.value?.shots[0]?.id ?? null
   }
 
-  return { adaptation, loadedProjectId, loading, saving, error, selectedEpisodeId, selectedSceneId, selectedShotId, selectedEpisode, selectedScene, selectedShot, totalShots, load, clearError, createEpisode, updateEpisode, createScene, updateScene, createShot, updateShot, createVisualProfile, updateVisualProfile, selectEpisode, selectScene }
+  return { adaptation, loadedProjectId, loading, saving, checking, productionPackage, error, selectedEpisodeId, selectedSceneId, selectedShotId, selectedEpisode, selectedScene, selectedShot, totalShots, load, clearError, checkProductionPackage, createEpisode, updateEpisode, createScene, updateScene, createShot, updateShot, createVisualProfile, updateVisualProfile, selectEpisode, selectScene }
 })

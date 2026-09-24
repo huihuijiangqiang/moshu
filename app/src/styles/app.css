@@ -138,6 +138,7 @@ button { font: inherit; color: inherit; }
 
 /* 漫剧工作台：像一张导演桌，而不是视频生成器。胶片序列是唯一的视觉重心。 */
 .storyboard-view { height: 100%; min-height: 0; display: grid; grid-template-rows: auto auto minmax(0, 1fr); background: var(--canvas); color: var(--ink); }
+.storyboard-view:not(:has(.storyboard-error)) { grid-template-rows: auto minmax(0, 1fr); }
 .storyboard-head { min-height: 86px; display: flex; align-items: center; justify-content: space-between; gap: var(--u5); padding: 18px 24px; border-bottom: var(--hair) solid var(--line-strong); background: var(--paper); }
 .storyboard-head h1 { margin: 4px 0 3px; font-family: var(--font-prose); font-size: 24px; font-weight: 600; }
 .storyboard-head p { margin: 0; color: var(--ink-3); font-size: var(--fs-sm); }
@@ -178,6 +179,25 @@ button { font: inherit; color: inherit; }
 .storyboard-canvas-head p { max-width: 680px; margin: 0; color: var(--ink-3); font-size: var(--fs-sm); line-height: 1.6; }
 .storyboard-canvas-head .wk-btn { flex: none; margin-top: 9px; }
 .storyboard-canvas-actions { flex: none; display: flex; align-items: center; gap: 6px; }
+.storyboard-production { padding: 13px 24px 15px; border-bottom: var(--hair) solid var(--line-strong); background: var(--panel-sunken); }
+.storyboard-production-head, .storyboard-production-title, .storyboard-production-actions, .storyboard-production-summary { display: flex; align-items: center; gap: 10px; }
+.storyboard-production-head { justify-content: space-between; flex-wrap: wrap; }
+.storyboard-production-title strong { font-size: 13px; }
+.storyboard-production-title .wk-label { margin-right: 3px; }
+.storyboard-production-actions { gap: 6px; }
+.storyboard-production-status { padding: 3px 6px; border: 1px solid var(--alert-line); color: var(--alert-ink); background: var(--alert-soft); font-size: 10px; }
+.storyboard-production-status[data-ready='true'] { border-color: var(--primary-line); color: var(--primary); background: var(--primary-soft); }
+.storyboard-production-result { margin-top: 12px; border-top: var(--hair) solid var(--line); }
+.storyboard-production-summary { flex-wrap: wrap; margin: 9px 0; color: var(--ink-3); font-family: var(--font-mono); font-size: 10px; }
+.storyboard-production-summary span + span { padding-left: 10px; border-left: var(--hair) solid var(--line-strong); }
+.storyboard-production-clear { margin: 8px 0 0; color: var(--success); font-size: 11px; }
+.storyboard-production-issues { display: grid; gap: 4px; max-height: 160px; overflow-y: auto; margin: 0; padding: 0; list-style: none; }
+.storyboard-production-issues li { border-left: 2px solid var(--alert); }
+.storyboard-production-issues li[data-severity='warning'] { border-left-color: var(--primary); }
+.storyboard-production-issues button { width: 100%; padding: 5px 9px; border: 0; color: var(--ink-2); background: transparent; font-size: 11px; text-align: left; cursor: pointer; }
+.storyboard-production-issues button:hover:not(:disabled) { background: var(--paper); }
+.storyboard-production-issues button:disabled { cursor: default; }
+.storyboard-production-issues button span { display: inline-block; min-width: 80px; margin-right: 10px; color: var(--ink-4); font-family: var(--font-mono); font-size: 10px; }
 .storyboard-scene-editor { display: grid; gap: 12px; margin: 16px 24px; padding: 14px; border: 1px solid var(--line-strong); border-left: 3px solid var(--primary); background: var(--panel); }
 .scene-editor-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding-bottom: 9px; border-bottom: 1px solid var(--line); }
 .scene-editor-heading strong { font-size: 13px; }
@@ -314,4 +334,4 @@ button { font: inherit; color: inherit; }
 .workspace-history-empty { color: var(--ink-3); font-size: 12px; line-height: 1.7; }
 @media (max-width: 1120px) { .storyboard-layout { grid-template-columns: 236px minmax(390px, 1fr) 250px; } .storyboard-head { padding-inline: 16px; } .storyboard-canvas-head, .storyboard-shot-editor { margin-left: 16px; margin-right: 16px; } .storyboard-canvas-head { padding-inline: 0; } .storyboard-filmstrip { padding-inline: 16px; } }
 @media (max-width: 860px) { .storyboard-layout { grid-template-columns: 220px minmax(0, 1fr); overflow: auto; } .storyboard-inspector { grid-column: 1 / -1; min-height: 440px; border-top: var(--hair) solid var(--line-strong); border-left: 0; } .storyboard-inspector-intro, .visual-profile, .storyboard-binding, .storyboard-no-video { max-width: 520px; } .storyboard-no-video { margin-top: 18px; } }
-@media (max-width: 640px) { .storyboard-head { display: block; padding: 15px; } .storyboard-head-meta { margin-top: 11px; gap: 11px; } .storyboard-layout { display: block; overflow-y: auto; } .storyboard-outline { min-height: 270px; max-height: 350px; border-right: 0; border-bottom: var(--hair) solid var(--line-strong); } .storyboard-canvas { min-height: 620px; } .storyboard-canvas-head { display: grid; padding: 15px; } .storyboard-canvas-actions { justify-content: flex-end; } .storyboard-scene-editor { margin: 12px 15px; } .scene-editor-columns { grid-template-columns: minmax(0, 1fr); } .storyboard-filmstrip { padding: 16px; } .storyboard-shot-editor { margin: 0 15px 20px; } .storyboard-editor-grid { grid-template-columns: minmax(0, 1fr); } .storyboard-editor-grid .editor-wide { grid-column: auto; } .storyboard-dialog-backdrop { padding: 10px; } }
+@media (max-width: 640px) { .storyboard-head { display: block; padding: 15px; } .storyboard-head-meta { margin-top: 11px; gap: 11px; } .storyboard-layout { display: block; overflow-y: auto; } .storyboard-outline { min-height: 270px; max-height: 350px; border-right: 0; border-bottom: var(--hair) solid var(--line-strong); } .storyboard-canvas { min-height: 620px; } .storyboard-canvas-head { display: grid; padding: 15px; } .storyboard-canvas-actions { justify-content: flex-end; } .storyboard-production { padding-inline: 15px; } .storyboard-production-head { align-items: flex-start; flex-direction: column; } .storyboard-scene-editor { margin: 12px 15px; } .scene-editor-columns { grid-template-columns: minmax(0, 1fr); } .storyboard-filmstrip { padding: 16px; } .storyboard-shot-editor { margin: 0 15px 20px; } .storyboard-editor-grid { grid-template-columns: minmax(0, 1fr); } .storyboard-editor-grid .editor-wide { grid-column: auto; } .storyboard-dialog-backdrop { padding: 10px; } }

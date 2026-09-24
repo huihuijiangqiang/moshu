@@ -415,7 +415,7 @@ async def get_production_package(
         })
     tolerance = max(5, round(episode.target_duration * 0.2))
     if shots and abs(total_duration - episode.target_duration) > tolerance:
-        issue("duration_mismatch", "episode", episode.id, "镜头时长合计与目标时长偏差超过 20%", "warning")
+        issue("duration_mismatch", "episode", episode.id, "镜头时长合计与目标时长偏差过大", "warning")
 
     style = adaptation.style_profile or {}
     return {

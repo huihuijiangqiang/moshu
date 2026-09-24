@@ -73,4 +73,22 @@ describe('storyboard store', () => {
     expect(store.error).toBe('地点引用已经失效')
     expect(store.saving).toBe(false)
   })
+
+  it('checks the selected episode and invalidates the package after editing', async () => {
+    const store = useStoryboardStore()
+    await store.load('p1')
+    const checked = await store.checkProductionPackage('p1')
+
+    expect(checked?.schema_version).toBe(1)
+    expect(checked?.readiness.issues.some((issue) => issue.code === 'shot_unapproved')).toBe(true)
+    expect(store.productionPackage?.episode.id).toBe(store.selectedEpisode?.id)
+
+    await store.updateShot('p1', { visualPrompt: '修改后的近景' })
+    expect(store.productionPackage).toBeNull()
+
+    await store.checkProductionPackage('p1')
+    const episode = await store.createEpisode('p1', { title: '下一集', sourceChapterIds: ['ch87'], targetDuration: 90 })
+    expect(store.productionPackage).toBeNull()
+    expect(store.selectedEpisode?.id).toBe(episode?.id)
+  })
 })

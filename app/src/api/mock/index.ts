@@ -1,7 +1,7 @@
 import { delay } from '../http'
 import * as seed from './seed'
 import { findShelfBook, type CreatedBook } from './shelf'
-import type { Chapter, ChapterPlanPatch, ChapterVersionDetail, ChapterVersionRestoreResult, ChapterVersionSummary, CharacterStatistics, CodexEntry, CodexEntryDraft, CodexRelation, CodexRelationDraft, CodexStateDraft, CodexStateHistoryItem, GuardIssue, GuardOverview, GuardResolutionAction, Project, ProjectNote, ContextLayer, ProjectPatch, ProjectTrash, TemporalDecisionResult, TemporalReviewItem, TimelineBoard, TimelineEntry, TimelineEntryDraft, TimelineReflowResult, WritingProgressDay, StoryboardAdaptation, StoryboardEpisode, StoryboardScene, StoryboardShot, VisualProfile } from '@/types'
+import type { Chapter, ChapterPlanPatch, ChapterVersionDetail, ChapterVersionRestoreResult, ChapterVersionSummary, CharacterStatistics, CodexEntry, CodexEntryDraft, CodexRelation, CodexRelationDraft, CodexStateDraft, CodexStateHistoryItem, GuardIssue, GuardOverview, GuardResolutionAction, Project, ProjectNote, ContextLayer, ProjectPatch, ProjectTrash, TemporalDecisionResult, TemporalReviewItem, TimelineBoard, TimelineEntry, TimelineEntryDraft, TimelineReflowResult, WritingProgressDay, StoryboardAdaptation, StoryboardEpisode, StoryboardScene, StoryboardShot, VisualProfile, ProductionPackage, ProductionPackageIssue } from '@/types'
 
 /** 内存态副本：mock 下的写操作要真的改变数据，否则界面行为是假的。 */
 const state = {
@@ -728,6 +728,71 @@ export const mockApi = {
     return structuredClone(storyboardFor(projectId))
   },
 
+  async getProductionPackage(projectId: string, episodeId: string): Promise<ProductionPackage> {
+    await delay(100)
+    const adaptation = storyboardFor(projectId)
+    const episode = adaptation.episodes.find((item) => item.id === episodeId)
+    if (!episode) throw new Error('漫剧集不存在')
+    const issues: ProductionPackageIssue[] = []
+    const addIssue = (code: string, entity_type: ProductionPackageIssue['entity_type'], entity_id: string, message: string, severity: ProductionPackageIssue['severity'] = 'blocking') => {
+      issues.push({ code, entity_type, entity_id, message, severity })
+    }
+    const scenes = [...episode.scenes].sort((a, b) => a.order - b.order || a.id.localeCompare(b.id))
+    const characterIds = [...new Set(scenes.flatMap((scene) => scene.characterEntryIds))].sort()
+    const profiles = adaptation.visualProfiles.filter((profile) => characterIds.includes(profile.codexEntryId)).sort((a, b) => a.codexEntryId.localeCompare(b.codexEntryId))
+    const profilesByCharacter = new Map(profiles.map((profile) => [profile.codexEntryId, profile]))
+    const chapters = chaptersFor(projectId)
+    if (!scenes.length) addIssue('no_scenes', 'episode', episode.id, '本集还没有场景')
+    for (const chapterId of episode.sourceChapterIds) {
+      if (!chapters.some((chapter) => chapter.id === chapterId)) addIssue('source_chapter_missing', 'episode', episode.id, `来源章节 ${chapterId} 已不可用`)
+    }
+    for (const characterId of characterIds) {
+      const profile = profilesByCharacter.get(characterId)
+      if (!profile) addIssue('visual_profile_missing', 'character', characterId, '出场人物缺少视觉档案')
+      else {
+        if (!profile.locked) addIssue('visual_profile_unlocked', 'character', characterId, '出场人物视觉档案尚未锁定')
+        if (!profile.appearance.trim()) addIssue('visual_profile_appearance_missing', 'character', characterId, '人物视觉档案缺少外观锚点')
+      }
+    }
+    let totalDuration = 0
+    const sceneRows = scenes.map((scene) => {
+      const shots = [...scene.shots].sort((a, b) => a.order - b.order || a.id.localeCompare(b.id))
+      if (!shots.length) addIssue('no_shots', 'scene', scene.id, '场景还没有镜头')
+      return {
+        id: scene.id, order: scene.order, purpose: scene.purpose, summary: scene.summary,
+        time_anchor: scene.timeAnchor, location_entry_id: scene.locationEntryId ?? null,
+        character_entry_ids: scene.characterEntryIds,
+        shots: shots.map((shot) => {
+          totalDuration += shot.durationTarget
+          if (shot.status !== 'approved') addIssue('shot_unapproved', 'shot', shot.id, '镜头尚未确认')
+          if (!shot.visualPrompt.trim()) addIssue('visual_prompt_missing', 'shot', shot.id, '镜头缺少画面提示词')
+          return {
+            id: shot.id, order: shot.order, shot_type: shot.shotType, camera: shot.camera,
+            duration_target: shot.durationTarget, action: shot.action, dialogue: shot.dialogue,
+            narration: shot.narration, visual_prompt: shot.visualPrompt,
+            reference_asset_ids: shot.referenceAssetIds, status: shot.status
+          }
+        })
+      }
+    })
+    if (totalDuration && Math.abs(totalDuration - episode.targetDuration) > Math.max(5, Math.round(episode.targetDuration * .2))) {
+      addIssue('duration_mismatch', 'episode', episode.id, '镜头时长合计与目标时长偏差过大', 'warning')
+    }
+    return structuredClone({
+      schema_version: 1, project_id: projectId,
+      adaptation: { id: adaptation.id, title: adaptation.title, aspect_ratio: adaptation.aspectRatio, style_profile: adaptation.styleProfile },
+      episode: { id: episode.id, number: episode.number, title: episode.title, target_duration: episode.targetDuration, status: episode.status },
+      source_chapters: episode.sourceChapterIds.map((id) => ({ id, title: chapters.find((chapter) => chapter.id === id)?.title ?? null })),
+      visual_profiles: profiles.map((profile) => ({
+        id: profile.id, codex_entry_id: profile.codexEntryId, display_name: profile.displayName,
+        version: profile.version, locked: profile.locked, style: profile.style, appearance: profile.appearance,
+        costume: profile.costume, palette: profile.palette, reference_asset_ids: profile.referenceAssetIds
+      })),
+      scenes: sceneRows,
+      readiness: { ready: !issues.some((issue) => issue.severity === 'blocking'), total_duration: totalDuration, target_duration: episode.targetDuration, issues }
+    })
+  },
+
   async createStoryboardEpisode(projectId: string, input: Pick<StoryboardEpisode, 'title' | 'sourceChapterIds' | 'targetDuration'>): Promise<StoryboardEpisode> {
     await delay(100)
     const adaptation = storyboardFor(projectId)
@@ -782,7 +847,7 @@ export const mockApi = {
     await delay(80)
     const profile = storyboardFor(projectId).visualProfiles.find((item) => item.id === profileId)
     if (!profile) throw new Error('visual_profile_not_found')
-    Object.assign(profile, patch, { version: profile.version + 1 })
+    Object.assign(profile, patch, { version: profile.version + (Object.keys(patch).some((key) => key !== 'locked') ? 1 : 0) })
     return structuredClone(profile)
   },
 

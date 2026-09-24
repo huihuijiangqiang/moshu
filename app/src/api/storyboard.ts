@@ -4,7 +4,8 @@ import type {
   StoryboardEpisode,
   StoryboardScene,
   StoryboardShot,
-  VisualProfile
+  VisualProfile,
+  ProductionPackage
 } from '@/types'
 
 interface AdaptationDto {
@@ -158,6 +159,10 @@ function adaptationFromDto(row: AdaptationDto, episodes: StoryboardEpisode[], vi
 }
 
 export const storyboardApi = {
+  async getProductionPackage(_projectId: string, episodeId: string): Promise<ProductionPackage> {
+    return request<ProductionPackage>(`/episodes/${episodeId}/production-package`)
+  },
+
   async getStoryboard(projectId: string): Promise<StoryboardAdaptation> {
     const adaptations = await request<AdaptationDto[]>(`/projects/${projectId}/adaptations`)
     let adaptation = adaptations[0]

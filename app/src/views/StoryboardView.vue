@@ -6,7 +6,7 @@ import { useCodexStore } from '@/stores/codex'
 import { useShellStore } from '@/stores/shell'
 import { useStoryboardStore } from '@/stores/storyboard'
 import { useProjectStore } from '@/stores/project'
-import type { StoryboardShot, VisualProfile } from '@/types'
+import type { ProductionPackageIssue, StoryboardShot, VisualProfile } from '@/types'
 
 const route = useRoute()
 const shell = useShellStore()
@@ -53,6 +53,37 @@ watch(() => storyboard.selectedSceneId, () => {
 function showSaved(message = '已保存') {
   savedNotice.value = message
   window.setTimeout(() => { savedNotice.value = '' }, 1300)
+}
+
+function issueTarget(issue: ProductionPackageIssue) {
+  const episode = storyboard.selectedEpisode
+  if (!episode) return ''
+  const scene = episode.scenes.find((item) => item.id === issue.entity_id || item.shots.some((shot) => shot.id === issue.entity_id) || (issue.entity_type === 'character' && item.characterEntryIds.includes(issue.entity_id)))
+  if (issue.entity_type === 'character') return codex.byId.get(issue.entity_id)?.name ?? '人物'
+  if (issue.entity_type === 'episode') return '本集'
+  if (issue.entity_type === 'scene') return `场 ${scene?.order ?? '-'}`
+  const shot = scene?.shots.find((item) => item.id === issue.entity_id)
+  return `场 ${scene?.order ?? '-'} · 镜头 ${shot?.order ?? '-'}`
+}
+
+function focusIssue(issue: ProductionPackageIssue) {
+  const episode = storyboard.selectedEpisode
+  const scene = episode?.scenes.find((item) => item.id === issue.entity_id || item.shots.some((shot) => shot.id === issue.entity_id) || (issue.entity_type === 'character' && item.characterEntryIds.includes(issue.entity_id)))
+  if (!scene) return
+  storyboard.selectScene(scene.id)
+  if (issue.entity_type === 'shot') storyboard.selectedShotId = issue.entity_id
+}
+
+function downloadProductionPackage() {
+  const data = storyboard.productionPackage
+  if (!data || data.episode.id !== storyboard.selectedEpisode?.id) return
+  const url = URL.createObjectURL(new Blob([JSON.stringify(data, null, 2)], { type: 'application/json;charset=utf-8' }))
+  const link = document.createElement('a')
+  link.href = url
+  link.download = `漫剧-第${String(data.episode.number).padStart(2, '0')}集-制作包.json`
+  link.click()
+  URL.revokeObjectURL(url)
+  showSaved('制作包已下载')
 }
 
 function openEpisodeCreate() {
@@ -229,6 +260,35 @@ async function profileField(profile: VisualProfile, key: 'style' | 'appearance' 
             <button class="wk-btn" type="button" data-primary="true" :disabled="!storyboard.selectedScene || storyboard.saving" @click="storyboard.createShot(projectId)"><AppIcon name="plus" :size="14" /> 添加镜头</button>
           </div>
         </div>
+
+        <section v-if="storyboard.selectedEpisode" class="storyboard-production" aria-label="本集制作检查">
+          <div class="storyboard-production-head">
+            <div class="storyboard-production-title">
+              <span class="wk-label">本集制作</span>
+              <strong>分镜就绪检查</strong>
+              <span v-if="storyboard.productionPackage" class="storyboard-production-status" :data-ready="storyboard.productionPackage.readiness.ready">
+                {{ storyboard.productionPackage.readiness.ready ? '可进入制作' : '待补齐' }}
+              </span>
+            </div>
+            <div class="storyboard-production-actions">
+              <button class="wk-btn" type="button" :disabled="storyboard.checking || storyboard.saving" @click="storyboard.checkProductionPackage(projectId)"><AppIcon name="check" :size="14" /> {{ storyboard.checking ? '检查中…' : '检查本集' }}</button>
+              <button class="wk-btn" type="button" :disabled="!storyboard.productionPackage || storyboard.saving" @click="downloadProductionPackage"><AppIcon name="export" :size="14" /> 下载制作包</button>
+            </div>
+          </div>
+          <div v-if="storyboard.productionPackage" class="storyboard-production-result" aria-live="polite">
+            <div class="storyboard-production-summary">
+              <span>镜头 {{ storyboard.productionPackage.scenes.reduce((total, scene) => total + scene.shots.length, 0) }}</span>
+              <span>合计 {{ storyboard.productionPackage.readiness.total_duration }} / {{ storyboard.productionPackage.readiness.target_duration }} 秒</span>
+              <span>{{ storyboard.productionPackage.readiness.issues.filter((issue) => issue.severity === 'blocking').length }} 项待处理</span>
+            </div>
+            <p v-if="!storyboard.productionPackage.readiness.issues.length" class="storyboard-production-clear">人物档案、镜头确认和画面提示均已齐备。</p>
+            <ul v-else class="storyboard-production-issues">
+              <li v-for="(issue, index) in storyboard.productionPackage.readiness.issues" :key="`${issue.code}-${issue.entity_id}-${index}`" :data-severity="issue.severity">
+                <button type="button" :disabled="issue.entity_type === 'episode'" @click="focusIssue(issue)"><span>{{ issueTarget(issue) }}</span>{{ issue.message }}</button>
+              </li>
+            </ul>
+          </div>
+        </section>
 
         <form v-if="sceneEditOpen" class="storyboard-scene-editor" @submit.prevent="saveScene">
           <div class="scene-editor-heading"><strong>{{ sceneCreateMode ? '新建场景' : '编辑场景绑定' }}</strong><button type="button" aria-label="关闭场景编辑" @click="sceneEditOpen = false"><AppIcon name="close" :size="14" /></button></div>
