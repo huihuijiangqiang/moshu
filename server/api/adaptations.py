@@ -328,6 +328,132 @@ async def list_scenes(episode_id: str, db: AsyncSession = Depends(get_db), user:
     return result.scalars().all()
 
 
+@router.get("/episodes/{episode_id}/production-package")
+async def get_production_package(
+    episode_id: str,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """Export a versioned, reviewable storyboard manifest, never the source prose."""
+    episode = await require_episode(episode_id, db, user, ProjectPermission.EXPORT)
+    adaptation = await db.get(Adaptation, episode.adaptation_id)
+    chapter_rows = await db.execute(
+        select(Chapter.id, Chapter.title).where(
+            Chapter.project_id == adaptation.project_id,
+            Chapter.id.in_(episode.source_chapter_ids),
+            Chapter.deleted_at.is_(None),
+        )
+    )
+    chapter_titles = dict(chapter_rows.all())
+    scenes = (await db.execute(
+        select(Scene).where(Scene.episode_id == episode_id).order_by(Scene.order, Scene.id)
+    )).scalars().all()
+    scene_ids = [scene.id for scene in scenes]
+    shots = (await db.execute(
+        select(Shot).where(Shot.scene_id.in_(scene_ids)).order_by(Shot.order, Shot.id)
+    )).scalars().all() if scene_ids else []
+    shots_by_scene: dict[str, list[Shot]] = {scene_id: [] for scene_id in scene_ids}
+    for shot in shots:
+        shots_by_scene[shot.scene_id].append(shot)
+    character_ids = set().union(*(set(scene.character_entry_ids) for scene in scenes)) if scenes else set()
+    profiles = (await db.execute(
+        select(VisualProfile).where(
+            VisualProfile.adaptation_id == adaptation.id,
+            VisualProfile.codex_entry_id.in_(character_ids),
+        ).order_by(VisualProfile.codex_entry_id)
+    )).scalars().all() if character_ids else []
+    profiles_by_character = {profile.codex_entry_id: profile for profile in profiles}
+
+    issues = []
+
+    def issue(code: str, entity_type: str, entity_id: str, message: str, severity: str = "blocking") -> None:
+        issues.append({
+            "code": code, "severity": severity, "entity_type": entity_type,
+            "entity_id": entity_id, "message": message,
+        })
+
+    if not scenes:
+        issue("no_scenes", "episode", episode.id, "本集还没有场景")
+    for chapter_id in episode.source_chapter_ids:
+        if chapter_id not in chapter_titles:
+            issue("source_chapter_missing", "episode", episode.id, f"来源章节 {chapter_id} 已不可用")
+    for character_id in sorted(character_ids):
+        profile = profiles_by_character.get(character_id)
+        if not profile:
+            issue("visual_profile_missing", "character", character_id, "出场人物缺少视觉档案")
+        else:
+            if not profile.locked:
+                issue("visual_profile_unlocked", "character", character_id, "出场人物视觉档案尚未锁定")
+            if not profile.appearance.strip():
+                issue("visual_profile_appearance_missing", "character", character_id, "人物视觉档案缺少外观锚点")
+
+    scene_data = []
+    total_duration = 0
+    for scene in scenes:
+        scene_shots = shots_by_scene[scene.id]
+        if not scene_shots:
+            issue("no_shots", "scene", scene.id, "场景还没有镜头")
+        shot_data = []
+        for shot in scene_shots:
+            total_duration += shot.duration_target
+            if shot.status != "approved":
+                issue("shot_unapproved", "shot", shot.id, "镜头尚未确认")
+            if not shot.visual_prompt.strip():
+                issue("visual_prompt_missing", "shot", shot.id, "镜头缺少画面提示词")
+            shot_data.append({
+                "id": shot.id, "order": shot.order, "shot_type": shot.shot_type,
+                "camera": shot.camera, "duration_target": shot.duration_target,
+                "action": shot.action, "dialogue": shot.dialogue, "narration": shot.narration,
+                "visual_prompt": shot.visual_prompt, "reference_asset_ids": shot.reference_asset_ids,
+                "status": shot.status,
+            })
+        scene_data.append({
+            "id": scene.id, "order": scene.order, "purpose": scene.purpose,
+            "summary": scene.summary, "time_anchor": scene.time_anchor,
+            "location_entry_id": scene.location_entry_id,
+            "character_entry_ids": scene.character_entry_ids, "shots": shot_data,
+        })
+    tolerance = max(5, round(episode.target_duration * 0.2))
+    if shots and abs(total_duration - episode.target_duration) > tolerance:
+        issue("duration_mismatch", "episode", episode.id, "镜头时长合计与目标时长偏差超过 20%", "warning")
+
+    style = adaptation.style_profile or {}
+    return {
+        "schema_version": 1,
+        "project_id": adaptation.project_id,
+        "adaptation": {
+            "id": adaptation.id, "title": adaptation.title,
+            "aspect_ratio": adaptation.aspect_ratio,
+            "style_profile": {key: style[key] for key in ("label", "description") if isinstance(style.get(key), str)},
+        },
+        "episode": {
+            "id": episode.id, "number": episode.number, "title": episode.title,
+            "target_duration": episode.target_duration, "status": episode.status,
+        },
+        "source_chapters": [
+            {"id": chapter_id, "title": chapter_titles.get(chapter_id)}
+            for chapter_id in episode.source_chapter_ids
+        ],
+        "visual_profiles": [
+            {
+                "id": profile.id, "codex_entry_id": profile.codex_entry_id,
+                "display_name": profile.display_name, "version": profile.version,
+                "locked": profile.locked, "style": profile.style,
+                "appearance": profile.appearance, "costume": profile.costume,
+                "palette": profile.palette, "reference_asset_ids": profile.reference_asset_ids,
+            }
+            for profile in profiles
+        ],
+        "scenes": scene_data,
+        "readiness": {
+            "ready": not any(item["severity"] == "blocking" for item in issues),
+            "total_duration": total_duration,
+            "target_duration": episode.target_duration,
+            "issues": issues,
+        },
+    }
+
+
 @router.post("/episodes/{episode_id}/scenes", response_model=SceneOut, status_code=201)
 async def create_scene(
     episode_id: str,
