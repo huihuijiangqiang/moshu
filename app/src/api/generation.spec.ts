@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { GenerationError, generationDraftApi, normalizeGenerationError, responseError } from './generation'
+import { generationDraftApi, longGenerationPayload, normalizeGenerationError, responseError } from './generation'
 
 describe('generation stream failure contract', () => {
   afterEach(() => vi.unstubAllGlobals())
@@ -42,5 +42,22 @@ describe('generation stream failure contract', () => {
       method: 'PATCH',
       body: JSON.stringify({ segmentIds: ['p1', 'p3'], decision: 'accepted', baseVersion: 4 })
     }))
+  })
+
+  it('builds a real long-form request with the selected context policy', () => {
+    expect(longGenerationPayload({
+      model: 'advanced',
+      providerModel: 'doubao-seed-2.1-turbo',
+      contextMode: 'deep',
+      dialogueDensity: 'high',
+      instruction: '在段尾留下可见风险。'
+    })).toEqual({
+      model: 'advanced',
+      modelId: 'doubao-seed-2.1-turbo',
+      useStyleProfile: true,
+      dialogueDensity: 'high',
+      contextMode: 'deep',
+      instruction: '在段尾留下可见风险。'
+    })
   })
 })

@@ -85,6 +85,56 @@ export interface StreamHandlers {
   onError?: (e: unknown) => void
 }
 
+export type LongGenerationSegmentStatus = 'pending' | 'running' | 'ready' | 'failed' | 'accepted' | 'skipped'
+
+export interface LongGenerationSegment {
+  id: string
+  projectId?: string
+  chapterId?: string
+  index: number
+  targetWords: number
+  status: LongGenerationSegmentStatus
+  revision: number
+  generatedWords: number
+  leaseOwner?: string | null
+  leaseExpiresAt?: string | null
+  heartbeatAt?: string | null
+  errorCode?: string | null
+  contentHash?: string
+  manifest?: Record<string, unknown>
+}
+
+export interface LongGenerationPlan {
+  chapterId: string
+  projectId?: string
+  targetWords?: number
+  segmentWords?: number
+  totalSegments: number
+  acceptedSegments?: number
+  nextSegment?: number | null
+  segments: LongGenerationSegment[]
+}
+
+export interface LongGenerationOptions {
+  model?: GenerateOptions['model']
+  providerModel?: string
+  useStyleProfile?: boolean
+  dialogueDensity?: GenerateOptions['dialogueDensity']
+  contextMode?: ContextMode
+  instruction?: string
+}
+
+export function longGenerationPayload(options: LongGenerationOptions = {}) {
+  return {
+    model: options.model ?? 'basic',
+    modelId: options.providerModel,
+    useStyleProfile: options.useStyleProfile ?? true,
+    dialogueDensity: options.dialogueDensity ?? 'mid',
+    contextMode: options.contextMode ?? 'smart',
+    instruction: options.instruction ?? ''
+  }
+}
+
 export class GenerationError extends Error {
   constructor(public code: string, message: string, public status?: number) {
     super(message)
@@ -194,6 +244,48 @@ export const generationDraftApi = {
   }, handlers: StreamHandlers): () => void {
     if (USE_MOCK) throw new GenerationError('continuation_not_available', '当前演示数据没有可继续的候选')
     return startStream(`/generate/drafts/${encodeURIComponent(id)}/continue`, options as GenerateOptions, handlers)
+  }
+}
+
+export const longGenerationApi = {
+  async createPlan(options: {
+    chapterId: string
+    targetWords: number
+    segmentWords: number
+    scenePurposes?: string[]
+    requiredBeats?: string[]
+  }): Promise<LongGenerationPlan> {
+    if (USE_MOCK) throw new GenerationError('long_generation_requires_real_service', '长篇分段需要连接真实服务')
+    return request<LongGenerationPlan>('/generate/long-plan', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        chapterId: options.chapterId,
+        targetWords: options.targetWords,
+        segmentWords: options.segmentWords,
+        scenePurposes: options.scenePurposes ?? [],
+        requiredBeats: options.requiredBeats ?? []
+      })
+    })
+  },
+
+  async getPlan(chapterId: string): Promise<LongGenerationPlan> {
+    if (USE_MOCK) throw new GenerationError('long_generation_requires_real_service', '长篇分段需要连接真实服务')
+    return request<LongGenerationPlan>(`/generate/long-plan/${encodeURIComponent(chapterId)}`)
+  },
+
+  async queueSegment(segmentId: string, options: LongGenerationOptions = {}): Promise<LongGenerationSegment & { taskId?: string }> {
+    if (USE_MOCK) throw new GenerationError('long_generation_requires_real_service', '长篇分段需要连接真实服务')
+    return request<LongGenerationSegment & { taskId?: string }>(`/generate/long-segments/${encodeURIComponent(segmentId)}/generate`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(longGenerationPayload(options))
+    })
+  },
+
+  async merge(chapterId: string): Promise<GenerationDraftDetail> {
+    if (USE_MOCK) throw new GenerationError('long_generation_requires_real_service', '长篇分段需要连接真实服务')
+    return request<GenerationDraftDetail>(`/generate/long-plan/${encodeURIComponent(chapterId)}/merge`, { method: 'POST' })
   }
 }
 

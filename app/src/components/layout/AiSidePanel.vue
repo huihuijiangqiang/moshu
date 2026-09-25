@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { contentApi } from '@/api/content'
 import { useProjectStore } from '@/stores/project'
@@ -8,7 +8,7 @@ import { useGuardStore } from '@/stores/guard'
 import { useStylesStore } from '@/stores/styles'
 import { CODEX_KIND_LABEL, type CodexEntry, type CodexStateHistoryItem, type ContextLayer, type ContextMode, type GenerationControls, type ProjectNote } from '@/types'
 import { useProjectNavigation } from '@/composables/use-project-navigation'
-import { generationDraftApi, previewGeneration, type GenerationPreview } from '@/api/generation'
+import { generationDraftApi, longGenerationApi, previewGeneration, type GenerationPreview, type LongGenerationPlan } from '@/api/generation'
 import AppIcon from '@/components/ui/AppIcon.vue'
 import ReviewPanel from '@/components/editor/ReviewPanel.vue'
 import type { GenerationDraftDecision, GenerationDraftDetail, GenerationDraftSummary, ReviewAnchor, ReviewComment, ReviewRound, ReviewWorkspace } from '@/types'
@@ -59,7 +59,7 @@ const styles = useStylesStore()
 const { toProject } = useProjectNavigation()
 
 const layers = ref<ContextLayer[]>([])
-const tab = ref<'ai' | 'drafts' | 'refs' | 'review' | 'notes'>('ai')
+const tab = ref<'ai' | 'long' | 'drafts' | 'refs' | 'review' | 'notes'>('ai')
 const targetWords = ref(3000)
 const model = ref<'basic' | 'advanced'>('basic')
 const contextMode = ref<ContextMode>('smart')
@@ -85,6 +85,16 @@ const noteDraft = ref('')
 const notesLoading = ref(false)
 const noteBusy = ref(false)
 const noteError = ref('')
+const longPlan = ref<LongGenerationPlan | null>(null)
+const longTargetWords = ref(100000)
+const longSegmentWords = ref(2400)
+const longInstruction = ref('')
+const longPlanLoading = ref(false)
+const longPlanBusy = ref(false)
+const longPlanError = ref('')
+const longModel = ref<'basic' | 'advanced'>('basic')
+const longContextMode = ref<ContextMode>('smart')
+let longPollTimer: number | null = null
 let referenceStateRequest = 0
 let previewRequest = 0
 let notesRequest = 0
@@ -100,7 +110,7 @@ const CONTEXT_MODE_BUDGET = Object.fromEntries(
 ) as Record<ContextMode, number>
 const availableTabs = computed(() => props.mobileReadOnly
   ? (['notes'] as const)
-  : (['ai', 'drafts', 'refs', 'review', 'notes'] as const))
+  : (['ai', 'long', 'drafts', 'refs', 'review', 'notes'] as const))
 
 watch(() => props.mobileReadOnly, (value) => {
   if (value) tab.value = 'notes'
@@ -126,6 +136,120 @@ async function loadNotes() {
     if (requestId === notesRequest) notesLoading.value = false
   }
 }
+
+const longNextSegment = computed(() => longPlan.value?.segments.find((segment) => segment.status === 'pending' || segment.status === 'failed') ?? null)
+const longRunning = computed(() => Boolean(longPlan.value?.segments.some((segment) => segment.status === 'running')))
+const longReadyCount = computed(() => longPlan.value?.segments.filter((segment) => segment.status === 'ready' || segment.status === 'accepted').length ?? 0)
+const longComplete = computed(() => Boolean(longPlan.value && longPlan.value.segments.length > 0 && longReadyCount.value === longPlan.value.segments.filter((segment) => segment.status !== 'skipped').length))
+
+function clearLongPoll() {
+  if (longPollTimer !== null) {
+    window.clearTimeout(longPollTimer)
+    longPollTimer = null
+  }
+}
+
+function scheduleLongPoll() {
+  clearLongPoll()
+  if (!longRunning.value || !project.activeId) return
+  longPollTimer = window.setTimeout(async () => {
+    longPollTimer = null
+    await loadLongPlan()
+    scheduleLongPoll()
+  }, 4000)
+}
+
+async function loadLongPlan() {
+  const chapterId = project.activeId
+  if (!chapterId || longPlanLoading.value) return
+  longPlanLoading.value = true
+  longPlanError.value = ''
+  try {
+    longPlan.value = await longGenerationApi.getPlan(chapterId)
+    scheduleLongPoll()
+  } catch (error) {
+    const message = error instanceof Error ? error.message : '长篇计划加载失败'
+    if (!message.includes('404')) longPlanError.value = message
+  } finally {
+    longPlanLoading.value = false
+  }
+}
+
+async function createLongPlan() {
+  const chapterId = project.activeId
+  if (!chapterId || longPlanBusy.value) return
+  longPlanBusy.value = true
+  longPlanError.value = ''
+  try {
+    longPlan.value = await longGenerationApi.createPlan({
+      chapterId,
+      targetWords: Math.max(800, Math.min(1_000_000, Math.round(longTargetWords.value))),
+      segmentWords: Math.max(800, Math.min(32_000, Math.round(longSegmentWords.value))),
+      scenePurposes: project.active?.outline ?? []
+    })
+    scheduleLongPoll()
+  } catch (error) {
+    longPlanError.value = error instanceof Error ? error.message : '长篇计划创建失败'
+  } finally {
+    longPlanBusy.value = false
+  }
+}
+
+async function queueLongNext() {
+  const segment = longNextSegment.value
+  if (!segment || longPlanBusy.value) return
+  longPlanBusy.value = true
+  longPlanError.value = ''
+  try {
+    const queued = await longGenerationApi.queueSegment(segment.id, {
+      model: longModel.value,
+      contextMode: longContextMode.value,
+      dialogueDensity: 'mid',
+      useStyleProfile: true,
+      instruction: longInstruction.value.trim()
+    })
+    if (longPlan.value) {
+      longPlan.value = {
+        ...longPlan.value,
+        segments: longPlan.value.segments.map((item) => item.id === queued.id ? { ...item, ...queued, status: 'running' } : item)
+      }
+    }
+    scheduleLongPoll()
+  } catch (error) {
+    longPlanError.value = error instanceof Error ? error.message : '长篇分段排队失败'
+  } finally {
+    longPlanBusy.value = false
+  }
+}
+
+async function mergeLongPlan() {
+  const chapterId = project.activeId
+  if (!chapterId || longPlanBusy.value || !longReadyCount.value) return
+  longPlanBusy.value = true
+  longPlanError.value = ''
+  try {
+    await longGenerationApi.merge(chapterId)
+    emit('refreshDrafts')
+    tab.value = 'drafts'
+  } catch (error) {
+    longPlanError.value = error instanceof Error ? error.message : '长篇候选合并失败'
+  } finally {
+    longPlanBusy.value = false
+  }
+}
+
+watch(() => project.activeId, () => {
+  clearLongPoll()
+  longPlan.value = null
+  longPlanError.value = ''
+  if (tab.value === 'long') void loadLongPlan()
+})
+
+watch(() => tab.value, (value) => {
+  if (value === 'long') void loadLongPlan()
+})
+
+onBeforeUnmount(clearLongPoll)
 
 watch(() => project.project?.id, () => void loadNotes(), { immediate: true })
 
@@ -526,7 +650,7 @@ function forwardReviewDecision(round: ReviewRound, decision: 'approved' | 'chang
         :aria-selected="tab === t"
         @click="tab = t"
       >
-        {{ t === 'ai' ? 'AI' : t === 'drafts' ? `候选 ${props.drafts?.length ?? 0}` : t === 'refs' ? '资料' : t === 'review' ? `审稿 ${props.reviewWorkspace?.rounds[0]?.comments.filter((item) => item.status === 'open').length ?? 0}` : '笔记' }}
+        {{ t === 'ai' ? 'AI' : t === 'long' ? '长篇' : t === 'drafts' ? `候选 ${props.drafts?.length ?? 0}` : t === 'refs' ? '资料' : t === 'review' ? `审稿 ${props.reviewWorkspace?.rounds[0]?.comments.filter((item) => item.status === 'open').length ?? 0}` : '笔记' }}
       </button>
     </div>
 
@@ -799,6 +923,37 @@ function forwardReviewDecision(round: ReviewRound, decision: 'approved' | 'chang
           </button>
           <p v-if="!guard.open.length" :style="{ margin: 0, color: 'var(--ink-3)' }">暂无提醒。</p>
         </div>
+      </section>
+    </template>
+
+    <template v-else-if="tab === 'long'">
+      <div class="wk-head"><span>长篇分段</span><span class="wk-head-push">最多 100 万字</span><button class="draft-refresh" type="button" title="刷新长篇计划" aria-label="刷新长篇计划" @click="loadLongPlan"><AppIcon name="restore" :size="14" /></button></div>
+      <section class="long-generation-card" aria-label="长篇分段生成">
+        <p class="long-generation-intro">把整章拆成可恢复的小段，每段独立校验，完成后再合并到候选区。关闭页面也不会丢失已保存的段落。</p>
+        <div class="long-generation-fields">
+          <label><span>目标字数</span><input v-model.number="longTargetWords" type="number" min="800" max="1000000" step="1000" :disabled="Boolean(longPlan?.segments.length)" /></label>
+          <label><span>每段字数</span><input v-model.number="longSegmentWords" type="number" min="800" max="32000" step="200" :disabled="Boolean(longPlan?.segments.length)" /></label>
+          <label><span>模型档位</span><select v-model="longModel"><option value="basic">均衡</option><option value="advanced">高级</option></select></label>
+          <label><span>上下文</span><select v-model="longContextMode"><option value="smart">智能</option><option value="standard">标准</option><option value="deep">深度</option><option value="fast">快速</option></select></label>
+        </div>
+        <label class="long-generation-instruction"><span>本轮补充要求（可选）</span><textarea v-model="longInstruction" rows="3" maxlength="2000" placeholder="例如：本段必须让女主拿到第一条可验证的线索，并在结尾留下新的风险。" /></label>
+        <p v-if="longPlanError" class="long-generation-error" role="alert">{{ longPlanError }}</p>
+        <p v-if="longPlanLoading" class="long-generation-state" role="status">正在读取分段计划…</p>
+        <template v-if="longPlan?.segments.length">
+          <div class="long-generation-progress">
+            <div class="row-between"><strong>{{ longReadyCount }} / {{ longPlan.segments.filter((segment) => segment.status !== 'skipped').length }} 段已完成</strong><span>{{ longPlan.targetWords?.toLocaleString() ?? longTargetWords.toLocaleString() }} 字</span></div>
+            <div class="long-generation-progress-bar"><span :style="{ width: `${longPlan.segments.length ? (longReadyCount / longPlan.segments.filter((segment) => segment.status !== 'skipped').length) * 100 : 0}%` }" /></div>
+          </div>
+          <div class="long-generation-segments">
+            <div v-for="segment in longPlan.segments" :key="segment.id" class="long-generation-segment" :data-status="segment.status">
+              <span class="long-generation-index">{{ String(segment.index + 1).padStart(2, '0') }}</span>
+              <span class="long-generation-segment-main"><strong>{{ segment.status === 'running' ? '生成中' : segment.status === 'ready' ? '待合并' : segment.status === 'accepted' ? '已采纳' : segment.status === 'failed' ? '需要重试' : segment.status === 'skipped' ? '已跳过' : '待生成' }}</strong><small>{{ segment.generatedWords.toLocaleString() }} / {{ segment.targetWords.toLocaleString() }} 字</small></span>
+              <span v-if="segment.errorCode" class="long-generation-segment-error">{{ segment.errorCode }}</span>
+            </div>
+          </div>
+          <div class="long-generation-actions"><button class="wk-btn" type="button" :disabled="longPlanBusy || longRunning || !longNextSegment" @click="queueLongNext">{{ longPlanBusy ? '排队中…' : longRunning ? '当前段生成中…' : longNextSegment?.status === 'failed' ? '重试当前段' : '生成下一段' }}</button><button class="wk-btn" data-primary="true" type="button" :disabled="longPlanBusy || !longReadyCount" @click="mergeLongPlan">{{ longComplete ? '合并全部候选' : '合并已完成段落' }}</button></div>
+        </template>
+        <button v-else class="wk-btn" data-primary="true" type="button" :disabled="longPlanBusy || longPlanLoading || !project.activeId" @click="createLongPlan">{{ longPlanBusy ? '创建中…' : '创建长篇计划' }}</button>
       </section>
     </template>
 
@@ -1179,6 +1334,30 @@ function forwardReviewDecision(round: ReviewRound, decision: 'approved' | 'chang
 .draft-segment footer button { padding: 2px 5px; color: var(--ink-2); background: transparent; border: 0; cursor: pointer; }
 .draft-segment footer button:hover { color: var(--ink); background: var(--panel); }
 .draft-segment footer button:focus-visible { outline: 2px solid var(--primary); outline-offset: 1px; }
+.long-generation-card { display: grid; gap: var(--u4); padding: var(--u3); border: var(--hair) solid var(--line-strong); background: var(--panel-sunken); }
+.long-generation-intro { margin: 0; color: var(--ink-3); font-size: var(--fs-sm); line-height: 1.7; }
+.long-generation-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--u3); }
+.long-generation-fields label, .long-generation-instruction { display: grid; gap: 5px; color: var(--ink-3); font-size: var(--fs-xs); }
+.long-generation-fields input, .long-generation-fields select, .long-generation-instruction textarea { width: 100%; min-width: 0; padding: 7px 8px; color: var(--ink); background: var(--paper); border: var(--hair) solid var(--line-strong); border-radius: 3px; font: inherit; }
+.long-generation-fields input:focus, .long-generation-fields select:focus, .long-generation-instruction textarea:focus { outline: 2px solid var(--primary-soft); border-color: var(--primary); }
+.long-generation-instruction textarea { resize: vertical; line-height: 1.6; }
+.long-generation-error { margin: 0; padding: 7px 9px; color: var(--alert-ink); background: var(--alert-soft); border-left: 3px solid var(--alert); font-size: var(--fs-sm); line-height: 1.6; }
+.long-generation-state { margin: 0; color: var(--ink-3); font-size: var(--fs-sm); }
+.long-generation-progress { display: grid; gap: 7px; color: var(--ink-2); font-size: var(--fs-xs); }
+.long-generation-progress-bar { height: 5px; overflow: hidden; background: var(--line); border-radius: 2px; }
+.long-generation-progress-bar span { display: block; height: 100%; background: var(--primary); transition: width .25s ease; }
+.long-generation-segments { display: grid; gap: 5px; max-height: 250px; overflow: auto; }
+.long-generation-segment { display: grid; grid-template-columns: 28px minmax(0, 1fr) auto; align-items: center; gap: var(--u2); min-height: 42px; padding: 6px 8px; border: var(--hair) solid var(--line); background: var(--paper); }
+.long-generation-segment[data-status='running'] { border-left: 3px solid var(--primary); }
+.long-generation-segment[data-status='ready'], .long-generation-segment[data-status='accepted'] { border-left: 3px solid var(--success); }
+.long-generation-segment[data-status='failed'] { border-left: 3px solid var(--alert); }
+.long-generation-index { color: var(--ink-4); font: 700 var(--fs-xs)/1 var(--font-mono); }
+.long-generation-segment-main { display: grid; gap: 2px; min-width: 0; }
+.long-generation-segment-main strong { color: var(--ink-2); font-size: var(--fs-sm); }
+.long-generation-segment-main small { color: var(--ink-4); font-size: var(--fs-xs); }
+.long-generation-segment-error { max-width: 90px; overflow: hidden; color: var(--alert-ink); font: var(--fs-2xs)/1.3 var(--font-mono); text-overflow: ellipsis; white-space: nowrap; }
+.long-generation-actions { display: flex; flex-wrap: wrap; gap: var(--u2); }
+@media (max-width: 420px) { .long-generation-fields { grid-template-columns: 1fr; } }
 .draft-warning { margin: 0; color: var(--alert-ink); font-size: var(--fs-sm); line-height: 1.6; }
 .draft-actions { display: flex; justify-content: flex-end; gap: var(--u2); }
 .generation-recovery {

@@ -44,7 +44,9 @@ server/
 长篇章节先通过 `POST /generate/long-plan` 建立可恢复的分段账本（目标最多
 1,000,000 字，默认每段 2,400 字），再逐段调用现有生成流。段记录包含
 `context_manifest`、源正文修订号、prompt hash、状态和错误码；恢复时只继续第一个
-未完成段，作者采纳的段不会被重复生成。
+未完成段，作者采纳的段不会被重复生成。`POST /generate/long-segments/{id}/generate`
+会复用 `GenerationService`、积分预留与 Celery worker，生成结果先进入 `ready` 段，
+通过 `/generate/long-plan/{chapter_id}/merge` 生成作者候选，不会直接覆盖正文。
 
 `GET /generate/models` 返回已登记的火山 Coding Plan 模型和上下文窗口。需要做真实
 对比时，在本机设置 `VOLCENGINE_API_KEY`（以及可选的 `VOLCENGINE_BASE_URL`），运行：

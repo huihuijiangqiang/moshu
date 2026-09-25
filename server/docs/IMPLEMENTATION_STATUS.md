@@ -605,14 +605,14 @@ PostgreSQL/pgvector 检索必须在真实部署上单独压测；该脚本只覆
 
 #### 单元测试（1728 passed，SQLite in-memory，受控 providers）
 
-**全量测试结果**：1728 passed, 38 skipped（未设置集成测试 URL 时）；前端 209 passed
+**全量测试结果**：1728 passed, 38 skipped（未设置集成测试 URL 时）；前端 211 passed
 
 #### 前端依赖安全审计
 
 - ✅ `vitest` 已升级至 4.1.11，修复测试服务任意文件读取与执行风险
 - ✅ `happy-dom` 已升级至 20.14.0，修复 VM context escape 与跨源凭据泄露风险
 - ✅ `npm audit --omit=dev` 与完整 `npm audit` 均为 0 个已知漏洞
-- ✅ 作品定位、场景卡片、自然化审查、充值订单自动查单、漫剧静态编辑、人物全身设定图资产、任务中心、账号安全和弹性上下文实现后 209 个前端测试、TypeScript 类型检查和 Vite 生产构建全部通过
+- ✅ 作品定位、场景卡片、自然化审查、充值订单自动查单、漫剧静态编辑、人物全身设定图资产、任务中心、账号安全、弹性上下文和长篇分段 worker 入口实现后 211 个前端测试、TypeScript 类型检查和 Vite 生产构建全部通过
 
 主要测试覆盖（不逐文件列举测试数量，以实际 pytest 结果为准）：
 - ✅ Codex 设定库：页面与 API 完整 CRUD、关系增改删与双向投影、引用删除保护、原子别名替换、可检索文本判据、两段式事务、deferred 降级、httpx 错误重试
