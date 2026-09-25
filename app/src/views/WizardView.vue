@@ -555,8 +555,6 @@ onMounted(() => {
     protagonist.value = typeof draft.protagonist === 'string' ? draft.protagonist : ''
     coreHook.value = typeof draft.coreHook === 'string' ? draft.coreHook : ''
     synopsis.value = typeof draft.synopsis === 'string' ? draft.synopsis : ''
-    firstPayoff.value = typeof draft.firstPayoff === 'string' ? draft.firstPayoff : ''
-    longTermArc.value = typeof draft.longTermArc === 'string' ? draft.longTermArc : ''
     volumes.value = Array.isArray(draft.volumes) ? draft.volumes : []
     chapters.value = Array.isArray(draft.chapters)
       ? draft.chapters.flatMap((item: unknown): ChapterDraft[] => {
@@ -575,6 +573,12 @@ onMounted(() => {
         }]
       }).slice(0, 3)
       : []
+    firstPayoff.value = typeof draft.firstPayoff === 'string'
+      ? draft.firstPayoff : (chapters.value[0]?.outline.split('\n').at(-1)?.trim() ?? '')
+    longTermArc.value = typeof draft.longTermArc === 'string'
+      ? draft.longTermArc : volumes.value
+        .map((volume) => typeof volume?.summary === 'string' ? volume.summary : '')
+        .filter(Boolean).join('；')
     lastPlanSignature.value = typeof draft.lastPlanSignature === 'string'
       ? draft.lastPlanSignature : skeletonValid.value ? planSignature.value : ''
     // A draft saved while a request was in flight must remain recoverable.

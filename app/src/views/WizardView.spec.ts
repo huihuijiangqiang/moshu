@@ -217,6 +217,10 @@ describe('new project wizard', () => {
     expect(wrapper.findAll('.wizard-chapter-plan')).toHaveLength(3)
     expect(wrapper.get('textarea[aria-label="第 3 章章纲"]').element)
       .toHaveProperty('value', plan.chapters[2]!.outline.join('\n'))
+    expect(wrapper.get('textarea[placeholder^="前三章"]').element)
+      .toHaveProperty('value', plan.chapters[0]!.outline.at(-1))
+    expect(wrapper.get('textarea[placeholder^="中后期"]').element)
+      .toHaveProperty('value', plan.volumes.map((volume) => volume.summary).join('；'))
     expect(buttonByText(wrapper, '确认故事骨架')?.attributes('disabled')).toBeUndefined()
     await buttonByText(wrapper, '上一步')?.trigger('click')
     await wrapper.get('.wizard-steps button:nth-child(3)').trigger('click')
@@ -224,6 +228,17 @@ describe('new project wizard', () => {
     const saved = JSON.parse(storage.get('moshu:new-project-draft')!)
     expect(saved.chapters[2].volumeIndex).toBe(1)
     expect(saved.chapters[2].outline).toBe(plan.chapters[2]!.outline.join('\n'))
+  })
+
+  it('keeps an explicitly cleared payoff invalid when restoring a draft', async () => {
+    const plan = storyPlan()
+    const wrapper = await mountWizard({
+      ...selectedDraft, step: 3, highestStep: 3,
+      bookTitle: plan.title, protagonist: plan.protagonist, coreHook: plan.coreHook,
+      synopsis: plan.synopsis, volumes: plan.volumes, chapters: plan.chapters,
+      firstPayoff: ''
+    })
+    expect(buttonByText(wrapper, '确认故事骨架')?.attributes('disabled')).toBeDefined()
   })
 
   it('keeps a selected subgenre when its current genre group is clicked again', async () => {
