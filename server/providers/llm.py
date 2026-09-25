@@ -1,5 +1,9 @@
-"""
-OpenAI-compatible LLM providers for extraction, embedding, and summarization
+"""Backward-compatible OpenAI-compatible provider adapters.
+
+The live application uses ``providers.consistency`` and
+``services.embedding``. This module remains importable for integrations that
+used the older provider names, but reads the current gateway settings instead
+of the removed ``openai_*`` fields.
 """
 import hashlib
 import json
@@ -11,6 +15,20 @@ from config import settings
 from services.prompt_security import security_policy, untrusted_text_block
 
 
+def _chat_endpoint(base_url: str) -> str:
+    base = base_url.rstrip("/")
+    return base if base.endswith("/chat/completions") else f"{base}/chat/completions"
+
+
+def _embedding_endpoint(base_url: str) -> str:
+    base = base_url.rstrip("/")
+    if base.endswith("/embeddings"):
+        return base
+    if base.endswith("/chat/completions"):
+        return base[: -len("/chat/completions")] + "/embeddings"
+    return f"{base}/embeddings"
+
+
 class StructuredExtractionProvider:
     """
     Structured extraction using OpenAI-compatible API
@@ -18,9 +36,9 @@ class StructuredExtractionProvider:
     """
 
     def __init__(self):
-        self.base_url = settings.openai_api_base
-        self.api_key = settings.openai_api_key
-        self.model_name = settings.openai_model_name
+        self.base_url = _chat_endpoint(settings.gateway_url(settings.consistency_gateway_tier))
+        self.api_key = settings.gateway_key(settings.consistency_gateway_tier)
+        self.model_name = settings.consistency_extraction_model
         self.version = "1.0.0"
         self.timeout = httpx.Timeout(60.0, connect=10.0)
 
@@ -42,7 +60,7 @@ class StructuredExtractionProvider:
 
         async with httpx.AsyncClient(timeout=self.timeout) as client:
             response = await client.post(
-                f"{self.base_url}/chat/completions",
+                self.base_url,
                 headers={
                     "Authorization": f"Bearer {self.api_key}",
                     "Content-Type": "application/json",
@@ -161,9 +179,11 @@ class EmbeddingProvider:
     """
 
     def __init__(self):
-        self.base_url = settings.openai_api_base
-        self.api_key = settings.openai_api_key
-        self.embedding_model = settings.openai_embedding_model
+        self.base_url = _embedding_endpoint(
+            settings.embedding_gateway_url or settings.gateway_url(settings.consistency_gateway_tier)
+        )
+        self.api_key = settings.embedding_gateway_key or settings.gateway_key(settings.consistency_gateway_tier)
+        self.embedding_model = settings.embedding_model
         self.timeout = httpx.Timeout(30.0, connect=10.0)
 
     async def embed(self, text: str) -> list[float]:
@@ -175,7 +195,7 @@ class EmbeddingProvider:
         """
         async with httpx.AsyncClient(timeout=self.timeout) as client:
             response = await client.post(
-                f"{self.base_url}/embeddings",
+                self.base_url,
                 headers={
                     "Authorization": f"Bearer {self.api_key}",
                     "Content-Type": "application/json",
@@ -199,7 +219,7 @@ class EmbeddingProvider:
         """
         async with httpx.AsyncClient(timeout=self.timeout) as client:
             response = await client.post(
-                f"{self.base_url}/embeddings",
+                self.base_url,
                 headers={
                     "Authorization": f"Bearer {self.api_key}",
                     "Content-Type": "application/json",
