@@ -255,10 +255,12 @@ docker compose up -d --build
 - API（本地调试时可在 `MOSHU_DEBUG=true` 后访问文档）：http://localhost:8000
 - 就绪探针：http://localhost:8000/health/ready
 
-本地 Compose 默认将前端发布到 `8080`、PostgreSQL 发布到 `55432`，用于避开 Windows
+本地 Compose 默认将前端发布到回环地址 `127.0.0.1:8080`、PostgreSQL 发布到
+`127.0.0.1:55432`，用于避开 Windows
 常见保留端口；应用容器之间仍使用内部的 `postgres:5432` 和 `redis:6379`。如端口仍被占用，
 可在仓库根目录的未跟踪 `.env` 中覆盖 `MOSHU_FRONTEND_HOST_PORT`、
-`MOSHU_POSTGRES_HOST_PORT`。生产环境请通过 `MOSHU_PUBLIC_APP_URL` 设置真实访问地址，
+`MOSHU_API_HOST_PORT`、`MOSHU_POSTGRES_HOST_PORT`、`MOSHU_REDIS_HOST_PORT`。
+生产环境请通过 `MOSHU_PUBLIC_APP_URL` 设置真实访问地址，
 不要把真实密钥或环境文件提交到 Git。
 
 `migration` 会在 API 和 worker 启动前执行 `alembic upgrade head`。就绪探针同时检查

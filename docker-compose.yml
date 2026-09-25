@@ -29,7 +29,7 @@ services:
     ports:
       # The application uses the internal postgres:5432 address. Keep the host
       # port configurable so a local PostgreSQL service cannot block startup.
-      - "${MOSHU_POSTGRES_HOST_PORT:-55432}:5432"
+      - "127.0.0.1:${MOSHU_POSTGRES_HOST_PORT:-55432}:5432"
     volumes:
       - ${MOSHU_POSTGRES_DATA_DIR:-./.docker-data/postgres}:/var/lib/postgresql/data
     healthcheck:
@@ -42,7 +42,7 @@ services:
     image: redis:7-alpine
     command: ["redis-server", "--appendonly", "yes"]
     ports:
-      - "6379:6379"
+      - "127.0.0.1:${MOSHU_REDIS_HOST_PORT:-6379}:6379"
     volumes:
       - ${MOSHU_REDIS_DATA_DIR:-./.docker-data/redis}:/data
     healthcheck:
@@ -63,7 +63,7 @@ services:
     <<: *server-base
     command: ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
     ports:
-      - "8000:8000"
+      - "127.0.0.1:${MOSHU_API_HOST_PORT:-8000}:8000"
     volumes:
       - ${MOSHU_PRODUCTION_ASSET_DATA_DIR:-./.docker-data/production-assets}:/app/.local/production-assets
     depends_on:
@@ -87,7 +87,7 @@ services:
         VITE_API_BASE: /api
         VITE_USE_MOCK: "false"
     ports:
-      - "${MOSHU_FRONTEND_HOST_PORT:-8080}:80"
+      - "127.0.0.1:${MOSHU_FRONTEND_HOST_PORT:-8080}:80"
     depends_on:
       api:
         condition: service_healthy
