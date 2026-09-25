@@ -21,6 +21,7 @@ from api.auth import (
     verify_chapter_assignment,
     verify_project_permission,
 )
+from celery_app import celery_app
 from config import settings
 from db.models_core import Chapter, ChapterBody, Project, User
 from db.models_long_generation import GenerationSegment
@@ -61,6 +62,7 @@ from services.long_generation_executor import (
     merge_segment_outputs,
     validate_claimed_segment,
 )
+from services.long_generation_runner import LONG_SEGMENT_LEASE_SECONDS
 from services.model_catalog import CODING_PLAN_MODELS
 from services.model_configs import active_user_generation_route
 from services.provenance import PROVENANCE_ALGORITHM, generated_paragraph_hashes
@@ -195,6 +197,21 @@ class LongSegmentHeartbeatRequest(BaseModel):
     lease_revision: int = Field(alias="leaseRevision", ge=1)
     lease_owner: str | None = Field(None, alias="leaseOwner", min_length=1, max_length=100)
     lease_seconds: int = Field(300, alias="leaseSeconds", ge=1, le=3600)
+
+
+class LongSegmentGenerateRequest(BaseModel):
+    """Worker options persisted with a claimed segment."""
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    model: Literal["basic", "advanced"] = "basic"
+    provider_model: str | None = Field(None, alias="modelId", min_length=1, max_length=200)
+    use_style_profile: bool = Field(True, alias="useStyleProfile")
+    dialogue_density: Literal["low", "mid", "high"] = Field("mid", alias="dialogueDensity")
+    context_mode: Literal["smart", "fast", "standard", "deep"] = Field(
+        "smart", alias="contextMode"
+    )
+    instruction: str = Field("", max_length=2000)
 
 
 def get_generation_gateway() -> GenerationGateway:
@@ -784,6 +801,77 @@ async def get_long_chapter_plan(
             for row in segments
         ],
     }
+
+
+@router.post("/long-segments/{segment_id}/generate")
+async def queue_long_generation_segment(
+    segment_id: str,
+    request: LongSegmentGenerateRequest | None = None,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Claim and queue one long-form segment for the existing Celery worker."""
+    segment = await _load_segment_scope(segment_id, user, db, ProjectPermission.GENERATE)
+    if segment.status in {"ready", "accepted"}:
+        return _segment_payload(segment)
+    if segment.status == "running":
+        raise HTTPException(status_code=409, detail={"code": "SEGMENT_BUSY", "message": "该段正在生成"})
+    if segment.status not in {"pending", "failed"}:
+        raise HTTPException(
+            status_code=409,
+            detail={"code": "SEGMENT_STATE_INVALID", "message": f"该段当前状态为 {segment.status}"},
+        )
+    payload = request or LongSegmentGenerateRequest()
+    if payload.provider_model and payload.provider_model not in {str(item["id"]) for item in CODING_PLAN_MODELS}:
+        raise HTTPException(status_code=422, detail={"code": "MODEL_NOT_ALLOWED", "message": "模型不在已验证的模型目录中。"})
+    owner = f"long:{user.id}:{uuid.uuid4().hex[:16]}"
+    try:
+        claim = await claim_segment(
+            db,
+            segment_id,
+            lease_seconds=LONG_SEGMENT_LEASE_SECONDS,
+            lease_owner=owner,
+        )
+        manifest = dict(segment.context_manifest or {})
+        manifest["generationRequest"] = {
+            "model": payload.model,
+            "providerModel": payload.provider_model,
+            "useStyleProfile": payload.use_style_profile,
+            "dialogueDensity": payload.dialogue_density,
+            "contextMode": payload.context_mode,
+            "instruction": payload.instruction,
+        }
+        segment.context_manifest = manifest
+        await db.commit()
+    except Exception as exc:
+        await db.rollback()
+        raise _segment_error(exc) from exc
+
+    try:
+        task = await asyncio.to_thread(
+            celery_app.send_task,
+            "generation.generate_long_segment",
+            args=[segment_id, user.id, claim.lease_revision, owner],
+            retry=False,
+        )
+    except Exception as exc:
+        try:
+            await fail_segment(
+                db,
+                segment_id,
+                lease_revision=claim.lease_revision,
+                lease_owner=owner,
+                error_code="worker_dispatch_failed",
+            )
+            await db.commit()
+        except Exception:
+            await db.rollback()
+        raise HTTPException(status_code=503, detail={"code": "WORKER_UNAVAILABLE", "message": "长篇生成任务暂时无法排队"}) from exc
+
+    row = await db.get(GenerationSegment, segment_id)
+    payload_out = _segment_payload(row or segment)
+    payload_out["taskId"] = task.id
+    return payload_out
 
 
 async def _load_segment_scope(

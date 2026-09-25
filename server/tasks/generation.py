@@ -8,7 +8,9 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from config import settings
+from db.models_long_generation import GenerationSegment
 from db.models_usage import GenerationDraft, UsageLog
+from services.long_generation_runner import LongSegmentOptions, execute_long_segment
 from services.usage import ensure_current_quota
 
 engine = create_async_engine(settings.database_url, echo=False)
@@ -97,4 +99,44 @@ def recover_stale_generation_state_task():
     return run_async(run())
 
 
-__all__ = ["STALE_GENERATION_SECONDS", "recover_stale_generation_state", "recover_stale_generation_state_task"]
+@shared_task(name="generation.generate_long_segment")
+def generate_long_segment_task(
+    segment_id: str,
+    user_id: str,
+    lease_revision: int,
+    lease_owner: str,
+):
+    """Generate one claimed long-form segment in a durable worker.
+
+    The API claims the segment before publishing this task.  The revision and
+    owner are passed through as a fencing token so a late worker cannot write
+    into a reclaimed retry.
+    """
+
+    async def run():
+        async with AsyncSessionLocal() as db:
+            segment = await db.get(GenerationSegment, segment_id)
+            if segment is None:
+                return {"status": "missing", "segmentId": segment_id}
+            raw = segment.context_manifest.get("generationRequest", {}) if isinstance(segment.context_manifest, dict) else {}
+            options = LongSegmentOptions(
+                model=str(raw.get("model") or "basic"),
+                provider_model=str(raw["providerModel"]) if raw.get("providerModel") else None,
+                use_style_profile=bool(raw.get("useStyleProfile", True)),
+                dialogue_density=str(raw.get("dialogueDensity") or "mid"),
+                context_mode=str(raw.get("contextMode") or "smart"),
+                instruction=str(raw.get("instruction") or ""),
+            )
+            return await execute_long_segment(
+                db,
+                segment_id=segment_id,
+                user_id=user_id,
+                lease_revision=lease_revision,
+                lease_owner=lease_owner,
+                options=options,
+            )
+
+    return run_async(run())
+
+
+__all__ = ["STALE_GENERATION_SECONDS", "recover_stale_generation_state", "recover_stale_generation_state_task", "generate_long_segment_task"]

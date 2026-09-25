@@ -1,4 +1,5 @@
 import hashlib
+from types import SimpleNamespace
 
 from sqlalchemy import select
 
@@ -214,3 +215,48 @@ async def test_rejected_long_merge_requires_changed_segments(
     )
     assert repeated.status_code == 409
     assert repeated.json()["detail"]["code"] == "LONG_MERGE_REJECTED"
+
+
+async def test_queue_long_segment_claims_and_persists_worker_options(
+    app_client, async_db_session, seed_project, auth_headers, monkeypatch
+):
+    await seed_project(
+        user_id="long_queue_writer",
+        project_id="long_queue_project",
+        chapter_ids=("long_queue_chapter",),
+    )
+    headers = auth_headers("long_queue_writer")
+    planned = await app_client.post(
+        "/generate/long-plan",
+        headers=headers,
+        json={"chapterId": "long_queue_chapter", "targetWords": 800, "segmentWords": 800},
+    )
+    segment_id = planned.json()["segments"][0]["id"]
+    sent = {}
+
+    def fake_send_task(name, *, args, retry):
+        sent.update(name=name, args=args, retry=retry)
+        return SimpleNamespace(id="celery-long-1")
+
+    monkeypatch.setattr("api.generate.celery_app.send_task", fake_send_task)
+    queued = await app_client.post(
+        f"/generate/long-segments/{segment_id}/generate",
+        headers=headers,
+        json={
+            "model": "basic",
+            "modelId": "doubao-seed-2.1-turbo",
+            "contextMode": "deep",
+            "dialogueDensity": "high",
+            "instruction": "让本段在结尾产生可见局面变化。",
+        },
+    )
+    assert queued.status_code == 200, queued.text
+    assert queued.json()["status"] == "running"
+    assert queued.json()["taskId"] == "celery-long-1"
+    assert sent["name"] == "generation.generate_long_segment"
+    assert sent["retry"] is False
+    assert sent["args"][0] == segment_id
+    row = await async_db_session.get(GenerationSegment, segment_id)
+    assert row is not None and row.status == "running"
+    assert row.context_manifest["generationRequest"]["contextMode"] == "deep"
+    assert row.context_manifest["generationRequest"]["instruction"]

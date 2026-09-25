@@ -41,6 +41,7 @@ celery_app.conf.update(
         "production.generate_image": {"queue": "consistency"},
         "production.dispatch_queued": {"queue": "outbox"},
         "production.recover_stale": {"queue": "outbox"},
+        "generation.generate_long_segment": {"queue": "generation"},
     },
     beat_schedule={
         "dispatch-consistency-outbox": {
