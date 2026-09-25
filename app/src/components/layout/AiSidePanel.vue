@@ -140,7 +140,9 @@ async function loadNotes() {
 const longNextSegment = computed(() => longPlan.value?.segments.find((segment) => segment.status === 'pending' || segment.status === 'failed') ?? null)
 const longRunning = computed(() => Boolean(longPlan.value?.segments.some((segment) => segment.status === 'running')))
 const longReadyCount = computed(() => longPlan.value?.segments.filter((segment) => segment.status === 'ready' || segment.status === 'accepted').length ?? 0)
-const longComplete = computed(() => Boolean(longPlan.value && longPlan.value.segments.length > 0 && longReadyCount.value === longPlan.value.segments.filter((segment) => segment.status !== 'skipped').length))
+const longActiveCount = computed(() => longPlan.value?.segments.filter((segment) => segment.status !== 'skipped').length ?? 0)
+const longProgressPercent = computed(() => longActiveCount.value ? Math.min(100, (longReadyCount.value / longActiveCount.value) * 100) : 0)
+const longComplete = computed(() => Boolean(longPlan.value && longActiveCount.value > 0 && longReadyCount.value === longActiveCount.value))
 
 function clearLongPoll() {
   if (longPollTimer !== null) {
@@ -941,8 +943,8 @@ function forwardReviewDecision(round: ReviewRound, decision: 'approved' | 'chang
         <p v-if="longPlanLoading" class="long-generation-state" role="status">正在读取分段计划…</p>
         <template v-if="longPlan?.segments.length">
           <div class="long-generation-progress">
-            <div class="row-between"><strong>{{ longReadyCount }} / {{ longPlan.segments.filter((segment) => segment.status !== 'skipped').length }} 段已完成</strong><span>{{ longPlan.targetWords?.toLocaleString() ?? longTargetWords.toLocaleString() }} 字</span></div>
-            <div class="long-generation-progress-bar"><span :style="{ width: `${longPlan.segments.length ? (longReadyCount / longPlan.segments.filter((segment) => segment.status !== 'skipped').length) * 100 : 0}%` }" /></div>
+            <div class="row-between"><strong>{{ longReadyCount }} / {{ longActiveCount }} 段已完成</strong><span>{{ longPlan.targetWords?.toLocaleString() ?? longTargetWords.toLocaleString() }} 字</span></div>
+            <div class="long-generation-progress-bar"><span :style="{ width: `${longProgressPercent}%` }" /></div>
           </div>
           <div class="long-generation-segments">
             <div v-for="segment in longPlan.segments" :key="segment.id" class="long-generation-segment" :data-status="segment.status">
