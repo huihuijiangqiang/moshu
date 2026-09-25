@@ -3,6 +3,7 @@
 import asyncio
 import base64
 import binascii
+import re
 from dataclasses import dataclass
 from urllib.parse import urlsplit, urlunsplit
 
@@ -42,7 +43,7 @@ def image_gateway_config(config: Settings = settings) -> tuple[str, str]:
         pass
     elif not path:
         path = "/v1/images/generations"
-    elif path.endswith("/v1"):
+    elif re.search(r"/v\d+(?:\.\d+)?$", path):
         path += "/images/generations"
     else:
         raise ImageGatewayError("image_gateway_not_configured")

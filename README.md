@@ -184,7 +184,7 @@ docker compose up -d --build api worker dispatcher beat
 curl http://localhost:8000/health/ready
 ```
 
-漫剧分镜页可为单个镜头和人物全身设定图先预览提示词和积分，再确认生成，也可上传已有立绘。出场人物必须有已锁定且包含外观锚点的视觉档案；任务排队、生成和失败状态会回到对应资产，失败或取消排队任务会返还预留积分。生成图和上传图先存为私有草稿，人工确认后才能进入制作包。图片由 worker 生成，API 和 worker 必须挂载同一持久化素材目录；默认 Compose 已处理。图片网关需支持 OpenAI 兼容 `POST /v1/images/generations` 并返回 `data[0].b64_json`，不从供应商返回的任意 URL 下载图片。`IMAGE_GENERATION_CREDITS` 是部署者自定的固定价格，示例数字不代表实际上游成本。
+漫剧分镜页可为单个镜头和人物全身设定图先预览提示词和积分，再确认生成，也可上传已有立绘。出场人物必须有已锁定且包含外观锚点的视觉档案；任务排队、生成和失败状态会回到对应资产，失败或取消排队任务会返还预留积分。生成图和上传图先存为私有草稿，人工确认后才能进入制作包。图片由 worker 生成，API 和 worker 必须挂载同一持久化素材目录；默认 Compose 已处理。图片网关需支持 OpenAI 兼容 `POST /images/generations` 并返回 `data[0].b64_json`；配置可以填写完整图片端点、`/v1` 等版本化 base URL（例如 `/api/coding/v3`），服务端会在版本化 base URL 后补上 `/images/generations`，不从供应商返回的任意 URL 下载图片。`IMAGE_GENERATION_CREDITS` 是部署者自定的固定价格，示例数字不代表实际上游成本。
 
 密码找回邮件使用 SMTP 配置，不把令牌写入数据库或日志：
 

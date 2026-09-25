@@ -34,6 +34,15 @@ def test_image_gateway_rejects_non_https_or_unexpected_routes(monkeypatch):
         image_gateway_config()
 
 
+def test_image_gateway_accepts_versioned_compatible_base_url(monkeypatch):
+    monkeypatch.setattr(settings, "image_gateway_url", "https://ark.cn-beijing.volces.com/api/coding/v3")
+    monkeypatch.setattr(settings, "image_gateway_key", "test-key")
+    assert image_gateway_config() == (
+        "https://ark.cn-beijing.volces.com/api/coding/v3/images/generations",
+        "test-key",
+    )
+
+
 @pytest.mark.asyncio
 async def test_image_adapter_uses_bounded_base64_response(monkeypatch):
     monkeypatch.setattr(settings, "image_gateway_url", "https://image.example/v1")
