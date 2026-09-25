@@ -5,6 +5,7 @@ from sqlalchemy import select
 
 from db.models_long_generation import GenerationSegment
 from db.models_usage import GenerationRun
+from services.generation import count_generated_words
 from services.long_generation_runner import LongSegmentOptions, _append_stream, execute_long_segment
 from services.usage import UsageReservation
 
@@ -104,3 +105,131 @@ async def test_execute_long_segment_checkpoints_validates_and_records_run(
     run = await async_db_session.get(GenerationRun, result["runId"])
     assert run is not None and run.task_type == "long_segment"
     assert (await async_db_session.execute(select(GenerationRun))).scalars().all()
+
+
+async def test_execute_long_segment_requests_only_remaining_words_after_checkpoint(
+    async_db_session, seed_project, monkeypatch
+):
+    await seed_project(
+        user_id="resume_writer",
+        project_id="resume_project",
+        chapter_ids=("resume_chapter",),
+    )
+    prefix = "已保存的正文前缀记录粮账和脚步声。" * 20
+    continuation = "她顺着脚步声追到库门，新的证据让局面再次改变。" * 35
+    segment = GenerationSegment(
+        id="resume_segment",
+        project_id="resume_project",
+        chapter_id="resume_chapter",
+        segment_index=0,
+        target_words=800,
+        status="running",
+        revision=1,
+        content_text=prefix,
+        lease_owner="resume-worker",
+        lease_expires_at=datetime.now(UTC) + timedelta(minutes=20),
+        heartbeat_at=datetime.now(UTC),
+        context_manifest={"purpose": "从已保存正文继续"},
+    )
+    async_db_session.add(segment)
+    await async_db_session.commit()
+
+    package = SimpleNamespace(
+        route=SimpleNamespace(source="platform", config_id=None),
+        model_id="gpt-test",
+        model_tier="main",
+        prompt_tokens=900,
+        messages=[{"role": "system", "content": "test"}],
+        layer_report={"context": {"used_tokens": 900}},
+        preflight={"blocking": False},
+    )
+    prepared_targets: list[int] = []
+    reserved_targets: list[int] = []
+
+    class FakeService:
+        def __init__(self, _db):
+            pass
+
+        async def prepare(self, **kwargs):
+            prepared_targets.append(kwargs["target_words"])
+            return package
+
+    async def fake_stream(_gateway, _package):
+        yield SimpleNamespace(type="chunk", text=continuation, usage=None)
+        yield SimpleNamespace(type="usage", text="", usage={"prompt_tokens": 900, "completion_tokens": 500})
+
+    async def fake_reserve(_db, **kwargs):
+        reserved_targets.append(kwargs["target_words"])
+        return UsageReservation(log_id=2, reserved_credits=20)
+
+    async def fake_settle(_db, _reservation, **_kwargs):
+        return 18
+
+    monkeypatch.setattr("services.long_generation_runner.GenerationService", FakeService)
+    monkeypatch.setattr("services.long_generation_runner.retryable_stream", fake_stream)
+    monkeypatch.setattr("services.long_generation_runner.reserve_generation", fake_reserve)
+    monkeypatch.setattr("services.long_generation_runner.settle_generation", fake_settle)
+
+    result = await execute_long_segment(
+        async_db_session,
+        segment_id=segment.id,
+        user_id="resume_writer",
+        lease_revision=1,
+        lease_owner="resume-worker",
+        options=LongSegmentOptions(),
+    )
+
+    remaining = max(100, segment.target_words - count_generated_words(prefix))
+    assert result["status"] == "ready"
+    assert prepared_targets == [remaining]
+    assert reserved_targets == [remaining]
+
+
+async def test_execute_long_segment_accepts_a_complete_checkpoint_without_regenerating(
+    async_db_session, seed_project, monkeypatch
+):
+    await seed_project(
+        user_id="checkpoint_writer",
+        project_id="checkpoint_project",
+        chapter_ids=("checkpoint_chapter",),
+    )
+    content = "沈禾核对粮账，门外传来脚步声，所有人都停下手里的动作。" * 40
+    segment = GenerationSegment(
+        id="checkpoint_segment",
+        project_id="checkpoint_project",
+        chapter_id="checkpoint_chapter",
+        segment_index=0,
+        target_words=800,
+        status="running",
+        revision=2,
+        content_text=content,
+        generated_words=0,
+        lease_owner="checkpoint-worker",
+        lease_expires_at=datetime.now(UTC) + timedelta(minutes=20),
+        heartbeat_at=datetime.now(UTC),
+        context_manifest={"purpose": "保留已经生成的正文"},
+    )
+    async_db_session.add(segment)
+    await async_db_session.commit()
+
+    class UnexpectedGeneration:
+        def __init__(self, _db):
+            raise AssertionError("a complete checkpoint must not call the model")
+
+    monkeypatch.setattr("services.long_generation_runner.GenerationService", UnexpectedGeneration)
+
+    result = await execute_long_segment(
+        async_db_session,
+        segment_id=segment.id,
+        user_id="checkpoint_writer",
+        lease_revision=2,
+        lease_owner="checkpoint-worker",
+        options=LongSegmentOptions(),
+    )
+
+    assert result["status"] == "ready"
+    assert result["credits"] == 0
+    assert result["resumedWithoutGeneration"] is True
+    row = await async_db_session.get(GenerationSegment, segment.id)
+    assert row is not None and row.status == "ready"
+    assert row.generated_words == result["generatedWords"]
