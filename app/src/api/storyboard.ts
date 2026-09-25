@@ -78,7 +78,8 @@ interface ProductionAssetDto {
   adaptation_id: string
   episode_id: string | null
   shot_id: string | null
-  kind: 'image' | 'reference'
+  visual_profile_id: string | null
+  kind: 'image' | 'reference' | 'character_sheet'
   original_filename: string
   mime_type: string
   byte_size: number
@@ -94,7 +95,7 @@ interface ProductionAssetDto {
 function assetFromDto(row: ProductionAssetDto): StoryboardAsset {
   return {
     id: row.id, adaptationId: row.adaptation_id, episodeId: row.episode_id ?? undefined,
-    shotId: row.shot_id ?? undefined, kind: row.kind, originalFilename: row.original_filename,
+    shotId: row.shot_id ?? undefined, visualProfileId: row.visual_profile_id ?? undefined, kind: row.kind, originalFilename: row.original_filename,
     mimeType: row.mime_type, byteSize: row.byte_size, width: row.width ?? undefined,
     height: row.height ?? undefined, sha256: row.sha256, status: row.status,
     createdBy: row.created_by, rejectionReason: row.rejection_reason ?? undefined,
@@ -213,6 +214,23 @@ export const storyboardApi = {
     return request<ImageGenerationJob>(`/image-jobs/${jobId}/cancel`, { method: 'POST' })
   },
 
+  async getFullBodyImageGenerationPreview(profileId: string): Promise<ImageGenerationPreview> {
+    return request<ImageGenerationPreview>(`/visual-profiles/${profileId}/full-body-preview`)
+  },
+
+  async listFullBodyImageGenerationJobs(profileId: string): Promise<ImageGenerationJob[]> {
+    return request<ImageGenerationJob[]>(`/visual-profiles/${profileId}/full-body-jobs`)
+  },
+
+  async createFullBodyImageGenerationJob(profileId: string, clientRequestId: string, preview: ImageGenerationPreview): Promise<ImageGenerationJob> {
+    return request<ImageGenerationJob>(`/visual-profiles/${profileId}/full-body-jobs`, {
+      method: 'POST', body: JSON.stringify({
+        client_request_id: clientRequestId, prompt_sha256: preview.prompt_sha256,
+        model: preview.model, credits: preview.credits
+      })
+    })
+  },
+
   async listStoryboardAssets(_projectId: string, adaptationId: string): Promise<StoryboardAsset[]> {
     const rows = await request<ProductionAssetDto[]>(`/adaptations/${adaptationId}/assets`)
     return rows.map(assetFromDto)
@@ -224,6 +242,14 @@ export const storyboardApi = {
     if (shotId) body.append('shot_id', shotId)
     if (episodeId) body.append('episode_id', episodeId)
     body.append('kind', 'image')
+    return assetFromDto(await request<ProductionAssetDto>(`/adaptations/${adaptationId}/assets`, { method: 'POST', body }))
+  },
+
+  async uploadCharacterSheet(_projectId: string, adaptationId: string, profileId: string, file: File): Promise<StoryboardAsset> {
+    const body = new FormData()
+    body.append('file', file)
+    body.append('visual_profile_id', profileId)
+    body.append('kind', 'character_sheet')
     return assetFromDto(await request<ProductionAssetDto>(`/adaptations/${adaptationId}/assets`, { method: 'POST', body }))
   },
 

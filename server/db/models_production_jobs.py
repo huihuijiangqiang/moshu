@@ -14,6 +14,7 @@ class ProductionJob(Base, TimestampMixin):
     __tablename__ = "production_jobs"
     __table_args__ = (
         Index("ix_production_jobs_adaptation_shot", "adaptation_id", "shot_id"),
+        Index("ix_production_jobs_visual_profile_id", "visual_profile_id"),
         Index("ix_production_jobs_status_created", "status", "created_at"),
         Index("uq_production_jobs_user_request", "user_id", "client_request_id", unique=True),
         CheckConstraint("credits > 0", name="ck_production_jobs_credits_positive"),
@@ -28,6 +29,9 @@ class ProductionJob(Base, TimestampMixin):
     )
     shot_id: Mapped[Optional[str]] = mapped_column(
         String(32), ForeignKey("adaptation_shots.id", ondelete="SET NULL"), nullable=True
+    )
+    visual_profile_id: Mapped[Optional[str]] = mapped_column(
+        String(32), ForeignKey("adaptation_visual_profiles.id", ondelete="SET NULL"), nullable=True
     )
     user_id: Mapped[str] = mapped_column(String(32), ForeignKey("users.id", ondelete="RESTRICT"), nullable=False)
     client_request_id: Mapped[str] = mapped_column(String(100), nullable=False)

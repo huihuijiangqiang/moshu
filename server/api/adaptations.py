@@ -31,6 +31,7 @@ class ProductionAssetOut(BaseModel):
     adaptation_id: str
     episode_id: str | None
     shot_id: str | None
+    visual_profile_id: str | None
     kind: str
     original_filename: str
     mime_type: str
@@ -52,7 +53,7 @@ class ProductionAssetPatch(BaseModel):
 def _asset_out(asset: ProductionAsset) -> ProductionAssetOut:
     return ProductionAssetOut(
         id=asset.id, adaptation_id=asset.adaptation_id, episode_id=asset.episode_id,
-        shot_id=asset.shot_id, kind=asset.kind, original_filename=asset.original_filename,
+        shot_id=asset.shot_id, visual_profile_id=asset.visual_profile_id, kind=asset.kind, original_filename=asset.original_filename,
         mime_type=asset.mime_type, byte_size=asset.byte_size, width=asset.width,
         height=asset.height, sha256=asset.sha256, status=asset.status,
         created_by=asset.created_by, rejection_reason=asset.rejection_reason,
@@ -372,13 +373,23 @@ async def upload_production_asset(
     file: UploadFile = File(...),
     episode_id: str | None = Form(default=None),
     shot_id: str | None = Form(default=None),
-    kind: Literal["image", "reference"] = Form(default="image"),
+    visual_profile_id: str | None = Form(default=None),
+    kind: Literal["image", "reference", "character_sheet"] = Form(default="image"),
     db: AsyncSession = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
     adaptation = await require_adaptation(adaptation_id, db, user, ProjectPermission.MANAGE_OUTLINE)
+    visual_profile: VisualProfile | None = None
     if file.content_type not in IMAGE_EXTENSIONS:
         raise HTTPException(status_code=415, detail={"code": "unsupported_image_type", "allowed": sorted(IMAGE_EXTENSIONS)})
+    if visual_profile_id:
+        visual_profile = await db.get(VisualProfile, visual_profile_id)
+        if visual_profile is None or visual_profile.adaptation_id != adaptation.id:
+            raise HTTPException(status_code=422, detail={"code": "asset_visual_profile_outside_adaptation"})
+        if kind != "character_sheet":
+            raise HTTPException(status_code=422, detail={"code": "visual_profile_asset_must_be_character_sheet"})
+    if shot_id and visual_profile_id:
+        raise HTTPException(status_code=422, detail={"code": "asset_target_is_ambiguous"})
     if shot_id:
         shot = await db.get(Shot, shot_id)
         if not shot:
@@ -419,6 +430,7 @@ async def upload_production_asset(
         adaptation_id=adaptation.id,
         episode_id=episode_id,
         shot_id=shot_id,
+        visual_profile_id=visual_profile_id,
         kind=kind,
         original_filename=Path(file.filename or f"{asset_id}.{extension}").name[:255],
         storage_key=storage_key,
@@ -436,6 +448,8 @@ async def upload_production_asset(
         shot = await db.get(Shot, shot_id)
         if shot is not None:
             shot.reference_asset_ids = [*dict.fromkeys([*(shot.reference_asset_ids or []), asset_id])]
+    if visual_profile is not None:
+        visual_profile.reference_asset_ids = [*dict.fromkeys([*(visual_profile.reference_asset_ids or []), asset_id])]
     try:
         await db.commit()
     except Exception:
@@ -464,6 +478,14 @@ async def update_production_asset(
                 shot.reference_asset_ids = [item for item in references if item != asset.id]
             elif payload.status == "approved" and asset.id not in references:
                 shot.reference_asset_ids = [*references, asset.id]
+    if asset.visual_profile_id is not None:
+        profile = await db.get(VisualProfile, asset.visual_profile_id)
+        if profile is not None:
+            references = profile.reference_asset_ids or []
+            if payload.status == "rejected":
+                profile.reference_asset_ids = [item for item in references if item != asset.id]
+            elif payload.status == "approved" and asset.id not in references:
+                profile.reference_asset_ids = [*references, asset.id]
     await db.commit()
     await db.refresh(asset)
     return _asset_out(asset)
@@ -673,6 +695,7 @@ async def get_production_package(
         "assets": [
             {
                 "id": asset.id, "episode_id": asset.episode_id, "shot_id": asset.shot_id,
+                "visual_profile_id": asset.visual_profile_id,
                 "kind": asset.kind, "original_filename": asset.original_filename,
                 "mime_type": asset.mime_type, "byte_size": asset.byte_size,
                 "width": asset.width, "height": asset.height, "sha256": asset.sha256,

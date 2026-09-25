@@ -5,7 +5,7 @@ import pytest
 from PIL import Image
 from sqlalchemy.exc import IntegrityError
 
-from db.models_adaptation import Adaptation
+from db.models_adaptation import Adaptation, VisualProfile
 from db.models_codex import CodexEntry
 from db.models_core import ChapterBody, Project
 from db.models_org import Org, OrgMember
@@ -446,6 +446,55 @@ async def test_production_asset_upload_binds_to_shot_and_requires_review(
     )
     assert malformed.status_code == 422
     assert (await app_client.get(f"/assets/{asset['id']}/content")).status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_character_sheet_upload_binds_to_visual_profile_and_review(
+    app_client, async_db_session, seed_project, auth_headers, monkeypatch, tmp_path,
+):
+    from config import settings
+
+    monkeypatch.setattr(settings, "production_asset_dir", str(tmp_path))
+    await seed_project(project_id="profile-asset-project", chapter_ids=("profile-asset-chapter",))
+    async_db_session.add_all([
+        CodexEntry(
+            id="profile-asset-character", project_id="profile-asset-project", kind="character", name="女主",
+            description="", attrs={}, resident=False, status="confirmed", ref_chapters=[], conflicts=[],
+        ),
+        Adaptation(id="profile-asset-adaptation", project_id="profile-asset-project", title="人物资产季"),
+        VisualProfile(
+            id="profile-asset-profile", adaptation_id="profile-asset-adaptation", codex_entry_id="profile-asset-character",
+            display_name="女主", appearance="银灰短发", costume="白色机甲服", locked=True,
+        ),
+    ])
+    await async_db_session.commit()
+    headers = auth_headers("user_a")
+    image_file = BytesIO()
+    Image.new("RGB", (64, 128), "#445566").save(image_file, format="PNG")
+
+    uploaded = await app_client.post(
+        "/adaptations/profile-asset-adaptation/assets",
+        headers=headers,
+        data={"visual_profile_id": "profile-asset-profile", "kind": "character_sheet"},
+        files={"file": ("hero-sheet.png", image_file.getvalue(), "image/png")},
+    )
+    assert uploaded.status_code == 201
+    asset_id = uploaded.json()["id"]
+    profile = await async_db_session.get(VisualProfile, "profile-asset-profile")
+    assert profile.reference_asset_ids == [asset_id]
+
+    rejected = await app_client.patch(
+        f"/assets/{asset_id}", headers=headers,
+        json={"status": "rejected", "rejection_reason": "鞋子需要完整入镜"},
+    )
+    assert rejected.status_code == 200
+    await async_db_session.refresh(profile)
+    assert profile.reference_asset_ids == []
+
+    approved = await app_client.patch(f"/assets/{asset_id}", headers=headers, json={"status": "approved"})
+    assert approved.status_code == 200
+    await async_db_session.refresh(profile)
+    assert profile.reference_asset_ids == [asset_id]
 
 
 @pytest.mark.asyncio

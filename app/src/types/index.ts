@@ -730,7 +730,8 @@ export interface StoryboardAsset {
   adaptationId: string
   episodeId?: string
   shotId?: string
-  kind: 'image' | 'reference'
+  visualProfileId?: string
+  kind: 'image' | 'reference' | 'character_sheet'
   originalFilename: string
   mimeType: string
   byteSize: number
@@ -759,6 +760,7 @@ export interface ImageGenerationJob {
   adaptation_id: string
   episode_id: string | null
   shot_id: string | null
+  visual_profile_id: string | null
   status: 'queued' | 'running' | 'completed' | 'failed' | 'cancelled'
   model: string
   prompt_sha256: string
@@ -861,6 +863,7 @@ export interface ProductionPackage {
     id: string
     episode_id: string | null
     shot_id: string | null
+    visual_profile_id?: string | null
     kind: string
     original_filename: string
     mime_type: string

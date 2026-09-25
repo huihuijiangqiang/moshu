@@ -11,7 +11,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from celery_app import celery_app
-from db import Adaptation, ProductionAsset, ProductionJob, Shot
+from db import Adaptation, ProductionAsset, ProductionJob, Shot, VisualProfile
 from db.models_core import User
 from db.models_usage import UsageLog
 from db.session import AsyncSessionLocal
@@ -81,7 +81,8 @@ async def process_image_job(db: AsyncSession, job_id: str) -> str:
         await asyncio.to_thread(write_image)
         asset = ProductionAsset(
             id=asset_id, adaptation_id=job.adaptation_id, episode_id=job.episode_id,
-            shot_id=job.shot_id, kind="image", original_filename=f"{asset_id}.{extension}",
+            shot_id=job.shot_id, visual_profile_id=job.visual_profile_id,
+            kind="character_sheet" if job.visual_profile_id else "image", original_filename=f"{asset_id}.{extension}",
             storage_key=storage_key, mime_type=image.mime_type, byte_size=len(image.data),
             width=image.width, height=image.height, sha256=hashlib.sha256(image.data).hexdigest(),
             status="draft", created_by=job.user_id,
@@ -92,6 +93,10 @@ async def process_image_job(db: AsyncSession, job_id: str) -> str:
             shot = await db.get(Shot, job.shot_id)
             if shot is not None:
                 shot.reference_asset_ids = [*dict.fromkeys([*(shot.reference_asset_ids or []), asset_id])]
+        if job.visual_profile_id is not None:
+            profile = await db.get(VisualProfile, job.visual_profile_id)
+            if profile is not None:
+                profile.reference_asset_ids = [*dict.fromkeys([*(profile.reference_asset_ids or []), asset_id])]
         await settle_fixed_credits(db, UsageReservation(job.usage_log_id, job.credits))
         job.asset_id = asset_id
         job.status = "completed"

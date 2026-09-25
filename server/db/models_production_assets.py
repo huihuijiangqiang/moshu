@@ -18,6 +18,7 @@ class ProductionAsset(Base, TimestampMixin):
         Index("ix_production_assets_adaptation_id", "adaptation_id"),
         Index("ix_production_assets_episode_id", "episode_id"),
         Index("ix_production_assets_shot_id", "shot_id"),
+        Index("ix_production_assets_visual_profile_id", "visual_profile_id"),
     )
 
     id: Mapped[str] = mapped_column(String(32), primary_key=True)
@@ -29,6 +30,9 @@ class ProductionAsset(Base, TimestampMixin):
     )
     shot_id: Mapped[Optional[str]] = mapped_column(
         String(32), ForeignKey("adaptation_shots.id", ondelete="SET NULL"), nullable=True
+    )
+    visual_profile_id: Mapped[Optional[str]] = mapped_column(
+        String(32), ForeignKey("adaptation_visual_profiles.id", ondelete="SET NULL"), nullable=True
     )
     kind: Mapped[str] = mapped_column(String(30), default="image")
     original_filename: Mapped[str] = mapped_column(String(255))

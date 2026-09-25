@@ -24,6 +24,7 @@ const assetUploadError = ref('')
 const assetReview = ref<StoryboardAsset | null>(null)
 const assetRejectionReason = ref('')
 const imageConfirmOpen = ref(false)
+const fullBodyConfirmOpen = ref(false)
 const assetInput = ref<HTMLInputElement | null>(null)
 const episodeDraft = reactive({ title: '', sourceChapterIds: [] as string[], targetDuration: 90 })
 const sceneDraft = reactive({ purpose: '', summary: '', timeAnchor: '', locationEntryId: '', characterEntryIds: [] as string[] })
@@ -42,6 +43,11 @@ const activeProfile = computed(() => {
   const characterId = storyboard.selectedScene?.characterEntryIds[0]
   return characterId ? storyboard.adaptation?.visualProfiles.find((profile) => profile.codexEntryId === characterId) ?? null : null
 })
+const profileAssets = computed(() => activeProfile.value
+  ? storyboard.assets.filter((asset) => asset.visualProfileId === activeProfile.value!.id && asset.kind === 'character_sheet')
+  : [])
+const fullBodyAsset = computed(() => [...profileAssets.value].reverse().find((asset) => asset.status !== 'rejected'))
+const activeFullBodyJob = computed(() => storyboard.fullBodyJobs.find((job) => job.status === 'queued' || job.status === 'running'))
 const activeCharacters = computed(() => (storyboard.selectedScene?.characterEntryIds ?? []).map((id) => codex.byId.get(id)).filter(Boolean))
 const locationName = computed(() => {
   const id = storyboard.selectedScene?.locationEntryId
@@ -56,6 +62,8 @@ onMounted(async () => {
 const imagePollTimer = window.setInterval(() => {
   const shotId = storyboard.selectedShotId
   if (shotId && activeImageJob.value) void storyboard.loadImageJobs(shotId)
+  const profileId = activeProfile.value?.id
+  if (profileId && activeFullBodyJob.value) void storyboard.loadFullBodyJobs(profileId)
 }, 3000)
 
 onUnmounted(() => {
@@ -77,7 +85,23 @@ watch(() => storyboard.selectedShotId, (shotId) => {
   if (shotId) void storyboard.loadImageJobs(shotId)
 })
 
+watch(() => activeProfile.value?.id, (profileId) => {
+  fullBodyConfirmOpen.value = false
+  storyboard.fullBodyPreview = null
+  storyboard.fullBodyJobs = []
+  storyboard.generationError = ''
+  if (profileId) {
+    void storyboard.loadFullBodyJobs(profileId)
+    const asset = storyboard.assets.find((item) => item.visualProfileId === profileId && item.kind === 'character_sheet')
+    if (asset) void storyboard.loadAssetPreview(projectId.value, asset)
+  }
+}, { immediate: true })
+
 watch(shotAssets, (assets) => {
+  assets.forEach((asset) => { void storyboard.loadAssetPreview(projectId.value, asset) })
+}, { immediate: true })
+
+watch(profileAssets, (assets) => {
   assets.forEach((asset) => { void storyboard.loadAssetPreview(projectId.value, asset) })
 }, { immediate: true })
 
@@ -270,6 +294,8 @@ function imageIssueLabel(issue: string) {
   if (issue.startsWith('visual_profile_not_ready:')) return '出场人物的视觉档案需填写外观并锁定'
   if (issue === 'image_price_not_configured') return '管理员尚未配置出图价格'
   if (issue === 'image_gateway_not_configured') return '管理员尚未配置图片网关'
+  if (issue === 'visual_profile_unlocked') return '请先锁定人物视觉档案'
+  if (issue === 'visual_profile_costume_missing') return '先补充人物服装与道具'
   return issue
 }
 
@@ -294,6 +320,23 @@ async function confirmImageGeneration() {
   if (job) {
     imageConfirmOpen.value = false
     showSaved('出图任务已提交')
+  }
+}
+
+async function openFullBodyConfirmation() {
+  const profileId = activeProfile.value?.id
+  if (!profileId) return
+  const preview = await storyboard.prepareFullBodyGeneration(profileId)
+  if (preview && activeProfile.value?.id === profileId) fullBodyConfirmOpen.value = true
+}
+
+async function confirmFullBodyGeneration() {
+  const profileId = activeProfile.value?.id
+  if (!profileId) return
+  const job = await storyboard.confirmFullBodyGeneration(profileId)
+  if (job) {
+    fullBodyConfirmOpen.value = false
+    showSaved('全身设定图任务已提交')
   }
 }
 
@@ -514,6 +557,13 @@ async function moveShot(shotId: string, direction: -1 | 1) {
             <label>服装与道具<textarea rows="4" :value="activeProfile.costume" :disabled="activeProfile.locked || !profileEditOpen" @change="profileField(activeProfile, 'costume', $event)" /></label>
           </div>
           <button class="profile-edit" type="button" @click="profileEditOpen = !profileEditOpen">{{ profileEditOpen ? '完成编辑' : '编辑文字档案' }}</button>
+          <section class="visual-profile-sheet" aria-label="人物全身设定图">
+            <div class="visual-profile-sheet-head"><div><span class="wk-label">角色资产</span><strong>全身设定图</strong></div><span v-if="fullBodyAsset" class="visual-profile-sheet-status">{{ fullBodyAsset.status === 'approved' ? '已确认' : '待审阅' }}</span></div>
+            <button v-if="fullBodyAsset && storyboard.assetPreviewUrls[fullBodyAsset.id]" class="visual-profile-sheet-image" type="button" @click="openAssetReview(fullBodyAsset)"><img :src="storyboard.assetPreviewUrls[fullBodyAsset.id]" :alt="`${activeProfile.displayName}全身设定图`" /></button>
+            <div v-else class="visual-profile-sheet-empty"><AppIcon name="codex" :size="18" /><span>还没有全身图</span></div>
+            <p class="visual-profile-sheet-hint">用于固定人物从头到脚的比例、服装和道具，镜头生成会持续参考。</p>
+            <div class="visual-profile-sheet-actions"><button class="wk-btn" type="button" :disabled="storyboard.fullBodyLoading || storyboard.fullBodyGenerating || !activeProfile.appearance.trim() || !activeProfile.costume.trim()" @click="openFullBodyConfirmation">{{ storyboard.fullBodyLoading ? '读取价格…' : activeFullBodyJob ? '生成中…' : fullBodyAsset ? '重新生成' : '生成全身图' }}</button><span v-if="activeFullBodyJob" class="visual-profile-sheet-job">{{ imageJobLabel(activeFullBodyJob.status, activeFullBodyJob.error_code) }}</span></div>
+          </section>
           <p v-if="activeProfile.notes" class="visual-profile-note">{{ activeProfile.notes }}</p>
         </div>
         <div v-else-if="activeCharacters.length" class="storyboard-empty inspector-empty">
@@ -556,6 +606,17 @@ async function moveShot(shotId: string, direction: -1 | 1) {
         <label>服装与道具<textarea v-model="profileDraft.costume" rows="3" placeholder="常服、身份标志、随身道具" /></label>
         <footer><button class="wk-btn" type="button" @click="profileCreateOpen = false">取消</button><button class="wk-btn" data-primary="true" type="submit" :disabled="storyboard.saving || !profileDraft.codexEntryId || !profileDraft.displayName.trim()">{{ storyboard.saving ? '创建中…' : '创建档案' }}</button></footer>
       </form>
+    </div>
+
+    <div v-if="fullBodyConfirmOpen && storyboard.fullBodyPreview" class="storyboard-dialog-backdrop" @click.self="fullBodyConfirmOpen = false">
+      <div class="storyboard-dialog storyboard-image-confirm" role="dialog" aria-modal="true" aria-labelledby="full-body-confirm-title">
+        <header><div><span class="wk-label">{{ activeProfile?.displayName }} · 角色资产</span><h2 id="full-body-confirm-title">生成全身设定图</h2></div><button type="button" aria-label="关闭" @click="fullBodyConfirmOpen = false"><AppIcon name="close" :size="15" /></button></header>
+        <div class="storyboard-image-quote"><span>{{ storyboard.fullBodyPreview.model }}</span><strong>{{ storyboard.fullBodyPreview.credits }} 积分 / 张</strong></div>
+        <ul v-if="storyboard.fullBodyPreview.issues.length" class="storyboard-image-issues"><li v-for="issue in storyboard.fullBodyPreview.issues" :key="issue">{{ imageIssueLabel(issue) }}</li></ul>
+        <label>生成提示词<textarea :value="storyboard.fullBodyPreview.prompt" rows="9" readonly /></label>
+        <p class="dialog-hint">会强制要求完整入镜，不裁切头发、手部或鞋子。生成后仍需人工审阅。</p>
+        <footer><button class="wk-btn" type="button" @click="fullBodyConfirmOpen = false">取消</button><button class="wk-btn" data-primary="true" type="button" :disabled="!storyboard.fullBodyPreview.ready || storyboard.fullBodyGenerating" @click="confirmFullBodyGeneration">{{ storyboard.fullBodyGenerating ? '提交中…' : `确认生成 · ${storyboard.fullBodyPreview.credits} 积分` }}</button></footer>
+      </div>
     </div>
 
     <div v-if="imageConfirmOpen && storyboard.imagePreview" class="storyboard-dialog-backdrop" @click.self="imageConfirmOpen = false">

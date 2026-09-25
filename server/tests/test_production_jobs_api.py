@@ -88,6 +88,43 @@ async def test_image_job_preview_confirm_idempotency_and_cancel(
 
 
 @pytest.mark.asyncio
+async def test_full_body_character_sheet_preview_job_and_worker_asset(
+    app_client, async_db_session, seed_project, auth_headers, image_settings, monkeypatch, tmp_path,
+):
+    await seed_shot(async_db_session, seed_project)
+    monkeypatch.setattr(settings, "production_asset_dir", str(tmp_path))
+    headers = auth_headers("image_owner")
+    preview_response = await app_client.get("/visual-profiles/image_profile/full-body-preview", headers=headers)
+    assert preview_response.status_code == 200
+    preview = preview_response.json()
+    assert preview["ready"] is True
+    assert "complete standing pose" in preview["prompt"]
+
+    created = await app_client.post("/visual-profiles/image_profile/full-body-jobs", headers=headers, json={
+        "client_request_id": "full-body-request-001", "prompt_sha256": preview["prompt_sha256"],
+        "model": preview["model"], "credits": preview["credits"],
+    })
+    assert created.status_code == 201
+    job_id = created.json()["id"]
+    output = BytesIO()
+    Image.new("RGB", (512, 1024), "#345b62").save(output, format="PNG")
+
+    async def fake_generate(prompt, *, aspect_ratio, model):
+        assert "complete standing pose" in prompt
+        return GeneratedImage(output.getvalue(), "image/png", 512, 1024, "sheet-provider")
+
+    monkeypatch.setattr(production, "generate_storyboard_image", fake_generate)
+    assert await production.process_image_job(async_db_session, job_id) == "completed"
+    job = await async_db_session.get(ProductionJob, job_id)
+    asset = await async_db_session.get(ProductionAsset, job.asset_id)
+    profile = await async_db_session.get(VisualProfile, "image_profile")
+    assert job.visual_profile_id == profile.id
+    assert asset.kind == "character_sheet" and asset.visual_profile_id == profile.id
+    assert asset.id in profile.reference_asset_ids
+    assert (await app_client.get(f"/assets/{asset.id}/content", headers=headers)).status_code == 200
+
+
+@pytest.mark.asyncio
 async def test_image_job_rejects_stale_preview_and_unlocked_character(
     app_client, async_db_session, seed_project, auth_headers, image_settings,
 ):
