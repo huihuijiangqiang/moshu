@@ -5,8 +5,26 @@ from sqlalchemy import select
 
 from db.models_long_generation import GenerationSegment
 from db.models_usage import GenerationRun
-from services.long_generation_runner import LongSegmentOptions, execute_long_segment
+from services.long_generation_runner import LongSegmentOptions, _append_stream, execute_long_segment
 from services.usage import UsageReservation
+
+
+def test_append_stream_preserves_checkpoint_prefix_and_spacing():
+    existing = "已经保存的段落结尾。\n"
+
+    continued = _append_stream(existing, "接着推进新的动作。")
+
+    assert continued.startswith(existing)
+    assert continued == "已经保存的段落结尾。\n接着推进新的动作。"
+
+
+def test_append_stream_deduplicates_repeated_boundary_without_rewriting_prefix():
+    existing = "已经保存的段落结尾，门外的脚步声越来越近，所有人都屏住了呼吸。"
+
+    continued = _append_stream(existing, existing + "新的动作。")
+
+    assert continued.startswith(existing)
+    assert continued == existing + "\n新的动作。"
 
 
 async def test_execute_long_segment_checkpoints_validates_and_records_run(

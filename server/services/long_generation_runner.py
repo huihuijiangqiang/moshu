@@ -66,6 +66,9 @@ def _append_stream(existing: str, incoming: str) -> str:
         return existing
     if not existing:
         return incoming
+    # Keep the persisted prefix byte-for-byte intact.  ``checkpoint_segment``
+    # uses it as a CAS-protected prefix; stripping a trailing newline here
+    # would make an otherwise valid continuation look like a replacement.
     left = existing.rstrip()
     right = incoming.lstrip()
     upper = min(500, len(left), len(right))
@@ -73,8 +76,9 @@ def _append_stream(existing: str, incoming: str) -> str:
     if overlap:
         right = right[overlap:].lstrip()
     if not right:
-        return left
-    return f"{left}\n{right}" if left else right
+        return existing
+    separator = "" if existing[-1].isspace() else "\n"
+    return f"{existing}{separator}{right}"
 
 
 def _error_code(error: Exception) -> str:
