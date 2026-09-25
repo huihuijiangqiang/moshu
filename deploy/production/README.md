@@ -4,7 +4,7 @@
 
 ## 首次配置
 
-1. 将 `moshu.production.env.example` 复制到服务器受保护目录，例如 `/etc/moshu/moshu.production.env`，填写所有 `replace-*` 项。数据库密码、JWT 密钥、凭据加密密钥和一次性引导令牌都应使用密码生成器生成，至少 32 个字符。
+1. 将 `moshu.production.env.example` 复制到服务器受保护目录，例如 `/etc/moshu/moshu.production.env`，填写所有 `replace-*` 项。`PUBLIC_APP_URL` 和 `CORS_ORIGINS` 必须改成 Cloudflare Tunnel 对外提供的 HTTPS 源，例如 `https://ms.example.com`。数据库密码、JWT 密钥、凭据加密密钥和一次性引导令牌都应使用密码生成器生成，至少 32 个字符。
 2. 运行预检（不会打印任何密钥）：
 
    ```bash
@@ -32,7 +32,7 @@
 ```bash
 docker compose --env-file "$MOSHU_PRODUCTION_ENV_FILE" -f docker-compose.production.yml ps
 docker compose --env-file "$MOSHU_PRODUCTION_ENV_FILE" -f docker-compose.production.yml logs --tail=100 api worker
-curl --fail http://127.0.0.1:5180/
+curl --fail http://127.0.0.1:5180/api/health/ready
 ```
 
 服务设有健康检查、非 root 运行、禁止新增 Linux 权限、只读应用文件系统、单 worker 并发和 JSON 日志轮转。PostgreSQL、Redis 和私有漫剧画面使用命名卷；应按服务器策略定期备份这些卷。画面通过鉴权 API 提供，不由 Nginx 直接公开。`docker compose down` 不会删除卷，清理数据必须显式执行并先确认备份。
