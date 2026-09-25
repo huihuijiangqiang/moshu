@@ -26,4 +26,15 @@ PY
 
 COPY . /app
 
+# Keep local Compose as close to the production image as possible: API,
+# migrations and Celery must not run as root. The mounted asset directory is
+# created and owned here; Docker Desktop also maps the bind mount with write
+# access for this user on supported hosts.
+RUN addgroup --system --gid 10001 moshu \
+    && adduser --system --uid 10001 --ingroup moshu --home /nonexistent --no-create-home moshu \
+    && mkdir -p /app/.local/production-assets \
+    && chown -R moshu:moshu /app /opt/tiktoken-cache
+
+USER moshu
+
 CMD ["celery", "-A", "celery_app:celery_app", "worker", "--loglevel=INFO"]
