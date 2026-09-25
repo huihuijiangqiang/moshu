@@ -185,4 +185,29 @@ describe('storyboard static editing workflow', () => {
     expect(store.assets.some((asset) => asset.kind === 'character_sheet')).toBe(true)
     wrapper.unmount()
   })
+
+  it('switches the inspector between every character bound to the scene', async () => {
+    const pinia = createPinia()
+    setActivePinia(pinia)
+    const store = useStoryboardStore()
+    await store.load('p1')
+    await store.updateScene('p1', { characterEntryIds: ['c-shenyan', 'c-zhoutou'] })
+    await store.createVisualProfile('p1', {
+      codexEntryId: 'c-zhoutou', displayName: '老周头', appearance: '花白短发', costume: '旧皮围裙'
+    })
+    const router = createRouter({
+      history: createMemoryHistory(),
+      routes: [{ path: '/projects/:projectId/storyboard', component: StoryboardView }]
+    })
+    await router.push('/projects/p1/storyboard')
+    await router.isReady()
+    const wrapper = mount(StoryboardView, { attachTo: document.body, global: { plugins: [pinia, router] } })
+    await vi.waitFor(() => expect(wrapper.find('.visual-profile-switcher').exists()).toBe(true))
+
+    const oldZhou = wrapper.findAll('.visual-profile-switcher button').find((button) => button.text().includes('老周头'))
+    expect(oldZhou).toBeTruthy()
+    await oldZhou!.trigger('click')
+    expect(wrapper.get('.visual-profile-head').text()).toContain('老周头')
+    wrapper.unmount()
+  })
 })

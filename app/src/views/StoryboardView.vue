@@ -25,6 +25,7 @@ const assetReview = ref<StoryboardAsset | null>(null)
 const assetRejectionReason = ref('')
 const imageConfirmOpen = ref(false)
 const fullBodyConfirmOpen = ref(false)
+const selectedCharacterId = ref<string | null>(null)
 const assetInput = ref<HTMLInputElement | null>(null)
 const profileAssetInput = ref<HTMLInputElement | null>(null)
 const episodeDraft = reactive({ title: '', sourceChapterIds: [] as string[], targetDuration: 90 })
@@ -40,10 +41,18 @@ const activeImageJob = computed(() => storyboard.imageJobs.find((job) => job.sta
 const characterEntries = computed(() => codex.entries.filter((entry) => entry.kind === 'character' && entry.status === 'confirmed'))
 const locationEntries = computed(() => codex.entries.filter((entry) => entry.kind === 'place' && entry.status === 'confirmed'))
 const profileCandidates = computed(() => characterEntries.value.filter((entry) => !storyboard.adaptation?.visualProfiles.some((profile) => profile.codexEntryId === entry.id)))
-const activeProfile = computed(() => {
-  const characterId = storyboard.selectedScene?.characterEntryIds[0]
-  return characterId ? storyboard.adaptation?.visualProfiles.find((profile) => profile.codexEntryId === characterId) ?? null : null
-})
+const sceneCharacters = computed(() => (storyboard.selectedScene?.characterEntryIds ?? [])
+  .map((id) => ({
+    id,
+    character: codex.byId.get(id),
+    profile: storyboard.adaptation?.visualProfiles.find((profile) => profile.codexEntryId === id) ?? null
+  }))
+  .filter((item) => item.character))
+const activeCharacterId = computed(() => sceneCharacters.value.some((item) => item.id === selectedCharacterId.value)
+  ? selectedCharacterId.value
+  : sceneCharacters.value[0]?.id ?? null)
+const activeCharacter = computed(() => sceneCharacters.value.find((item) => item.id === activeCharacterId.value)?.character ?? null)
+const activeProfile = computed(() => sceneCharacters.value.find((item) => item.id === activeCharacterId.value)?.profile ?? null)
 const profileAssets = computed(() => activeProfile.value
   ? storyboard.assets.filter((asset) => asset.visualProfileId === activeProfile.value!.id && asset.kind === 'character_sheet')
   : [])
@@ -75,6 +84,7 @@ onUnmounted(() => {
 watch(() => storyboard.selectedSceneId, () => {
   sceneEditOpen.value = false
   sceneCreateMode.value = false
+  selectedCharacterId.value = null
 })
 
 watch(() => storyboard.selectedShotId, (shotId) => {
@@ -206,6 +216,12 @@ function openProfileCreate(characterId?: string) {
   Object.assign(profileDraft, { codexEntryId: entry?.id ?? '', displayName: entry?.name ?? '', style: '', appearance: '', costume: '' })
   storyboard.clearError()
   profileCreateOpen.value = true
+}
+
+function selectCharacter(characterId: string) {
+  selectedCharacterId.value = characterId
+  profileEditOpen.value = false
+  assetReview.value = null
 }
 
 function selectProfileCharacter(id: string) {
@@ -563,6 +579,11 @@ async function moveShot(shotId: string, direction: -1 | 1) {
           <span class="storyboard-count">{{ storyboard.adaptation?.visualProfiles.length ?? 0 }}</span>
         </div>
         <p class="storyboard-inspector-intro">视觉档案先于图片生成。锁定后，所有镜头都应引用同一版本。</p>
+        <nav v-if="sceneCharacters.length > 1" class="visual-profile-switcher" aria-label="当前场景人物">
+          <button v-for="item in sceneCharacters" :key="item.id" type="button" :data-active="item.id === activeCharacterId" @click="selectCharacter(item.id)">
+            <strong>{{ item.character?.name }}</strong><small>{{ item.profile ? '已有档案' : '待建立' }}</small>
+          </button>
+        </nav>
         <div v-if="activeProfile" class="visual-profile">
           <header class="visual-profile-head">
             <div class="visual-profile-avatar">{{ activeProfile.displayName.slice(0, 1) }}</div>
@@ -587,9 +608,9 @@ async function moveShot(shotId: string, direction: -1 | 1) {
           <p v-if="activeProfile.notes" class="visual-profile-note">{{ activeProfile.notes }}</p>
         </div>
         <div v-else-if="activeCharacters.length" class="storyboard-empty inspector-empty">
-          <strong>{{ activeCharacters[0]?.name }}尚无视觉档案</strong>
+          <strong>{{ activeCharacter?.name }}尚无视觉档案</strong>
           <p>先建立外观、服装和画风约束，后续镜头会持续引用同一版本。</p>
-          <button class="wk-btn" data-primary="true" type="button" :disabled="storyboard.saving" @click="openProfileCreate(activeCharacters[0]?.id)">创建视觉档案</button>
+          <button class="wk-btn" data-primary="true" type="button" :disabled="storyboard.saving || !activeCharacterId" @click="openProfileCreate(activeCharacterId ?? undefined)">创建视觉档案</button>
         </div>
         <div v-else class="storyboard-empty inspector-empty">当前场景还没有绑定人物。请先编辑场景并选择出场人物。</div>
 
