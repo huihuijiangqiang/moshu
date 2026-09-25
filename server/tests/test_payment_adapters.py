@@ -136,6 +136,25 @@ async def test_wechat_webhook_signature_and_aes_gcm_decryption(payment_keys):
         await adapter.verify_webhook(headers=headers, body=body)
 
 
+async def test_wechat_api_response_does_not_require_notification_headers(payment_keys):
+    config = wechat_config(payment_keys)
+
+    def handler(request):
+        assert request.method == "POST"
+        assert request.url.path == "/v3/pay/transactions/native"
+        return httpx.Response(200, json={"code_url": "https://wxpay.test/qr"})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        adapter = WeChatPayAdapter(config, client)
+        checkout = await adapter.create_checkout(
+            order_id="ord_wechat_checkout",
+            description="作者积分包",
+            amount_minor=990,
+            currency="CNY",
+        )
+    assert checkout.checkout_url == "https://wxpay.test/qr"
+
+
 async def test_alipay_response_and_notification_signatures(payment_keys):
     _, platform, merchant_path, public_path, _, _ = payment_keys
     result = {"code": "10000", "msg": "Success", "qr_code": "https://qr.alipay.test/order"}

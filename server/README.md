@@ -220,7 +220,7 @@ docker compose up -d --build api worker dispatcher beat frontend
 session、管理员设置与审计、项目/工作室 RBAC、设定库 CRUD 与 embedding 回填、
 持续章纲、版本化正文保存、四层上下文、SSE 生成、导出备份、用量结算、Guard
 扫描与 LLM 仲裁、平台后台模型用量台账、移动端只读与私有速记均已接通。后端单元/功能
-测试为 1731 passed，另有 38 个需要真实 PostgreSQL/pgvector 的集成测试按条件跳过；前端测试为 213 passed。
+测试为 1732 passed，另有 38 个需要真实 PostgreSQL/pgvector 的集成测试按条件跳过；前端测试为 213 passed。
 
 仍需在生产数据上继续验证的事项：
 

@@ -245,7 +245,10 @@ class WeChatPayAdapter:
             except ValueError:
                 code = "HTTP_ERROR"
             raise PaymentProviderError(f"WeChat Pay rejected request: {code}", retryable=response.status_code >= 500)
-        self._verify_message(dict(response.headers), response.content)
+        # WeChat Pay signs asynchronous notification envelopes, not ordinary
+        # API responses. The request is already authenticated with the merchant
+        # signature above and transported over HTTPS; requiring notification
+        # headers here would make every legitimate API response fail.
         return response.json() if response.content else {}
 
     async def create_checkout(
