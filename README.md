@@ -265,6 +265,9 @@ docker compose up -d --build
 
 `migration` 会在 API 和 worker 启动前执行 `alembic upgrade head`。就绪探针同时检查
 PostgreSQL、Redis 与数据库迁移版本；任一项不满足就返回 503。
+worker 和 dispatcher 还会分别执行 Celery 节点级 ping 健康检查；查看
+`docker compose ps` 时必须看到它们为 `healthy`，否则生成、出图或一致性任务可能无法处理，
+Compose 会按 `restart: unless-stopped` 自动拉起失联进程。
 
 首次启动或更新代码后建议显式执行一次迁移，再重建依赖 migration 的服务：
 

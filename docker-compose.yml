@@ -104,12 +104,18 @@ services:
     # work from older deployments is drained instead of orphaned.
     volumes:
       - ${MOSHU_PRODUCTION_ASSET_DATA_DIR:-./.docker-data/production-assets}:/app/.local/production-assets
-    command: ["celery", "-A", "celery_app:celery_app", "worker", "--loglevel=INFO", "--concurrency=2", "--queues=consistency,generation,celery"]
+    command: ["celery", "-A", "celery_app:celery_app", "worker", "--loglevel=INFO", "--concurrency=2", "--queues=consistency,generation,celery", "--hostname=worker@%h"]
     depends_on:
       migration:
         condition: service_completed_successfully
       redis:
         condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "celery -A celery_app:celery_app inspect ping -d worker@$$(hostname) --timeout=3 | grep -q pong"]
+      interval: 15s
+      timeout: 8s
+      retries: 3
+      start_period: 20s
     restart: unless-stopped
 
   dispatcher:
@@ -120,6 +126,12 @@ services:
         condition: service_completed_successfully
       redis:
         condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "celery -A celery_app:celery_app inspect ping -d outbox@$$(hostname) --timeout=3 | grep -q pong"]
+      interval: 15s
+      timeout: 8s
+      retries: 3
+      start_period: 20s
     restart: unless-stopped
 
   beat:

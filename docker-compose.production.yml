@@ -118,12 +118,18 @@ services:
       - egress
     volumes:
       - production-assets:/app/.local/production-assets
-    command: ["celery", "-A", "celery_app:celery_app", "worker", "--loglevel=INFO", "--concurrency=1", "--max-tasks-per-child=50", "--queues=consistency,generation,celery"]
+    command: ["celery", "-A", "celery_app:celery_app", "worker", "--loglevel=INFO", "--concurrency=1", "--max-tasks-per-child=50", "--queues=consistency,generation,celery", "--hostname=worker@%h"]
     depends_on:
       migration:
         condition: service_completed_successfully
       redis:
         condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "celery -A celery_app:celery_app inspect ping -d worker@$$(hostname) --timeout=3 | grep -q pong"]
+      interval: 15s
+      timeout: 8s
+      retries: 3
+      start_period: 20s
     restart: unless-stopped
     mem_limit: 320m
     cpus: 0.75
@@ -139,6 +145,12 @@ services:
         condition: service_completed_successfully
       redis:
         condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "celery -A celery_app:celery_app inspect ping -d outbox@$$(hostname) --timeout=3 | grep -q pong"]
+      interval: 15s
+      timeout: 8s
+      retries: 3
+      start_period: 20s
     restart: unless-stopped
     mem_limit: 96m
     cpus: 0.25
