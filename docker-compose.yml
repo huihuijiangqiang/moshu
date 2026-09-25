@@ -5,6 +5,11 @@ x-server-environment: &server-environment
   CELERY_RESULT_BACKEND: redis://redis:6379/2
   BUILD_REVISION: ${MOSHU_BUILD_REVISION:-local}
   PRODUCTION_ASSET_DIR: /app/.local/production-assets
+  # Compose runs behind the frontend proxy by default. Keep production-safe
+  # defaults while allowing a deployment to override the public origin.
+  DEBUG: ${MOSHU_DEBUG:-false}
+  PUBLIC_APP_URL: ${MOSHU_PUBLIC_APP_URL:-http://localhost:8080}
+  CORS_ORIGINS: ${MOSHU_CORS_ORIGINS:-http://localhost:8080}
 
 x-server-base: &server-base
   build:
@@ -87,7 +92,7 @@ services:
       api:
         condition: service_healthy
     healthcheck:
-      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://127.0.0.1/"]
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://127.0.0.1/api/health/ready"]
       interval: 10s
       timeout: 3s
       retries: 10
