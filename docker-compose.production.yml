@@ -118,7 +118,7 @@ services:
       - egress
     volumes:
       - production-assets:/app/.local/production-assets
-    command: ["celery", "-A", "celery_app:celery_app", "worker", "--loglevel=INFO", "--concurrency=1", "--max-tasks-per-child=50", "--queues=consistency,celery"]
+    command: ["celery", "-A", "celery_app:celery_app", "worker", "--loglevel=INFO", "--concurrency=1", "--max-tasks-per-child=50", "--queues=consistency,generation,celery"]
     depends_on:
       migration:
         condition: service_completed_successfully
