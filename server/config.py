@@ -94,6 +94,17 @@ class Settings(BaseSettings):
     # rolling deploy can keep an unhealthy instance in service for minutes.
     health_check_timeout_seconds: float = Field(default=5.0, ge=0.1, le=30.0)
 
+    # Password reset delivery. Credentials stay in the runtime environment;
+    # the API never persists or logs the plaintext reset token.
+    public_app_url: str = "http://localhost:5180"
+    smtp_host: Optional[str] = None
+    smtp_port: int = Field(default=587, ge=1, le=65_535)
+    smtp_username: Optional[str] = None
+    smtp_password: Optional[str] = None
+    smtp_from: Optional[str] = None
+    smtp_use_tls: bool = True
+    smtp_timeout_seconds: float = Field(default=15.0, ge=1.0, le=120.0)
+
     # Mainland payment adapters. Secrets/certificates stay outside the repo;
     # adapters remain disabled until the merchant credentials are complete.
     payment_notify_base_url: Optional[str] = None

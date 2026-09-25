@@ -32,6 +32,7 @@ export interface AdminSettings {
   embedding_model: string
   generation_gateway_configured: boolean
   embedding_gateway_configured: boolean
+  password_reset_delivery_configured: boolean
   credit_rates: {
     basic_input: number
     basic_output: number

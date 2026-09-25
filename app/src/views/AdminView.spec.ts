@@ -45,7 +45,7 @@ describe('AdminView loading recovery', () => {
       registration_enabled: true, default_plan: 'free', default_monthly_quota: 1000,
       credit_rates: { basic_input: 1, basic_output: 2, advanced_input: 3, advanced_output: 4, cached_percent: 20 },
       generation_model: 'model', consistency_model: 'model', embedding_model: 'embed',
-      generation_gateway_configured: true, embedding_gateway_configured: true
+      generation_gateway_configured: true, embedding_gateway_configured: true, password_reset_delivery_configured: true
     })
     admin.platformUsage.mockResolvedValue({
       period_days: 30, totals: { events: 0, requests: 0, prompt_tokens: 0, cached_tokens: 0, completion_tokens: 0, estimated_events: 0 }, items: [], recent: []

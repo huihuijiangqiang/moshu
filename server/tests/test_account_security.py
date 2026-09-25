@@ -5,6 +5,7 @@ from datetime import UTC, datetime, timedelta
 import pytest
 from sqlalchemy import select
 
+import api.auth as auth_module
 from api.auth import _token_digest, hash_password
 from db.models_auth_security import PasswordResetToken
 
@@ -91,8 +92,6 @@ async def test_reset_request_is_generic_and_token_is_hashed_and_one_time(
         delivered["email"] = email
         delivered["token"] = token
 
-    import api.auth as auth_module
-
     monkeypatch.setattr(auth_module, "_deliver_password_reset_token", capture)
     known = await app_client.post("/auth/password-reset/request", json={"email": user.email})
     unknown = await app_client.post("/auth/password-reset/request", json={"email": "nobody@example.test"})
@@ -141,3 +140,69 @@ async def test_expired_reset_token_is_rejected(app_client, async_db_session, mak
         json={"token": "expired-token-value-123456", "new_password": "new-pass-456"},
     )
     assert response.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_password_reset_smtp_delivery_uses_tls_and_never_logs_token(monkeypatch):
+    sent = []
+
+    class FakeSMTP:
+        def __init__(self, host, port, timeout):
+            self.host = host
+            self.port = port
+            self.timeout = timeout
+            self.started_tls = False
+            self.credentials = None
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def starttls(self, *, context):
+            self.started_tls = True
+
+        def login(self, username, password):
+            self.credentials = (username, password)
+
+        def send_message(self, message):
+            sent.append((self, message))
+
+    monkeypatch.setattr(auth_module.smtplib, "SMTP", FakeSMTP)
+    monkeypatch.setattr(auth_module.settings, "public_app_url", "https://ms.example")
+    monkeypatch.setattr(auth_module.settings, "smtp_host", "smtp.example")
+    monkeypatch.setattr(auth_module.settings, "smtp_port", 587)
+    monkeypatch.setattr(auth_module.settings, "smtp_username", "mailer")
+    monkeypatch.setattr(auth_module.settings, "smtp_password", "secret")
+    monkeypatch.setattr(auth_module.settings, "smtp_from", "no-reply@ms.example")
+    monkeypatch.setattr(auth_module.settings, "smtp_use_tls", True)
+
+    token = "reset-token-for-test"
+    await auth_module._deliver_password_reset_token("writer@example.test", token, datetime.now(UTC) + timedelta(minutes=20))
+
+    assert len(sent) == 1
+    client, message = sent[0]
+    assert client.started_tls is True
+    assert client.credentials == ("mailer", "secret")
+    assert message["To"] == "writer@example.test"
+    assert "https://ms.example/password-reset?token=reset-token-for-test" in message.get_content()
+
+
+@pytest.mark.asyncio
+async def test_password_reset_delivery_failure_revokes_unusable_token(
+    app_client, async_db_session, make_user, monkeypatch,
+):
+    user = make_user("reset-delivery-failure", email="delivery-failure@example.test", password_hash=hash_password("old-pass-123"))
+    async_db_session.add(user)
+    await async_db_session.commit()
+
+    async def fail(*_args):
+        raise auth_module.PasswordResetDeliveryError("password_reset_smtp_unavailable")
+
+    monkeypatch.setattr(auth_module, "_deliver_password_reset_token", fail)
+    response = await app_client.post("/auth/password-reset/request", json={"email": user.email})
+
+    assert response.status_code == 202
+    row = await async_db_session.scalar(select(PasswordResetToken).where(PasswordResetToken.user_id == user.id))
+    assert row is not None and row.used_at is not None

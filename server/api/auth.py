@@ -4,9 +4,14 @@ import asyncio
 import base64
 import hashlib
 import hmac
+import logging
 import secrets
+import smtplib
+import ssl
 from datetime import UTC, datetime, timedelta
+from email.message import EmailMessage
 from enum import StrEnum
+from urllib.parse import quote, urlsplit
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request, status
@@ -31,6 +36,7 @@ except ModuleNotFoundError:  # pragma: no cover - production dependencies includ
 
 router = APIRouter()
 security = HTTPBearer(auto_error=False)
+logger = logging.getLogger(__name__)
 _PASSWORD_ITERATIONS = 210_000
 # SQLite has no transaction-level advisory lock.  This lock still makes the
 # bootstrap endpoint safe in the supported single-process SQLite deployment;
@@ -44,6 +50,14 @@ _REDIS_FAILURE_SCRIPT = "local n = redis.call('INCR', KEYS[1]); if n == 1 then r
 
 class AuthProtectionUnavailableError(RuntimeError):
     """Raised when fail-closed auth protection cannot reach Redis."""
+
+
+class PasswordResetDeliveryError(RuntimeError):
+    """Raised when a reset link cannot be delivered without exposing its token."""
+
+    def __init__(self, code: str):
+        self.code = code
+        super().__init__(code)
 
 
 class UserOut(BaseModel):
@@ -814,9 +828,61 @@ async def change_password(
 # Password reset delivery and endpoints are defined below; credentials stay out of storage and logs.
 
 
+def _password_reset_url(token: str) -> str:
+    base = settings.public_app_url.strip().rstrip("/")
+    parsed = urlsplit(base)
+    if parsed.scheme not in {"http", "https"} or not parsed.hostname or parsed.username or parsed.password or parsed.query or parsed.fragment:
+        raise PasswordResetDeliveryError("password_reset_public_url_invalid")
+    return f"{base}/password-reset?token={quote(token, safe='')}"
+
+
+def _send_password_reset_email(email: str, token: str, expires_at: datetime) -> None:
+    host = (settings.smtp_host or "").strip()
+    sender = (settings.smtp_from or "").strip()
+    username = (settings.smtp_username or "").strip()
+    password = settings.smtp_password or ""
+    if not host or not sender:
+        raise PasswordResetDeliveryError("password_reset_delivery_not_configured")
+    if bool(username) != bool(password):
+        raise PasswordResetDeliveryError("password_reset_smtp_credentials_incomplete")
+
+    link = _password_reset_url(token)
+    expiry = expires_at.astimezone(UTC).strftime("%Y-%m-%d %H:%M UTC")
+    message = EmailMessage()
+    message["From"] = sender
+    message["To"] = email
+    message["Subject"] = "墨枢 · 重置你的登录密码"
+    message.set_content(
+        "你好，\n\n"
+        "我们收到了你的密码重置请求。请在 20 分钟内打开下面的链接设置新密码：\n\n"
+        f"{link}\n\n"
+        f"链接有效期至：{expiry}\n"
+        "如果这不是你发起的请求，可以忽略这封邮件。\n"
+    )
+
+    try:
+        if settings.smtp_use_tls and settings.smtp_port == 465:
+            client = smtplib.SMTP_SSL(
+                host, settings.smtp_port, timeout=settings.smtp_timeout_seconds,
+                context=ssl.create_default_context(),
+            )
+        else:
+            client = smtplib.SMTP(host, settings.smtp_port, timeout=settings.smtp_timeout_seconds)
+        with client:
+            if settings.smtp_use_tls and settings.smtp_port != 465:
+                client.starttls(context=ssl.create_default_context())
+            if username:
+                client.login(username, password)
+            client.send_message(message)
+    except PasswordResetDeliveryError:
+        raise
+    except (OSError, smtplib.SMTPException) as error:
+        raise PasswordResetDeliveryError("password_reset_smtp_unavailable") from error
+
+
 async def _deliver_password_reset_token(email: str, token: str, expires_at: datetime) -> None:
-    """Delivery seam for a mail provider; plaintext is never persisted or logged."""
-    return None
+    """Deliver one reset link through SMTP without persisting or logging its token."""
+    await asyncio.to_thread(_send_password_reset_email, email, token, expires_at)
 
 
 @router.post("/password-reset/request", response_model=PasswordResetRequestOut, status_code=202)
@@ -854,16 +920,25 @@ async def request_password_reset(
             .where(PasswordResetToken.user_id == user.id, PasswordResetToken.used_at.is_(None))
             .values(used_at=now)
         )
-        db.add(
-            PasswordResetToken(
-                id=f"prt_{secrets.token_hex(12)}",
-                user_id=user.id,
-                token_hash=_token_digest(token),
-                expires_at=expires_at,
-            )
+        reset_token = PasswordResetToken(
+            id=f"prt_{secrets.token_hex(12)}",
+            user_id=user.id,
+            token_hash=_token_digest(token),
+            expires_at=expires_at,
         )
+        db.add(reset_token)
         await db.commit()
-        await _deliver_password_reset_token(email, token, expires_at)
+        try:
+            await _deliver_password_reset_token(email, token, expires_at)
+        except PasswordResetDeliveryError as error:
+            # Never leave a usable token behind when delivery did not happen.
+            await db.execute(
+                update(PasswordResetToken)
+                .where(PasswordResetToken.id == reset_token.id, PasswordResetToken.used_at.is_(None))
+                .values(used_at=datetime.now(UTC))
+            )
+            await db.commit()
+            logger.warning("password reset delivery unavailable: %s", error.code)
     else:
         await db.rollback()
     try:

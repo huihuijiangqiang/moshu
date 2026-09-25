@@ -59,6 +59,7 @@ class AdminSettingsOut(BaseModel):
     embedding_model: str
     generation_gateway_configured: bool
     embedding_gateway_configured: bool
+    password_reset_delivery_configured: bool
     credit_rates: dict[str, int]
 
 
@@ -292,6 +293,10 @@ async def get_settings(
         embedding_model=settings.embedding_model,
         generation_gateway_configured=bool(settings.model_gateway_main_url and settings.model_gateway_main_key),
         embedding_gateway_configured=bool(settings.embedding_gateway_url and settings.embedding_gateway_key),
+        password_reset_delivery_configured=bool(
+            settings.public_app_url and settings.smtp_host and settings.smtp_from
+            and bool(settings.smtp_username) == bool(settings.smtp_password)
+        ),
         credit_rates=credit_rates,
     )
 

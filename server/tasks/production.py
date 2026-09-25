@@ -60,7 +60,10 @@ async def process_image_job(db: AsyncSession, job_id: str) -> str:
         adaptation = await db.get(Adaptation, adaptation_id)
         if adaptation is None:
             raise ImageGatewayError("image_adaptation_missing")
-        image = await generate_storyboard_image(prompt, aspect_ratio=adaptation.aspect_ratio, model=model)
+        # Character sheets need a portrait canvas so the head-to-toe silhouette has
+        # room even when the parent adaptation is configured for a landscape frame.
+        image_aspect_ratio = "9:16" if job.visual_profile_id is not None else adaptation.aspect_ratio
+        image = await generate_storyboard_image(prompt, aspect_ratio=image_aspect_ratio, model=model)
         job = await db.scalar(select(ProductionJob).where(ProductionJob.id == job_id).with_for_update())
         if job is None or job.status != "running":
             await db.rollback()

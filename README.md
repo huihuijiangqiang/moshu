@@ -186,6 +186,22 @@ curl http://localhost:8000/health/ready
 
 漫剧分镜页可为单个镜头和人物全身设定图先预览提示词和积分，再确认生成，也可上传已有立绘。出场人物必须有已锁定且包含外观锚点的视觉档案；任务排队、生成和失败状态会回到对应资产，失败或取消排队任务会返还预留积分。生成图和上传图先存为私有草稿，人工确认后才能进入制作包。图片由 worker 生成，API 和 worker 必须挂载同一持久化素材目录；默认 Compose 已处理。图片网关需支持 OpenAI 兼容 `POST /v1/images/generations` 并返回 `data[0].b64_json`，不从供应商返回的任意 URL 下载图片。`IMAGE_GENERATION_CREDITS` 是部署者自定的固定价格，示例数字不代表实际上游成本。
 
+密码找回邮件使用 SMTP 配置，不把令牌写入数据库或日志：
+
+```dotenv
+PUBLIC_APP_URL=https://your-domain.example
+SMTP_HOST=smtp.example.com
+SMTP_PORT=587
+SMTP_USERNAME=mailer@example.com
+SMTP_PASSWORD=provided-outside-git
+SMTP_FROM=墨枢 <mailer@example.com>
+SMTP_USE_TLS=true
+SMTP_TIMEOUT_SECONDS=15
+```
+
+未配置或投递失败时，接口仍返回统一的防枚举响应，但本次令牌会立即作废；管理员页的
+“密码邮件”状态会提示是否已具备投递条件。
+
 #### 用户配置自己的服务（BYOK）
 
 登录后打开全局菜单 **我的模型服务**（路由 `/model-settings`），填写：
@@ -346,7 +362,7 @@ ready/pending/failed/stale 分块、已完成向量的章节数和排队数；
 `POST /projects/{project_id}/chapter-chunks/reindex` 以异步 outbox 方式批量重建当前正文版本。
 查看需要作品权限，批量重建需要项目管理权限；重建不会改写正文或正文版本历史。
 
-最近一次后端回归记录：`1732 passed, 38 skipped`；本轮前端回归为 `215 passed`。后端被跳过的
+最近一次后端回归记录：`1735 passed, 38 skipped`；本轮前端回归为 `215 passed`。后端被跳过的
 测试需要显式配置真实 PostgreSQL/pgvector 集成环境；测试正文、模型 key、`.env` 和 Docker
 数据卷均不提交 Git。
 

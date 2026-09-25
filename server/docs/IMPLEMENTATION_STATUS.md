@@ -7,7 +7,7 @@
 
 **关键事实**：
 - ✅ 69 张表完整 Alembic 覆盖，增量迁移已到 `045_character_full_body`
-- ✅ 1732 个单元/功能测试通过，38 个需要真实外部依赖的集成测试按条件跳过（SQLite in-memory，受控 embedding/LLM provider）
+- ✅ 1735 个单元/功能测试通过，38 个需要真实外部依赖的集成测试按条件跳过（SQLite in-memory，受控 embedding/LLM provider）
 - ✅ 前端 215 个测试、TypeScript 类型检查和生产构建通过
 - ✅ 前端生产与开发依赖均通过 `npm audit`，当前为 0 个已知漏洞（2026-09-07）
 - ✅ 迁移契约覆盖当前 head；真实 PostgreSQL + pgvector 集成测试需在设置 `TEST_POSTGRES_URL` 的环境执行
@@ -426,7 +426,7 @@ PostgreSQL/pgvector 检索必须在真实部署上单独压测；该脚本只覆
 - ✅ 禁用账号即时拒绝既有 access token、登录和 refresh
 - ✅ `GET /auth/sessions`、`DELETE /auth/sessions/{session_id}` 提供本人会话查看与单会话撤销
 - ✅ `POST /auth/password/change` 修改密码并撤销其他会话；`POST /auth/password-reset/request|confirm` 使用仅存哈希、20 分钟有效、单次消费的重置令牌并在重置后撤销全部会话
-- ⚠️ 密码重置已预留邮件投递适配器；未配置邮件供应商时不会返回或记录明文令牌，生产部署需接入实际邮件服务
+- ✅ 密码重置通过可选 SMTP 投递一次性链接，数据库只保存令牌哈希；未配置或投递失败时会作废令牌并保留防枚举响应，管理员状态页会显示邮件服务是否就绪
 
 #### 用户模型服务 (`api/model_configs.py`)
 - ✅ `GET/PUT/DELETE /account/model-config` - 用户隔离读取、保存/轮换、停用与删除
@@ -603,9 +603,9 @@ PostgreSQL/pgvector 检索必须在真实部署上单独压测；该脚本只覆
 
 ### 5. 测试覆盖
 
-#### 单元测试（1732 passed，SQLite in-memory，受控 providers）
+#### 单元测试（1735 passed，SQLite in-memory，受控 providers）
 
-**全量测试结果**：1732 passed, 38 skipped（未设置集成测试 URL 时）；前端 215 passed
+**全量测试结果**：1735 passed, 38 skipped（未设置集成测试 URL 时）；前端 215 passed
 
 #### 前端依赖安全审计
 
@@ -996,8 +996,8 @@ cd server
 - `server/tasks/consistency.py` - 一致性任务
 - `server/tasks/codex.py` - Codex 回填任务
 
-### 测试（1732 passed；另有 38 个 PostgreSQL 集成测试按环境跳过）
-- `server/tests/` - 单元/功能测试（1732 passed）
+### 测试（1735 passed；另有 38 个 PostgreSQL 集成测试按环境跳过）
+- `server/tests/` - 单元/功能测试（1735 passed）
 - `app/src/**/*.spec.ts` - 前端测试（215 passed）
 - `server/tests/integration/` - 集成测试（需设置真实 PostgreSQL URL 才执行）
 
@@ -1008,7 +1008,7 @@ cd server
 
 ## 总结
 
-墨枢一致性后端已完成核心数据模型、服务层、API 端点和异步任务定义，1732 个单元/功能
+墨枢一致性后端已完成核心数据模型、服务层、API 端点和异步任务定义，1735 个单元/功能
 测试在 SQLite in-memory + 受控 providers 环境下通过，另有 38 个集成测试在未设置
 真实 PostgreSQL URL 时跳过。真实认证、可吊销会话、管理员、工作室 RBAC、作品创建、
 作品归档、分卷与章节生命周期、虚拟化章节导航、写作台新建章节、作品定位、章纲、场景卡片、章节 POV、人物出场轨迹、逐章设定状态沿革、可编辑设定关系、资料与正文并排、故事/章节双序时间板、作者人工计划事件、正文版本历史与恢复、AI 多候选草稿及逐段审阅、自然化审查、移动端只读与私有速记、全书查找替换、章节审稿与段落批注、工作室章节任务与产量看板、全量导出、非覆盖备份恢复、风格指纹、AI 来源账本、拆书分析、作者生成用量与平台模型成本台账、任务中心、账号安全、弹性长篇上下文、漫剧静态分镜和人物全身设定图资产链已经接通，前端 215 个测试与生产构建通过。

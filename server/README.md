@@ -137,6 +137,11 @@ PostgreSQL、Redis 与 Alembic head，全部通过时返回 200，否则返回 5
 默认最多等待 5 秒，可用 `HEALTH_CHECK_TIMEOUT_SECONDS` 调整（范围 0.1～30 秒），避免
 依赖故障时发布探针长时间悬挂。
 
+密码找回需要配置 `PUBLIC_APP_URL`、`SMTP_HOST`、`SMTP_FROM` 以及 SMTP 服务要求的
+账号密码。服务端只在投递时短暂使用明文令牌，数据库只保存哈希；SMTP 未配置或发送失败
+时会作废本次令牌并保留防枚举的统一响应。管理员页面的“密码邮件”状态可用于检查配置，
+不会显示任何密钥。
+
 当前 migration head 为 `045_character_full_body`。更新代码后建议显式执行 migration
 容器，再重建 API 和 worker，避免复用旧的已完成 migration 容器：
 
@@ -222,7 +227,7 @@ docker compose up -d --build api worker dispatcher beat frontend
 session、管理员设置与审计、项目/工作室 RBAC、设定库 CRUD 与 embedding 回填、
 持续章纲、版本化正文保存、四层上下文、SSE 生成、导出备份、用量结算、Guard
 扫描与 LLM 仲裁、平台后台模型用量台账、移动端只读与私有速记均已接通。后端单元/功能
-测试为 1732 passed，另有 38 个需要真实 PostgreSQL/pgvector 的集成测试按条件跳过；前端测试为 215 passed。
+测试为 1735 passed，另有 38 个需要真实 PostgreSQL/pgvector 的集成测试按条件跳过；前端测试为 215 passed。
 
 仍需在生产数据上继续验证的事项：
 

@@ -125,6 +125,36 @@ async def test_full_body_character_sheet_preview_job_and_worker_asset(
 
 
 @pytest.mark.asyncio
+async def test_full_body_character_sheet_uses_portrait_canvas_for_landscape_adaptation(
+    app_client, async_db_session, seed_project, auth_headers, image_settings, monkeypatch, tmp_path,
+):
+    await seed_shot(async_db_session, seed_project)
+    monkeypatch.setattr(settings, "production_asset_dir", str(tmp_path))
+    adaptation = await async_db_session.get(Adaptation, "image_adaptation")
+    adaptation.aspect_ratio = "16:9"
+    await async_db_session.commit()
+    headers = auth_headers("image_owner")
+    preview = (await app_client.get("/visual-profiles/image_profile/full-body-preview", headers=headers)).json()
+    await app_client.post("/visual-profiles/image_profile/full-body-jobs", headers=headers, json={
+        "client_request_id": "full-body-portrait-001", "prompt_sha256": preview["prompt_sha256"],
+        "model": preview["model"], "credits": preview["credits"],
+    })
+    called: list[str] = []
+
+    async def fake_generate(prompt, *, aspect_ratio, model):
+        called.append(aspect_ratio)
+        output = BytesIO()
+        Image.new("RGB", (512, 1024), "#345b62").save(output, format="PNG")
+        return GeneratedImage(output.getvalue(), "image/png", 512, 1024, "sheet-provider")
+
+    monkeypatch.setattr(production, "generate_storyboard_image", fake_generate)
+    job = (await async_db_session.execute(select(ProductionJob).where(ProductionJob.visual_profile_id == "image_profile"))).scalars().first()
+    assert job is not None
+    assert await production.process_image_job(async_db_session, job.id) == "completed"
+    assert called == ["9:16"]
+
+
+@pytest.mark.asyncio
 async def test_image_job_rejects_stale_preview_and_unlocked_character(
     app_client, async_db_session, seed_project, auth_headers, image_settings,
 ):
