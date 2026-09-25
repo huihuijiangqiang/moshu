@@ -370,9 +370,9 @@ ready/pending/failed/stale 分块、已完成向量的章节数和排队数；
 `POST /projects/{project_id}/chapter-chunks/reindex` 以异步 outbox 方式批量重建当前正文版本。
 查看需要作品权限，批量重建需要项目管理权限；重建不会改写正文或正文版本历史。
 
-最近一次后端回归记录：`1735 passed, 38 skipped`；本轮前端回归为 `215 passed`。后端被跳过的
-测试需要显式配置真实 PostgreSQL/pgvector 集成环境；测试正文、模型 key、`.env` 和 Docker
-数据卷均不提交 Git。
+最近一次后端回归记录：`1737 passed, 38 skipped`（未设置集成数据库时）；本轮真实
+PostgreSQL/pgvector 集成回归为 `38 passed`，前端回归为 `215 passed`。测试正文、模型 key、
+`.env` 和 Docker 数据卷均不提交 Git。
 
 ## 许可
 
