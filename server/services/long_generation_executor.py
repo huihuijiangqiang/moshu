@@ -114,6 +114,20 @@ def _utc(value: datetime) -> datetime:
     return value if value.tzinfo is not None else value.replace(tzinfo=UTC)
 
 
+def _utc_storage_timestamp(value: datetime) -> datetime:
+    """Return a UTC timestamp compatible with legacy ``completed_at`` columns.
+
+    Early installations created ``generation_segments.completed_at`` as
+    ``timestamp without time zone`` while newer migrations use ``timestamptz``.
+    asyncpg rejects an aware datetime for the former (``can't subtract
+    offset-naive and offset-aware datetimes``), whereas a naive UTC value is
+    accepted by both PostgreSQL timestamp codecs.  Keep lease/heartbeat fields
+    timezone-aware; only this completion marker needs the compatibility shape.
+    """
+
+    return _utc(value).replace(tzinfo=None)
+
+
 def _word_count(text: str) -> int:
     # Keep this local to avoid importing the network-facing generation module.
     import re
@@ -327,7 +341,7 @@ async def validate_claimed_segment(
     row.generated_words = _word_count(row.content_text)
     row.status = "failed" if check.blocking else "ready"
     row.error_code = "validation_failed" if check.blocking else None
-    row.completed_at = None if check.blocking else current
+    row.completed_at = None if check.blocking else _utc_storage_timestamp(current)
     row.updated_at = current
     row.lease_owner = None
     row.lease_expires_at = None
@@ -375,7 +389,7 @@ async def accept_ready_segment(
     current = now or datetime.now(UTC)
     row.status = "accepted"
     row.error_code = None
-    row.completed_at = row.completed_at or current
+    row.completed_at = row.completed_at or _utc_storage_timestamp(current)
     row.updated_at = current
     row.lease_owner = None
     row.lease_expires_at = None

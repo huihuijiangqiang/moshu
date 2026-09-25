@@ -206,6 +206,9 @@ async def test_validation_persists_evidence_and_allows_retry(async_db_session, e
     assert passed.blocking is False
     assert row.status == "ready"
     assert row.completed_at is not None
+    # ``completed_at`` must remain writable against both legacy timestamp
+    # columns and current timestamptz columns in PostgreSQL.
+    assert row.completed_at.tzinfo is None
     assert row.context_manifest["lastValidation"]["status"] == "ready"
 
 
