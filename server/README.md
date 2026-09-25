@@ -133,7 +133,9 @@ uvicorn main:app --reload --host 0.0.0.0 --port 8000
 
 容器探针：`GET /health` 仅检查 Web 进程存活；`GET /health/ready` 会实际探测
 PostgreSQL、Redis 与 Alembic head，全部通过时返回 200，否则返回 503 和逐项状态。
-响应包含 `BUILD_REVISION`，用于判断正在运行的实例是否与待验收提交一致。
+响应包含 `BUILD_REVISION`，用于判断正在运行的实例是否与待验收提交一致。每个依赖探测
+默认最多等待 5 秒，可用 `HEALTH_CHECK_TIMEOUT_SECONDS` 调整（范围 0.1～30 秒），避免
+依赖故障时发布探针长时间悬挂。
 
 当前 migration head 为 `045_character_full_body`。更新代码后建议显式执行 migration
 容器，再重建 API 和 worker，避免复用旧的已完成 migration 容器：

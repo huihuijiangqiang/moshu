@@ -2,6 +2,7 @@
 FastAPI 应用入口
 """
 
+import asyncio
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -119,10 +120,16 @@ async def readiness():
     """
     checks: dict[str, str] = {}
     try:
-        async with engine.connect() as connection:
-            migration_result = await connection.execute(text("SELECT version_num FROM alembic_version"))
+        async def check_database() -> str | None:
+            async with engine.connect() as connection:
+                migration_result = await connection.execute(text("SELECT version_num FROM alembic_version"))
+            return migration_result.scalar_one_or_none()
+
+        migration_version = await asyncio.wait_for(
+            check_database(), timeout=settings.health_check_timeout_seconds,
+        )
         checks["postgres"] = "ok"
-        checks["migrations"] = "ok" if migration_result.scalar_one_or_none() == MIGRATION_HEAD else "outdated"
+        checks["migrations"] = "ok" if migration_version == MIGRATION_HEAD else "outdated"
     except Exception:
         checks["postgres"] = "failed"
         checks["migrations"] = "unknown"
@@ -133,7 +140,7 @@ async def readiness():
         client = None
         try:
             client = redis.from_url(settings.redis_url, decode_responses=True)
-            await client.ping()
+            await asyncio.wait_for(client.ping(), timeout=settings.health_check_timeout_seconds)
             checks["redis"] = "ok"
         except Exception:
             checks["redis"] = "failed"

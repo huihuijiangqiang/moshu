@@ -90,6 +90,9 @@ class Settings(BaseSettings):
     cors_origins: str = "http://localhost:5173"
     log_level: str = "INFO"
     build_revision: str = "local"
+    # Readiness probes must fail fast when a dependency is down; otherwise a
+    # rolling deploy can keep an unhealthy instance in service for minutes.
+    health_check_timeout_seconds: float = Field(default=5.0, ge=0.1, le=30.0)
 
     # Mainland payment adapters. Secrets/certificates stay outside the repo;
     # adapters remain disabled until the merchant credentials are complete.

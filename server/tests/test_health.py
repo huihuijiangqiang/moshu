@@ -45,6 +45,19 @@ class _Redis:
         self.closed = True
 
 
+class _HangingConnection:
+    async def __aenter__(self):
+        await __import__("asyncio").sleep(60)
+
+    async def __aexit__(self, *_args):
+        return False
+
+
+class _HangingEngine:
+    def connect(self):
+        return _HangingConnection()
+
+
 @pytest.mark.asyncio
 async def test_readiness_reports_all_dependencies_ready(monkeypatch):
     fake_redis = _Redis()
@@ -111,3 +124,16 @@ async def test_readiness_rejects_database_behind_migration_head(monkeypatch):
     assert response.status_code == 503
     assert b'"postgres":"ok"' in response.body
     assert b'"migrations":"outdated"' in response.body
+
+
+@pytest.mark.asyncio
+async def test_readiness_fails_fast_when_database_hangs(monkeypatch):
+    monkeypatch.setattr(main, "engine", _HangingEngine())
+    monkeypatch.setattr(main, "redis", SimpleNamespace(from_url=lambda *_args, **_kwargs: _Redis()))
+    monkeypatch.setattr(main.settings, "health_check_timeout_seconds", 0.01)
+
+    response = await main.readiness()
+
+    assert response.status_code == 503
+    assert b'"postgres":"failed"' in response.body
+    assert b'"redis":"ok"' in response.body
