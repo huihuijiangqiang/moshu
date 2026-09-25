@@ -72,10 +72,37 @@ async def recover_stale_generation_state(
     for user_id in expired_users:
         await ensure_current_quota(db, user_id)
 
+    expired_segments = list(
+        (
+            await db.execute(
+                select(GenerationSegment)
+                .where(
+                    GenerationSegment.status == "running",
+                    GenerationSegment.lease_expires_at.is_not(None),
+                    GenerationSegment.lease_expires_at <= current,
+                )
+                .with_for_update(skip_locked=True)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    for segment in expired_segments:
+        segment.status = "failed"
+        segment.error_code = "segment_lease_expired"
+        segment.lease_owner = None
+        segment.lease_expires_at = None
+        segment.heartbeat_at = current
+        segment.updated_at = current
+
     # ensure_current_quota commits when it changes a user's balance. Commit
     # the draft state as well, including the no-reservation case.
     await db.commit()
-    return {"streaming_recovered": len(drafts), "reservations_released": len(expired_reservations)}
+    return {
+        "streaming_recovered": len(drafts),
+        "reservations_released": len(expired_reservations),
+        "segments_recovered": len(expired_segments),
+    }
 
 
 def run_async(coro):

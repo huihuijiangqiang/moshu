@@ -814,9 +814,7 @@ async def queue_long_generation_segment(
     segment = await _load_segment_scope(segment_id, user, db, ProjectPermission.GENERATE)
     if segment.status in {"ready", "accepted"}:
         return _segment_payload(segment)
-    if segment.status == "running":
-        raise HTTPException(status_code=409, detail={"code": "SEGMENT_BUSY", "message": "该段正在生成"})
-    if segment.status not in {"pending", "failed"}:
+    if segment.status not in {"pending", "failed", "running"}:
         raise HTTPException(
             status_code=409,
             detail={"code": "SEGMENT_STATE_INVALID", "message": f"该段当前状态为 {segment.status}"},
