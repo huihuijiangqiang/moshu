@@ -1,13 +1,11 @@
 """Comic-drama storyboard, review and private visual-asset API."""
 import hashlib
-from io import BytesIO
 from pathlib import Path
 from typing import Literal
 from uuid import uuid4
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse
-from PIL import Image, ImageOps, UnidentifiedImageError
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
@@ -19,51 +17,13 @@ from config import settings
 from db import Adaptation, Chapter, CodexEntry, Episode, ProductionAsset, Scene, Shot, VisualProfile
 from db.models_core import User
 from db.session import get_db
+from services.production_assets import IMAGE_EXTENSIONS, InvalidProductionImageError, asset_path, normalize_image
 
 router = APIRouter()
 
 
 def new_id(prefix: str) -> str:
     return f"{prefix}_{uuid4().hex[:24]}"
-
-
-_IMAGE_EXTENSIONS = {"image/png": "png", "image/jpeg": "jpg", "image/webp": "webp"}
-
-
-def _asset_root() -> Path:
-    root = Path(settings.production_asset_dir).expanduser()
-    return root if root.is_absolute() else Path(__file__).resolve().parents[1] / root
-
-
-def _asset_path(storage_key: str) -> Path:
-    root = _asset_root().resolve()
-    candidate = (root / storage_key).resolve()
-    if candidate != root and root not in candidate.parents:
-        raise HTTPException(status_code=404, detail="素材不存在")
-    return candidate
-
-
-def _normalize_image(data: bytes, mime_type: str) -> tuple[bytes, int, int]:
-    formats = {"image/png": "PNG", "image/jpeg": "JPEG", "image/webp": "WEBP"}
-    try:
-        with Image.open(BytesIO(data)) as source:
-            if source.format != formats[mime_type] or getattr(source, "n_frames", 1) != 1:
-                raise ValueError("unexpected image format or animation")
-            width, height = source.size
-            if width < 1 or height < 1 or width > 8192 or height > 8192 or width * height > 16_000_000:
-                raise ValueError("image dimensions out of bounds")
-            source.load()
-            oriented = ImageOps.exif_transpose(source)
-            image = oriented.convert("RGB" if mime_type == "image/jpeg" else "RGBA")
-            output = BytesIO()
-            options = {"quality": 90} if mime_type == "image/jpeg" else {}
-            image.save(output, format=formats[mime_type], **options)
-            return output.getvalue(), image.width, image.height
-    except (UnidentifiedImageError, OSError, ValueError, Image.DecompressionBombError) as error:
-        raise HTTPException(
-            status_code=422,
-            detail={"code": "invalid_image", "message": "图片损坏、尺寸过大或包含不支持的动画"},
-        ) from error
 
 
 class ProductionAssetOut(BaseModel):
@@ -417,8 +377,8 @@ async def upload_production_asset(
     user: User = Depends(get_current_user),
 ):
     adaptation = await require_adaptation(adaptation_id, db, user, ProjectPermission.MANAGE_OUTLINE)
-    if file.content_type not in _IMAGE_EXTENSIONS:
-        raise HTTPException(status_code=415, detail={"code": "unsupported_image_type", "allowed": sorted(_IMAGE_EXTENSIONS)})
+    if file.content_type not in IMAGE_EXTENSIONS:
+        raise HTTPException(status_code=415, detail={"code": "unsupported_image_type", "allowed": sorted(IMAGE_EXTENSIONS)})
     if shot_id:
         shot = await db.get(Shot, shot_id)
         if not shot:
@@ -438,14 +398,20 @@ async def upload_production_asset(
     data = await file.read(settings.production_asset_max_bytes + 1)
     if len(data) > settings.production_asset_max_bytes:
         raise HTTPException(status_code=413, detail={"code": "asset_too_large", "max_bytes": settings.production_asset_max_bytes})
-    data, width, height = await run_in_threadpool(_normalize_image, data, file.content_type)
+    try:
+        data, width, height = await run_in_threadpool(normalize_image, data, file.content_type)
+    except InvalidProductionImageError as error:
+        raise HTTPException(
+            status_code=422,
+            detail={"code": "invalid_image", "message": "图片损坏、尺寸过大或包含不支持的动画"},
+        ) from error
     if len(data) > settings.production_asset_max_bytes:
         raise HTTPException(status_code=413, detail={"code": "asset_too_large", "max_bytes": settings.production_asset_max_bytes})
 
     asset_id = new_id("asset")
-    extension = _IMAGE_EXTENSIONS[file.content_type]
+    extension = IMAGE_EXTENSIONS[file.content_type]
     storage_key = f"{adaptation.id}/{asset_id}.{extension}"
-    target = _asset_path(storage_key)
+    target = asset_path(storage_key)
     target.parent.mkdir(parents=True, exist_ok=True)
     await run_in_threadpool(target.write_bytes, data)
     asset = ProductionAsset(
@@ -502,7 +468,10 @@ async def get_production_asset_content(
     user: User = Depends(get_current_user),
 ):
     asset = await require_asset(asset_id, db, user)
-    path = _asset_path(asset.storage_key)
+    try:
+        path = asset_path(asset.storage_key)
+    except InvalidProductionImageError as error:
+        raise HTTPException(status_code=404, detail="素材不存在") from error
     if not path.is_file():
         raise HTTPException(status_code=404, detail="素材文件不存在")
     return FileResponse(path, media_type=asset.mime_type, filename=asset.original_filename)
