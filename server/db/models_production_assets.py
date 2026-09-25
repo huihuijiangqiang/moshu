@@ -2,7 +2,7 @@
 
 from typing import Optional
 
-from sqlalchemy import ForeignKey, Index, Integer, String, Text
+from sqlalchemy import ForeignKey, Index, Integer, String, Text, UniqueConstraint
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -14,6 +14,7 @@ class ProductionAsset(Base, TimestampMixin):
 
     __tablename__ = "production_assets"
     __table_args__ = (
+        UniqueConstraint("storage_key", name="uq_production_assets_storage_key"),
         Index("ix_production_assets_adaptation_id", "adaptation_id"),
         Index("ix_production_assets_episode_id", "episode_id"),
         Index("ix_production_assets_shot_id", "shot_id"),
@@ -31,7 +32,7 @@ class ProductionAsset(Base, TimestampMixin):
     )
     kind: Mapped[str] = mapped_column(String(30), default="image")
     original_filename: Mapped[str] = mapped_column(String(255))
-    storage_key: Mapped[str] = mapped_column(String(500), unique=True)
+    storage_key: Mapped[str] = mapped_column(String(500))
     mime_type: Mapped[str] = mapped_column(String(100))
     byte_size: Mapped[int] = mapped_column(Integer)
     width: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)

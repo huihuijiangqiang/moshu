@@ -33,8 +33,8 @@ def upgrade() -> None:
         sa.Column("error_code", sa.String(80)),
         sa.Column("started_at", sa.DateTime(timezone=True)),
         sa.Column("finished_at", sa.DateTime(timezone=True)),
-        sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.func.now()),
-        sa.Column("updated_at", sa.DateTime(timezone=True), server_default=sa.func.now()),
+        sa.Column("created_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.func.now()),
+        sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.func.now()),
         sa.CheckConstraint("credits > 0", name="ck_production_jobs_credits_positive"),
     )
     op.create_index("ix_production_jobs_adaptation_shot", "production_jobs", ["adaptation_id", "shot_id"])
