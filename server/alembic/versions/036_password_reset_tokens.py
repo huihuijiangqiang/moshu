@@ -3,8 +3,8 @@
 from collections.abc import Sequence
 
 import sqlalchemy as sa
-from alembic import op
 
+from alembic import op
 
 revision: str = "036_password_reset_tokens"
 down_revision: str | None = "035_adaptation_refs"

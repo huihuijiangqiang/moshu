@@ -1,7 +1,8 @@
 """Persist model-provider capability probe results."""
 
-from alembic import op
 import sqlalchemy as sa
+
+from alembic import op
 
 revision = "042_model_capabilities"
 down_revision = "041_story_hook_ledger"

@@ -205,12 +205,13 @@ async def patch_scene(
     # Access is checked after loading the card in the service; first resolve its
     # chapter through a read-only query to avoid trusting a client project id.
     from sqlalchemy import select
+
     from db.models_scene_cards import ChapterScene
 
     existing = await db.scalar(select(ChapterScene).where(ChapterScene.id == scene_id))
     if existing is None:
         raise HTTPException(status_code=404, detail={"code": "SCENE_NOT_FOUND"})
-    chapter = await _chapter_access(existing.chapter_id, db, user, ProjectPermission.MANAGE_OUTLINE)
+    await _chapter_access(existing.chapter_id, db, user, ProjectPermission.MANAGE_OUTLINE)
     try:
         scene = await update_scene(
             db,
@@ -263,12 +264,13 @@ async def post_archive(
     db: AsyncSession = Depends(get_db),
 ) -> SceneResponse:
     from sqlalchemy import select
+
     from db.models_scene_cards import ChapterScene
 
     existing = await db.scalar(select(ChapterScene).where(ChapterScene.id == scene_id))
     if existing is None:
         raise HTTPException(status_code=404, detail={"code": "SCENE_NOT_FOUND"})
-    chapter = await _chapter_access(existing.chapter_id, db, user, ProjectPermission.MANAGE_OUTLINE)
+    await _chapter_access(existing.chapter_id, db, user, ProjectPermission.MANAGE_OUTLINE)
     try:
         scene = await archive_scene(
             db,

@@ -9,7 +9,6 @@ from sqlalchemy.orm import Mapped, mapped_column
 
 from db.base import Base, TimestampMixin
 
-
 CHAPTER_CHUNK_STATUSES = ("pending", "ready", "stale", "failed")
 
 

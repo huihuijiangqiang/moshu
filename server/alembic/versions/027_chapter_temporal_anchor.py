@@ -7,7 +7,6 @@ from sqlalchemy.dialects import postgresql
 
 from alembic import op
 
-
 revision: str = "027_chapter_temporal_anchor"
 down_revision: str | None = "026_agent_harness"
 branch_labels: str | Sequence[str] | None = None

@@ -3,9 +3,9 @@
 from collections.abc import Sequence
 
 import sqlalchemy as sa
-from alembic import op
 from sqlalchemy.dialects import postgresql
 
+from alembic import op
 
 revision: str = "031_naturalization_review"
 down_revision: str | None = "030_chapter_scenes"

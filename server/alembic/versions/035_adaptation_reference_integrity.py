@@ -2,7 +2,6 @@
 
 from alembic import op
 
-
 revision: str = "035_adaptation_refs"
 down_revision: str | None = "034_chapter_chunks"
 branch_labels: str | None = None

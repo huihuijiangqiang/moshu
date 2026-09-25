@@ -7,12 +7,16 @@ settings JSON document.
 """
 
 from datetime import datetime
+from typing import TYPE_CHECKING
+
 from sqlalchemy import CheckConstraint, DateTime, ForeignKey, Index, Integer, String, Text, UniqueConstraint, func
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from db.base import Base, TimestampMixin
 
+if TYPE_CHECKING:
+    from db.models_core import Project
 
 PLATFORM_VALUES = ("fanqie", "qimao", "qidian", "general")
 POSITIONING_STATUSES = ("draft", "active", "archived")

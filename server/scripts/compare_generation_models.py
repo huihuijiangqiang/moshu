@@ -19,7 +19,6 @@ import httpx
 
 from services.model_catalog import CODING_PLAN_MODELS, VOLCENGINE_CODING_BASE_URL
 
-
 TASK = """请写一段约800字的中文女频穿越种田小说。女主沈砚秋刚穿越到欠税的河湾村，
 她发现里正私扣赈粮，决定先用晒菜干换盐，再借村中账册留下证据。要求有三方势力的
 利益冲突（女主、里正、粮商），信息差只让女主知道一半，结尾留下可回收的权谋钩子。

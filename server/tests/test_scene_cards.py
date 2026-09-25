@@ -2,8 +2,8 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from db.models_consistency import ChapterOutlineState
 from db.models_codex import CodexEntry
+from db.models_consistency import ChapterOutlineState
 from db.models_core import Chapter, ChapterBody
 from domain.outlines import BodyPolicy
 from services.scene_cards import (

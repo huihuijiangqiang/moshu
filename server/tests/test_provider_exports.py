@@ -9,8 +9,14 @@ from providers import (
 )
 from services.providers import (
     EmbeddingProvider as ServiceEmbeddingProvider,
+)
+from services.providers import (
     MockEmbeddingProvider as ServiceMockEmbeddingProvider,
+)
+from services.providers import (
     MockStructuredExtractionProvider as ServiceMockStructuredExtractionProvider,
+)
+from services.providers import (
     StructuredExtractionProvider as ServiceStructuredExtractionProvider,
 )
 

@@ -19,7 +19,6 @@ from services.chapter_chunks import (
 )
 from services.outbox import OutboxService
 
-
 router = APIRouter()
 
 

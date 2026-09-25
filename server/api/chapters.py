@@ -23,13 +23,13 @@ from services.body import (
     count_words,
     save_chapter_body,
 )
+from services.chapter_chunks import count_current_chapter_chunks, embed_pending_chapter_chunks
 from services.character_tracking import (
     CharacterStatisticsNotFoundError,
     InvalidPovEntryError,
     PovRevisionConflictError,
     update_chapter_pov,
 )
-from services.chapter_chunks import count_current_chapter_chunks, embed_pending_chapter_chunks
 from services.embedding import EmbeddingProviderError, GatewayEmbeddingProvider
 from services.idempotency import IdempotencyConflictError
 from services.retrieval import ConsistencyRetrieval

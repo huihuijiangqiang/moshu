@@ -7,6 +7,7 @@ Revises: 032_timestamp_nullability
 from collections.abc import Sequence
 
 import sqlalchemy as sa
+
 from alembic import op
 
 revision: str = "033_payment_provider_workflow"

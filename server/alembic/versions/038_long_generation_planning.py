@@ -3,8 +3,9 @@
 from collections.abc import Sequence
 
 import sqlalchemy as sa
-from alembic import op
 from sqlalchemy.dialects import postgresql
+
+from alembic import op
 
 revision: str = "038_long_generation_planning"
 down_revision: str | None = "037_model_context_budgets"

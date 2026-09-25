@@ -4,7 +4,6 @@ from collections.abc import Sequence
 
 from alembic import op
 
-
 revision: str = "032_timestamp_nullability"
 down_revision: str | None = "031_naturalization_review"
 branch_labels: str | Sequence[str] | None = None

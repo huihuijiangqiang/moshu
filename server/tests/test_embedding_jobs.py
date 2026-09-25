@@ -5,9 +5,9 @@ from types import SimpleNamespace
 import pytest
 from sqlalchemy import select
 
-from db.models_embedding import CodexEmbeddingJob
 from db.models_chapter_chunks import ChapterChunk
 from db.models_core import ChapterBody
+from db.models_embedding import CodexEmbeddingJob
 from services.codex import create_entry
 from services.embedding import EmbeddingProviderError
 from services.providers import MockEmbeddingProvider
