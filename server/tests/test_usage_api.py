@@ -1,17 +1,92 @@
 from datetime import UTC, datetime, timedelta
 
+import pytest
 from sqlalchemy import select
 
-from db.models_usage import UsageLog
+from db.models_usage import CreditGrant, UsageLog
 from services.provider_usage import provider_usage_event, record_platform_usage
 from services.usage import (
     InsufficientCreditsError,
     UsageReservation,
     ensure_current_quota,
     release_reservation,
+    reserve_fixed_credits,
     reserve_generation,
+    settle_fixed_credits,
     settle_generation,
 )
+
+
+async def test_fixed_image_price_reserves_and_settles_without_token_formula(async_db_session, seed_project):
+    await seed_project(user_id="image_user", project_id="image_project")
+    reservation = await reserve_fixed_credits(
+        async_db_session, user_id="image_user", project_id="image_project",
+        feature="comic_image", model="gpt-image-2", credits=23,
+    )
+    user = await ensure_current_quota(async_db_session, "image_user")
+    assert reservation.reserved_credits == 23
+    assert user.quota_remaining == 977
+
+    assert await settle_fixed_credits(async_db_session, reservation) == 23
+    assert await settle_fixed_credits(async_db_session, reservation) == 23
+    log = await async_db_session.get(UsageLog, reservation.log_id)
+    assert log.status == "completed" and log.credits == 23
+    assert log.prompt_tokens == 0 and log.completion_tokens == 0
+    assert log.detail["billing_mode"] == "fixed_image"
+    assert user.quota_remaining == 977
+
+
+async def test_failed_fixed_image_restores_monthly_and_purchased_balance(async_db_session, seed_project):
+    await seed_project(user_id="image_refund", project_id="image_refund_project")
+    user = await ensure_current_quota(async_db_session, "image_refund")
+    user.quota_remaining = 2
+    user.quota_total = 2
+    user.purchased_credits_remaining = 10
+    grant = CreditGrant(
+        id="image_grant", user_id=user.id, kind="purchase", credits=10, remaining_credits=10,
+    )
+    async_db_session.add(grant)
+    await async_db_session.commit()
+
+    reservation = await reserve_fixed_credits(
+        async_db_session, user_id=user.id, project_id="image_refund_project",
+        feature="comic_image", model="gpt-image-2", credits=8,
+    )
+    assert user.quota_remaining == 0 and user.purchased_credits_remaining == 4
+    await release_reservation(async_db_session, reservation, reason="provider_error")
+    await async_db_session.commit()
+    assert user.quota_remaining == 2 and user.purchased_credits_remaining == 10
+    assert grant.remaining_credits == 10
+
+    next_reservation = await reserve_fixed_credits(
+        async_db_session, user_id=user.id, project_id="image_refund_project",
+        feature="comic_image", model="gpt-image-2", credits=8,
+    )
+    assert await settle_fixed_credits(async_db_session, next_reservation) == 8
+    await async_db_session.commit()
+    assert user.quota_remaining == 0 and user.purchased_credits_remaining == 4
+    assert grant.remaining_credits == 4
+
+
+async def test_fixed_image_rejects_missing_price_or_balance(async_db_session, seed_project):
+    await seed_project(user_id="image_low", project_id="image_low_project")
+    with pytest.raises(ValueError, match="positive"):
+        await reserve_fixed_credits(
+            async_db_session, user_id="image_low", project_id="image_low_project",
+            feature="comic_image", model="gpt-image-2", credits=0,
+        )
+    user = await ensure_current_quota(async_db_session, "image_low")
+    user.quota_remaining = 1
+    await async_db_session.commit()
+    try:
+        await reserve_fixed_credits(
+            async_db_session, user_id=user.id, project_id="image_low_project",
+            feature="comic_image", model="gpt-image-2", credits=3,
+        )
+    except InsufficientCreditsError as error:
+        assert (error.required, error.remaining) == (3, 1)
+    else:
+        raise AssertionError("expected insufficient credit rejection")
 
 
 async def test_generation_reservation_settles_actual_cost_and_refunds_difference(

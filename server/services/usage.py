@@ -248,6 +248,89 @@ async def reserve_generation(
     return UsageReservation(log_id=log.id, reserved_credits=reserved)
 
 
+async def reserve_fixed_credits(
+    db: AsyncSession,
+    *,
+    user_id: str,
+    project_id: str,
+    feature: str,
+    model: str,
+    credits: int,
+) -> UsageReservation:
+    """Reserve a configured per-operation price without token-based estimation."""
+    if credits <= 0:
+        raise ValueError("fixed credit price must be positive")
+    user = await db.scalar(select(User).where(User.id == user_id).with_for_update())
+    if user is None:
+        raise ValueError("user not found")
+    now = datetime.now(UTC)
+    _reset_quota_if_due(user, now)
+    await _release_expired_reservations(db, user, now)
+    available = user.quota_remaining + user.purchased_credits_remaining
+    if credits > available:
+        await db.rollback()
+        raise InsufficientCreditsError(required=credits, remaining=available)
+    monthly_reserved = min(credits, user.quota_remaining)
+    purchased_reserved = credits - monthly_reserved
+    user.quota_remaining -= monthly_reserved
+    user.purchased_credits_remaining -= purchased_reserved
+    log = UsageLog(
+        user_id=user.id,
+        project_id=project_id,
+        feature=feature,
+        model=model,
+        prompt_tokens=0,
+        reserved_credits=credits,
+        credits=0,
+        status="reserved",
+        detail={
+            "billing_mode": "fixed_image",
+            "unit_price_credits": credits,
+            "reserved_split": {"monthly": monthly_reserved, "purchased": purchased_reserved},
+        },
+        timestamp=now,
+        reservation_expires_at=now + timedelta(hours=1),
+    )
+    db.add(log)
+    await db.commit()
+    await db.refresh(log)
+    return UsageReservation(log_id=log.id, reserved_credits=credits)
+
+
+async def _settle_reserved_balance(db: AsyncSession, log: UsageLog, user: User, actual: int) -> int:
+    same_month = _same_billing_month(log, datetime.now(UTC))
+    if same_month:
+        _restore_reservation(user, log, restore_monthly=True)
+        charged, _ = await _charge_current_balance(db, user, actual)
+    else:
+        monthly_reserved, purchased_reserved = _reservation_split(log)
+        user.purchased_credits_remaining += purchased_reserved
+        purchased_charge = min(max(0, actual - monthly_reserved), purchased_reserved)
+        purchased_charge = await _consume_purchased_grants(db, user.id, purchased_charge)
+        user.purchased_credits_remaining -= purchased_charge
+        charged = min(actual, monthly_reserved + purchased_reserved)
+    return charged
+
+
+async def settle_fixed_credits(db: AsyncSession, reservation: UsageReservation) -> int:
+    log = await db.scalar(select(UsageLog).where(UsageLog.id == reservation.log_id).with_for_update())
+    if log is None or log.status != "reserved":
+        return log.credits if log else 0
+    if (log.detail or {}).get("billing_mode") != "fixed_image":
+        raise ValueError("reservation is not fixed-price image usage")
+    user = await db.scalar(select(User).where(User.id == log.user_id).with_for_update())
+    if user is None:
+        raise ValueError("usage user not found")
+    actual = log.reserved_credits
+    charged = await _settle_reserved_balance(db, log, user, actual)
+    log.credits = charged
+    log.status = "completed"
+    log.reservation_expires_at = None
+    log.finalized_at = datetime.now(UTC)
+    log.detail = {**(log.detail or {}), "calculated_credits": actual, "unbilled_credits": actual - charged}
+    return charged
+
+
 async def settle_generation(
     db: AsyncSession,
     reservation: UsageReservation,
@@ -271,22 +354,7 @@ async def settle_generation(
         cached_tokens=cached_tokens,
         completion_tokens=completion_tokens,
     )
-    same_month = _same_billing_month(log, datetime.now(UTC))
-    if same_month:
-        _restore_reservation(user, log, restore_monthly=True)
-        charged, _ = await _charge_current_balance(db, user, actual)
-    else:
-        # The old period has closed. Record actual usage without carrying an old
-        # reservation refund or overage into the newly reset monthly balance.
-        monthly_reserved, purchased_reserved = _reservation_split(log)
-        # The closed monthly bucket cannot be refunded or overrun. Purchased
-        # credits remain valid, so only their reservation portion is restored
-        # and settled against the actual result.
-        user.purchased_credits_remaining += purchased_reserved
-        purchased_charge = min(max(0, actual - monthly_reserved), purchased_reserved)
-        purchased_charge = await _consume_purchased_grants(db, user.id, purchased_charge)
-        user.purchased_credits_remaining -= purchased_charge
-        charged = min(actual, monthly_reserved + purchased_reserved)
+    charged = await _settle_reserved_balance(db, log, user, actual)
     log.run_id = run_id
     log.prompt_tokens = max(0, prompt_tokens)
     log.cached_tokens = min(log.prompt_tokens, max(0, cached_tokens))
