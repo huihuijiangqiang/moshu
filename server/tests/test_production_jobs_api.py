@@ -1,11 +1,17 @@
+from datetime import UTC, datetime, timedelta
+from io import BytesIO
+
 import pytest
+from PIL import Image
 from sqlalchemy import select
 
 from celery_app import celery_app
 from config import settings
-from db import Adaptation, CodexEntry, Episode, ProductionJob, Scene, Shot, VisualProfile
+from db import Adaptation, CodexEntry, Episode, ProductionAsset, ProductionJob, Scene, Shot, VisualProfile
 from db.models_core import User
 from db.models_usage import UsageLog
+from providers.production_images import GeneratedImage, ImageGatewayError
+from tasks import production
 
 
 @pytest.fixture
@@ -126,3 +132,88 @@ async def test_image_job_checks_project_permission_and_price(
     )).json()
     assert preview["ready"] is False
     assert "image_price_not_configured" in preview["issues"]
+
+
+@pytest.mark.asyncio
+async def test_image_worker_persists_private_draft_and_charges_once(
+    app_client, async_db_session, seed_project, auth_headers, image_settings, monkeypatch, tmp_path,
+):
+    await seed_shot(async_db_session, seed_project)
+    monkeypatch.setattr(settings, "production_asset_dir", str(tmp_path))
+    output = BytesIO()
+    Image.new("RGB", (64, 96), "#945b69").save(output, format="PNG")
+    called = []
+
+    async def fake_generate(prompt, *, aspect_ratio, model):
+        called.append((prompt, aspect_ratio, model))
+        return GeneratedImage(output.getvalue(), "image/png", 64, 96, "provider-result")
+
+    monkeypatch.setattr(production, "generate_storyboard_image", fake_generate)
+    headers = auth_headers("image_owner")
+    preview = (await app_client.get("/shots/image_shot/image-preview", headers=headers)).json()
+    created = await app_client.post("/shots/image_shot/image-jobs", headers=headers, json={
+        "client_request_id": "image-worker-001", "prompt_sha256": preview["prompt_sha256"],
+    })
+    job_id = created.json()["id"]
+
+    assert await production.process_image_job(async_db_session, job_id) == "completed"
+    assert await production.process_image_job(async_db_session, job_id) == "not_queued"
+    job = await async_db_session.get(ProductionJob, job_id)
+    asset = await async_db_session.get(ProductionAsset, job.asset_id)
+    log = await async_db_session.get(UsageLog, job.usage_log_id)
+    assert job.status == "completed" and asset.status == "draft"
+    assert asset.metadata_json == {"source": "image_generation", "job_id": job_id, "provider_id": "provider-result"}
+    assert (tmp_path / asset.storage_key).read_bytes() == output.getvalue()
+    assert log.status == "completed" and log.credits == 23
+    assert (await async_db_session.get(User, "image_owner")).quota_remaining == 977
+    assert len(called) == 1 and called[0][1:] == ("9:16", "gpt-image-2")
+    assert (await app_client.get(f"/assets/{asset.id}/content", headers=headers)).status_code == 200
+    assert (await app_client.post(f"/image-jobs/{job_id}/cancel", headers=headers)).status_code == 409
+
+
+@pytest.mark.asyncio
+async def test_image_worker_failure_releases_credits(
+    app_client, async_db_session, seed_project, auth_headers, image_settings, monkeypatch,
+):
+    await seed_shot(async_db_session, seed_project)
+
+    async def fail_generate(prompt, *, aspect_ratio, model):
+        raise ImageGatewayError("image_provider_forbidden")
+
+    monkeypatch.setattr(production, "generate_storyboard_image", fail_generate)
+    headers = auth_headers("image_owner")
+    preview = (await app_client.get("/shots/image_shot/image-preview", headers=headers)).json()
+    created = await app_client.post("/shots/image_shot/image-jobs", headers=headers, json={
+        "client_request_id": "image-worker-002", "prompt_sha256": preview["prompt_sha256"],
+    })
+    job_id = created.json()["id"]
+    assert await production.process_image_job(async_db_session, job_id) == "failed"
+    job = await async_db_session.get(ProductionJob, job_id)
+    log = await async_db_session.get(UsageLog, job.usage_log_id)
+    user = await async_db_session.get(User, "image_owner")
+    assert job.status == "failed" and job.error_code == "image_provider_forbidden"
+    assert log.status == "released" and user.quota_remaining == 1000
+    assert await async_db_session.scalar(select(ProductionAsset.id)) is None
+
+
+@pytest.mark.asyncio
+async def test_stale_image_job_recovery_releases_credits(
+    app_client, async_db_session, seed_project, auth_headers, image_settings,
+):
+    await seed_shot(async_db_session, seed_project)
+    headers = auth_headers("image_owner")
+    preview = (await app_client.get("/shots/image_shot/image-preview", headers=headers)).json()
+    created = await app_client.post("/shots/image_shot/image-jobs", headers=headers, json={
+        "client_request_id": "image-worker-003", "prompt_sha256": preview["prompt_sha256"],
+    })
+    job = await async_db_session.get(ProductionJob, created.json()["id"])
+    now = datetime.now(UTC)
+    job.status = "running"
+    job.started_at = now - timedelta(minutes=30)
+    await async_db_session.commit()
+
+    assert await production.recover_stale_image_jobs(async_db_session, now=now) == 1
+    assert await production.recover_stale_image_jobs(async_db_session, now=now) == 0
+    assert job.status == "failed" and job.error_code == "image_job_timeout"
+    assert (await async_db_session.get(UsageLog, job.usage_log_id)).status == "released"
+    assert (await async_db_session.get(User, "image_owner")).quota_remaining == 1000

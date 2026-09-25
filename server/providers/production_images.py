@@ -53,12 +53,13 @@ async def generate_storyboard_image(
     prompt: str,
     *,
     aspect_ratio: str,
+    model: str | None = None,
     config: Settings = settings,
     client: httpx.AsyncClient | None = None,
 ) -> GeneratedImage:
     endpoint, key = image_gateway_config(config)
     size = "1024x1536" if aspect_ratio == "9:16" else "1536x1024"
-    payload = {"model": config.image_gateway_model, "prompt": prompt, "size": size}
+    payload = {"model": model or config.image_gateway_model, "prompt": prompt, "size": size}
     owned_client = client is None
     if client is None:
         client = httpx.AsyncClient(timeout=httpx.Timeout(180.0, connect=10.0), follow_redirects=False)

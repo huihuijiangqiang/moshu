@@ -26,7 +26,7 @@ celery_app.conf.update(
     task_reject_on_worker_lost=True,
     worker_prefetch_multiplier=1,
     worker_max_tasks_per_child=1000,
-    imports=("tasks.consistency", "tasks.codex", "tasks.generation"),
+    imports=("tasks.consistency", "tasks.codex", "tasks.generation", "tasks.production"),
     task_routes={
         "consistency.dispatch_outbox": {"queue": "outbox"},
         "consistency.process_body_saved": {"queue": "consistency"},
@@ -38,6 +38,9 @@ celery_app.conf.update(
         "codex.backfill_embeddings": {"queue": "consistency"},
         "codex.backfill_chapter_chunks": {"queue": "consistency"},
         "codex.recover_stale_embedding_jobs": {"queue": "outbox"},
+        "production.generate_image": {"queue": "consistency"},
+        "production.dispatch_queued": {"queue": "outbox"},
+        "production.recover_stale": {"queue": "outbox"},
     },
     beat_schedule={
         "dispatch-consistency-outbox": {
@@ -51,6 +54,14 @@ celery_app.conf.update(
         },
         "recover-stale-generation-state": {
             "task": "generation.recover_stale_state",
+            "schedule": 60.0,
+        },
+        "dispatch-queued-image-jobs": {
+            "task": "production.dispatch_queued",
+            "schedule": 15.0,
+        },
+        "recover-stale-image-jobs": {
+            "task": "production.recover_stale",
             "schedule": 60.0,
         },
     },
