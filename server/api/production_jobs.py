@@ -72,6 +72,7 @@ def full_body_prompt(profile: VisualProfile, adaptation: Adaptation) -> str:
         "style_description": str(style.get("description", ""))[:600],
         "character": {
             "name": profile.display_name[:200],
+            "style": profile.style[:100],
             "appearance": profile.appearance[:1200],
             "costume": profile.costume[:800],
             "palette": profile.palette[:12],

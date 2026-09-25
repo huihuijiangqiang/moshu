@@ -1,3 +1,4 @@
+import json
 from datetime import UTC, datetime, timedelta
 from io import BytesIO
 
@@ -130,6 +131,32 @@ async def test_full_body_character_sheet_preview_job_and_worker_asset(
     assert asset.kind == "character_sheet" and asset.visual_profile_id == profile.id
     assert asset.id in profile.reference_asset_ids
     assert (await app_client.get(f"/assets/{asset.id}/content", headers=headers)).status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_full_body_quote_includes_character_style_and_rejects_old_style_before_billing(
+    app_client, async_db_session, seed_project, auth_headers, image_settings,
+):
+    await seed_shot(async_db_session, seed_project)
+    headers = auth_headers("image_owner")
+    old_quote = (await app_client.get("/visual-profiles/image_profile/full-body-preview", headers=headers)).json()
+    updated = await app_client.patch("/visual-profiles/image_profile", headers=headers, json={"style": "赛璐璐"})
+    assert updated.status_code == 200
+    response = await app_client.get("/visual-profiles/image_profile/full-body-preview", headers=headers)
+    assert response.status_code == 200
+    quote = response.json()
+    reference_data = json.loads(quote["prompt"].split("\n", 1)[1])
+    assert reference_data["character"]["style"] == "赛璐璐"
+    assert quote["prompt_sha256"] != old_quote["prompt_sha256"]
+    rejected = await app_client.post("/visual-profiles/image_profile/full-body-jobs", headers=headers, json={
+        "client_request_id": "full-body-old-style", "prompt_sha256": old_quote["prompt_sha256"],
+        "model": old_quote["model"], "credits": old_quote["credits"],
+    })
+    assert rejected.status_code == 409
+    assert rejected.json()["detail"]["code"] == "image_preview_changed"
+    assert image_settings == []
+    assert (await async_db_session.get(User, "image_owner")).quota_remaining == 1000
+    assert await async_db_session.scalar(select(UsageLog.id)) is None
 
 
 @pytest.mark.asyncio
