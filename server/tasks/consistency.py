@@ -1070,21 +1070,18 @@ async def _dispatch_outbox_async(task_id: str, batch_size: int):
                     rescan_temporal_dependents.delay(int(event.payload["run_id"]))
                     await OutboxService.mark_sent(db, event.id, event.lease_token)
                     dispatched += 1
-                elif event.topic == "chapter.outline_updated":
-                    # Outline retrieval reads the authoritative database rows
-                    # directly; there is no materialized cache to refresh yet.
-                    # Acknowledge the event so it does not become a false DLQ.
-                    await OutboxService.mark_sent(db, event.id, event.lease_token)
-                    dispatched += 1
                 elif event.topic in {
+                    "chapter.outline_updated",
                     "chapter.scene_updated",
                     "chapter.scene_reordered",
                     "chapter.scene_archived",
+                    "chapter.body_revision_acknowledged",
+                    "naturalization.accepted",
                 }:
-                    # Scene cards are already the authoritative rows consumed by
-                    # context assembly.  Their events are an audit/extension seam
-                    # for future projections, so acknowledge them until a
-                    # materialized scene projection is introduced.
+                    # These rows are already authoritative for their respective
+                    # reads. Their events are audit/extension seams for future
+                    # projections, so acknowledge them until such projections
+                    # are introduced instead of creating false dead letters.
                     await OutboxService.mark_sent(db, event.id, event.lease_token)
                     dispatched += 1
                 else:

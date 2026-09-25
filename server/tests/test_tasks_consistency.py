@@ -2887,9 +2887,16 @@ async def test_dispatch_outbox_acknowledges_outline_refresh_without_false_dead_l
 
 @pytest.mark.parametrize(
     "topic",
-    ["chapter.scene_updated", "chapter.scene_reordered", "chapter.scene_archived"],
+    [
+        "chapter.outline_updated",
+        "chapter.scene_updated",
+        "chapter.scene_reordered",
+        "chapter.scene_archived",
+        "chapter.body_revision_acknowledged",
+        "naturalization.accepted",
+    ],
 )
-async def test_dispatch_outbox_acknowledges_scene_events_without_false_dead_letter(
+async def test_dispatch_outbox_acknowledges_projectionless_events_without_false_dead_letter(
     use_test_session, monkeypatch, topic
 ):
     event = SimpleNamespace(
