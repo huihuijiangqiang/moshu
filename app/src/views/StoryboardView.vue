@@ -21,6 +21,8 @@ const sceneCreateMode = ref(false)
 const profileCreateOpen = ref(false)
 const assetUploading = ref(false)
 const assetUploadError = ref('')
+const assetReview = ref<StoryboardAsset | null>(null)
+const assetRejectionReason = ref('')
 const imageConfirmOpen = ref(false)
 const assetInput = ref<HTMLInputElement | null>(null)
 const episodeDraft = reactive({ title: '', sourceChapterIds: [] as string[], targetDuration: 90 })
@@ -68,6 +70,7 @@ watch(() => storyboard.selectedSceneId, () => {
 
 watch(() => storyboard.selectedShotId, (shotId) => {
   imageConfirmOpen.value = false
+  assetReview.value = null
   storyboard.imagePreview = null
   storyboard.imageJobs = []
   storyboard.generationError = ''
@@ -241,10 +244,20 @@ async function uploadShotAsset(event: Event) {
   showSaved('画面素材已上传，待确认')
 }
 
-async function toggleAssetStatus(asset: StoryboardAsset) {
-  const status = asset.status === 'approved' ? 'draft' : 'approved'
-  const updated = await storyboard.approveAsset(projectId.value, asset.id, status)
-  if (updated) showSaved(status === 'approved' ? '画面已确认' : '画面已退回')
+async function openAssetReview(asset: StoryboardAsset) {
+  assetReview.value = asset
+  assetRejectionReason.value = asset.rejectionReason ?? ''
+  await storyboard.loadAssetPreview(projectId.value, asset)
+}
+
+async function saveAssetReview(status: StoryboardAsset['status']) {
+  const asset = assetReview.value
+  if (!asset) return
+  const updated = await storyboard.approveAsset(projectId.value, asset.id, status, status === 'rejected' ? assetRejectionReason.value.trim() : undefined)
+  if (updated) {
+    assetReview.value = null
+    showSaved(status === 'approved' ? '画面已确认' : '画面已退回')
+  }
 }
 
 function shotImage(shotId: string) {
@@ -473,7 +486,7 @@ async function moveShot(shotId: string, direction: -1 | 1) {
                     <AppIcon v-else name="storyboard" :size="20" />
                   </div>
                   <div class="storyboard-asset-meta"><strong>{{ asset.originalFilename }}</strong><small>{{ asset.status === 'approved' ? '已确认' : asset.status === 'rejected' ? '已退回' : '待确认' }} · {{ Math.ceil(asset.byteSize / 1024) }} KB</small></div>
-                  <button class="storyboard-asset-status" type="button" :disabled="storyboard.saving" @click="toggleAssetStatus(asset)">{{ asset.status === 'approved' ? '退回' : '确认' }}</button>
+                  <button class="storyboard-asset-status" type="button" :disabled="storyboard.saving" @click="openAssetReview(asset)">查看</button>
                 </article>
               </div>
               <p v-else class="storyboard-shot-assets-empty">还没有画面。</p>
@@ -553,6 +566,18 @@ async function moveShot(shotId: string, direction: -1 | 1) {
         <label>生成提示词<textarea :value="storyboard.imagePreview.prompt" rows="8" readonly /></label>
         <p v-if="storyboard.generationError" class="storyboard-shot-assets-error" role="alert">{{ storyboard.generationError }}</p>
         <footer><button class="wk-btn" type="button" @click="imageConfirmOpen = false">取消</button><button class="wk-btn" data-primary="true" type="button" :disabled="!storyboard.imagePreview.ready || storyboard.generating" @click="confirmImageGeneration">{{ storyboard.generating ? '提交中…' : `确认生成 · ${storyboard.imagePreview.credits} 积分` }}</button></footer>
+      </div>
+    </div>
+
+    <div v-if="assetReview" class="storyboard-dialog-backdrop" @click.self="assetReview = null">
+      <div class="storyboard-dialog storyboard-asset-review" role="dialog" aria-modal="true" aria-labelledby="asset-review-title">
+        <header><div><span class="wk-label">镜头画面</span><h2 id="asset-review-title">审阅画面</h2></div><button type="button" aria-label="关闭" @click="assetReview = null"><AppIcon name="close" :size="15" /></button></header>
+        <img v-if="storyboard.assetPreviewUrls[assetReview.id]" class="storyboard-review-image" :src="storyboard.assetPreviewUrls[assetReview.id]" :alt="assetReview.originalFilename" />
+        <p v-else class="storyboard-shot-assets-error">图片暂时无法加载，请稍后重试。</p>
+        <div class="storyboard-review-meta"><strong>{{ assetReview.originalFilename }}</strong><span>{{ assetReview.width ?? '?' }} × {{ assetReview.height ?? '?' }} · {{ Math.ceil(assetReview.byteSize / 1024) }} KB</span></div>
+        <label>退回原因<textarea v-model="assetRejectionReason" rows="2" maxlength="500" placeholder="需要修改的画面细节" /></label>
+        <p v-if="storyboard.error" class="storyboard-shot-assets-error" role="alert">{{ storyboard.error }}</p>
+        <footer><button class="wk-btn" type="button" @click="assetReview = null">关闭</button><button class="wk-btn" type="button" :disabled="storyboard.saving" @click="saveAssetReview('rejected')">退回修改</button><button class="wk-btn" data-primary="true" type="button" :disabled="storyboard.saving || !storyboard.assetPreviewUrls[assetReview.id]" @click="saveAssetReview('approved')">确认画面</button></footer>
       </div>
     </div>
   </div>

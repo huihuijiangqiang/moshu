@@ -4,6 +4,7 @@ import { createMemoryHistory, createRouter } from 'vue-router'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import StoryboardView from './StoryboardView.vue'
 import { useStoryboardStore } from '@/stores/storyboard'
+import { mockApi } from '@/api/mock'
 
 describe('storyboard static editing workflow', () => {
   beforeEach(() => {
@@ -121,6 +122,43 @@ describe('storyboard static editing workflow', () => {
     expect(wrapper.findAll('.storyboard-scene-row')[0]?.text()).toContain('第二场')
     await wrapper.findAll('.storyboard-shot-order button')[store.selectedScene!.shots.length * 2 - 2]!.trigger('click')
     await vi.waitFor(() => expect(store.selectedScene?.shots.at(-2)?.id).toBe(lastShotId))
+    wrapper.unmount()
+  })
+
+  it('opens a full image review before approving or rejecting a frame', async () => {
+    vi.spyOn(mockApi, 'getStoryboardAssetPreview').mockResolvedValue('data:image/png;base64,dGVzdA==')
+    const pinia = createPinia()
+    setActivePinia(pinia)
+    const store = useStoryboardStore()
+    await store.load('storyboard-review-ui')
+    const shotId = store.selectedShot!.id
+    const asset = await store.uploadAsset('storyboard-review-ui', new File(['image'], 'frame.png', { type: 'image/png' }), shotId)
+    expect(asset).toBeTruthy()
+    asset!.contentUrl = '/assets/test/content'
+    const router = createRouter({
+      history: createMemoryHistory(),
+      routes: [{ path: '/projects/:projectId/storyboard', component: StoryboardView }]
+    })
+    await router.push('/projects/storyboard-review-ui/storyboard')
+    await router.isReady()
+    const wrapper = mount(StoryboardView, { attachTo: document.body, global: { plugins: [pinia, router] } })
+    await vi.waitFor(() => expect(wrapper.find('.storyboard-asset-status').exists()).toBe(true))
+
+    await wrapper.get('.storyboard-asset-status').trigger('click')
+    expect(wrapper.get('[aria-labelledby="asset-review-title"]').text()).toContain('frame.png')
+    await wrapper.get('.storyboard-asset-review textarea').setValue('人物面部需要更清晰')
+    await wrapper.get('.storyboard-asset-review button:nth-last-child(2)').trigger('click')
+    await vi.waitFor(() => expect(store.assets.find((item) => item.id === asset!.id)?.status).toBe('rejected'))
+    expect(store.assets.find((item) => item.id === asset!.id)?.rejectionReason).toBe('人物面部需要更清晰')
+    expect(store.selectedShot?.referenceAssetIds).not.toContain(asset!.id)
+
+    asset!.contentUrl = '/assets/test/content'
+    await wrapper.get('.storyboard-asset-status').trigger('click')
+    await vi.waitFor(() => expect(store.assetPreviewUrls[asset!.id]).toBeTruthy())
+    expect(wrapper.get('.storyboard-asset-review footer button:last-child').attributes('disabled')).toBeUndefined()
+    await wrapper.get('.storyboard-asset-review footer button:last-child').trigger('click')
+    await vi.waitFor(() => expect(store.assets.find((item) => item.id === asset!.id)?.status).toBe('approved'))
+    expect(store.selectedShot?.referenceAssetIds).toContain(asset!.id)
     wrapper.unmount()
   })
 })

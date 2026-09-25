@@ -423,6 +423,16 @@ async def test_production_asset_upload_binds_to_shot_and_requires_review(
     assert ready["assets"][0]["id"] == asset["id"]
     assert ready["readiness"]["ready"] is True
 
+    rejected = await app_client.patch(
+        f"/assets/{asset['id']}", headers=headers,
+        json={"status": "rejected", "rejection_reason": "人物面部需调整"},
+    )
+    assert rejected.json()["rejection_reason"] == "人物面部需调整"
+    assert (await app_client.get(f"/scenes/{scene['id']}/shots", headers=headers)).json()[0]["reference_asset_ids"] == []
+    assert (await app_client.get(package_path, headers=headers)).json()["assets"] == []
+    await app_client.patch(f"/assets/{asset['id']}", headers=headers, json={"status": "approved"})
+    assert (await app_client.get(f"/scenes/{scene['id']}/shots", headers=headers)).json()[0]["reference_asset_ids"] == [asset["id"]]
+
     invalid = await app_client.post(
         "/adaptations/adaptation-a/assets",
         headers=headers,

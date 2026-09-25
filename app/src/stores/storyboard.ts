@@ -21,10 +21,10 @@ export const useStoryboardStore = defineStore('storyboard', () => {
   const imagePreview = ref<ImageGenerationPreview | null>(null)
   const imageJobs = ref<ImageGenerationJob[]>([])
   const generationLoading = ref(false)
-  const jobsLoading = ref(false)
   const generating = ref(false)
   const generationError = ref('')
-  let pendingImageRequest: { shotId: string; hash: string; id: string } | null = null
+  let pendingImageRequest: { shotId: string; hash: string; model: string; credits: number; id: string } | null = null
+  const loadingImageJobs = new Set<string>()
   const error = ref('')
   let packageRevision = 0
 
@@ -110,8 +110,8 @@ export const useStoryboardStore = defineStore('storyboard', () => {
   }
 
   async function loadImageJobs(shotId: string) {
-    if (USE_MOCK || jobsLoading.value) return
-    jobsLoading.value = true
+    if (USE_MOCK || loadingImageJobs.has(shotId)) return
+    loadingImageJobs.add(shotId)
     try {
       const rows = await storyboardApi.listImageGenerationJobs(shotId)
       if (selectedShotId.value !== shotId) return
@@ -127,7 +127,7 @@ export const useStoryboardStore = defineStore('storyboard', () => {
     } catch (caught) {
       generationError.value = imageErrorMessage(caught, '图片任务加载失败')
     } finally {
-      jobsLoading.value = false
+      loadingImageJobs.delete(shotId)
     }
   }
 
@@ -141,7 +141,7 @@ export const useStoryboardStore = defineStore('storyboard', () => {
     generationLoading.value = true
     try {
       const preview = await storyboardApi.getImageGenerationPreview(shotId)
-      if (pendingImageRequest && (pendingImageRequest.shotId !== shotId || pendingImageRequest.hash !== preview.prompt_sha256)) pendingImageRequest = null
+      if (pendingImageRequest && (pendingImageRequest.shotId !== shotId || pendingImageRequest.hash !== preview.prompt_sha256 || pendingImageRequest.model !== preview.model || pendingImageRequest.credits !== preview.credits)) pendingImageRequest = null
       if (selectedShotId.value === shotId) imagePreview.value = preview
       return preview
     } catch (caught) {
@@ -155,13 +155,13 @@ export const useStoryboardStore = defineStore('storyboard', () => {
   async function confirmImageGeneration(shotId: string) {
     const preview = imagePreview.value
     if (!preview?.ready || generating.value || selectedShotId.value !== shotId) return null
-    if (!pendingImageRequest || pendingImageRequest.shotId !== shotId || pendingImageRequest.hash !== preview.prompt_sha256) {
-      pendingImageRequest = { shotId, hash: preview.prompt_sha256, id: crypto.randomUUID().replaceAll('-', '') }
+    if (!pendingImageRequest || pendingImageRequest.shotId !== shotId || pendingImageRequest.hash !== preview.prompt_sha256 || pendingImageRequest.model !== preview.model || pendingImageRequest.credits !== preview.credits) {
+      pendingImageRequest = { shotId, hash: preview.prompt_sha256, model: preview.model, credits: preview.credits, id: crypto.randomUUID().replaceAll('-', '') }
     }
     generating.value = true
     generationError.value = ''
     try {
-      const job = await storyboardApi.createImageGenerationJob(shotId, pendingImageRequest.id, preview.prompt_sha256)
+      const job = await storyboardApi.createImageGenerationJob(shotId, pendingImageRequest.id, preview)
       imageJobs.value = [job, ...imageJobs.value.filter((item) => item.id !== job.id)]
       imagePreview.value = null
       pendingImageRequest = null
@@ -227,11 +227,14 @@ export const useStoryboardStore = defineStore('storyboard', () => {
     return asset
   }
 
-  async function approveAsset(projectId: string, assetId: string, status: StoryboardAsset['status']) {
-    const updated = await mutate(() => api.updateStoryboardAsset(projectId, assetId, status), '画面素材状态保存失败')
+  async function approveAsset(projectId: string, assetId: string, status: StoryboardAsset['status'], rejectionReason?: string) {
+    const updated = await mutate(() => api.updateStoryboardAsset(projectId, assetId, status, rejectionReason), '画面素材状态保存失败')
     if (updated) {
       const asset = assets.value.find((item) => item.id === assetId)
       if (asset) Object.assign(asset, updated)
+      const shot = adaptation.value?.episodes.flatMap((episode) => episode.scenes).flatMap((scene) => scene.shots).find((item) => item.id === updated.shotId)
+      if (shot && status === 'rejected') shot.referenceAssetIds = shot.referenceAssetIds.filter((id) => id !== assetId)
+      if (shot && status === 'approved' && !shot.referenceAssetIds.includes(assetId)) shot.referenceAssetIds.push(assetId)
     }
     return updated
   }

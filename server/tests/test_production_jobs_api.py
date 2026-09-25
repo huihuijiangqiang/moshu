@@ -63,7 +63,7 @@ async def test_image_job_preview_confirm_idempotency_and_cancel(
     assert "左眉有细疤" in preview["prompt"]
     assert preview["profile_versions"] == {"image_character": 1}
 
-    payload = {"client_request_id": "image-request-001", "prompt_sha256": preview["prompt_sha256"]}
+    payload = {"client_request_id": "image-request-001", "prompt_sha256": preview["prompt_sha256"], "model": preview["model"], "credits": preview["credits"]}
     created = await app_client.post("/shots/image_shot/image-jobs", headers=headers, json=payload)
     assert created.status_code == 201
     job_id = created.json()["id"]
@@ -98,7 +98,7 @@ async def test_image_job_rejects_stale_preview_and_unlocked_character(
     shot.visual_prompt = "改成另一个画面"
     await async_db_session.commit()
     response = await app_client.post("/shots/image_shot/image-jobs", headers=headers, json={
-        "client_request_id": "image-request-002", "prompt_sha256": preview["prompt_sha256"],
+        "client_request_id": "image-request-002", "prompt_sha256": preview["prompt_sha256"], "model": preview["model"], "credits": preview["credits"],
     })
     assert response.status_code == 409
     assert response.json()["detail"]["code"] == "image_preview_changed"
@@ -110,7 +110,7 @@ async def test_image_job_rejects_stale_preview_and_unlocked_character(
     preview = (await app_client.get("/shots/image_shot/image-preview", headers=headers)).json()
     assert preview["ready"] is False
     response = await app_client.post("/shots/image_shot/image-jobs", headers=headers, json={
-        "client_request_id": "image-request-003", "prompt_sha256": preview["prompt_sha256"],
+        "client_request_id": "image-request-003", "prompt_sha256": preview["prompt_sha256"], "model": preview["model"], "credits": preview["credits"],
     })
     assert response.status_code == 422
     assert "visual_profile_not_ready:image_character" in response.json()["detail"]["issues"]
@@ -135,6 +135,24 @@ async def test_image_job_checks_project_permission_and_price(
 
 
 @pytest.mark.asyncio
+async def test_image_job_refuses_changed_price_after_preview(
+    app_client, async_db_session, seed_project, auth_headers, image_settings, monkeypatch,
+):
+    await seed_shot(async_db_session, seed_project)
+    headers = auth_headers("image_owner")
+    preview = (await app_client.get("/shots/image_shot/image-preview", headers=headers)).json()
+    monkeypatch.setattr(settings, "image_generation_credits", 42)
+    response = await app_client.post("/shots/image_shot/image-jobs", headers=headers, json={
+        "client_request_id": "image-price-changed", "prompt_sha256": preview["prompt_sha256"],
+        "model": preview["model"], "credits": preview["credits"],
+    })
+    assert response.status_code == 409
+    assert response.json()["detail"]["code"] == "image_preview_changed"
+    assert (await async_db_session.get(User, "image_owner")).quota_remaining == 1000
+    assert await async_db_session.scalar(select(ProductionJob.id)) is None
+
+
+@pytest.mark.asyncio
 async def test_image_worker_persists_private_draft_and_charges_once(
     app_client, async_db_session, seed_project, auth_headers, image_settings, monkeypatch, tmp_path,
 ):
@@ -152,7 +170,7 @@ async def test_image_worker_persists_private_draft_and_charges_once(
     headers = auth_headers("image_owner")
     preview = (await app_client.get("/shots/image_shot/image-preview", headers=headers)).json()
     created = await app_client.post("/shots/image_shot/image-jobs", headers=headers, json={
-        "client_request_id": "image-worker-001", "prompt_sha256": preview["prompt_sha256"],
+        "client_request_id": "image-worker-001", "prompt_sha256": preview["prompt_sha256"], "model": preview["model"], "credits": preview["credits"],
     })
     job_id = created.json()["id"]
 
@@ -188,7 +206,7 @@ async def test_image_worker_failure_releases_credits(
     headers = auth_headers("image_owner")
     preview = (await app_client.get("/shots/image_shot/image-preview", headers=headers)).json()
     created = await app_client.post("/shots/image_shot/image-jobs", headers=headers, json={
-        "client_request_id": "image-worker-002", "prompt_sha256": preview["prompt_sha256"],
+        "client_request_id": "image-worker-002", "prompt_sha256": preview["prompt_sha256"], "model": preview["model"], "credits": preview["credits"],
     })
     job_id = created.json()["id"]
     assert await production.process_image_job(async_db_session, job_id) == "failed"
@@ -208,7 +226,7 @@ async def test_stale_image_job_recovery_releases_credits(
     headers = auth_headers("image_owner")
     preview = (await app_client.get("/shots/image_shot/image-preview", headers=headers)).json()
     created = await app_client.post("/shots/image_shot/image-jobs", headers=headers, json={
-        "client_request_id": "image-worker-003", "prompt_sha256": preview["prompt_sha256"],
+        "client_request_id": "image-worker-003", "prompt_sha256": preview["prompt_sha256"], "model": preview["model"], "credits": preview["credits"],
     })
     job = await async_db_session.get(ProductionJob, created.json()["id"])
     now = datetime.now(UTC)
@@ -220,4 +238,29 @@ async def test_stale_image_job_recovery_releases_credits(
     assert await production.recover_stale_image_jobs(async_db_session, now=now) == 0
     assert job.status == "failed" and job.error_code == "image_job_timeout"
     assert (await async_db_session.get(UsageLog, job.usage_log_id)).status == "released"
+    assert (await async_db_session.get(User, "image_owner")).quota_remaining == 1000
+
+
+@pytest.mark.asyncio
+async def test_expired_image_reservation_never_calls_provider(
+    app_client, async_db_session, seed_project, auth_headers, image_settings, monkeypatch,
+):
+    await seed_shot(async_db_session, seed_project)
+    headers = auth_headers("image_owner")
+    preview = (await app_client.get("/shots/image_shot/image-preview", headers=headers)).json()
+    created = await app_client.post("/shots/image_shot/image-jobs", headers=headers, json={
+        "client_request_id": "image-worker-004", "prompt_sha256": preview["prompt_sha256"], "model": preview["model"], "credits": preview["credits"],
+    })
+    job = await async_db_session.get(ProductionJob, created.json()["id"])
+    log = await async_db_session.get(UsageLog, job.usage_log_id)
+    log.reservation_expires_at = datetime.now(UTC) - timedelta(seconds=1)
+    await async_db_session.commit()
+
+    async def forbidden_call(*args, **kwargs):
+        raise AssertionError("expired reservation must not spend provider credits")
+
+    monkeypatch.setattr(production, "generate_storyboard_image", forbidden_call)
+    assert await production.process_image_job(async_db_session, job.id) == "reservation_expired"
+    assert job.status == "failed" and job.error_code == "image_reservation_expired"
+    assert log.status == "released"
     assert (await async_db_session.get(User, "image_owner")).quota_remaining == 1000

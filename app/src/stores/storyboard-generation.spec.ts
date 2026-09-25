@@ -35,7 +35,10 @@ describe('storyboard real image generation flow', () => {
     vi.mocked(request).mockImplementation(async (path, init) => {
       if (path === '/shots/shot_test/image-preview') return preview
       if (path === '/shots/shot_test/image-jobs' && init?.method === 'POST') {
-        submitted.push(JSON.parse(String(init.body)).client_request_id)
+        const body = JSON.parse(String(init.body))
+        expect(body.model).toBe('gpt-image-2')
+        expect(body.credits).toBe(23)
+        submitted.push(body.client_request_id)
         if (submitted.length === 1) throw new Error('network timeout')
         return queuedJob
       }

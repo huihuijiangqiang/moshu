@@ -40,6 +40,8 @@ class ImagePreview(BaseModel):
 class ImageJobCreate(BaseModel):
     client_request_id: str = Field(min_length=8, max_length=100, pattern=r"^[A-Za-z0-9_-]+$")
     prompt_sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
+    model: str = Field(min_length=1, max_length=100)
+    credits: int = Field(ge=0, le=100_000)
 
 
 class ImageJobOut(BaseModel):
@@ -174,11 +176,13 @@ async def create_shot_image_job(
         ProductionJob.user_id == user.id, ProductionJob.client_request_id == payload.client_request_id,
     ))
     if existing is not None:
-        if existing.shot_id != shot_id or existing.prompt_sha256 != payload.prompt_sha256:
+        if (existing.shot_id != shot_id or existing.prompt_sha256 != payload.prompt_sha256
+                or existing.model != payload.model or existing.credits != payload.credits):
             raise HTTPException(status_code=409, detail={"code": "image_request_id_reused"})
         return job_out(existing)
     preview = await image_preview(shot, scene, adaptation, db)
-    if preview.prompt_sha256 != payload.prompt_sha256:
+    if (preview.prompt_sha256 != payload.prompt_sha256 or preview.model != payload.model
+            or preview.credits != payload.credits):
         raise HTTPException(status_code=409, detail={"code": "image_preview_changed"})
     if not preview.ready:
         raise HTTPException(status_code=422, detail={"code": "image_generation_not_ready", "issues": preview.issues})
@@ -206,7 +210,9 @@ async def create_shot_image_job(
         existing = await db.scalar(select(ProductionJob).where(
             ProductionJob.user_id == user.id, ProductionJob.client_request_id == payload.client_request_id,
         ))
-        if existing is not None and existing.shot_id == shot_id and existing.prompt_sha256 == payload.prompt_sha256:
+        if (existing is not None and existing.shot_id == shot_id
+                and existing.prompt_sha256 == payload.prompt_sha256
+                and existing.model == payload.model and existing.credits == payload.credits):
             return job_out(existing)
         raise HTTPException(status_code=409, detail={"code": "image_request_id_reused"}) from error
     await db.refresh(job)
@@ -241,6 +247,7 @@ async def cancel_image_job(
     job.status = "cancelled"
     job.finished_at = datetime.now(UTC)
     if job.usage_log_id:
+        await db.scalar(select(User).where(User.id == job.user_id).with_for_update())
         await release_reservation(db, UsageReservation(job.usage_log_id, job.credits), reason="user_cancelled")
     await db.commit()
     await db.refresh(job)

@@ -200,9 +200,12 @@ export const storyboardApi = {
     return request<ImageGenerationJob[]>(`/shots/${shotId}/image-jobs`)
   },
 
-  async createImageGenerationJob(shotId: string, clientRequestId: string, promptSha256: string): Promise<ImageGenerationJob> {
+  async createImageGenerationJob(shotId: string, clientRequestId: string, preview: ImageGenerationPreview): Promise<ImageGenerationJob> {
     return request<ImageGenerationJob>(`/shots/${shotId}/image-jobs`, {
-      method: 'POST', body: JSON.stringify({ client_request_id: clientRequestId, prompt_sha256: promptSha256 })
+      method: 'POST', body: JSON.stringify({
+        client_request_id: clientRequestId, prompt_sha256: preview.prompt_sha256,
+        model: preview.model, credits: preview.credits
+      })
     })
   },
 

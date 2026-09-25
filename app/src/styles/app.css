@@ -254,6 +254,9 @@ button { font: inherit; color: inherit; }
 .storyboard-shot-assets { display: grid; gap: 8px; padding-top: 2px; border-top: var(--hair) solid var(--line); }
 .storyboard-shot-assets-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 .storyboard-shot-assets-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 6px; }
+.storyboard-shot-assets-actions .wk-btn { flex: none; white-space: nowrap; }
+.storyboard-shot-assets-actions label.wk-btn { display: inline-flex; }
+@media (max-width: 640px) { .storyboard-shot-assets-head { flex-wrap: wrap; } .storyboard-shot-assets-actions { width: 100%; justify-content: flex-start; } }
 .storyboard-shot-assets-head > div { display: flex; align-items: baseline; gap: 8px; }
 .storyboard-shot-assets-head strong { font-size: 12px; }
 .storyboard-shot-assets-head .wk-btn { position: relative; overflow: hidden; }
@@ -311,6 +314,11 @@ button { font: inherit; color: inherit; }
 .storyboard-image-confirm label { display: grid; gap: 6px; color: var(--ink-3); font-size: 11px; }
 .storyboard-image-confirm textarea { max-height: 280px; font-family: var(--font-mono); font-size: 11px; }
 .storyboard-image-issues { margin: 0; padding: 8px 8px 8px 28px; color: var(--alert-ink); background: var(--alert-soft); font-size: 11px; line-height: 1.6; }
+.storyboard-asset-review { width: min(100%, 760px); }
+.storyboard-review-image { display: block; max-width: 100%; max-height: min(65vh, 720px); margin: 0 auto; object-fit: contain; }
+.storyboard-review-meta { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 4px 16px; color: var(--ink-3); font-size: 11px; }
+.storyboard-review-meta strong { color: var(--ink-2); }
+.storyboard-asset-review label { display: grid; gap: 6px; color: var(--ink-3); font-size: 11px; }
 .storyboard-dialog > header { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; padding-bottom: 11px; border-bottom: 1px solid var(--line); }
 .storyboard-dialog h2 { margin: 4px 0 0; font-family: var(--font-prose); font-size: 21px; font-weight: 600; }
 .storyboard-dialog > header button { display: grid; place-items: center; width: 26px; height: 26px; padding: 0; color: var(--ink-3); border: 0; background: transparent; cursor: pointer; }

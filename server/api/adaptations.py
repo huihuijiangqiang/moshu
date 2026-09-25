@@ -456,6 +456,14 @@ async def update_production_asset(
     asset = await require_asset(asset_id, db, user, ProjectPermission.MANAGE_OUTLINE)
     asset.status = payload.status
     asset.rejection_reason = payload.rejection_reason if payload.status == "rejected" else None
+    if asset.shot_id is not None:
+        shot = await db.get(Shot, asset.shot_id)
+        if shot is not None:
+            references = shot.reference_asset_ids or []
+            if payload.status == "rejected":
+                shot.reference_asset_ids = [item for item in references if item != asset.id]
+            elif payload.status == "approved" and asset.id not in references:
+                shot.reference_asset_ids = [*references, asset.id]
     await db.commit()
     await db.refresh(asset)
     return _asset_out(asset)

@@ -12,6 +12,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from celery_app import celery_app
 from db import Adaptation, ProductionAsset, ProductionJob, Shot
+from db.models_core import User
+from db.models_usage import UsageLog
 from db.session import AsyncSessionLocal
 from providers.production_images import ImageGatewayError, generate_storyboard_image
 from services.production_assets import IMAGE_EXTENSIONS, asset_path
@@ -22,11 +24,32 @@ logger = logging.getLogger(__name__)
 STALE_IMAGE_JOB_SECONDS = 20 * 60
 
 
+def reservation_valid(log: UsageLog | None, now: datetime) -> bool:
+    if log is None or log.status != "reserved" or log.reservation_expires_at is None:
+        return False
+    expires_at = log.reservation_expires_at
+    if expires_at.tzinfo is None:
+        expires_at = expires_at.replace(tzinfo=UTC)
+    return expires_at > now
+
+
 async def process_image_job(db: AsyncSession, job_id: str) -> str:
     job = await db.scalar(select(ProductionJob).where(ProductionJob.id == job_id).with_for_update(skip_locked=True))
     if job is None or job.status != "queued":
         await db.rollback()
         return "not_queued"
+    await db.scalar(select(User).where(User.id == job.user_id).with_for_update())
+    log = await db.scalar(select(UsageLog).where(UsageLog.id == job.usage_log_id).with_for_update())
+    if not reservation_valid(log, datetime.now(UTC)):
+        job.status = "failed"
+        job.error_code = "image_reservation_expired"
+        job.finished_at = datetime.now(UTC)
+        if log is not None and log.status == "reserved":
+            await release_reservation(
+                db, UsageReservation(job.usage_log_id, job.credits), reason="image_reservation_expired",
+            )
+        await db.commit()
+        return "reservation_expired"
     job.status = "running"
     job.started_at = datetime.now(UTC)
     prompt, model, adaptation_id = job.prompt, job.model, job.adaptation_id
@@ -42,6 +65,10 @@ async def process_image_job(db: AsyncSession, job_id: str) -> str:
         if job is None or job.status != "running":
             await db.rollback()
             return "no_longer_running"
+        await db.scalar(select(User).where(User.id == job.user_id).with_for_update())
+        log = await db.scalar(select(UsageLog).where(UsageLog.id == job.usage_log_id).with_for_update())
+        if not reservation_valid(log, datetime.now(UTC)):
+            raise ImageGatewayError("image_reservation_expired")
         extension = IMAGE_EXTENSIONS[image.mime_type]
         asset_id = f"asset_{uuid4().hex[:24]}"
         storage_key = f"{job.adaptation_id}/{asset_id}.{extension}"
@@ -79,6 +106,7 @@ async def process_image_job(db: AsyncSession, job_id: str) -> str:
         logger.warning("Image job %s failed: %s", job_id, code)
         job = await db.scalar(select(ProductionJob).where(ProductionJob.id == job_id).with_for_update())
         if job is not None and job.status == "running":
+            await db.scalar(select(User).where(User.id == job.user_id).with_for_update())
             job.status = "failed"
             job.error_code = code
             job.finished_at = datetime.now(UTC)
@@ -111,6 +139,7 @@ async def recover_stale_image_jobs(
         ).with_for_update(skip_locked=True)
     )).scalars().all()
     for job in rows:
+        await db.scalar(select(User).where(User.id == job.user_id).with_for_update())
         job.status = "failed"
         job.error_code = "image_job_timeout"
         job.finished_at = current
