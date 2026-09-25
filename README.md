@@ -137,6 +137,11 @@ uvicorn main:app --reload --port 8000
 成功后应立即从运行环境移除该变量；审计记录不会保存令牌内容。已有用户的实例不会
 接受该入口，后续管理员仍通过系统后台和审计流程维护。
 
+公网部署前必须替换 `JWT_SECRET_KEY` 和独立的 `CREDENTIAL_ENCRYPTION_KEY`。当
+`PUBLIC_APP_URL` 或 `CORS_ORIGINS` 使用公网域名时，API 会在启动阶段拒绝示例密钥；
+localhost 本地 Compose 仍保留免配置启动能力。可使用 `openssl rand -base64 48` 分别生成两份密钥，
+不要把真实值提交到 Git。
+
 ### 配置自己的大模型调用地址
 
 墨枢使用 OpenAI 兼容协议调用文本模型。请根据使用场景选择一种配置方式，API

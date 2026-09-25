@@ -3,6 +3,7 @@
 """
 from pathlib import Path
 from typing import Optional
+from urllib.parse import urlsplit
 
 from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -21,6 +22,52 @@ MIN_CONTEXT_INPUT_TOKENS = 1_024
 DEFAULT_GENERATION_CONTEXT_WINDOW_TOKENS = 256_000
 DEFAULT_GENERATION_MAX_OUTPUT_TOKENS = 32_000
 DEFAULT_GENERATION_CONTEXT_SAFETY_MARGIN_TOKENS = 16_000
+
+_INSECURE_JWT_SECRETS = {
+    "local-development-only-change-before-production",
+    "change-this-in-production",
+}
+_INSECURE_CREDENTIAL_KEYS = {
+    "replace-with-a-separate-long-random-secret",
+    "replace-with-a-separate-at-least-32-byte-random-secret",
+}
+
+
+def _is_loopback_origin(value: str) -> bool:
+    """Return whether an app origin is explicitly local-only."""
+
+    try:
+        hostname = (urlsplit(value.strip()).hostname or "").lower().rstrip(".")
+    except ValueError:
+        return False
+    return hostname in {"localhost", "127.0.0.1", "::1"}
+
+
+def validate_public_deployment_secrets(
+    *,
+    public_app_url: str,
+    cors_origins: str,
+    jwt_secret_key: str,
+    credential_encryption_key: str | None,
+) -> None:
+    """Reject sample cryptographic material when the app is public."""
+
+    origins = [public_app_url, *(item for item in cors_origins.split(",") if item.strip())]
+    if all(_is_loopback_origin(origin) for origin in origins):
+        return
+    if len(jwt_secret_key) < 32 or jwt_secret_key in _INSECURE_JWT_SECRETS:
+        raise ValueError(
+            "public deployments require JWT_SECRET_KEY with at least 32 random characters; "
+            "replace the example value"
+        )
+    if (
+        credential_encryption_key is None
+        or len(credential_encryption_key) < 32
+        or credential_encryption_key in _INSECURE_CREDENTIAL_KEYS
+    ):
+        raise ValueError(
+            "public deployments require a separate CREDENTIAL_ENCRYPTION_KEY with at least 32 random characters"
+        )
 
 
 class Settings(BaseSettings):
@@ -193,6 +240,16 @@ class Settings(BaseSettings):
                 "context budget must reserve at least "
                 f"{MIN_CONTEXT_INPUT_TOKENS} tokens for input"
             )
+        return self
+
+    @model_validator(mode="after")
+    def validate_public_secrets(self) -> "Settings":
+        validate_public_deployment_secrets(
+            public_app_url=self.public_app_url,
+            cors_origins=self.cors_origins,
+            jwt_secret_key=self.jwt_secret_key,
+            credential_encryption_key=self.credential_encryption_key,
+        )
         return self
 
     @property
