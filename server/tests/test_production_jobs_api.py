@@ -100,12 +100,20 @@ async def test_full_body_character_sheet_preview_job_and_worker_asset(
     assert preview["ready"] is True
     assert "complete standing pose" in preview["prompt"]
 
-    created = await app_client.post("/visual-profiles/image_profile/full-body-jobs", headers=headers, json={
+    payload = {
         "client_request_id": "full-body-request-001", "prompt_sha256": preview["prompt_sha256"],
         "model": preview["model"], "credits": preview["credits"],
-    })
+    }
+    created = await app_client.post("/visual-profiles/image_profile/full-body-jobs", headers=headers, json=payload)
     assert created.status_code == 201
     job_id = created.json()["id"]
+    repeated = await app_client.post("/visual-profiles/image_profile/full-body-jobs", headers=headers, json=payload)
+    assert repeated.status_code == 201
+    assert repeated.json()["id"] == job_id
+    assert len(image_settings) == 1
+    assert (await async_db_session.get(User, "image_owner")).quota_remaining == 977
+    logs = (await async_db_session.execute(select(UsageLog).where(UsageLog.feature == "comic_character_sheet"))).scalars().all()
+    assert len(logs) == 1 and logs[0].status == "reserved"
     output = BytesIO()
     Image.new("RGB", (512, 1024), "#345b62").save(output, format="PNG")
 

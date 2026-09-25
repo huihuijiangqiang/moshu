@@ -23,11 +23,23 @@ export const useStoryboardStore = defineStore('storyboard', () => {
   const fullBodyPreview = ref<ImageGenerationPreview | null>(null)
   const fullBodyJobs = ref<ImageGenerationJob[]>([])
   const fullBodyLoading = ref(false)
-  const fullBodyGenerating = ref(false)
+  const fullBodyJobsLoading = ref(false)
+  const fullBodyError = ref('')
+  const selectedVisualProfileId = ref<string | null>(null)
+  const submittingFullBodyProfiles = ref(new Set<string>())
+  const fullBodyGenerating = computed(() => submittingFullBodyProfiles.value.has(selectedVisualProfileId.value ?? ''))
   const generationLoading = ref(false)
   const generating = ref(false)
   const generationError = ref('')
   let pendingImageRequest: { shotId: string; hash: string; model: string; credits: number; id: string } | null = null
+  // Keep an uncertain submission across dialog closes and character changes.
+  // Only an acknowledged response or a changed quote starts a new paid request.
+  const pendingFullBodyRequests = new Map<string, { signature: string; id: string }>()
+  let fullBodyContext = 0
+  let fullBodyPreviewRevision = 0
+  let fullBodyJobsRevision = 0
+  let loadRevision = 0
+  let assetPreviewRevision = 0
   const loadingImageJobs = new Set<string>()
   const loadingFullBodyJobs = new Set<string>()
   const error = ref('')
@@ -50,18 +62,32 @@ export const useStoryboardStore = defineStore('storyboard', () => {
   }
 
   function clearAssetPreviews() {
+    assetPreviewRevision += 1
     Object.values(assetPreviewUrls.value).forEach((url) => URL.revokeObjectURL(url))
     assetPreviewUrls.value = {}
   }
 
   async function load(projectId: string) {
     if (loadedProjectId.value === projectId && adaptation.value) return
+    const revision = ++loadRevision
+    selectVisualProfile(null)
+    clearAssetPreviews()
+    adaptation.value = null
+    loadedProjectId.value = null
+    assets.value = []
+    imagePreview.value = null
+    imageJobs.value = []
+    selectedEpisodeId.value = null
+    selectedSceneId.value = null
+    selectedShotId.value = null
+    invalidateProductionPackage()
     loading.value = true
     error.value = ''
     try {
       const nextAdaptation = await api.getStoryboard(projectId)
+      if (revision !== loadRevision) return
       const nextAssets = await api.listStoryboardAssets(projectId, nextAdaptation.id)
-      clearAssetPreviews()
+      if (revision !== loadRevision) return
       adaptation.value = nextAdaptation
       assets.value = nextAssets
       imagePreview.value = null
@@ -73,10 +99,11 @@ export const useStoryboardStore = defineStore('storyboard', () => {
       selectedShotId.value = null
       selectDefaults()
     } catch (caught) {
+      if (revision !== loadRevision) return
       adaptation.value = null
       error.value = caught instanceof Error && caught.message ? caught.message : '漫剧工作台加载失败'
     } finally {
-      loading.value = false
+      if (revision === loadRevision) loading.value = false
     }
   }
 
@@ -100,6 +127,7 @@ export const useStoryboardStore = defineStore('storyboard', () => {
   function clearError() {
     error.value = ''
     generationError.value = ''
+    fullBodyError.value = ''
   }
 
   function imageErrorMessage(caught: unknown, fallback: string) {
@@ -157,61 +185,113 @@ export const useStoryboardStore = defineStore('storyboard', () => {
     }
   }
 
-  async function prepareFullBodyGeneration(profileId: string) {
+  function selectVisualProfile(profileId: string | null) {
+    fullBodyContext += 1
+    fullBodyPreviewRevision += 1
+    fullBodyJobsRevision += 1
+    selectedVisualProfileId.value = profileId
     fullBodyPreview.value = null
-    generationError.value = ''
+    fullBodyJobs.value = []
+    fullBodyLoading.value = false
+    fullBodyJobsLoading.value = false
+    fullBodyError.value = ''
+  }
+
+  function isFullBodyContext(context: number, profileId: string) {
+    return context === fullBodyContext && selectedVisualProfileId.value === profileId
+  }
+
+  async function prepareFullBodyGeneration(profileId: string) {
+    if (selectedVisualProfileId.value !== profileId || loading.value || saving.value || fullBodyGenerating.value) return null
+    const context = fullBodyContext
+    const revision = ++fullBodyPreviewRevision
+    const isCurrent = () => isFullBodyContext(context, profileId) && revision === fullBodyPreviewRevision
+    fullBodyPreview.value = null
+    fullBodyError.value = ''
     if (USE_MOCK) {
-      generationError.value = '全身设定图需要连接真实服务'
+      fullBodyError.value = '全身设定图需要连接真实服务'
       return null
     }
     fullBodyLoading.value = true
     try {
       const preview = await storyboardApi.getFullBodyImageGenerationPreview(profileId)
-      if (adaptation.value?.visualProfiles.some((profile) => profile.id === profileId)) fullBodyPreview.value = preview
+      if (!isCurrent()) return null
+      fullBodyPreview.value = preview
       return preview
     } catch (caught) {
-      generationError.value = imageErrorMessage(caught, '全身设定图预览加载失败')
+      if (isCurrent()) fullBodyError.value = imageErrorMessage(caught, '全身设定图预览加载失败')
       return null
     } finally {
-      fullBodyLoading.value = false
+      if (isCurrent()) fullBodyLoading.value = false
     }
   }
 
   async function confirmFullBodyGeneration(profileId: string) {
     const preview = fullBodyPreview.value
-    if (!preview?.ready || fullBodyGenerating.value) return null
-    fullBodyGenerating.value = true
-    generationError.value = ''
+    if (!preview?.ready || saving.value || fullBodyLoading.value || fullBodyJobsLoading.value || fullBodyGenerating.value || selectedVisualProfileId.value !== profileId) return null
+    if (fullBodyJobs.value.some((job) => job.visual_profile_id === profileId && (job.status === 'queued' || job.status === 'running'))) return null
+    const context = fullBodyContext
+    const signature = JSON.stringify([preview.prompt_sha256, preview.model, preview.credits])
+    let pending = pendingFullBodyRequests.get(profileId)
+    if (!pending || pending.signature !== signature) {
+      pending = { signature, id: `sheet_${crypto.randomUUID().replaceAll('-', '')}` }
+      pendingFullBodyRequests.set(profileId, pending)
+    }
+    submittingFullBodyProfiles.value.add(profileId)
+    fullBodyError.value = ''
     try {
-      const requestId = `sheet_${crypto.randomUUID().replaceAll('-', '')}`
-      const job = await storyboardApi.createFullBodyImageGenerationJob(profileId, requestId, preview)
+      const job = await storyboardApi.createFullBodyImageGenerationJob(profileId, pending.id, preview)
+      pendingFullBodyRequests.delete(profileId)
+      if (!isFullBodyContext(context, profileId)) return null
+      // A poll started before this acknowledgement must not erase the new job.
+      fullBodyJobsRevision += 1
+      fullBodyJobsLoading.value = false
       fullBodyJobs.value = [job, ...fullBodyJobs.value.filter((item) => item.id !== job.id)]
       fullBodyPreview.value = null
       return job
     } catch (caught) {
-      generationError.value = imageErrorMessage(caught, '全身设定图任务创建失败')
+      if (isFullBodyContext(context, profileId)) {
+        fullBodyError.value = imageErrorMessage(caught, '全身设定图任务创建失败')
+        if (fullBodyError.value === '镜头或人物档案已变更，请重新预览') fullBodyPreview.value = null
+      }
       return null
     } finally {
-      fullBodyGenerating.value = false
+      submittingFullBodyProfiles.value.delete(profileId)
+      // Returning to a character while its submission is in flight needs a fresh poll.
+      if (!isFullBodyContext(context, profileId) && selectedVisualProfileId.value === profileId) {
+        fullBodyJobsRevision += 1
+        void loadFullBodyJobs(profileId)
+      }
     }
   }
 
   async function loadFullBodyJobs(profileId: string) {
-    if (USE_MOCK || loadingFullBodyJobs.has(profileId)) return
-    loadingFullBodyJobs.add(profileId)
+    if (USE_MOCK || selectedVisualProfileId.value !== profileId) return
+    const context = fullBodyContext
+    const revision = fullBodyJobsRevision
+    const key = `${context}:${revision}:${profileId}`
+    if (loadingFullBodyJobs.has(key)) return
+    const isCurrent = () => isFullBodyContext(context, profileId) && revision === fullBodyJobsRevision
+    loadingFullBodyJobs.add(key)
+    fullBodyJobsLoading.value = true
     try {
       const rows = await storyboardApi.listFullBodyImageGenerationJobs(profileId)
+      if (!isCurrent()) return
       fullBodyJobs.value = rows
       const completed = rows.some((job) => job.status === 'completed' && job.asset_id && !assets.value.some((asset) => asset.id === job.asset_id))
       if (completed && adaptation.value) {
-        assets.value = await storyboardApi.listStoryboardAssets(adaptation.value.projectId, adaptation.value.id)
-        assets.value.filter((asset) => asset.visualProfileId === profileId).forEach((asset) => { void loadAssetPreview(adaptation.value!.projectId, asset) })
+        const projectId = adaptation.value.projectId
+        const nextAssets = await storyboardApi.listStoryboardAssets(projectId, adaptation.value.id)
+        if (!isCurrent()) return
+        assets.value = nextAssets
+        nextAssets.filter((asset) => asset.visualProfileId === profileId).forEach((asset) => { void loadAssetPreview(projectId, asset) })
         invalidateProductionPackage()
       }
     } catch (caught) {
-      generationError.value = imageErrorMessage(caught, '全身设定图任务加载失败')
+      if (isCurrent()) fullBodyError.value = imageErrorMessage(caught, '全身设定图任务加载失败')
     } finally {
-      loadingFullBodyJobs.delete(profileId)
+      loadingFullBodyJobs.delete(key)
+      if (isCurrent()) fullBodyJobsLoading.value = false
     }
   }
 
@@ -320,8 +400,17 @@ export const useStoryboardStore = defineStore('storyboard', () => {
 
   async function loadAssetPreview(projectId: string, asset: StoryboardAsset) {
     if (assetPreviewUrls.value[asset.id] || !asset.contentUrl) return assetPreviewUrls.value[asset.id] ?? ''
+    const revision = assetPreviewRevision
     try {
       const url = await api.getStoryboardAssetPreview(projectId, asset)
+      if (revision !== assetPreviewRevision) {
+        if (url) URL.revokeObjectURL(url)
+        return ''
+      }
+      if (assetPreviewUrls.value[asset.id]) {
+        if (url) URL.revokeObjectURL(url)
+        return assetPreviewUrls.value[asset.id]
+      }
       if (url) assetPreviewUrls.value = { ...assetPreviewUrls.value, [asset.id]: url }
       return url
     } catch {
@@ -417,6 +506,11 @@ export const useStoryboardStore = defineStore('storyboard', () => {
   }
 
   async function updateVisualProfile(projectId: string, profileId: string, patch: Partial<VisualProfile>) {
+    if (selectedVisualProfileId.value === profileId) {
+      fullBodyPreviewRevision += 1
+      fullBodyPreview.value = null
+      fullBodyLoading.value = false
+    }
     const updated = await mutate(() => api.updateVisualProfile(projectId, profileId, patch), '视觉档案保存失败')
     if (!updated) return null
     const profile = adaptation.value?.visualProfiles.find((item) => item.id === profileId)
@@ -442,5 +536,5 @@ export const useStoryboardStore = defineStore('storyboard', () => {
     selectedShotId.value = selectedScene.value?.shots[0]?.id ?? null
   }
 
-  return { adaptation, assets, assetPreviewUrls, imagePreview, imageJobs, fullBodyPreview, fullBodyJobs, fullBodyLoading, fullBodyGenerating, generationLoading, generating, generationError, loadedProjectId, loading, saving, checking, productionPackage, error, selectedEpisodeId, selectedSceneId, selectedShotId, selectedEpisode, selectedScene, selectedShot, totalShots, load, clearError, clearAssetPreviews, loadImageJobs, prepareImageGeneration, confirmImageGeneration, prepareFullBodyGeneration, confirmFullBodyGeneration, loadFullBodyJobs, cancelImageGeneration, checkProductionPackage, uploadAsset, uploadCharacterSheet, approveAsset, loadAssetPreview, createEpisode, updateEpisode, createScene, updateScene, moveScene, createShot, updateShot, moveShot, createVisualProfile, updateVisualProfile, selectEpisode, selectScene }
+  return { adaptation, assets, assetPreviewUrls, imagePreview, imageJobs, fullBodyPreview, fullBodyJobs, fullBodyLoading, fullBodyGenerating, fullBodyJobsLoading, fullBodyError, selectedVisualProfileId, generationLoading, generating, generationError, loadedProjectId, loading, saving, checking, productionPackage, error, selectedEpisodeId, selectedSceneId, selectedShotId, selectedEpisode, selectedScene, selectedShot, totalShots, load, clearError, clearAssetPreviews, selectVisualProfile, loadImageJobs, prepareImageGeneration, confirmImageGeneration, prepareFullBodyGeneration, confirmFullBodyGeneration, loadFullBodyJobs, cancelImageGeneration, checkProductionPackage, uploadAsset, uploadCharacterSheet, approveAsset, loadAssetPreview, createEpisode, updateEpisode, createScene, updateScene, moveScene, createShot, updateShot, moveShot, createVisualProfile, updateVisualProfile, selectEpisode, selectScene }
 })

@@ -236,4 +236,71 @@ describe('storyboard static editing workflow', () => {
     expect(wrapper.find('.visual-profile-sheet-actions input[type="file"]').exists()).toBe(true)
     wrapper.unmount()
   })
+
+  it('disables duplicate full-body generation and shows failures in the profile and confirmation dialog', async () => {
+    const pinia = createPinia()
+    setActivePinia(pinia)
+    const store = useStoryboardStore()
+    const router = createRouter({
+      history: createMemoryHistory(),
+      routes: [{ path: '/projects/:projectId/storyboard', component: StoryboardView }]
+    })
+    await router.push('/projects/p1/storyboard')
+    await router.isReady()
+    const wrapper = mount(StoryboardView, { global: { plugins: [pinia, router] } })
+    await vi.waitFor(() => expect(wrapper.find('.visual-profile').exists()).toBe(true))
+    const profileId = store.selectedVisualProfileId!
+    store.fullBodyJobs = [{
+      id: 'sheet_job', adaptation_id: store.adaptation!.id, episode_id: null, shot_id: null,
+      visual_profile_id: profileId, status: 'running', model: 'gpt-image-2',
+      prompt_sha256: 'a'.repeat(64), credits: 23, asset_id: null, error_code: null,
+      created_at: new Date().toISOString(), started_at: null, finished_at: null
+    }]
+    await flushPromises()
+    const generate = wrapper.get('.visual-profile-sheet-actions > button')
+    expect(generate.attributes('disabled')).toBeDefined()
+    expect(wrapper.get('.visual-profile-sheet-job').text()).toBe('生成中')
+    store.fullBodyJobs[0]!.status = 'failed'
+    store.fullBodyJobs[0]!.error_code = 'image_provider_rate_limited'
+    await flushPromises()
+    expect(generate.attributes('disabled')).toBeUndefined()
+    expect(wrapper.get('.visual-profile-sheet-job').text()).toBe('网关限流，额度已返还')
+
+    const quote = { prompt: 'full body', prompt_sha256: 'a'.repeat(64), profile_versions: {}, model: 'gpt-image-2', credits: 23, ready: true, issues: [] }
+    vi.spyOn(store, 'prepareFullBodyGeneration').mockImplementation(async () => {
+      store.fullBodyPreview = quote
+      return quote
+    })
+    vi.spyOn(store, 'confirmFullBodyGeneration').mockImplementation(async () => {
+      store.fullBodyError = '网络超时，请重试'
+      return null
+    })
+    await generate.trigger('click')
+    await flushPromises()
+    const dialog = wrapper.get('[aria-labelledby="full-body-confirm-title"]')
+    await dialog.get('footer button:last-child').trigger('click')
+    await flushPromises()
+    expect(dialog.get('[role="alert"]').text()).toBe('网络超时，请重试')
+    expect(wrapper.get('.visual-profile-sheet [role="alert"]').text()).toBe('网络超时，请重试')
+    wrapper.unmount()
+    expect(store.selectedVisualProfileId).toBeNull()
+  })
+
+  it('reloads the storyboard when navigating between projects in the same view', async () => {
+    const pinia = createPinia()
+    setActivePinia(pinia)
+    const store = useStoryboardStore()
+    const router = createRouter({
+      history: createMemoryHistory(),
+      routes: [{ path: '/projects/:projectId/storyboard', component: StoryboardView }]
+    })
+    await router.push('/projects/p1/storyboard')
+    await router.isReady()
+    const wrapper = mount(StoryboardView, { global: { plugins: [pinia, router] } })
+    await vi.waitFor(() => expect(store.loadedProjectId).toBe('p1'))
+    await router.push('/projects/storyboard-navigation/storyboard')
+    await vi.waitFor(() => expect(store.loadedProjectId).toBe('storyboard-navigation'))
+    expect(store.adaptation?.projectId).toBe('storyboard-navigation')
+    wrapper.unmount()
+  })
 })
