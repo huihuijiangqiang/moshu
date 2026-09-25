@@ -80,7 +80,7 @@ describe('storyboard static editing workflow', () => {
     await router.push('/projects/p1/storyboard')
     await router.isReady()
     const wrapper = mount(StoryboardView, { attachTo: document.body, global: { plugins: [pinia, router] } })
-    await vi.waitFor(() => expect(wrapper.find('.storyboard-production').exists()).toBe(true))
+    await vi.waitFor(() => expect(wrapper.find('.storyboard-shot-editor').exists()).toBe(true))
 
     await wrapper.get('.storyboard-production-actions button:first-child').trigger('click')
     await vi.waitFor(() => expect(wrapper.get('.storyboard-production-result').text()).toContain('镜头'))

@@ -4,6 +4,7 @@ x-server-environment: &server-environment
   CELERY_BROKER_URL: ${CELERY_BROKER_URL:?Set CELERY_BROKER_URL in the external production env file}
   CELERY_RESULT_BACKEND: ${CELERY_RESULT_BACKEND:?Set CELERY_RESULT_BACKEND in the external production env file}
   BUILD_REVISION: ${BUILD_REVISION:-production}
+  PRODUCTION_ASSET_DIR: /app/.local/production-assets
 
 x-server-base: &server-base
   build:
@@ -92,6 +93,8 @@ services:
     networks:
       - backend
       - egress
+    volumes:
+      - production-assets:/app/.local/production-assets
     command: ["gunicorn", "main:app", "--worker-class", "uvicorn.workers.UvicornWorker", "--workers", "1", "--bind", "0.0.0.0:8000", "--timeout", "660", "--graceful-timeout", "30", "--access-logfile", "-", "--error-logfile", "-"]
     depends_on:
       migration:
@@ -192,6 +195,7 @@ services:
 volumes:
   postgres-data:
   redis-data:
+  production-assets:
 
 networks:
   backend:

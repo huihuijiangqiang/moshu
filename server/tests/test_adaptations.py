@@ -1,6 +1,8 @@
+from io import BytesIO
 from unittest.mock import AsyncMock
 
 import pytest
+from PIL import Image
 from sqlalchemy.exc import IntegrityError
 
 from db.models_adaptation import Adaptation
@@ -306,3 +308,106 @@ async def test_production_package_viewer_can_see_adaptation_but_cannot_export(
     assert (await app_client.get(
         f"/episodes/{episode['id']}/production-package", headers=auth_headers("viewer")
     )).status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_production_asset_upload_binds_to_shot_and_requires_review(
+    app_client, async_db_session, seed_project, auth_headers, monkeypatch, tmp_path,
+):
+    from config import settings
+
+    monkeypatch.setattr(settings, "production_asset_dir", str(tmp_path))
+    await seed_project(project_id="project-a", chapter_ids=("chapter-a",))
+    async_db_session.add(Adaptation(id="adaptation-a", project_id="project-a", title="第一季"))
+    await async_db_session.commit()
+    headers = auth_headers("user_a")
+    episode = (await app_client.post("/adaptations/adaptation-a/episodes", headers=headers, json={
+        "number": 1, "title": "第一集", "source_chapter_ids": ["chapter-a"], "target_duration": 4,
+    })).json()
+    scene = (await app_client.post(f"/episodes/{episode['id']}/scenes", headers=headers, json={
+        "order": 1, "purpose": "开场", "summary": "", "character_entry_ids": [],
+    })).json()
+    shot = (await app_client.post(f"/scenes/{scene['id']}/shots", headers=headers, json={
+        "order": 1, "duration_target": 4, "visual_prompt": "竖屏近景",
+    })).json()
+    image_file = BytesIO()
+    Image.new("RGBA", (64, 64), "#779944").save(image_file, format="PNG")
+    png = image_file.getvalue()
+
+    uploaded = await app_client.post(
+        "/adaptations/adaptation-a/assets",
+        headers=headers,
+        data={"episode_id": episode["id"], "shot_id": shot["id"]},
+        files={"file": ("hero.png", png, "image/png")},
+    )
+    assert uploaded.status_code == 201
+    asset = uploaded.json()
+    assert asset["width"] == 64 and asset["height"] == 64
+    assert asset["status"] == "draft"
+    assert asset["content_url"] == f"/assets/{asset['id']}/content"
+    assert (await app_client.get(f"/assets/{asset['id']}/content", headers=headers)).content == png
+    listed = (await app_client.get("/adaptations/adaptation-a/assets", headers=headers)).json()
+    assert [row["id"] for row in listed] == [asset["id"]]
+    shot_after_upload = (await app_client.get(f"/scenes/{scene['id']}/shots", headers=headers)).json()[0]
+    assert shot_after_upload["reference_asset_ids"] == [asset["id"]]
+
+    package_path = f"/episodes/{episode['id']}/production-package"
+    pending = (await app_client.get(package_path, headers=headers)).json()
+    assert "asset_unapproved" in {item["code"] for item in pending["readiness"]["issues"]}
+    await app_client.patch(f"/shots/{shot['id']}", headers=headers, json={"status": "approved"})
+    approved = await app_client.patch(f"/assets/{asset['id']}", headers=headers, json={"status": "approved"})
+    assert approved.status_code == 200
+    ready = (await app_client.get(package_path, headers=headers)).json()
+    assert ready["assets"][0]["id"] == asset["id"]
+    assert ready["readiness"]["ready"] is True
+
+    invalid = await app_client.post(
+        "/adaptations/adaptation-a/assets",
+        headers=headers,
+        files={"file": ("bad.txt", b"not-an-image", "text/plain")},
+    )
+    assert invalid.status_code == 415
+    malformed = await app_client.post(
+        "/adaptations/adaptation-a/assets",
+        headers=headers,
+        files={"file": ("bad.png", b"not-an-image", "image/png")},
+    )
+    assert malformed.status_code == 422
+    assert (await app_client.get(f"/assets/{asset['id']}/content")).status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_production_asset_rejects_cross_adaptation_shot(
+    app_client, async_db_session, seed_project, make_project, make_chapter, auth_headers, monkeypatch, tmp_path,
+):
+    from config import settings
+
+    monkeypatch.setattr(settings, "production_asset_dir", str(tmp_path))
+    await seed_project(project_id="project-a", chapter_ids=("chapter-a",))
+    async_db_session.add(make_project("project-b", owner_id="user_a"))
+    await async_db_session.flush()
+    async_db_session.add(make_chapter("chapter-b", project_id="project-b"))
+    await async_db_session.flush()
+    async_db_session.add_all([
+        Adaptation(id="adaptation-a", project_id="project-a", title="A"),
+        Adaptation(id="adaptation-b", project_id="project-b", title="B"),
+    ])
+    await async_db_session.commit()
+    headers = auth_headers("user_a")
+    episode = (await app_client.post("/adaptations/adaptation-b/episodes", headers=headers, json={
+        "number": 1, "title": "外部集", "source_chapter_ids": ["chapter-b"],
+    })).json()
+    scene = (await app_client.post(f"/episodes/{episode['id']}/scenes", headers=headers, json={
+        "order": 1, "purpose": "外部场景", "character_entry_ids": [],
+    })).json()
+    shot = (await app_client.post(f"/scenes/{scene['id']}/shots", headers=headers, json={"order": 1})).json()
+    image_file = BytesIO()
+    Image.new("RGB", (8, 8), "red").save(image_file, format="PNG")
+    result = await app_client.post(
+        "/adaptations/adaptation-a/assets", headers=headers,
+        data={"shot_id": shot["id"]},
+        files={"file": ("foreign.png", image_file.getvalue(), "image/png")},
+    )
+    assert result.status_code == 422
+    assert result.json()["detail"]["code"] == "asset_shot_outside_adaptation"
+    assert list(tmp_path.rglob("*")) == []

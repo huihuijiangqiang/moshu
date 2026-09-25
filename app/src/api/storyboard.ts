@@ -1,11 +1,13 @@
 import { request } from './http'
+import { requestResponse } from './http'
 import type {
   StoryboardAdaptation,
   StoryboardEpisode,
   StoryboardScene,
   StoryboardShot,
   VisualProfile,
-  ProductionPackage
+  ProductionPackage,
+  StoryboardAsset
 } from '@/types'
 
 interface AdaptationDto {
@@ -67,6 +69,35 @@ interface VisualProfileDto {
   version: number
   locked: boolean
   notes: string
+}
+
+interface ProductionAssetDto {
+  id: string
+  adaptation_id: string
+  episode_id: string | null
+  shot_id: string | null
+  kind: 'image' | 'reference'
+  original_filename: string
+  mime_type: string
+  byte_size: number
+  width: number | null
+  height: number | null
+  sha256: string
+  status: StoryboardAsset['status']
+  created_by: string
+  rejection_reason?: string | null
+  content_url: string
+}
+
+function assetFromDto(row: ProductionAssetDto): StoryboardAsset {
+  return {
+    id: row.id, adaptationId: row.adaptation_id, episodeId: row.episode_id ?? undefined,
+    shotId: row.shot_id ?? undefined, kind: row.kind, originalFilename: row.original_filename,
+    mimeType: row.mime_type, byteSize: row.byte_size, width: row.width ?? undefined,
+    height: row.height ?? undefined, sha256: row.sha256, status: row.status,
+    createdBy: row.created_by, rejectionReason: row.rejection_reason ?? undefined,
+    contentUrl: row.content_url
+  }
 }
 
 function shotFromDto(row: ShotDto): StoryboardShot {
@@ -159,6 +190,29 @@ function adaptationFromDto(row: AdaptationDto, episodes: StoryboardEpisode[], vi
 }
 
 export const storyboardApi = {
+  async listStoryboardAssets(_projectId: string, adaptationId: string): Promise<StoryboardAsset[]> {
+    const rows = await request<ProductionAssetDto[]>(`/adaptations/${adaptationId}/assets`)
+    return rows.map(assetFromDto)
+  },
+
+  async uploadStoryboardAsset(_projectId: string, adaptationId: string, file: File, shotId?: string, episodeId?: string): Promise<StoryboardAsset> {
+    const body = new FormData()
+    body.append('file', file)
+    if (shotId) body.append('shot_id', shotId)
+    if (episodeId) body.append('episode_id', episodeId)
+    body.append('kind', 'image')
+    return assetFromDto(await request<ProductionAssetDto>(`/adaptations/${adaptationId}/assets`, { method: 'POST', body }))
+  },
+
+  async updateStoryboardAsset(_projectId: string, assetId: string, status: StoryboardAsset['status'], rejectionReason?: string): Promise<StoryboardAsset> {
+    return assetFromDto(await request<ProductionAssetDto>(`/assets/${assetId}`, { method: 'PATCH', body: JSON.stringify({ status, rejection_reason: rejectionReason }) }))
+  },
+
+  async getStoryboardAssetPreview(_projectId: string, asset: StoryboardAsset): Promise<string> {
+    const response = await requestResponse(asset.contentUrl)
+    return URL.createObjectURL(await response.blob())
+  },
+
   async getProductionPackage(_projectId: string, episodeId: string): Promise<ProductionPackage> {
     return request<ProductionPackage>(`/episodes/${episodeId}/production-package`)
   },

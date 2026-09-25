@@ -27,6 +27,7 @@ COPY . /app
 # All runtime processes, including migrations and Celery, run without root.
 RUN addgroup --system --gid 10001 moshu \
     && adduser --system --uid 10001 --ingroup moshu --home /nonexistent --no-create-home moshu \
+    && mkdir -p /app/.local/production-assets \
     && chown -R moshu:moshu /app /opt/tiktoken-cache
 
 USER moshu

@@ -1,12 +1,12 @@
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref, watch } from 'vue'
+import { computed, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import AppIcon from '@/components/ui/AppIcon.vue'
 import { useCodexStore } from '@/stores/codex'
 import { useShellStore } from '@/stores/shell'
 import { useStoryboardStore } from '@/stores/storyboard'
 import { useProjectStore } from '@/stores/project'
-import type { ProductionPackageIssue, StoryboardShot, VisualProfile } from '@/types'
+import type { ProductionPackageIssue, StoryboardAsset, StoryboardShot, VisualProfile } from '@/types'
 
 const route = useRoute()
 const shell = useShellStore()
@@ -19,6 +19,9 @@ const episodeCreateOpen = ref(false)
 const sceneEditOpen = ref(false)
 const sceneCreateMode = ref(false)
 const profileCreateOpen = ref(false)
+const assetUploading = ref(false)
+const assetUploadError = ref('')
+const assetInput = ref<HTMLInputElement | null>(null)
 const episodeDraft = reactive({ title: '', sourceChapterIds: [] as string[], targetDuration: 90 })
 const sceneDraft = reactive({ purpose: '', summary: '', timeAnchor: '', locationEntryId: '', characterEntryIds: [] as string[] })
 const profileDraft = reactive({ codexEntryId: '', displayName: '', style: '', appearance: '', costume: '' })
@@ -27,6 +30,7 @@ const projectId = computed(() => typeof route.params.projectId === 'string' ? ro
 const episodes = computed(() => storyboard.adaptation?.episodes ?? [])
 const scenes = computed(() => storyboard.selectedEpisode?.scenes ?? [])
 const shots = computed(() => storyboard.selectedScene?.shots ?? [])
+const shotAssets = computed(() => storyboard.assets.filter((asset) => asset.shotId === storyboard.selectedShot?.id))
 const characterEntries = computed(() => codex.entries.filter((entry) => entry.kind === 'character' && entry.status === 'confirmed'))
 const locationEntries = computed(() => codex.entries.filter((entry) => entry.kind === 'place' && entry.status === 'confirmed'))
 const profileCandidates = computed(() => characterEntries.value.filter((entry) => !storyboard.adaptation?.visualProfiles.some((profile) => profile.codexEntryId === entry.id)))
@@ -45,10 +49,16 @@ onMounted(async () => {
   await Promise.all([codex.load(projectId.value), project.load(projectId.value), storyboard.load(projectId.value)])
 })
 
+onUnmounted(() => storyboard.clearAssetPreviews())
+
 watch(() => storyboard.selectedSceneId, () => {
   sceneEditOpen.value = false
   sceneCreateMode.value = false
 })
+
+watch(shotAssets, (assets) => {
+  assets.forEach((asset) => { void storyboard.loadAssetPreview(projectId.value, asset) })
+}, { immediate: true })
 
 function showSaved(message = '已保存') {
   savedNotice.value = message
@@ -58,20 +68,20 @@ function showSaved(message = '已保存') {
 function issueTarget(issue: ProductionPackageIssue) {
   const episode = storyboard.selectedEpisode
   if (!episode) return ''
-  const scene = episode.scenes.find((item) => item.id === issue.entity_id || item.shots.some((shot) => shot.id === issue.entity_id) || (issue.entity_type === 'character' && item.characterEntryIds.includes(issue.entity_id)))
+  const scene = episode.scenes.find((item) => item.id === issue.entity_id || item.shots.some((shot) => shot.id === issue.entity_id || shot.referenceAssetIds.includes(issue.entity_id)) || (issue.entity_type === 'character' && item.characterEntryIds.includes(issue.entity_id)))
   if (issue.entity_type === 'character') return codex.byId.get(issue.entity_id)?.name ?? '人物'
   if (issue.entity_type === 'episode') return '本集'
   if (issue.entity_type === 'scene') return `场 ${scene?.order ?? '-'}`
-  const shot = scene?.shots.find((item) => item.id === issue.entity_id)
+  const shot = scene?.shots.find((item) => item.id === issue.entity_id || item.referenceAssetIds.includes(issue.entity_id))
   return `场 ${scene?.order ?? '-'} · 镜头 ${shot?.order ?? '-'}`
 }
 
 function focusIssue(issue: ProductionPackageIssue) {
   const episode = storyboard.selectedEpisode
-  const scene = episode?.scenes.find((item) => item.id === issue.entity_id || item.shots.some((shot) => shot.id === issue.entity_id) || (issue.entity_type === 'character' && item.characterEntryIds.includes(issue.entity_id)))
+  const scene = episode?.scenes.find((item) => item.id === issue.entity_id || item.shots.some((shot) => shot.id === issue.entity_id || shot.referenceAssetIds.includes(issue.entity_id)) || (issue.entity_type === 'character' && item.characterEntryIds.includes(issue.entity_id)))
   if (!scene) return
   storyboard.selectScene(scene.id)
-  if (issue.entity_type === 'shot') storyboard.selectedShotId = issue.entity_id
+  if (issue.entity_type === 'shot') storyboard.selectedShotId = scene.shots.find((shot) => shot.id === issue.entity_id || shot.referenceAssetIds.includes(issue.entity_id))?.id ?? null
 }
 
 function downloadProductionPackage() {
@@ -195,6 +205,29 @@ async function profileField(profile: VisualProfile, key: 'style' | 'appearance' 
   const updated = await storyboard.updateVisualProfile(projectId.value, profile.id, { [key]: value })
   if (updated) showSaved()
 }
+
+async function uploadShotAsset(event: Event) {
+  const input = event.target as HTMLInputElement
+  const file = input.files?.[0]
+  input.value = ''
+  if (!file || !storyboard.selectedShot) return
+  assetUploadError.value = ''
+  assetUploading.value = true
+  const asset = await storyboard.uploadAsset(projectId.value, file, storyboard.selectedShot.id)
+  assetUploading.value = false
+  if (!asset) {
+    assetUploadError.value = storyboard.error || '图片上传失败'
+    return
+  }
+  await storyboard.loadAssetPreview(projectId.value, asset)
+  showSaved('画面素材已上传，待确认')
+}
+
+async function toggleAssetStatus(asset: StoryboardAsset) {
+  const status = asset.status === 'approved' ? 'draft' : 'approved'
+  const updated = await storyboard.approveAsset(projectId.value, asset.id, status)
+  if (updated) showSaved(status === 'approved' ? '画面已确认' : '画面已退回')
+}
 </script>
 
 <template>
@@ -203,7 +236,7 @@ async function profileField(profile: VisualProfile, key: 'style' | 'appearance' 
       <div>
         <span class="wk-label">改编工作台 / 静态阶段</span>
         <h1>{{ storyboard.adaptation?.title ?? '漫剧改编' }}</h1>
-        <p>先锁定人物和镜头语言，再进入图片资产与视频渲染。</p>
+        <p>锁定人物与镜头语言，逐镜头整理画面资产。</p>
       </div>
       <div class="storyboard-head-meta">
         <span class="storyboard-ratio">{{ storyboard.adaptation?.aspectRatio ?? '9:16' }}</span>
@@ -271,7 +304,7 @@ async function profileField(profile: VisualProfile, key: 'style' | 'appearance' 
               </span>
             </div>
             <div class="storyboard-production-actions">
-              <button class="wk-btn" type="button" :disabled="storyboard.checking || storyboard.saving" @click="storyboard.checkProductionPackage(projectId)"><AppIcon name="check" :size="14" /> {{ storyboard.checking ? '检查中…' : '检查本集' }}</button>
+              <button class="wk-btn" type="button" :disabled="storyboard.loading || storyboard.checking || storyboard.saving" @click="storyboard.checkProductionPackage(projectId)"><AppIcon name="check" :size="14" /> {{ storyboard.checking ? '检查中…' : '检查本集' }}</button>
               <button class="wk-btn" type="button" :disabled="!storyboard.productionPackage || storyboard.saving" @click="downloadProductionPackage"><AppIcon name="export" :size="14" /> 下载制作包</button>
             </div>
           </div>
@@ -335,6 +368,28 @@ async function profileField(profile: VisualProfile, key: 'style' | 'appearance' 
             <label class="editor-wide">对白<textarea rows="2" :value="storyboard.selectedShot.dialogue" placeholder="没有对白可留空" @change="updateShot('dialogue', ($event.target as HTMLTextAreaElement).value)" /></label>
             <label class="editor-wide">旁白<textarea rows="2" :value="storyboard.selectedShot.narration" placeholder="旁白和字幕的初稿" @change="updateShot('narration', ($event.target as HTMLTextAreaElement).value)" /></label>
             <label class="editor-wide">画面提示词<textarea rows="3" :value="storyboard.selectedShot.visualPrompt" placeholder="人物、环境、光线、构图；这里只保存提示词，不生成视频" @change="updateShot('visualPrompt', ($event.target as HTMLTextAreaElement).value)" /></label>
+            <section class="storyboard-shot-assets editor-wide" aria-label="镜头画面素材">
+              <div class="storyboard-shot-assets-head">
+                <div><span class="wk-label">画面资产</span><strong>{{ shotAssets.length }} 张</strong></div>
+                <label class="wk-btn" :data-primary="true">
+                  <AppIcon name="plus" :size="13" /> {{ assetUploading ? '上传中…' : '上传画面' }}
+                  <input ref="assetInput" type="file" accept="image/png,image/jpeg,image/webp" :disabled="assetUploading || storyboard.saving" @change="uploadShotAsset" />
+                </label>
+              </div>
+              <p class="storyboard-shot-assets-hint">上传的图片会绑定到本镜头，确认后才会进入制作包。支持 PNG、JPEG、WebP，单张不超过 20 MB。</p>
+              <p v-if="assetUploadError" class="storyboard-shot-assets-error" role="alert">{{ assetUploadError }}</p>
+              <div v-if="shotAssets.length" class="storyboard-asset-grid">
+                <article v-for="asset in shotAssets" :key="asset.id" class="storyboard-asset" :data-status="asset.status">
+                  <div class="storyboard-asset-preview">
+                    <img v-if="storyboard.assetPreviewUrls[asset.id]" :src="storyboard.assetPreviewUrls[asset.id]" :alt="asset.originalFilename" />
+                    <AppIcon v-else name="storyboard" :size="20" />
+                  </div>
+                  <div class="storyboard-asset-meta"><strong>{{ asset.originalFilename }}</strong><small>{{ asset.status === 'approved' ? '已确认' : asset.status === 'rejected' ? '已退回' : '待确认' }} · {{ Math.ceil(asset.byteSize / 1024) }} KB</small></div>
+                  <button class="storyboard-asset-status" type="button" :disabled="storyboard.saving" @click="toggleAssetStatus(asset)">{{ asset.status === 'approved' ? '退回' : '确认' }}</button>
+                </article>
+              </div>
+              <p v-else class="storyboard-shot-assets-empty">还没有画面。可以先上传一张人工参考图，后续生成器也会沿用同一条资产记录。</p>
+            </section>
           </div>
         </div>
       </main>
@@ -375,7 +430,7 @@ async function profileField(profile: VisualProfile, key: 'style' | 'appearance' 
           <div class="binding-row"><span>人物</span><strong>{{ activeCharacters.map((item) => item?.name).join('、') || '未绑定' }}</strong></div>
           <p>绑定来自设定库 ID，改名或补充人物资料时不会丢失关联。</p>
         </div>
-        <div class="storyboard-no-video"><span class="wk-label">当前阶段</span><strong>只做分镜稿</strong><p>图片生成、配音、字幕时间轴和视频合成暂未启用。</p></div>
+        <div class="storyboard-no-video"><span class="wk-label">当前阶段</span><strong>分镜与画面审阅</strong><p>已可上传并确认镜头画面；配音、字幕时间轴和视频合成尚未启用。</p></div>
       </aside>
     </div>
 

@@ -3,7 +3,7 @@ import { computed, ref } from 'vue'
 import { mockApi } from '@/api/mock'
 import { USE_MOCK } from '@/api/http'
 import { storyboardApi } from '@/api/storyboard'
-import type { ProductionPackage, StoryboardAdaptation, StoryboardEpisode, StoryboardScene, StoryboardShot, VisualProfile } from '@/types'
+import type { ProductionPackage, StoryboardAdaptation, StoryboardAsset, StoryboardEpisode, StoryboardScene, StoryboardShot, VisualProfile } from '@/types'
 
 export const useStoryboardStore = defineStore('storyboard', () => {
   const api = USE_MOCK ? mockApi : storyboardApi
@@ -16,6 +16,8 @@ export const useStoryboardStore = defineStore('storyboard', () => {
   const saving = ref(false)
   const checking = ref(false)
   const productionPackage = ref<ProductionPackage | null>(null)
+  const assets = ref<StoryboardAsset[]>([])
+  const assetPreviewUrls = ref<Record<string, string>>({})
   const error = ref('')
   let packageRevision = 0
 
@@ -35,12 +37,21 @@ export const useStoryboardStore = defineStore('storyboard', () => {
     productionPackage.value = null
   }
 
+  function clearAssetPreviews() {
+    Object.values(assetPreviewUrls.value).forEach((url) => URL.revokeObjectURL(url))
+    assetPreviewUrls.value = {}
+  }
+
   async function load(projectId: string) {
     if (loadedProjectId.value === projectId && adaptation.value) return
     loading.value = true
     error.value = ''
     try {
-      adaptation.value = await api.getStoryboard(projectId)
+      const nextAdaptation = await api.getStoryboard(projectId)
+      const nextAssets = await api.listStoryboardAssets(projectId, nextAdaptation.id)
+      clearAssetPreviews()
+      adaptation.value = nextAdaptation
+      assets.value = nextAssets
       invalidateProductionPackage()
       loadedProjectId.value = projectId
       selectedEpisodeId.value = null
@@ -76,7 +87,7 @@ export const useStoryboardStore = defineStore('storyboard', () => {
 
   async function checkProductionPackage(projectId: string) {
     const episodeId = selectedEpisode.value?.id
-    if (!episodeId || checking.value || saving.value) return null
+    if (!episodeId || loading.value || checking.value || saving.value) return null
     const revision = ++packageRevision
     checking.value = true
     error.value = ''
@@ -91,6 +102,39 @@ export const useStoryboardStore = defineStore('storyboard', () => {
       return null
     } finally {
       checking.value = false
+    }
+  }
+
+  async function uploadAsset(projectId: string, file: File, shotId?: string) {
+    if (!adaptation.value) return null
+    const asset = await mutate(
+      () => api.uploadStoryboardAsset(projectId, adaptation.value!.id, file, shotId, selectedEpisode.value?.id),
+      '画面素材上传失败'
+    )
+    if (!asset) return null
+    assets.value.push(asset)
+    const shot = adaptation.value?.episodes.flatMap((episode) => episode.scenes).flatMap((scene) => scene.shots).find((item) => item.id === shotId)
+    if (shot && !shot.referenceAssetIds.includes(asset.id)) shot.referenceAssetIds.push(asset.id)
+    return asset
+  }
+
+  async function approveAsset(projectId: string, assetId: string, status: StoryboardAsset['status']) {
+    const updated = await mutate(() => api.updateStoryboardAsset(projectId, assetId, status), '画面素材状态保存失败')
+    if (updated) {
+      const asset = assets.value.find((item) => item.id === assetId)
+      if (asset) Object.assign(asset, updated)
+    }
+    return updated
+  }
+
+  async function loadAssetPreview(projectId: string, asset: StoryboardAsset) {
+    if (assetPreviewUrls.value[asset.id] || !asset.contentUrl) return assetPreviewUrls.value[asset.id] ?? ''
+    try {
+      const url = await api.getStoryboardAssetPreview(projectId, asset)
+      if (url) assetPreviewUrls.value = { ...assetPreviewUrls.value, [asset.id]: url }
+      return url
+    } catch {
+      return ''
     }
   }
 
@@ -173,5 +217,5 @@ export const useStoryboardStore = defineStore('storyboard', () => {
     selectedShotId.value = selectedScene.value?.shots[0]?.id ?? null
   }
 
-  return { adaptation, loadedProjectId, loading, saving, checking, productionPackage, error, selectedEpisodeId, selectedSceneId, selectedShotId, selectedEpisode, selectedScene, selectedShot, totalShots, load, clearError, checkProductionPackage, createEpisode, updateEpisode, createScene, updateScene, createShot, updateShot, createVisualProfile, updateVisualProfile, selectEpisode, selectScene }
+  return { adaptation, assets, assetPreviewUrls, loadedProjectId, loading, saving, checking, productionPackage, error, selectedEpisodeId, selectedSceneId, selectedShotId, selectedEpisode, selectedScene, selectedShot, totalShots, load, clearError, clearAssetPreviews, checkProductionPackage, uploadAsset, approveAsset, loadAssetPreview, createEpisode, updateEpisode, createScene, updateScene, createShot, updateShot, createVisualProfile, updateVisualProfile, selectEpisode, selectScene }
 })

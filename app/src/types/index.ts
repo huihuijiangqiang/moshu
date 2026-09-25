@@ -725,6 +725,25 @@ export interface VisualProfile {
   notes: string
 }
 
+export interface StoryboardAsset {
+  id: string
+  adaptationId: string
+  episodeId?: string
+  shotId?: string
+  kind: 'image' | 'reference'
+  originalFilename: string
+  mimeType: string
+  byteSize: number
+  width?: number
+  height?: number
+  sha256: string
+  status: 'draft' | 'approved' | 'rejected'
+  createdBy: string
+  rejectionReason?: string
+  contentUrl: string
+  previewUrl?: string
+}
+
 export interface StoryboardShot {
   id: string
   sceneId: string
@@ -811,6 +830,20 @@ export interface ProductionPackage {
     costume: string
     palette: string[]
     reference_asset_ids: string[]
+  }[]
+  assets: {
+    id: string
+    episode_id: string | null
+    shot_id: string | null
+    kind: string
+    original_filename: string
+    mime_type: string
+    byte_size: number
+    width: number | null
+    height: number | null
+    sha256: string
+    status: string
+    content_url: string
   }[]
   scenes: {
     id: string

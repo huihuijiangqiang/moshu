@@ -35,7 +35,7 @@ docker compose --env-file "$MOSHU_PRODUCTION_ENV_FILE" -f docker-compose.product
 curl --fail http://127.0.0.1:5180/
 ```
 
-服务设有健康检查、非 root 运行、禁止新增 Linux 权限、只读应用文件系统、单 worker 并发和 JSON 日志轮转。PostgreSQL/Redis 使用命名卷；应按服务器策略定期备份卷和外部 S3 存储。`docker compose down` 不会删除卷，清理数据必须显式执行并先确认备份。
+服务设有健康检查、非 root 运行、禁止新增 Linux 权限、只读应用文件系统、单 worker 并发和 JSON 日志轮转。PostgreSQL、Redis 和私有漫剧画面使用命名卷；应按服务器策略定期备份这些卷。画面通过鉴权 API 提供，不由 Nginx 直接公开。`docker compose down` 不会删除卷，清理数据必须显式执行并先确认备份。
 
 ## 更新与回滚
 

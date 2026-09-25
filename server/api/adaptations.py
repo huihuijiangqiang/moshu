@@ -1,17 +1,21 @@
-"""漫剧改编与静态分镜 API。
-
-当前只管理结构化稿件和人物视觉约束，不启动图片/视频生成任务。
-"""
+"""Comic-drama storyboard, review and private visual-asset API."""
+import hashlib
+from io import BytesIO
+from pathlib import Path
 from typing import Literal
 from uuid import uuid4
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
+from fastapi.responses import FileResponse
+from starlette.concurrency import run_in_threadpool
+from PIL import Image, ImageOps, UnidentifiedImageError
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from db import Adaptation, Chapter, CodexEntry, Episode, Scene, Shot, VisualProfile
+from config import settings
+from db import Adaptation, Chapter, CodexEntry, Episode, ProductionAsset, Scene, Shot, VisualProfile
 from db.session import get_db
 from api.auth import ProjectPermission, get_current_user, verify_project_permission
 from db.models_core import User
@@ -21,6 +25,79 @@ router = APIRouter()
 
 def new_id(prefix: str) -> str:
     return f"{prefix}_{uuid4().hex[:24]}"
+
+
+_IMAGE_EXTENSIONS = {"image/png": "png", "image/jpeg": "jpg", "image/webp": "webp"}
+
+
+def _asset_root() -> Path:
+    root = Path(settings.production_asset_dir).expanduser()
+    return root if root.is_absolute() else Path(__file__).resolve().parents[1] / root
+
+
+def _asset_path(storage_key: str) -> Path:
+    root = _asset_root().resolve()
+    candidate = (root / storage_key).resolve()
+    if candidate != root and root not in candidate.parents:
+        raise HTTPException(status_code=404, detail="素材不存在")
+    return candidate
+
+
+def _normalize_image(data: bytes, mime_type: str) -> tuple[bytes, int, int]:
+    formats = {"image/png": "PNG", "image/jpeg": "JPEG", "image/webp": "WEBP"}
+    try:
+        with Image.open(BytesIO(data)) as source:
+            if source.format != formats[mime_type] or getattr(source, "n_frames", 1) != 1:
+                raise ValueError("unexpected image format or animation")
+            width, height = source.size
+            if width < 1 or height < 1 or width > 8192 or height > 8192 or width * height > 16_000_000:
+                raise ValueError("image dimensions out of bounds")
+            source.load()
+            oriented = ImageOps.exif_transpose(source)
+            image = oriented.convert("RGB" if mime_type == "image/jpeg" else "RGBA")
+            output = BytesIO()
+            options = {"quality": 90} if mime_type == "image/jpeg" else {}
+            image.save(output, format=formats[mime_type], **options)
+            return output.getvalue(), image.width, image.height
+    except (UnidentifiedImageError, OSError, ValueError, Image.DecompressionBombError) as error:
+        raise HTTPException(
+            status_code=422,
+            detail={"code": "invalid_image", "message": "图片损坏、尺寸过大或包含不支持的动画"},
+        ) from error
+
+
+class ProductionAssetOut(BaseModel):
+    id: str
+    adaptation_id: str
+    episode_id: str | None
+    shot_id: str | None
+    kind: str
+    original_filename: str
+    mime_type: str
+    byte_size: int
+    width: int | None
+    height: int | None
+    sha256: str
+    status: str
+    created_by: str
+    rejection_reason: str | None = None
+    content_url: str
+
+
+class ProductionAssetPatch(BaseModel):
+    status: Literal["draft", "approved", "rejected"]
+    rejection_reason: str | None = Field(default=None, max_length=500)
+
+
+def _asset_out(asset: ProductionAsset) -> ProductionAssetOut:
+    return ProductionAssetOut(
+        id=asset.id, adaptation_id=asset.adaptation_id, episode_id=asset.episode_id,
+        shot_id=asset.shot_id, kind=asset.kind, original_filename=asset.original_filename,
+        mime_type=asset.mime_type, byte_size=asset.byte_size, width=asset.width,
+        height=asset.height, sha256=asset.sha256, status=asset.status,
+        created_by=asset.created_by, rejection_reason=asset.rejection_reason,
+        content_url=f"/assets/{asset.id}/content",
+    )
 
 
 class AdaptationCreate(BaseModel):
@@ -182,6 +259,14 @@ async def require_scene(
     return item
 
 
+async def require_asset(asset_id: str, db: AsyncSession, user: User, permission: ProjectPermission = ProjectPermission.VIEW) -> ProductionAsset:
+    asset = await db.get(ProductionAsset, asset_id)
+    if not asset:
+        raise HTTPException(status_code=404, detail="漫剧素材不存在")
+    await require_adaptation(asset.adaptation_id, db, user, permission)
+    return asset
+
+
 def unique_ids(values: list[str]) -> list[str]:
     return list(dict.fromkeys(value for value in values if value))
 
@@ -300,6 +385,126 @@ async def create_episode(
     return item
 
 
+@router.get("/adaptations/{adaptation_id}/assets", response_model=list[ProductionAssetOut])
+async def list_production_assets(
+    adaptation_id: str,
+    episode_id: str | None = None,
+    shot_id: str | None = None,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    await require_adaptation(adaptation_id, db, user)
+    query = select(ProductionAsset).where(ProductionAsset.adaptation_id == adaptation_id)
+    if episode_id:
+        query = query.where(ProductionAsset.episode_id == episode_id)
+    if shot_id:
+        query = query.where(ProductionAsset.shot_id == shot_id)
+    result = await db.execute(query.order_by(ProductionAsset.created_at, ProductionAsset.id))
+    return [_asset_out(asset) for asset in result.scalars().all()]
+
+
+@router.post("/adaptations/{adaptation_id}/assets", response_model=ProductionAssetOut, status_code=201)
+async def upload_production_asset(
+    adaptation_id: str,
+    file: UploadFile = File(...),
+    episode_id: str | None = Form(default=None),
+    shot_id: str | None = Form(default=None),
+    kind: Literal["image", "reference"] = Form(default="image"),
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    adaptation = await require_adaptation(adaptation_id, db, user, ProjectPermission.MANAGE_OUTLINE)
+    if file.content_type not in _IMAGE_EXTENSIONS:
+        raise HTTPException(status_code=415, detail={"code": "unsupported_image_type", "allowed": sorted(_IMAGE_EXTENSIONS)})
+    if shot_id:
+        shot = await db.get(Shot, shot_id)
+        if not shot:
+            raise HTTPException(status_code=404, detail="分镜不存在")
+        scene = await require_scene(shot.scene_id, db, user, ProjectPermission.MANAGE_OUTLINE)
+        episode = await db.get(Episode, scene.episode_id)
+        if episode is None or episode.adaptation_id != adaptation.id:
+            raise HTTPException(status_code=422, detail={"code": "asset_shot_outside_adaptation"})
+        if episode_id and episode_id != episode.id:
+            raise HTTPException(status_code=422, detail={"code": "asset_episode_mismatch"})
+        episode_id = episode.id
+    elif episode_id:
+        episode = await require_episode(episode_id, db, user, ProjectPermission.MANAGE_OUTLINE)
+        if episode.adaptation_id != adaptation.id:
+            raise HTTPException(status_code=422, detail={"code": "asset_episode_outside_adaptation"})
+
+    data = await file.read(settings.production_asset_max_bytes + 1)
+    if len(data) > settings.production_asset_max_bytes:
+        raise HTTPException(status_code=413, detail={"code": "asset_too_large", "max_bytes": settings.production_asset_max_bytes})
+    data, width, height = await run_in_threadpool(_normalize_image, data, file.content_type)
+    if len(data) > settings.production_asset_max_bytes:
+        raise HTTPException(status_code=413, detail={"code": "asset_too_large", "max_bytes": settings.production_asset_max_bytes})
+
+    asset_id = new_id("asset")
+    extension = _IMAGE_EXTENSIONS[file.content_type]
+    storage_key = f"{adaptation.id}/{asset_id}.{extension}"
+    target = _asset_path(storage_key)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    await run_in_threadpool(target.write_bytes, data)
+    asset = ProductionAsset(
+        id=asset_id,
+        adaptation_id=adaptation.id,
+        episode_id=episode_id,
+        shot_id=shot_id,
+        kind=kind,
+        original_filename=Path(file.filename or f"{asset_id}.{extension}").name[:255],
+        storage_key=storage_key,
+        mime_type=file.content_type,
+        byte_size=len(data),
+        width=width,
+        height=height,
+        sha256=hashlib.sha256(data).hexdigest(),
+        status="draft",
+        created_by=user.id,
+        metadata_json={},
+    )
+    db.add(asset)
+    if shot_id:
+        shot = await db.get(Shot, shot_id)
+        if shot is not None:
+            shot.reference_asset_ids = [*dict.fromkeys([*(shot.reference_asset_ids or []), asset_id])]
+    try:
+        await db.commit()
+    except Exception:
+        await db.rollback()
+        target.unlink(missing_ok=True)
+        raise
+    await db.refresh(asset)
+    return _asset_out(asset)
+
+
+@router.patch("/assets/{asset_id}", response_model=ProductionAssetOut)
+async def update_production_asset(
+    asset_id: str,
+    payload: ProductionAssetPatch,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    asset = await require_asset(asset_id, db, user, ProjectPermission.MANAGE_OUTLINE)
+    asset.status = payload.status
+    asset.rejection_reason = payload.rejection_reason if payload.status == "rejected" else None
+    await db.commit()
+    await db.refresh(asset)
+    return _asset_out(asset)
+
+
+@router.get("/assets/{asset_id}/content")
+async def get_production_asset_content(
+    asset_id: str,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    asset = await require_asset(asset_id, db, user)
+    path = _asset_path(asset.storage_key)
+    if not path.is_file():
+        raise HTTPException(status_code=404, detail="素材文件不存在")
+    return FileResponse(path, media_type=asset.mime_type, filename=asset.original_filename)
+
+
 @router.patch("/episodes/{episode_id}", response_model=EpisodeOut)
 async def update_episode(
     episode_id: str,
@@ -363,6 +568,23 @@ async def get_production_package(
         ).order_by(VisualProfile.codex_entry_id)
     )).scalars().all() if character_ids else []
     profiles_by_character = {profile.codex_entry_id: profile for profile in profiles}
+    referenced_asset_ids = {
+        asset_id
+        for shot in shots
+        for asset_id in (shot.reference_asset_ids or [])
+    }
+    referenced_asset_ids.update(
+        asset_id
+        for profile in profiles
+        for asset_id in (profile.reference_asset_ids or [])
+    )
+    asset_rows = (await db.execute(
+        select(ProductionAsset).where(
+            ProductionAsset.adaptation_id == adaptation.id,
+            ProductionAsset.id.in_(referenced_asset_ids),
+        ).order_by(ProductionAsset.created_at, ProductionAsset.id)
+    )).scalars().all() if referenced_asset_ids else []
+    assets_by_id = {asset.id: asset for asset in asset_rows}
 
     issues = []
 
@@ -386,6 +608,12 @@ async def get_production_package(
                 issue("visual_profile_unlocked", "character", character_id, "出场人物视觉档案尚未锁定")
             if not profile.appearance.strip():
                 issue("visual_profile_appearance_missing", "character", character_id, "人物视觉档案缺少外观锚点")
+    for asset_id in sorted(referenced_asset_ids):
+        asset = assets_by_id.get(asset_id)
+        if not asset:
+            issue("asset_reference_missing", "shot", asset_id, "镜头引用的画面素材不存在")
+        elif asset.status != "approved":
+            issue("asset_unapproved", "shot", asset.id, "镜头引用的画面素材尚未确认")
 
     scene_data = []
     total_duration = 0
@@ -443,6 +671,16 @@ async def get_production_package(
                 "palette": profile.palette, "reference_asset_ids": profile.reference_asset_ids,
             }
             for profile in profiles
+        ],
+        "assets": [
+            {
+                "id": asset.id, "episode_id": asset.episode_id, "shot_id": asset.shot_id,
+                "kind": asset.kind, "original_filename": asset.original_filename,
+                "mime_type": asset.mime_type, "byte_size": asset.byte_size,
+                "width": asset.width, "height": asset.height, "sha256": asset.sha256,
+                "status": asset.status, "content_url": f"/assets/{asset.id}/content",
+            }
+            for asset in asset_rows
         ],
         "scenes": scene_data,
         "readiness": {

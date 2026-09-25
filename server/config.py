@@ -73,6 +73,10 @@ class Settings(BaseSettings):
     s3_secret_key: str
     s3_bucket_exports: str = "moshu-exports"
     s3_bucket_uploads: str = "moshu-uploads"
+    # Local fallback for private production assets. In Docker set this to the
+    # mounted persistent volume; object-storage adapters can replace it later.
+    production_asset_dir: str = ".local/production-assets"
+    production_asset_max_bytes: int = Field(default=20_000_000, ge=1_000_000, le=100_000_000)
 
     # App
     debug: bool = False

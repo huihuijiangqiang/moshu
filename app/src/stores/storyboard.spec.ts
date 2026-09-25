@@ -91,4 +91,21 @@ describe('storyboard store', () => {
     expect(store.productionPackage).toBeNull()
     expect(store.selectedEpisode?.id).toBe(episode?.id)
   })
+
+  it('uploads a shot image and keeps it pending until approved', async () => {
+    const store = useStoryboardStore()
+    await store.load('p1')
+    const shotId = store.selectedShot!.id
+    const asset = await store.uploadAsset('p1', new File(['image-bytes'], 'frame.png', { type: 'image/png' }), shotId)
+
+    expect(asset?.status).toBe('draft')
+    expect(store.selectedShot?.referenceAssetIds).toContain(asset?.id)
+    const pending = await store.checkProductionPackage('p1')
+    expect(pending?.readiness.issues.some((issue) => issue.code === 'asset_unapproved')).toBe(true)
+
+    await store.approveAsset('p1', asset!.id, 'approved')
+    expect(store.productionPackage).toBeNull()
+    const checked = await store.checkProductionPackage('p1')
+    expect(checked?.assets.some((item) => item.id === asset!.id && item.status === 'approved')).toBe(true)
+  })
 })

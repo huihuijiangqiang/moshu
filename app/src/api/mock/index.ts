@@ -1,7 +1,7 @@
 import { delay } from '../http'
 import * as seed from './seed'
 import { findShelfBook, type CreatedBook } from './shelf'
-import type { Chapter, ChapterPlanPatch, ChapterVersionDetail, ChapterVersionRestoreResult, ChapterVersionSummary, CharacterStatistics, CodexEntry, CodexEntryDraft, CodexRelation, CodexRelationDraft, CodexStateDraft, CodexStateHistoryItem, GuardIssue, GuardOverview, GuardResolutionAction, Project, ProjectNote, ContextLayer, ProjectPatch, ProjectTrash, TemporalDecisionResult, TemporalReviewItem, TimelineBoard, TimelineEntry, TimelineEntryDraft, TimelineReflowResult, WritingProgressDay, StoryboardAdaptation, StoryboardEpisode, StoryboardScene, StoryboardShot, VisualProfile, ProductionPackage, ProductionPackageIssue } from '@/types'
+import type { Chapter, ChapterPlanPatch, ChapterVersionDetail, ChapterVersionRestoreResult, ChapterVersionSummary, CharacterStatistics, CodexEntry, CodexEntryDraft, CodexRelation, CodexRelationDraft, CodexStateDraft, CodexStateHistoryItem, GuardIssue, GuardOverview, GuardResolutionAction, Project, ProjectNote, ContextLayer, ProjectPatch, ProjectTrash, TemporalDecisionResult, TemporalReviewItem, TimelineBoard, TimelineEntry, TimelineEntryDraft, TimelineReflowResult, WritingProgressDay, StoryboardAdaptation, StoryboardEpisode, StoryboardScene, StoryboardShot, VisualProfile, ProductionPackage, ProductionPackageIssue, StoryboardAsset } from '@/types'
 
 /** 内存态副本：mock 下的写操作要真的改变数据，否则界面行为是假的。 */
 const state = {
@@ -21,6 +21,7 @@ const codexEntryStates = new Map<string, CodexEntry[]>()
 const codexStateHistoryStates = new Map<string, CodexStateHistoryItem[]>()
 const projectNoteStates = new Map<string, ProjectNote[]>()
 const storyboardStates = new Map<string, StoryboardAdaptation>()
+const storyboardAssetStates = new Map<string, StoryboardAsset[]>()
 let timelineEntrySequence = 1
 let codexStateSequence = 1
 let codexRelationSequence = 1
@@ -44,7 +45,7 @@ function storyboardFor(projectId: string): StoryboardAdaptation {
   const shot = (order: number, shotType: StoryboardShot['shotType'], action: string, visualPrompt: string): StoryboardShot => ({
     id: `${projectId}-shot-${order}`, sceneId, order, shotType, camera: order === 1 ? '缓慢推近' : '平移跟拍', durationTarget: 4,
     action, dialogue: order === 2 ? '「先把这一处看清。」' : '', narration: order === 1 ? '风雪停后，城墙露出一线灰白的天。' : '', visualPrompt,
-    referenceAssetIds: profile ? [profile.id] : [], status: 'draft'
+    referenceAssetIds: [], status: 'draft'
   })
   const scene: StoryboardScene = {
     id: sceneId, episodeId, order: 1, purpose: '建立本集的核心悬念和人物视觉锚点', locationEntryId: place?.id, timeAnchor: '清晨 · 关键地点',
@@ -728,6 +729,41 @@ export const mockApi = {
     return structuredClone(storyboardFor(projectId))
   },
 
+  async listStoryboardAssets(projectId: string, adaptationId: string): Promise<StoryboardAsset[]> {
+    await delay(70)
+    return structuredClone((storyboardAssetStates.get(projectId) ?? []).filter((asset) => asset.adaptationId === adaptationId))
+  },
+
+  async uploadStoryboardAsset(projectId: string, adaptationId: string, file: File, shotId?: string, episodeId?: string): Promise<StoryboardAsset> {
+    await delay(110)
+    const assets = storyboardAssetStates.get(projectId) ?? []
+    const asset: StoryboardAsset = {
+      id: `${projectId}-asset-${Date.now().toString(36)}`, adaptationId, episodeId, shotId,
+      kind: 'image', originalFilename: file.name, mimeType: file.type || 'image/png', byteSize: file.size,
+      width: undefined, height: undefined, sha256: `${file.size}-${file.name}`, status: 'draft',
+      createdBy: 'mock-user', contentUrl: ''
+    }
+    assets.push(asset)
+    storyboardAssetStates.set(projectId, assets)
+    if (shotId) {
+      const shot = storyboardFor(projectId).episodes.flatMap((episode) => episode.scenes).flatMap((scene) => scene.shots).find((item) => item.id === shotId)
+      if (shot) shot.referenceAssetIds = [...new Set([...shot.referenceAssetIds, asset.id])]
+    }
+    return structuredClone(asset)
+  },
+
+  async updateStoryboardAsset(projectId: string, assetId: string, status: StoryboardAsset['status'], rejectionReason?: string): Promise<StoryboardAsset> {
+    await delay(70)
+    const asset = (storyboardAssetStates.get(projectId) ?? []).find((item) => item.id === assetId)
+    if (!asset) throw new Error('漫剧素材不存在')
+    Object.assign(asset, { status, rejectionReason: status === 'rejected' ? rejectionReason : undefined })
+    return structuredClone(asset)
+  },
+
+  async getStoryboardAssetPreview(_projectId: string, _asset: StoryboardAsset): Promise<string> {
+    return ''
+  },
+
   async getProductionPackage(projectId: string, episodeId: string): Promise<ProductionPackage> {
     await delay(100)
     const adaptation = storyboardFor(projectId)
@@ -741,6 +777,9 @@ export const mockApi = {
     const characterIds = [...new Set(scenes.flatMap((scene) => scene.characterEntryIds))].sort()
     const profiles = adaptation.visualProfiles.filter((profile) => characterIds.includes(profile.codexEntryId)).sort((a, b) => a.codexEntryId.localeCompare(b.codexEntryId))
     const profilesByCharacter = new Map(profiles.map((profile) => [profile.codexEntryId, profile]))
+    const assets = storyboardAssetStates.get(projectId) ?? []
+    const referencedAssetIds = new Set(scenes.flatMap((scene) => scene.shots.flatMap((shot) => shot.referenceAssetIds)))
+    for (const profile of profiles) profile.referenceAssetIds.forEach((assetId) => referencedAssetIds.add(assetId))
     const chapters = chaptersFor(projectId)
     if (!scenes.length) addIssue('no_scenes', 'episode', episode.id, '本集还没有场景')
     for (const chapterId of episode.sourceChapterIds) {
@@ -753,6 +792,11 @@ export const mockApi = {
         if (!profile.locked) addIssue('visual_profile_unlocked', 'character', characterId, '出场人物视觉档案尚未锁定')
         if (!profile.appearance.trim()) addIssue('visual_profile_appearance_missing', 'character', characterId, '人物视觉档案缺少外观锚点')
       }
+    }
+    for (const assetId of [...referencedAssetIds].sort()) {
+      const asset = assets.find((item) => item.id === assetId)
+      if (!asset) addIssue('asset_reference_missing', 'shot', assetId, '镜头引用的画面素材不存在')
+      else if (asset.status !== 'approved') addIssue('asset_unapproved', 'shot', asset.id, '镜头引用的画面素材尚未确认')
     }
     let totalDuration = 0
     const sceneRows = scenes.map((scene) => {
@@ -789,6 +833,12 @@ export const mockApi = {
         costume: profile.costume, palette: profile.palette, reference_asset_ids: profile.referenceAssetIds
       })),
       scenes: sceneRows,
+      assets: assets.filter((asset) => referencedAssetIds.has(asset.id)).map((asset) => ({
+        id: asset.id, episode_id: asset.episodeId ?? null, shot_id: asset.shotId ?? null,
+        kind: asset.kind, original_filename: asset.originalFilename, mime_type: asset.mimeType,
+        byte_size: asset.byteSize, width: asset.width ?? null, height: asset.height ?? null,
+        sha256: asset.sha256, status: asset.status, content_url: asset.contentUrl
+      })),
       readiness: { ready: !issues.some((issue) => issue.severity === 'blocking'), total_duration: totalDuration, target_duration: episode.targetDuration, issues }
     })
   },

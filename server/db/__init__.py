@@ -33,6 +33,7 @@ from db.models_model_config import UserModelConfig
 from db.models_naturalization import NaturalizationFinding, NaturalizationRun
 from db.models_org import ChapterAssignment, Org, OrgMember
 from db.models_positioning import ProjectPositioning, ProjectPositioningRevision
+from db.models_production_assets import ProductionAsset
 from db.models_review import ChapterReviewRound, ReviewComment
 from db.models_scene_cards import ChapterScene
 from db.models_timeline import TimelineEntry
@@ -118,6 +119,7 @@ __all__ = [
     "Scene",
     "Shot",
     "VisualProfile",
+    "ProductionAsset",
     "ChapterScene",
     "NaturalizationRun",
     "NaturalizationFinding",

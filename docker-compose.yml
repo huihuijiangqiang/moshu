@@ -4,6 +4,7 @@ x-server-environment: &server-environment
   CELERY_BROKER_URL: redis://redis:6379/1
   CELERY_RESULT_BACKEND: redis://redis:6379/2
   BUILD_REVISION: ${MOSHU_BUILD_REVISION:-local}
+  PRODUCTION_ASSET_DIR: /app/.local/production-assets
 
 x-server-base: &server-base
   build:
@@ -56,6 +57,8 @@ services:
     command: ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
     ports:
       - "8000:8000"
+    volumes:
+      - ${MOSHU_PRODUCTION_ASSET_DATA_DIR:-./.docker-data/production-assets}:/app/.local/production-assets
     depends_on:
       migration:
         condition: service_completed_successfully
