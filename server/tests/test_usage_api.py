@@ -3,6 +3,7 @@ from datetime import UTC, datetime, timedelta
 import pytest
 from sqlalchemy import select
 
+from db.models_core import User
 from db.models_usage import CreditGrant, UsageLog
 from services.provider_usage import provider_usage_event, record_platform_usage
 from services.usage import (
@@ -34,6 +35,21 @@ async def test_fixed_image_price_reserves_and_settles_without_token_formula(asyn
     assert log.prompt_tokens == 0 and log.completion_tokens == 0
     assert log.detail["billing_mode"] == "fixed_image"
     assert user.quota_remaining == 977
+
+
+async def test_fixed_image_reservation_can_share_job_transaction(async_db_session, seed_project):
+    await seed_project(user_id="image_atomic", project_id="image_atomic_project")
+    await async_db_session.commit()
+    reservation = await reserve_fixed_credits(
+        async_db_session, user_id="image_atomic", project_id="image_atomic_project",
+        feature="comic_image", model="gpt-image-2", credits=23, commit=False,
+    )
+    assert (await async_db_session.get(UsageLog, reservation.log_id)).status == "reserved"
+    assert (await async_db_session.get(User, "image_atomic")).quota_remaining == 977
+
+    await async_db_session.rollback()
+    assert await async_db_session.get(UsageLog, reservation.log_id) is None
+    assert (await async_db_session.get(User, "image_atomic")).quota_remaining == 1000
 
 
 async def test_failed_fixed_image_restores_monthly_and_purchased_balance(async_db_session, seed_project):

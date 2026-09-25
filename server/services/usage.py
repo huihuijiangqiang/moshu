@@ -256,6 +256,7 @@ async def reserve_fixed_credits(
     feature: str,
     model: str,
     credits: int,
+    commit: bool = True,
 ) -> UsageReservation:
     """Reserve a configured per-operation price without token-based estimation."""
     if credits <= 0:
@@ -292,8 +293,11 @@ async def reserve_fixed_credits(
         reservation_expires_at=now + timedelta(hours=1),
     )
     db.add(log)
-    await db.commit()
-    await db.refresh(log)
+    if commit:
+        await db.commit()
+        await db.refresh(log)
+    else:
+        await db.flush()
     return UsageReservation(log_id=log.id, reserved_credits=credits)
 
 
