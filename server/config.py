@@ -67,6 +67,13 @@ class Settings(BaseSettings):
     model_gateway_premium_url: str
     model_gateway_premium_key: str
 
+    # Image generation uses a separate per-image price, never text-token rates.
+    # URL/key fall back to the main gateway when a compatible image route is available.
+    image_gateway_url: Optional[str] = None
+    image_gateway_key: Optional[str] = None
+    image_gateway_model: str = "gpt-image-2"
+    image_generation_credits: int = Field(default=0, ge=0, le=100_000)
+
     # Object Storage
     s3_endpoint: str
     s3_access_key: str
