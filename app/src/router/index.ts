@@ -58,4 +58,10 @@ export function authGuard(to: RouteLocationNormalized, useMock = USE_MOCK) {
   return true
 }
 
+/** Return a login redirect only when the app is not already on an auth page. */
+export function unauthorizedRedirect(to: Pick<RouteLocationNormalized, 'name' | 'fullPath'>) {
+  if (to.name === 'login' || to.name === 'password-reset') return null
+  return { name: 'login' as const, query: { redirect: to.fullPath } }
+}
+
 router.beforeEach((to) => authGuard(to))

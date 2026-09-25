@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { RouteLocationNormalized } from 'vue-router'
 import { setSession } from '@/api/session'
-import { authGuard } from './index'
+import { authGuard, unauthorizedRedirect } from './index'
 
 const storage = new Map<string, string>()
 vi.stubGlobal('localStorage', {
@@ -57,5 +57,13 @@ describe('authentication route guard', () => {
       user: { id: 'u1', name: '管理员', email: null, plan: 'studio', system_role: 'admin' }
     })
     expect(authGuard(route('admin', '/admin', { admin: true }), false)).toBe(true)
+  })
+
+  it('does not wrap an existing auth page in nested login redirects', () => {
+    expect(unauthorizedRedirect(route('login', '/login?redirect=/projects/p1/write'))).toBeNull()
+    expect(unauthorizedRedirect(route('password-reset', '/password-reset'))).toBeNull()
+    expect(unauthorizedRedirect(route('workspace', '/projects/p1/write'))).toEqual({
+      name: 'login', query: { redirect: '/projects/p1/write' }
+    })
   })
 })

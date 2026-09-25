@@ -8,6 +8,7 @@ import { useProjectStore } from '@/stores/project'
 import { useCodexStore } from '@/stores/codex'
 import { useGuardStore } from '@/stores/guard'
 import { useShellStore } from '@/stores/shell'
+import { unauthorizedRedirect } from '@/router'
 
 const route = useRoute()
 const router = useRouter()
@@ -23,7 +24,8 @@ const bare = computed(() => route.meta.bare === true)
 shell.initTheme()
 
 const onUnauthorized = () => {
-  void router.replace({ name: 'login', query: { redirect: route.fullPath } })
+  const redirect = unauthorizedRedirect(route)
+  if (redirect) void router.replace(redirect)
 }
 onMounted(() => window.addEventListener('moshu:unauthorized', onUnauthorized))
 onUnmounted(() => window.removeEventListener('moshu:unauthorized', onUnauthorized))
