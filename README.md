@@ -164,6 +164,13 @@ GENERATION_CONTEXT_SAFETY_MARGIN_TOKENS=16000
 CONSISTENCY_GATEWAY_TIER=main
 CONSISTENCY_SUMMARY_MODEL=your-text-model
 CONSISTENCY_EXTRACTION_MODEL=your-text-model
+
+# 可选：漫剧分镜图片。未设单独地址和 key 时尝试沿用 MAIN 网关。
+IMAGE_GATEWAY_URL=https://image.example.com/v1
+IMAGE_GATEWAY_KEY=your-image-api-key
+IMAGE_GATEWAY_MODEL=gpt-image-2
+# 管理员核算上游成本后设置每张图片的固定积分；0 表示关闭付费出图。
+IMAGE_GENERATION_CREDITS=23
 ```
 
 网关地址应直接对应 `POST /chat/completions`，支持 `stream: true` 的 SSE 返回，
@@ -175,6 +182,8 @@ dispatcher 后配置生效：
 docker compose up -d --build api worker dispatcher beat
 curl http://localhost:8000/health/ready
 ```
+
+漫剧分镜页可为单个镜头先预览提示词和积分，再确认生成。出场人物必须有已锁定且包含外观锚点的视觉档案；任务排队、生成和失败状态会回到镜头，失败或取消排队任务会返还预留积分。生成图先存为私有草稿，人工确认后才能进入制作包。图片由 worker 生成，API 和 worker 必须挂载同一持久化素材目录；默认 Compose 已处理。图片网关需支持 OpenAI 兼容 `POST /v1/images/generations` 并返回 `data[0].b64_json`，不从供应商返回的任意 URL 下载图片。`IMAGE_GENERATION_CREDITS` 是部署者自定的固定价格，示例数字不代表实际上游成本。
 
 #### 用户配置自己的服务（BYOK）
 
@@ -247,9 +256,10 @@ Compose 默认使用项目下的 `.docker-data` 目录作为开发兜底。部�
 ```dotenv
 MOSHU_POSTGRES_DATA_DIR=<postgres-data-directory>
 MOSHU_REDIS_DATA_DIR=<redis-data-directory>
+MOSHU_PRODUCTION_ASSET_DATA_DIR=<private-image-directory>
 ```
 
-这两个目录会以 bind mount 方式挂载，不使用 Docker Desktop 默认 named volume 位置。请按部署主机的操作系统填写实际目录，
+这些目录会以 bind mount 方式挂载，不使用 Docker Desktop 默认 named volume 位置。请按部署主机的操作系统填写实际目录，
 目录需提前创建，并在 Docker Desktop 中共享对应位置。
 
 ### 微信与支付宝
@@ -328,14 +338,14 @@ JWT 与凭据加密密钥。
 
 漫剧分镜在演示模式和真实 API 模式下使用同一套交互。真实 API 将改编版本、集、场景、
 镜头和视觉档案持久化到 PostgreSQL，并按作品权限限制查看、编辑分镜和维护视觉档案。
-当前阶段不包含实际视频、配音、字幕时间轴或合成任务；图片生成仍属于待接入能力。
+当前阶段已支持分镜静态画面生成、私有素材审阅与制作包校验；实际视频、配音、字幕时间轴或合成任务尚未接入。
 
 正文索引运维接口：`GET /projects/{project_id}/chapter-chunks/status` 查看当前正文版本的
 ready/pending/failed/stale 分块、已完成向量的章节数和排队数；
 `POST /projects/{project_id}/chapter-chunks/reindex` 以异步 outbox 方式批量重建当前正文版本。
 查看需要作品权限，批量重建需要项目管理权限；重建不会改写正文或正文版本历史。
 
-最近一次后端回归记录：`1481 passed, 38 skipped`；本轮前端回归为 `174 passed`。后端被跳过的
+最近一次后端回归记录：`1726 passed, 38 skipped`；本轮前端回归为 `207 passed`。后端被跳过的
 测试需要显式配置真实 PostgreSQL/pgvector 集成环境；测试正文、模型 key、`.env` 和 Docker
 数据卷均不提交 Git。
 

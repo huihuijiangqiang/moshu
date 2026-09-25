@@ -116,6 +116,8 @@ services:
     networks:
       - backend
       - egress
+    volumes:
+      - production-assets:/app/.local/production-assets
     command: ["celery", "-A", "celery_app:celery_app", "worker", "--loglevel=INFO", "--concurrency=1", "--max-tasks-per-child=50", "--queues=consistency,celery"]
     depends_on:
       migration:
