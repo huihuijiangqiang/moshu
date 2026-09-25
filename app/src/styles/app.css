@@ -167,7 +167,14 @@ button { font: inherit; color: inherit; }
 .storyboard-status { padding: 2px 4px; color: var(--ink-4); border: 1px solid var(--line); font-size: 9px; }
 .storyboard-status[data-status='in_review'] { color: var(--primary); border-color: var(--primary-line); }
 .storyboard-scene-list { padding: 0 0 8px 29px; background: color-mix(in srgb, var(--panel-sunken) 52%, var(--panel)); }
+.storyboard-scene-item { display: grid; grid-template-columns: minmax(0, 1fr) 24px; align-items: center; }
 .storyboard-scene-row { grid-template-columns: 38px minmax(0, 1fr); padding: 9px 10px 9px 12px; }
+.storyboard-order-controls { display: grid; }
+.storyboard-order-controls button, .storyboard-shot-order button { display: grid; place-items: center; width: 24px; height: 22px; padding: 0; border: 0; color: var(--ink-3); background: transparent; cursor: pointer; }
+.storyboard-order-controls button:hover:not(:disabled), .storyboard-shot-order button:hover:not(:disabled) { color: var(--primary); background: var(--primary-soft); }
+.storyboard-order-controls button:disabled, .storyboard-shot-order button:disabled { opacity: .3; cursor: default; }
+.storyboard-order-controls button:first-child svg { transform: rotate(-90deg); }
+.storyboard-order-controls button:last-child svg { transform: rotate(90deg); }
 .scene-index { color: var(--ink-4); font-family: var(--font-mono); font-size: 10px; }
 .storyboard-add-scene { display: inline-flex; align-items: center; gap: 5px; margin: 3px 10px 4px 12px; padding: 6px 0; border: 0; color: var(--primary); background: transparent; font-size: 11px; cursor: pointer; }
 .storyboard-empty { margin: 0; padding: 24px 16px; color: var(--ink-3); font-size: var(--fs-sm); line-height: 1.7; }
@@ -226,6 +233,7 @@ button { font: inherit; color: inherit; }
 .storyboard-shot-meta { display: grid; gap: 4px; padding: 10px 2px 0; }
 .storyboard-shot-meta strong { overflow: hidden; color: var(--ink); font-size: var(--fs-sm); text-overflow: ellipsis; white-space: nowrap; }
 .storyboard-shot-meta small { overflow: hidden; color: var(--ink-4); font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
+.storyboard-shot-order { display: flex; justify-content: flex-end; gap: 3px; }
 .storyboard-empty-canvas { min-width: min(360px, 85%); margin: 20px auto; padding: 38px; border: 1px dashed var(--line-strong); color: var(--ink-3); text-align: center; }
 .empty-mark { display: block; margin-bottom: 8px; color: var(--primary); font-size: 28px; font-weight: 300; }
 .storyboard-empty-canvas strong { color: var(--ink-2); }

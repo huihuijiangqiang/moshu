@@ -287,6 +287,11 @@ export const storyboardApi = {
     return sceneFromDto(await request<SceneDto>(`/scenes/${sceneId}`, { method: 'PATCH', body: JSON.stringify(body) }))
   },
 
+  async reorderStoryboardScenes(_projectId: string, episodeId: string, ids: string[]): Promise<StoryboardScene[]> {
+    const rows = await request<SceneDto[]>(`/episodes/${episodeId}/scenes/order`, { method: 'PUT', body: JSON.stringify({ ids }) })
+    return rows.map((row) => sceneFromDto(row))
+  },
+
   async createStoryboardShot(_projectId: string, sceneId: string, input: Partial<StoryboardShot>): Promise<StoryboardShot> {
     const existing = await request<ShotDto[]>(`/scenes/${sceneId}/shots`)
     const row = await request<ShotDto>(`/scenes/${sceneId}/shots`, {
@@ -308,7 +313,6 @@ export const storyboardApi = {
 
   async updateStoryboardShot(_projectId: string, shotId: string, patch: Partial<StoryboardShot>): Promise<StoryboardShot> {
     const body: Record<string, unknown> = {}
-    if (patch.order !== undefined) body.order = patch.order
     if (patch.shotType !== undefined) body.shot_type = patch.shotType
     if (patch.camera !== undefined) body.camera = patch.camera
     if (patch.durationTarget !== undefined) body.duration_target = patch.durationTarget
@@ -319,6 +323,11 @@ export const storyboardApi = {
     if (patch.referenceAssetIds !== undefined) body.reference_asset_ids = patch.referenceAssetIds
     if (patch.status !== undefined) body.status = patch.status
     return shotFromDto(await request<ShotDto>(`/shots/${shotId}`, { method: 'PATCH', body: JSON.stringify(body) }))
+  },
+
+  async reorderStoryboardShots(_projectId: string, sceneId: string, ids: string[]): Promise<StoryboardShot[]> {
+    const rows = await request<ShotDto[]>(`/scenes/${sceneId}/shots/order`, { method: 'PUT', body: JSON.stringify({ ids }) })
+    return rows.map(shotFromDto)
   },
 
   async updateVisualProfile(_projectId: string, profileId: string, patch: Partial<VisualProfile>): Promise<VisualProfile> {

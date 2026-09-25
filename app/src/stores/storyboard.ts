@@ -174,6 +174,23 @@ export const useStoryboardStore = defineStore('storyboard', () => {
     return updated
   }
 
+  async function moveScene(projectId: string, sceneId: string, direction: -1 | 1) {
+    const episode = selectedEpisode.value
+    if (!episode) return null
+    const ids = episode.scenes.map((scene) => scene.id)
+    const index = ids.indexOf(sceneId)
+    const next = index + direction
+    if (index < 0 || next < 0 || next >= ids.length) return null
+    const currentId = ids[index]!
+    ids[index] = ids[next]!
+    ids[next] = currentId
+    const result = await mutate(() => api.reorderStoryboardScenes(projectId, episode.id, ids), '场景顺序保存失败')
+    if (!result) return null
+    const byId = new Map(episode.scenes.map((scene) => [scene.id, scene]))
+    episode.scenes = result.map((row) => Object.assign(byId.get(row.id)!, { order: row.order }))
+    return result
+  }
+
   async function createShot(projectId: string) {
     if (!selectedScene.value) return
     const shot = await mutate(() => api.createStoryboardShot(projectId, selectedScene.value!.id, {}), '镜头创建失败')
@@ -189,6 +206,23 @@ export const useStoryboardStore = defineStore('storyboard', () => {
     const updated = await mutate(() => api.updateStoryboardShot(projectId, current.id, patch), '镜头保存失败')
     if (updated) Object.assign(current, updated)
     return updated
+  }
+
+  async function moveShot(projectId: string, shotId: string, direction: -1 | 1) {
+    const scene = selectedScene.value
+    if (!scene) return null
+    const ids = scene.shots.map((shot) => shot.id)
+    const index = ids.indexOf(shotId)
+    const next = index + direction
+    if (index < 0 || next < 0 || next >= ids.length) return null
+    const currentId = ids[index]!
+    ids[index] = ids[next]!
+    ids[next] = currentId
+    const result = await mutate(() => api.reorderStoryboardShots(projectId, scene.id, ids), '镜头顺序保存失败')
+    if (!result) return null
+    const byId = new Map(scene.shots.map((shot) => [shot.id, shot]))
+    scene.shots = result.map((row) => Object.assign(byId.get(row.id)!, { order: row.order }))
+    return result
   }
 
   async function updateVisualProfile(projectId: string, profileId: string, patch: Partial<VisualProfile>) {
@@ -217,5 +251,5 @@ export const useStoryboardStore = defineStore('storyboard', () => {
     selectedShotId.value = selectedScene.value?.shots[0]?.id ?? null
   }
 
-  return { adaptation, assets, assetPreviewUrls, loadedProjectId, loading, saving, checking, productionPackage, error, selectedEpisodeId, selectedSceneId, selectedShotId, selectedEpisode, selectedScene, selectedShot, totalShots, load, clearError, clearAssetPreviews, checkProductionPackage, uploadAsset, approveAsset, loadAssetPreview, createEpisode, updateEpisode, createScene, updateScene, createShot, updateShot, createVisualProfile, updateVisualProfile, selectEpisode, selectScene }
+  return { adaptation, assets, assetPreviewUrls, loadedProjectId, loading, saving, checking, productionPackage, error, selectedEpisodeId, selectedSceneId, selectedShotId, selectedEpisode, selectedScene, selectedShot, totalShots, load, clearError, clearAssetPreviews, checkProductionPackage, uploadAsset, approveAsset, loadAssetPreview, createEpisode, updateEpisode, createScene, updateScene, moveScene, createShot, updateShot, moveShot, createVisualProfile, updateVisualProfile, selectEpisode, selectScene }
 })

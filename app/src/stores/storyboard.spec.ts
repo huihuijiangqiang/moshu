@@ -108,4 +108,29 @@ describe('storyboard store', () => {
     const checked = await store.checkProductionPackage('p1')
     expect(checked?.assets.some((item) => item.id === asset!.id && item.status === 'approved')).toBe(true)
   })
+
+  it('moves scenes and shots without losing the current selection', async () => {
+    const store = useStoryboardStore()
+    await store.load('storyboard-order-test')
+    const firstSceneId = store.selectedScene!.id
+    await store.createScene('storyboard-order-test', {
+      purpose: '后续场景', summary: '', timeAnchor: '', locationEntryId: undefined, characterEntryIds: []
+    })
+    const secondSceneId = store.selectedScene!.id
+    await store.moveScene('storyboard-order-test', secondSceneId, -1)
+    expect(store.selectedEpisode?.scenes.map((scene) => scene.id)).toEqual([secondSceneId, firstSceneId])
+    expect(store.selectedEpisode?.scenes.map((scene) => scene.order)).toEqual([1, 2])
+    expect(store.selectedScene?.id).toBe(secondSceneId)
+
+    store.selectScene(firstSceneId)
+    const originalShotIds = store.selectedScene!.shots.map((shot) => shot.id)
+    await store.createShot('storyboard-order-test')
+    const secondShotId = store.selectedShot!.id
+    await store.moveShot('storyboard-order-test', secondShotId, -1)
+    expect(store.selectedScene?.shots.map((shot) => shot.id)).toEqual([
+      ...originalShotIds.slice(0, -1), secondShotId, originalShotIds.at(-1)
+    ])
+    expect(store.selectedScene?.shots.map((shot) => shot.order)).toEqual([1, 2, 3, 4])
+    expect(store.selectedShot?.id).toBe(secondShotId)
+  })
 })

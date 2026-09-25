@@ -3,6 +3,7 @@ import { createPinia, setActivePinia } from 'pinia'
 import { createMemoryHistory, createRouter } from 'vue-router'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import StoryboardView from './StoryboardView.vue'
+import { useStoryboardStore } from '@/stores/storyboard'
 
 describe('storyboard static editing workflow', () => {
   beforeEach(() => {
@@ -90,6 +91,36 @@ describe('storyboard static editing workflow', () => {
     await wrapper.get('.storyboard-editor-grid textarea[placeholder^="人物、环境"]').setValue('新的画面锚点')
     await vi.waitFor(() => expect(wrapper.find('.storyboard-production-result').exists()).toBe(false))
     expect(wrapper.get('.storyboard-production-actions button:last-child').attributes('disabled')).toBeDefined()
+    wrapper.unmount()
+  })
+
+  it('reorders scenes from the outline and shots from the filmstrip', async () => {
+    const pinia = createPinia()
+    setActivePinia(pinia)
+    const store = useStoryboardStore()
+    await store.load('storyboard-ui-order')
+    const firstSceneId = store.selectedScene!.id
+    await store.createScene('storyboard-ui-order', {
+      purpose: '第二场', summary: '', timeAnchor: '', locationEntryId: undefined, characterEntryIds: []
+    })
+    const secondSceneId = store.selectedScene!.id
+    store.selectScene(firstSceneId)
+    await store.createShot('storyboard-ui-order')
+    const lastShotId = store.selectedShot!.id
+    const router = createRouter({
+      history: createMemoryHistory(),
+      routes: [{ path: '/projects/:projectId/storyboard', component: StoryboardView }]
+    })
+    await router.push('/projects/storyboard-ui-order/storyboard')
+    await router.isReady()
+    const wrapper = mount(StoryboardView, { attachTo: document.body, global: { plugins: [pinia, router] } })
+    await flushPromises()
+
+    await wrapper.get(`[aria-label="上移场 2"]`).trigger('click')
+    await vi.waitFor(() => expect(store.selectedEpisode?.scenes[0]?.id).toBe(secondSceneId))
+    expect(wrapper.findAll('.storyboard-scene-row')[0]?.text()).toContain('第二场')
+    await wrapper.findAll('.storyboard-shot-order button')[store.selectedScene!.shots.length * 2 - 2]!.trigger('click')
+    await vi.waitFor(() => expect(store.selectedScene?.shots.at(-2)?.id).toBe(lastShotId))
     wrapper.unmount()
   })
 })

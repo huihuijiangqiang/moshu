@@ -7,18 +7,18 @@ from uuid import uuid4
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse
-from starlette.concurrency import run_in_threadpool
 from PIL import Image, ImageOps, UnidentifiedImageError
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
+from starlette.concurrency import run_in_threadpool
 
+from api.auth import ProjectPermission, get_current_user, verify_project_permission
 from config import settings
 from db import Adaptation, Chapter, CodexEntry, Episode, ProductionAsset, Scene, Shot, VisualProfile
-from db.session import get_db
-from api.auth import ProjectPermission, get_current_user, verify_project_permission
 from db.models_core import User
+from db.session import get_db
 
 router = APIRouter()
 
@@ -171,7 +171,6 @@ class ShotCreate(BaseModel):
 
 
 class ShotPatch(BaseModel):
-    order: int | None = Field(default=None, ge=1)
     shot_type: Literal["wide", "medium", "close", "detail", "overhead"] | None = None
     camera: str | None = None
     duration_target: int | None = Field(default=None, ge=1, le=120)
@@ -188,6 +187,10 @@ class ShotOut(ShotCreate):
     scene_id: str
     status: str
     model_config = ConfigDict(from_attributes=True)
+
+
+class ReorderRequest(BaseModel):
+    ids: list[str] = Field(min_length=1, max_length=500)
 
 
 class VisualProfileCreate(BaseModel):
@@ -529,8 +532,26 @@ async def update_episode(
 @router.get("/episodes/{episode_id}/scenes", response_model=list[SceneOut])
 async def list_scenes(episode_id: str, db: AsyncSession = Depends(get_db), user: User = Depends(get_current_user)):
     await require_episode(episode_id, db, user)
-    result = await db.execute(select(Scene).where(Scene.episode_id == episode_id).order_by(Scene.order))
+    result = await db.execute(select(Scene).where(Scene.episode_id == episode_id).order_by(Scene.order, Scene.id))
     return result.scalars().all()
+
+
+@router.put("/episodes/{episode_id}/scenes/order", response_model=list[SceneOut])
+async def reorder_scenes(
+    episode_id: str,
+    payload: ReorderRequest,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    await require_episode(episode_id, db, user, ProjectPermission.MANAGE_OUTLINE)
+    rows = (await db.execute(select(Scene).where(Scene.episode_id == episode_id).with_for_update())).scalars().all()
+    by_id = {row.id: row for row in rows}
+    if len(payload.ids) != len(rows) or len(set(payload.ids)) != len(payload.ids) or set(payload.ids) != set(by_id):
+        raise HTTPException(status_code=422, detail={"code": "invalid_scene_order"})
+    for order, scene_id in enumerate(payload.ids, start=1):
+        by_id[scene_id].order = order
+    await db.commit()
+    return [by_id[scene_id] for scene_id in payload.ids]
 
 
 @router.get("/episodes/{episode_id}/production-package")
@@ -743,8 +764,26 @@ async def update_scene(
 @router.get("/scenes/{scene_id}/shots", response_model=list[ShotOut])
 async def list_shots(scene_id: str, db: AsyncSession = Depends(get_db), user: User = Depends(get_current_user)):
     await require_scene(scene_id, db, user)
-    result = await db.execute(select(Shot).where(Shot.scene_id == scene_id).order_by(Shot.order))
+    result = await db.execute(select(Shot).where(Shot.scene_id == scene_id).order_by(Shot.order, Shot.id))
     return result.scalars().all()
+
+
+@router.put("/scenes/{scene_id}/shots/order", response_model=list[ShotOut])
+async def reorder_shots(
+    scene_id: str,
+    payload: ReorderRequest,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    await require_scene(scene_id, db, user, ProjectPermission.MANAGE_OUTLINE)
+    rows = (await db.execute(select(Shot).where(Shot.scene_id == scene_id).with_for_update())).scalars().all()
+    by_id = {row.id: row for row in rows}
+    if len(payload.ids) != len(rows) or len(set(payload.ids)) != len(payload.ids) or set(payload.ids) != set(by_id):
+        raise HTTPException(status_code=422, detail={"code": "invalid_shot_order"})
+    for order, shot_id in enumerate(payload.ids, start=1):
+        by_id[shot_id].order = order
+    await db.commit()
+    return [by_id[shot_id] for shot_id in payload.ids]
 
 
 @router.post("/scenes/{scene_id}/shots", response_model=ShotOut, status_code=201)

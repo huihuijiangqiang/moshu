@@ -228,6 +228,14 @@ async function toggleAssetStatus(asset: StoryboardAsset) {
   const updated = await storyboard.approveAsset(projectId.value, asset.id, status)
   if (updated) showSaved(status === 'approved' ? '画面已确认' : '画面已退回')
 }
+
+async function moveScene(sceneId: string, direction: -1 | 1) {
+  if (await storyboard.moveScene(projectId.value, sceneId, direction)) showSaved('场景顺序已保存')
+}
+
+async function moveShot(shotId: string, direction: -1 | 1) {
+  if (await storyboard.moveShot(projectId.value, shotId, direction)) showSaved('镜头顺序已保存')
+}
 </script>
 
 <template>
@@ -265,10 +273,16 @@ async function toggleAssetStatus(asset: StoryboardAsset) {
               <span class="storyboard-status" :data-status="episode.status">{{ episode.status === 'in_review' ? '审阅' : '草稿' }}</span>
             </button>
             <div v-if="episode.id === storyboard.selectedEpisodeId" class="storyboard-scene-list">
-              <button v-for="scene in episode.scenes" :key="scene.id" class="storyboard-scene-row" type="button" :aria-selected="scene.id === storyboard.selectedSceneId" @click="storyboard.selectScene(scene.id)">
-                <span class="scene-index">场 {{ scene.order }}</span>
-                <span><strong>{{ scene.purpose || '未命名场景' }}</strong><small>{{ scene.shots.length }} 镜头 · {{ scene.timeAnchor || '时间待定' }}</small></span>
-              </button>
+              <div v-for="(scene, index) in episode.scenes" :key="scene.id" class="storyboard-scene-item">
+                <button class="storyboard-scene-row" type="button" :aria-selected="scene.id === storyboard.selectedSceneId" @click="storyboard.selectScene(scene.id)">
+                  <span class="scene-index">场 {{ scene.order }}</span>
+                  <span><strong>{{ scene.purpose || '未命名场景' }}</strong><small>{{ scene.shots.length }} 镜头 · {{ scene.timeAnchor || '时间待定' }}</small></span>
+                </button>
+                <div class="storyboard-order-controls">
+                  <button type="button" :title="`上移场 ${scene.order}`" :aria-label="`上移场 ${scene.order}`" :disabled="index === 0 || storyboard.saving" @click="moveScene(scene.id, -1)"><AppIcon name="chevron" :size="13" /></button>
+                  <button type="button" :title="`下移场 ${scene.order}`" :aria-label="`下移场 ${scene.order}`" :disabled="index === episode.scenes.length - 1 || storyboard.saving" @click="moveScene(scene.id, 1)"><AppIcon name="chevron" :size="13" /></button>
+                </div>
+              </div>
               <button class="storyboard-add-scene" type="button" :disabled="storyboard.saving" @click="openSceneCreate"><AppIcon name="plus" :size="13" /> 添加场景</button>
             </div>
           </section>
@@ -336,7 +350,7 @@ async function toggleAssetStatus(asset: StoryboardAsset) {
         </form>
 
         <div class="storyboard-filmstrip" :data-empty="!shots.length">
-          <article v-for="shot in shots" :key="shot.id" class="storyboard-shot" :data-selected="shot.id === storyboard.selectedShotId" @click="storyboard.selectedShotId = shot.id">
+          <article v-for="(shot, index) in shots" :key="shot.id" class="storyboard-shot" :data-selected="shot.id === storyboard.selectedShotId" @click="storyboard.selectedShotId = shot.id">
             <button class="storyboard-frame" type="button" :aria-label="`选择第 ${shot.order} 个镜头`" @click.stop="storyboard.selectedShotId = shot.id">
               <span class="frame-corner frame-corner-tl" /><span class="frame-corner frame-corner-br" />
               <span class="frame-number">{{ String(shot.order).padStart(2, '0') }}</span>
@@ -346,6 +360,10 @@ async function toggleAssetStatus(asset: StoryboardAsset) {
             <div class="storyboard-shot-meta">
               <strong>{{ shot.action || '镜头动作待填写' }}</strong>
               <small>{{ shot.camera }} · {{ shot.status === 'approved' ? '已确认' : '草稿' }}</small>
+              <div class="storyboard-shot-order">
+                <button type="button" :title="`前移镜头 ${shot.order}`" :aria-label="`前移镜头 ${shot.order}`" :disabled="index === 0 || storyboard.saving" @click.stop="moveShot(shot.id, -1)"><AppIcon name="collapse" :size="14" /></button>
+                <button type="button" :title="`后移镜头 ${shot.order}`" :aria-label="`后移镜头 ${shot.order}`" :disabled="index === shots.length - 1 || storyboard.saving" @click.stop="moveShot(shot.id, 1)"><AppIcon name="chevron" :size="14" /></button>
+              </div>
             </div>
           </article>
           <div v-if="!shots.length" class="storyboard-empty-canvas">

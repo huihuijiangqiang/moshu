@@ -876,6 +876,18 @@ export const mockApi = {
     return structuredClone(scene)
   },
 
+  async reorderStoryboardScenes(projectId: string, episodeId: string, ids: string[]): Promise<StoryboardScene[]> {
+    await delay(80)
+    const episode = storyboardFor(projectId).episodes.find((item) => item.id === episodeId)
+    if (!episode || ids.length !== episode.scenes.length || new Set(ids).size !== ids.length || ids.some((id) => !episode.scenes.some((scene) => scene.id === id))) throw new Error('invalid_scene_order')
+    episode.scenes = ids.map((id, index) => {
+      const scene = episode.scenes.find((item) => item.id === id)!
+      scene.order = index + 1
+      return scene
+    })
+    return structuredClone(episode.scenes)
+  },
+
   async createStoryboardShot(projectId: string, sceneId: string, input: Partial<StoryboardShot>): Promise<StoryboardShot> {
     await delay(80)
     const scene = storyboardFor(projectId).episodes.flatMap((episode) => episode.scenes).find((item) => item.id === sceneId)
@@ -891,6 +903,18 @@ export const mockApi = {
     if (!shot) throw new Error('shot_not_found')
     Object.assign(shot, patch)
     return structuredClone(shot)
+  },
+
+  async reorderStoryboardShots(projectId: string, sceneId: string, ids: string[]): Promise<StoryboardShot[]> {
+    await delay(80)
+    const scene = storyboardFor(projectId).episodes.flatMap((episode) => episode.scenes).find((item) => item.id === sceneId)
+    if (!scene || ids.length !== scene.shots.length || new Set(ids).size !== ids.length || ids.some((id) => !scene.shots.some((shot) => shot.id === id))) throw new Error('invalid_shot_order')
+    scene.shots = ids.map((id, index) => {
+      const shot = scene.shots.find((item) => item.id === id)!
+      shot.order = index + 1
+      return shot
+    })
+    return structuredClone(scene.shots)
   },
 
   async updateVisualProfile(projectId: string, profileId: string, patch: Partial<VisualProfile>): Promise<VisualProfile> {

@@ -311,6 +311,68 @@ async def test_production_package_viewer_can_see_adaptation_but_cannot_export(
 
 
 @pytest.mark.asyncio
+async def test_scene_and_shot_reorder_is_atomic_and_scoped(
+    app_client, async_db_session, seed_project, make_user, auth_headers,
+):
+    await seed_project(project_id="project-a", chapter_ids=("chapter-a",))
+    async_db_session.add_all([
+        make_user("outsider"),
+        Adaptation(id="adaptation-a", project_id="project-a", title="第一季"),
+    ])
+    await async_db_session.commit()
+    headers = auth_headers("user_a")
+    episode = (await app_client.post("/adaptations/adaptation-a/episodes", headers=headers, json={
+        "number": 1, "title": "第一集", "source_chapter_ids": ["chapter-a"],
+    })).json()
+    other_episode = (await app_client.post("/adaptations/adaptation-a/episodes", headers=headers, json={
+        "number": 2, "title": "第二集", "source_chapter_ids": ["chapter-a"],
+    })).json()
+    scenes = [(await app_client.post(f"/episodes/{episode['id']}/scenes", headers=headers, json={
+        "order": index, "purpose": f"场 {index}",
+    })).json() for index in (1, 2)]
+    foreign_scene = (await app_client.post(f"/episodes/{other_episode['id']}/scenes", headers=headers, json={
+        "order": 1, "purpose": "别集",
+    })).json()
+    scene_path = f"/episodes/{episode['id']}/scenes/order"
+    assert (await app_client.put(scene_path, headers=auth_headers("outsider"), json={
+        "ids": [scenes[1]["id"], scenes[0]["id"]],
+    })).status_code == 403
+    invalid = await app_client.put(scene_path, headers=headers, json={
+        "ids": [scenes[1]["id"], foreign_scene["id"]],
+    })
+    assert invalid.status_code == 422
+    assert invalid.json()["detail"]["code"] == "invalid_scene_order"
+    reordered = await app_client.put(scene_path, headers=headers, json={
+        "ids": [scenes[1]["id"], scenes[0]["id"]],
+    })
+    assert [row["id"] for row in reordered.json()] == [scenes[1]["id"], scenes[0]["id"]]
+    assert [row["order"] for row in reordered.json()] == [1, 2]
+
+    shots = [(await app_client.post(f"/scenes/{scenes[0]['id']}/shots", headers=headers, json={
+        "order": index, "action": f"镜头 {index}",
+    })).json() for index in (1, 2)]
+    foreign_shot = (await app_client.post(f"/scenes/{scenes[1]['id']}/shots", headers=headers, json={
+        "order": 1,
+    })).json()
+    shot_path = f"/scenes/{scenes[0]['id']}/shots/order"
+    assert (await app_client.put(shot_path, headers=headers, json={
+        "ids": [shots[1]["id"], foreign_shot["id"]],
+    })).status_code == 422
+    assert (await app_client.put(shot_path, headers=headers, json={
+        "ids": [shots[0]["id"], shots[0]["id"]],
+    })).status_code == 422
+    reordered = await app_client.put(shot_path, headers=headers, json={
+        "ids": [shots[1]["id"], shots[0]["id"]],
+    })
+    assert [row["order"] for row in reordered.json()] == [1, 2]
+    listed = await app_client.get(f"/scenes/{scenes[0]['id']}/shots", headers=headers)
+    assert [row["id"] for row in listed.json()] == [shots[1]["id"], shots[0]["id"]]
+    package = await app_client.get(f"/episodes/{episode['id']}/production-package", headers=headers)
+    assert [row["id"] for row in package.json()["scenes"]] == [scenes[1]["id"], scenes[0]["id"]]
+    assert [row["id"] for row in package.json()["scenes"][1]["shots"]] == [shots[1]["id"], shots[0]["id"]]
+
+
+@pytest.mark.asyncio
 async def test_production_asset_upload_binds_to_shot_and_requires_review(
     app_client, async_db_session, seed_project, auth_headers, monkeypatch, tmp_path,
 ):
