@@ -85,6 +85,31 @@ AsyncSessionLocal = async_sessionmaker(engine, expire_on_commit=False)
 logger = logging.getLogger(__name__)
 TaskResult = TypeVar("TaskResult")
 
+# Keep the producer/consumer contract explicit.  Projectionless events are
+# intentionally acknowledged until a materialized projection is introduced;
+# they must still be registered so a new producer cannot silently drift into
+# the dead-letter queue.
+ROUTED_OUTBOX_TOPICS = frozenset(
+    {
+        "chapter.body_saved",
+        "chapter.chunk_embedding_requested",
+        "chapter.chunk_reindex_requested",
+        "consistency.manual_scan",
+        "consistency.timeline_rescan",
+    }
+)
+ACK_ONLY_OUTBOX_TOPICS = frozenset(
+    {
+        "chapter.outline_updated",
+        "chapter.scene_updated",
+        "chapter.scene_reordered",
+        "chapter.scene_archived",
+        "chapter.body_revision_acknowledged",
+        "naturalization.accepted",
+    }
+)
+KNOWN_OUTBOX_TOPICS = ROUTED_OUTBOX_TOPICS | ACK_ONLY_OUTBOX_TOPICS
+
 
 class RunNotFoundError(RuntimeError):
     """run 记录不存在 —— 上游传错了 run_id，必须让任务失败。"""
@@ -1070,14 +1095,7 @@ async def _dispatch_outbox_async(task_id: str, batch_size: int):
                     rescan_temporal_dependents.delay(int(event.payload["run_id"]))
                     await OutboxService.mark_sent(db, event.id, event.lease_token)
                     dispatched += 1
-                elif event.topic in {
-                    "chapter.outline_updated",
-                    "chapter.scene_updated",
-                    "chapter.scene_reordered",
-                    "chapter.scene_archived",
-                    "chapter.body_revision_acknowledged",
-                    "naturalization.accepted",
-                }:
+                elif event.topic in ACK_ONLY_OUTBOX_TOPICS:
                     # These rows are already authoritative for their respective
                     # reads. Their events are audit/extension seams for future
                     # projections, so acknowledge them until such projections

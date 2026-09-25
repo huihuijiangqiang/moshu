@@ -21,9 +21,11 @@
 「锁 + 版本比较」这段逻辑本身；真正的并发互斥需要 PostgreSQL，见
 tests/integration/（未跑过）。
 """
+import ast
 import asyncio
 import contextlib
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from types import SimpleNamespace
 
 import httpx
@@ -45,6 +47,26 @@ from services.consistency import (
 )
 from services.timeline import parse_absolute_anchor
 from tasks import consistency as tasks
+
+
+def test_production_outbox_producers_have_a_dispatcher_route():
+    """A new producer must not create an event the dispatcher cannot consume."""
+    server_root = Path(__file__).resolve().parents[1]
+    produced: set[str] = set()
+    for source_root_name in ("api", "services"):
+        source_root = server_root / source_root_name
+        for source_path in source_root.rglob("*.py"):
+            tree = ast.parse(source_path.read_text(encoding="utf-8"), filename=str(source_path))
+            for node in ast.walk(tree):
+                if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Attribute):
+                    continue
+                if node.func.attr != "enqueue":
+                    continue
+                topic = next((keyword.value for keyword in node.keywords if keyword.arg == "topic"), None)
+                if isinstance(topic, ast.Constant) and isinstance(topic.value, str):
+                    produced.add(topic.value)
+
+    assert produced <= tasks.KNOWN_OUTBOX_TOPICS, produced - tasks.KNOWN_OUTBOX_TOPICS
 
 
 def test_long_model_tasks_are_routed_away_from_outbox_dispatch():
