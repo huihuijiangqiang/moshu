@@ -7,7 +7,9 @@ import type {
   StoryboardShot,
   VisualProfile,
   ProductionPackage,
-  StoryboardAsset
+  StoryboardAsset,
+  ImageGenerationPreview,
+  ImageGenerationJob
 } from '@/types'
 
 interface AdaptationDto {
@@ -190,6 +192,24 @@ function adaptationFromDto(row: AdaptationDto, episodes: StoryboardEpisode[], vi
 }
 
 export const storyboardApi = {
+  async getImageGenerationPreview(shotId: string): Promise<ImageGenerationPreview> {
+    return request<ImageGenerationPreview>(`/shots/${shotId}/image-preview`)
+  },
+
+  async listImageGenerationJobs(shotId: string): Promise<ImageGenerationJob[]> {
+    return request<ImageGenerationJob[]>(`/shots/${shotId}/image-jobs`)
+  },
+
+  async createImageGenerationJob(shotId: string, clientRequestId: string, promptSha256: string): Promise<ImageGenerationJob> {
+    return request<ImageGenerationJob>(`/shots/${shotId}/image-jobs`, {
+      method: 'POST', body: JSON.stringify({ client_request_id: clientRequestId, prompt_sha256: promptSha256 })
+    })
+  },
+
+  async cancelImageGenerationJob(jobId: string): Promise<ImageGenerationJob> {
+    return request<ImageGenerationJob>(`/image-jobs/${jobId}/cancel`, { method: 'POST' })
+  },
+
   async listStoryboardAssets(_projectId: string, adaptationId: string): Promise<StoryboardAsset[]> {
     const rows = await request<ProductionAssetDto[]>(`/adaptations/${adaptationId}/assets`)
     return rows.map(assetFromDto)

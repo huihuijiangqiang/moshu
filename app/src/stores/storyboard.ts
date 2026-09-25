@@ -3,7 +3,7 @@ import { computed, ref } from 'vue'
 import { mockApi } from '@/api/mock'
 import { USE_MOCK } from '@/api/http'
 import { storyboardApi } from '@/api/storyboard'
-import type { ProductionPackage, StoryboardAdaptation, StoryboardAsset, StoryboardEpisode, StoryboardScene, StoryboardShot, VisualProfile } from '@/types'
+import type { ImageGenerationJob, ImageGenerationPreview, ProductionPackage, StoryboardAdaptation, StoryboardAsset, StoryboardEpisode, StoryboardScene, StoryboardShot, VisualProfile } from '@/types'
 
 export const useStoryboardStore = defineStore('storyboard', () => {
   const api = USE_MOCK ? mockApi : storyboardApi
@@ -18,6 +18,13 @@ export const useStoryboardStore = defineStore('storyboard', () => {
   const productionPackage = ref<ProductionPackage | null>(null)
   const assets = ref<StoryboardAsset[]>([])
   const assetPreviewUrls = ref<Record<string, string>>({})
+  const imagePreview = ref<ImageGenerationPreview | null>(null)
+  const imageJobs = ref<ImageGenerationJob[]>([])
+  const generationLoading = ref(false)
+  const jobsLoading = ref(false)
+  const generating = ref(false)
+  const generationError = ref('')
+  let pendingImageRequest: { shotId: string; hash: string; id: string } | null = null
   const error = ref('')
   let packageRevision = 0
 
@@ -52,6 +59,8 @@ export const useStoryboardStore = defineStore('storyboard', () => {
       clearAssetPreviews()
       adaptation.value = nextAdaptation
       assets.value = nextAssets
+      imagePreview.value = null
+      imageJobs.value = []
       invalidateProductionPackage()
       loadedProjectId.value = projectId
       selectedEpisodeId.value = null
@@ -69,6 +78,8 @@ export const useStoryboardStore = defineStore('storyboard', () => {
   async function mutate<T>(action: () => Promise<T>, fallback: string): Promise<T | null> {
     if (saving.value) return null
     invalidateProductionPackage()
+    imagePreview.value = null
+    pendingImageRequest = null
     saving.value = true
     error.value = ''
     try {
@@ -83,6 +94,104 @@ export const useStoryboardStore = defineStore('storyboard', () => {
 
   function clearError() {
     error.value = ''
+    generationError.value = ''
+  }
+
+  function imageErrorMessage(caught: unknown, fallback: string) {
+    const raw = caught instanceof Error ? caught.message : ''
+    try {
+      const detail = JSON.parse(raw)?.detail
+      if (detail?.code === 'image_preview_changed') return '镜头或人物档案已变更，请重新预览'
+      if (detail?.code === 'insufficient_credits') return `积分不足：需要 ${detail.required}，当前剩余 ${detail.remaining}`
+      if (detail?.code === 'image_generation_not_ready') return '请先补齐画面提示词和人物视觉档案'
+      if (detail?.code === 'image_request_id_reused') return '任务请求冲突，请刷新页面后重试'
+    } catch { /* Network errors are already readable messages. */ }
+    return raw || fallback
+  }
+
+  async function loadImageJobs(shotId: string) {
+    if (USE_MOCK || jobsLoading.value) return
+    jobsLoading.value = true
+    try {
+      const rows = await storyboardApi.listImageGenerationJobs(shotId)
+      if (selectedShotId.value !== shotId) return
+      imageJobs.value = rows
+      const completed = rows.some((job) => job.status === 'completed' && job.asset_id && !assets.value.some((asset) => asset.id === job.asset_id))
+      if (completed && adaptation.value) {
+        const nextAssets = await storyboardApi.listStoryboardAssets(adaptation.value.projectId, adaptation.value.id)
+        if (selectedShotId.value !== shotId) return
+        assets.value = nextAssets
+        nextAssets.filter((asset) => asset.shotId === shotId).forEach((asset) => { void loadAssetPreview(adaptation.value!.projectId, asset) })
+        invalidateProductionPackage()
+      }
+    } catch (caught) {
+      generationError.value = imageErrorMessage(caught, '图片任务加载失败')
+    } finally {
+      jobsLoading.value = false
+    }
+  }
+
+  async function prepareImageGeneration(shotId: string) {
+    imagePreview.value = null
+    generationError.value = ''
+    if (USE_MOCK) {
+      generationError.value = '图片生成需要连接真实服务'
+      return null
+    }
+    generationLoading.value = true
+    try {
+      const preview = await storyboardApi.getImageGenerationPreview(shotId)
+      if (pendingImageRequest && (pendingImageRequest.shotId !== shotId || pendingImageRequest.hash !== preview.prompt_sha256)) pendingImageRequest = null
+      if (selectedShotId.value === shotId) imagePreview.value = preview
+      return preview
+    } catch (caught) {
+      generationError.value = imageErrorMessage(caught, '生成预览加载失败')
+      return null
+    } finally {
+      generationLoading.value = false
+    }
+  }
+
+  async function confirmImageGeneration(shotId: string) {
+    const preview = imagePreview.value
+    if (!preview?.ready || generating.value || selectedShotId.value !== shotId) return null
+    if (!pendingImageRequest || pendingImageRequest.shotId !== shotId || pendingImageRequest.hash !== preview.prompt_sha256) {
+      pendingImageRequest = { shotId, hash: preview.prompt_sha256, id: crypto.randomUUID().replaceAll('-', '') }
+    }
+    generating.value = true
+    generationError.value = ''
+    try {
+      const job = await storyboardApi.createImageGenerationJob(shotId, pendingImageRequest.id, preview.prompt_sha256)
+      imageJobs.value = [job, ...imageJobs.value.filter((item) => item.id !== job.id)]
+      imagePreview.value = null
+      pendingImageRequest = null
+      return job
+    } catch (caught) {
+      generationError.value = imageErrorMessage(caught, '生成任务创建失败')
+      if (generationError.value === '镜头或人物档案已变更，请重新预览') {
+        imagePreview.value = null
+        pendingImageRequest = null
+      }
+      return null
+    } finally {
+      generating.value = false
+    }
+  }
+
+  async function cancelImageGeneration(jobId: string) {
+    if (generating.value) return null
+    generating.value = true
+    generationError.value = ''
+    try {
+      const job = await storyboardApi.cancelImageGenerationJob(jobId)
+      imageJobs.value = imageJobs.value.map((item) => item.id === jobId ? job : item)
+      return job
+    } catch (caught) {
+      generationError.value = imageErrorMessage(caught, '取消任务失败')
+      return null
+    } finally {
+      generating.value = false
+    }
   }
 
   async function checkProductionPackage(projectId: string) {
@@ -251,5 +360,5 @@ export const useStoryboardStore = defineStore('storyboard', () => {
     selectedShotId.value = selectedScene.value?.shots[0]?.id ?? null
   }
 
-  return { adaptation, assets, assetPreviewUrls, loadedProjectId, loading, saving, checking, productionPackage, error, selectedEpisodeId, selectedSceneId, selectedShotId, selectedEpisode, selectedScene, selectedShot, totalShots, load, clearError, clearAssetPreviews, checkProductionPackage, uploadAsset, approveAsset, loadAssetPreview, createEpisode, updateEpisode, createScene, updateScene, moveScene, createShot, updateShot, moveShot, createVisualProfile, updateVisualProfile, selectEpisode, selectScene }
+  return { adaptation, assets, assetPreviewUrls, imagePreview, imageJobs, generationLoading, generating, generationError, loadedProjectId, loading, saving, checking, productionPackage, error, selectedEpisodeId, selectedSceneId, selectedShotId, selectedEpisode, selectedScene, selectedShot, totalShots, load, clearError, clearAssetPreviews, loadImageJobs, prepareImageGeneration, confirmImageGeneration, cancelImageGeneration, checkProductionPackage, uploadAsset, approveAsset, loadAssetPreview, createEpisode, updateEpisode, createScene, updateScene, moveScene, createShot, updateShot, moveShot, createVisualProfile, updateVisualProfile, selectEpisode, selectScene }
 })

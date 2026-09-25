@@ -21,6 +21,7 @@ const sceneCreateMode = ref(false)
 const profileCreateOpen = ref(false)
 const assetUploading = ref(false)
 const assetUploadError = ref('')
+const imageConfirmOpen = ref(false)
 const assetInput = ref<HTMLInputElement | null>(null)
 const episodeDraft = reactive({ title: '', sourceChapterIds: [] as string[], targetDuration: 90 })
 const sceneDraft = reactive({ purpose: '', summary: '', timeAnchor: '', locationEntryId: '', characterEntryIds: [] as string[] })
@@ -31,6 +32,7 @@ const episodes = computed(() => storyboard.adaptation?.episodes ?? [])
 const scenes = computed(() => storyboard.selectedEpisode?.scenes ?? [])
 const shots = computed(() => storyboard.selectedScene?.shots ?? [])
 const shotAssets = computed(() => storyboard.assets.filter((asset) => asset.shotId === storyboard.selectedShot?.id))
+const activeImageJob = computed(() => storyboard.imageJobs.find((job) => job.status === 'queued' || job.status === 'running'))
 const characterEntries = computed(() => codex.entries.filter((entry) => entry.kind === 'character' && entry.status === 'confirmed'))
 const locationEntries = computed(() => codex.entries.filter((entry) => entry.kind === 'place' && entry.status === 'confirmed'))
 const profileCandidates = computed(() => characterEntries.value.filter((entry) => !storyboard.adaptation?.visualProfiles.some((profile) => profile.codexEntryId === entry.id)))
@@ -49,11 +51,27 @@ onMounted(async () => {
   await Promise.all([codex.load(projectId.value), project.load(projectId.value), storyboard.load(projectId.value)])
 })
 
-onUnmounted(() => storyboard.clearAssetPreviews())
+const imagePollTimer = window.setInterval(() => {
+  const shotId = storyboard.selectedShotId
+  if (shotId && activeImageJob.value) void storyboard.loadImageJobs(shotId)
+}, 3000)
+
+onUnmounted(() => {
+  window.clearInterval(imagePollTimer)
+  storyboard.clearAssetPreviews()
+})
 
 watch(() => storyboard.selectedSceneId, () => {
   sceneEditOpen.value = false
   sceneCreateMode.value = false
+})
+
+watch(() => storyboard.selectedShotId, (shotId) => {
+  imageConfirmOpen.value = false
+  storyboard.imagePreview = null
+  storyboard.imageJobs = []
+  storyboard.generationError = ''
+  if (shotId) void storyboard.loadImageJobs(shotId)
 })
 
 watch(shotAssets, (assets) => {
@@ -229,6 +247,47 @@ async function toggleAssetStatus(asset: StoryboardAsset) {
   if (updated) showSaved(status === 'approved' ? '画面已确认' : '画面已退回')
 }
 
+function shotImage(shotId: string) {
+  const asset = [...storyboard.assets].reverse().find((item) => item.shotId === shotId && item.status !== 'rejected')
+  return asset ? storyboard.assetPreviewUrls[asset.id] : undefined
+}
+
+function imageIssueLabel(issue: string) {
+  if (issue === 'visual_prompt_missing') return '先填写画面提示词'
+  if (issue.startsWith('visual_profile_not_ready:')) return '出场人物的视觉档案需填写外观并锁定'
+  if (issue === 'image_price_not_configured') return '管理员尚未配置出图价格'
+  if (issue === 'image_gateway_not_configured') return '管理员尚未配置图片网关'
+  return issue
+}
+
+function imageJobLabel(status: string, errorCode: string | null) {
+  if (status === 'failed' && errorCode === 'image_provider_forbidden') return '图片网关未开通，额度已返还'
+  if (status === 'failed' && errorCode === 'image_provider_rate_limited') return '网关限流，额度已返还'
+  if (status === 'failed' && errorCode === 'image_job_timeout') return '生成超时，额度已返还'
+  return ({ queued: '排队中', running: '生成中', completed: '已生成，待审阅', failed: '生成失败，额度已返还', cancelled: '已取消，额度已返还' } as Record<string, string>)[status] ?? status
+}
+
+async function openImageConfirmation() {
+  const shotId = storyboard.selectedShotId
+  if (!shotId) return
+  const preview = await storyboard.prepareImageGeneration(shotId)
+  if (preview && storyboard.selectedShotId === shotId) imageConfirmOpen.value = true
+}
+
+async function confirmImageGeneration() {
+  const shotId = storyboard.selectedShotId
+  if (!shotId) return
+  const job = await storyboard.confirmImageGeneration(shotId)
+  if (job) {
+    imageConfirmOpen.value = false
+    showSaved('出图任务已提交')
+  }
+}
+
+async function cancelImageJob(jobId: string) {
+  if (await storyboard.cancelImageGeneration(jobId)) showSaved('任务已取消，额度已返还')
+}
+
 async function moveScene(sceneId: string, direction: -1 | 1) {
   if (await storyboard.moveScene(projectId.value, sceneId, direction)) showSaved('场景顺序已保存')
 }
@@ -351,7 +410,8 @@ async function moveShot(shotId: string, direction: -1 | 1) {
 
         <div class="storyboard-filmstrip" :data-empty="!shots.length">
           <article v-for="(shot, index) in shots" :key="shot.id" class="storyboard-shot" :data-selected="shot.id === storyboard.selectedShotId" @click="storyboard.selectedShotId = shot.id">
-            <button class="storyboard-frame" type="button" :aria-label="`选择第 ${shot.order} 个镜头`" @click.stop="storyboard.selectedShotId = shot.id">
+            <button class="storyboard-frame" type="button" :data-has-image="!!shotImage(shot.id)" :aria-label="`选择第 ${shot.order} 个镜头`" @click.stop="storyboard.selectedShotId = shot.id">
+              <img v-if="shotImage(shot.id)" class="storyboard-frame-image" :src="shotImage(shot.id)" alt="" />
               <span class="frame-corner frame-corner-tl" /><span class="frame-corner frame-corner-br" />
               <span class="frame-number">{{ String(shot.order).padStart(2, '0') }}</span>
               <span class="frame-glyph">{{ shotLabel(shot) }}</span>
@@ -389,13 +449,23 @@ async function moveShot(shotId: string, direction: -1 | 1) {
             <section class="storyboard-shot-assets editor-wide" aria-label="镜头画面素材">
               <div class="storyboard-shot-assets-head">
                 <div><span class="wk-label">画面资产</span><strong>{{ shotAssets.length }} 张</strong></div>
-                <label class="wk-btn" :data-primary="true">
-                  <AppIcon name="plus" :size="13" /> {{ assetUploading ? '上传中…' : '上传画面' }}
-                  <input ref="assetInput" type="file" accept="image/png,image/jpeg,image/webp" :disabled="assetUploading || storyboard.saving" @change="uploadShotAsset" />
-                </label>
+                <div class="storyboard-shot-assets-actions">
+                  <button class="wk-btn" type="button" :disabled="storyboard.generationLoading || storyboard.generating || storyboard.saving" @click="openImageConfirmation"><AppIcon name="storyboard" :size="13" /> {{ storyboard.generationLoading ? '准备中…' : '生成画面' }}</button>
+                  <label class="wk-btn" :data-primary="true">
+                    <AppIcon name="plus" :size="13" /> {{ assetUploading ? '上传中…' : '上传画面' }}
+                    <input ref="assetInput" type="file" accept="image/png,image/jpeg,image/webp" :disabled="assetUploading || storyboard.saving" @change="uploadShotAsset" />
+                  </label>
+                </div>
               </div>
-              <p class="storyboard-shot-assets-hint">上传的图片会绑定到本镜头，确认后才会进入制作包。支持 PNG、JPEG、WebP，单张不超过 20 MB。</p>
+              <p class="storyboard-shot-assets-hint">画面确认后进入制作包。支持 PNG、JPEG、WebP，单张不超过 20 MB。</p>
               <p v-if="assetUploadError" class="storyboard-shot-assets-error" role="alert">{{ assetUploadError }}</p>
+              <p v-if="storyboard.generationError" class="storyboard-shot-assets-error" role="alert">{{ storyboard.generationError }}</p>
+              <div v-if="storyboard.imageJobs.length" class="storyboard-image-jobs" aria-live="polite">
+                <div v-for="job in storyboard.imageJobs.slice(0, 3)" :key="job.id" class="storyboard-image-job">
+                  <span>{{ imageJobLabel(job.status, job.error_code) }}</span><small>{{ job.model }} · {{ job.credits }} 积分</small>
+                  <button v-if="job.status === 'queued'" type="button" :disabled="storyboard.generating" @click="cancelImageJob(job.id)">取消</button>
+                </div>
+              </div>
               <div v-if="shotAssets.length" class="storyboard-asset-grid">
                 <article v-for="asset in shotAssets" :key="asset.id" class="storyboard-asset" :data-status="asset.status">
                   <div class="storyboard-asset-preview">
@@ -406,7 +476,7 @@ async function moveShot(shotId: string, direction: -1 | 1) {
                   <button class="storyboard-asset-status" type="button" :disabled="storyboard.saving" @click="toggleAssetStatus(asset)">{{ asset.status === 'approved' ? '退回' : '确认' }}</button>
                 </article>
               </div>
-              <p v-else class="storyboard-shot-assets-empty">还没有画面。可以先上传一张人工参考图，后续生成器也会沿用同一条资产记录。</p>
+              <p v-else class="storyboard-shot-assets-empty">还没有画面。</p>
             </section>
           </div>
         </div>
@@ -473,6 +543,17 @@ async function moveShot(shotId: string, direction: -1 | 1) {
         <label>服装与道具<textarea v-model="profileDraft.costume" rows="3" placeholder="常服、身份标志、随身道具" /></label>
         <footer><button class="wk-btn" type="button" @click="profileCreateOpen = false">取消</button><button class="wk-btn" data-primary="true" type="submit" :disabled="storyboard.saving || !profileDraft.codexEntryId || !profileDraft.displayName.trim()">{{ storyboard.saving ? '创建中…' : '创建档案' }}</button></footer>
       </form>
+    </div>
+
+    <div v-if="imageConfirmOpen && storyboard.imagePreview" class="storyboard-dialog-backdrop" @click.self="imageConfirmOpen = false">
+      <div class="storyboard-dialog storyboard-image-confirm" role="dialog" aria-modal="true" aria-labelledby="image-confirm-title">
+        <header><div><span class="wk-label">镜头 {{ String(storyboard.selectedShot?.order ?? 0).padStart(2, '0') }}</span><h2 id="image-confirm-title">生成画面</h2></div><button type="button" aria-label="关闭" @click="imageConfirmOpen = false"><AppIcon name="close" :size="15" /></button></header>
+        <div class="storyboard-image-quote"><span>{{ storyboard.imagePreview.model }}</span><strong>{{ storyboard.imagePreview.credits }} 积分 / 张</strong></div>
+        <ul v-if="storyboard.imagePreview.issues.length" class="storyboard-image-issues"><li v-for="issue in storyboard.imagePreview.issues" :key="issue">{{ imageIssueLabel(issue) }}</li></ul>
+        <label>生成提示词<textarea :value="storyboard.imagePreview.prompt" rows="8" readonly /></label>
+        <p v-if="storyboard.generationError" class="storyboard-shot-assets-error" role="alert">{{ storyboard.generationError }}</p>
+        <footer><button class="wk-btn" type="button" @click="imageConfirmOpen = false">取消</button><button class="wk-btn" data-primary="true" type="button" :disabled="!storyboard.imagePreview.ready || storyboard.generating" @click="confirmImageGeneration">{{ storyboard.generating ? '提交中…' : `确认生成 · ${storyboard.imagePreview.credits} 积分` }}</button></footer>
+      </div>
     </div>
   </div>
 </template>

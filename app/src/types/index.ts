@@ -744,6 +744,32 @@ export interface StoryboardAsset {
   previewUrl?: string
 }
 
+export interface ImageGenerationPreview {
+  prompt: string
+  prompt_sha256: string
+  profile_versions: Record<string, number>
+  model: string
+  credits: number
+  ready: boolean
+  issues: string[]
+}
+
+export interface ImageGenerationJob {
+  id: string
+  adaptation_id: string
+  episode_id: string | null
+  shot_id: string | null
+  status: 'queued' | 'running' | 'completed' | 'failed' | 'cancelled'
+  model: string
+  prompt_sha256: string
+  credits: number
+  asset_id: string | null
+  error_code: string | null
+  created_at: string
+  started_at: string | null
+  finished_at: string | null
+}
+
 export interface StoryboardShot {
   id: string
   sceneId: string
