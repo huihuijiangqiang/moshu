@@ -23,11 +23,10 @@ DEFAULT_GENERATION_CONTEXT_WINDOW_TOKENS = 256_000
 DEFAULT_GENERATION_MAX_OUTPUT_TOKENS = 32_000
 DEFAULT_GENERATION_CONTEXT_SAFETY_MARGIN_TOKENS = 16_000
 
-_INSECURE_JWT_SECRETS = {
+_INSECURE_CRYPTO_SECRETS = {
     "local-development-only-change-before-production",
     "change-this-in-production",
-}
-_INSECURE_CREDENTIAL_KEYS = {
+    "replace-with-at-least-32-random-bytes",
     "replace-with-a-separate-long-random-secret",
     "replace-with-a-separate-at-least-32-byte-random-secret",
 }
@@ -55,15 +54,16 @@ def validate_public_deployment_secrets(
     origins = [public_app_url, *(item for item in cors_origins.split(",") if item.strip())]
     if all(_is_loopback_origin(origin) for origin in origins):
         return
-    if len(jwt_secret_key) < 32 or jwt_secret_key in _INSECURE_JWT_SECRETS:
+    if len(jwt_secret_key.strip()) < 32 or jwt_secret_key.strip() in _INSECURE_CRYPTO_SECRETS:
         raise ValueError(
             "public deployments require JWT_SECRET_KEY with at least 32 random characters; "
             "replace the example value"
         )
     if (
         credential_encryption_key is None
-        or len(credential_encryption_key) < 32
-        or credential_encryption_key in _INSECURE_CREDENTIAL_KEYS
+        or len(credential_encryption_key.strip()) < 32
+        or credential_encryption_key.strip() in _INSECURE_CRYPTO_SECRETS
+        or credential_encryption_key.strip() == jwt_secret_key.strip()
     ):
         raise ValueError(
             "public deployments require a separate CREDENTIAL_ENCRYPTION_KEY with at least 32 random characters"
@@ -71,7 +71,9 @@ def validate_public_deployment_secrets(
 
 
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_file=_ENV_FILE, env_file_encoding="utf-8", extra="ignore")
+    model_config = SettingsConfigDict(
+        env_file=_ENV_FILE, env_file_encoding="utf-8", extra="ignore", hide_input_in_errors=True,
+    )
 
     # Database
     database_url: str = "postgresql+asyncpg://moshu:moshu@localhost:5432/moshu"

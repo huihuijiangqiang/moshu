@@ -99,10 +99,22 @@ cp .env.example .env
 docker compose up -d postgres redis
 ```
 
-容器使用 `pgvector/pgvector:pg16` 和 `redis:7-alpine`，默认端口分别为 5432、6379，
-并带健康检查与持久卷。
+容器使用 `pgvector/pgvector:pg16` 和 `redis:7-alpine`，宿主机默认端口分别为 55432、6379，
+容器内部仍使用 5432、6379，并带健康检查与持久卷。
 
-也可以一次启动完整产品环境：
+也可以一次启动完整产品环境。API、迁移和 Celery 使用 UID/GID `10001:10001`。
+Linux 首次使用默认素材绑定目录时，先在仓库根目录创建可写目录：
+
+```bash
+sudo install -d -m 0750 -o 10001 -g 10001 .docker-data/production-assets
+```
+
+如果设置了 `MOSHU_PRODUCTION_ASSET_DATA_DIR`，应为该变量指向的实际目录设置权限。
+从旧版 root 容器升级时，先备份并确认素材挂载路径，再将该目录和已有素材的所有者调整为
+`10001:10001`；不要改动 PostgreSQL 或 Redis 的数据目录权限。Windows Docker Desktop
+采用宿主机共享目录权限；生产 Compose 的素材命名卷由镜像初始化所有者。
+
+然后启动服务：
 
 ```bash
 docker compose up -d --build

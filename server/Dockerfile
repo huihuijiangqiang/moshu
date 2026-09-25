@@ -28,8 +28,8 @@ COPY . /app
 
 # Keep local Compose as close to the production image as possible: API,
 # migrations and Celery must not run as root. The mounted asset directory is
-# created and owned here; Docker Desktop also maps the bind mount with write
-# access for this user on supported hosts.
+# created and owned here. Linux bind mounts retain host ownership; see the
+# README for preparing that directory when using local Compose.
 RUN addgroup --system --gid 10001 moshu \
     && adduser --system --uid 10001 --ingroup moshu --home /nonexistent --no-create-home moshu \
     && mkdir -p /app/.local/production-assets \

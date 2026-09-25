@@ -139,8 +139,10 @@ uvicorn main:app --reload --port 8000
 
 公网部署前必须替换 `JWT_SECRET_KEY` 和独立的 `CREDENTIAL_ENCRYPTION_KEY`。当
 `PUBLIC_APP_URL` 或 `CORS_ORIGINS` 使用公网域名时，API 会在启动阶段拒绝示例密钥；
-localhost 本地 Compose 仍保留免配置启动能力。可使用 `openssl rand -base64 48` 分别生成两份密钥，
-不要把真实值提交到 Git。
+localhost 本地开发不触发这项检查。可使用 `openssl rand -base64 48` 分别生成两份不同的密钥，
+不要把真实值提交到 Git。通过 Tunnel 对外开放时也要配置实际访问域名；这项检查无法自动判断
+外部代理是否把 localhost 服务开放到公网。已有用户模型凭据时，更换加密密钥前需迁移凭据，
+直接替换会导致旧凭据无法解密；更换 JWT 密钥会使现有登录令牌失效。
 
 ### 配置自己的大模型调用地址
 
