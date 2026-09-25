@@ -6,7 +6,7 @@ import { useCodexStore } from '@/stores/codex'
 import { useShellStore } from '@/stores/shell'
 import { useStoryboardStore } from '@/stores/storyboard'
 import { useProjectStore } from '@/stores/project'
-import type { ProductionPackageIssue, StoryboardAsset, StoryboardShot, VisualProfile } from '@/types'
+import type { CodexEntry, ProductionPackageIssue, StoryboardAsset, StoryboardShot, VisualProfile } from '@/types'
 
 const route = useRoute()
 const shell = useShellStore()
@@ -41,18 +41,38 @@ const activeImageJob = computed(() => storyboard.imageJobs.find((job) => job.sta
 const characterEntries = computed(() => codex.entries.filter((entry) => entry.kind === 'character' && entry.status === 'confirmed'))
 const locationEntries = computed(() => codex.entries.filter((entry) => entry.kind === 'place' && entry.status === 'confirmed'))
 const profileCandidates = computed(() => characterEntries.value.filter((entry) => !storyboard.adaptation?.visualProfiles.some((profile) => profile.codexEntryId === entry.id)))
+type ProfileOption = { id: string; character: CodexEntry; profile: VisualProfile | null; inScene: boolean }
 const sceneCharacters = computed(() => (storyboard.selectedScene?.characterEntryIds ?? [])
   .map((id) => ({
     id,
     character: codex.byId.get(id),
-    profile: storyboard.adaptation?.visualProfiles.find((profile) => profile.codexEntryId === id) ?? null
+    profile: storyboard.adaptation?.visualProfiles.find((profile) => profile.codexEntryId === id) ?? null,
+    inScene: true
   }))
   .filter((item) => item.character))
-const activeCharacterId = computed(() => sceneCharacters.value.some((item) => item.id === selectedCharacterId.value)
+const profileOptions = computed(() => {
+  const options = new Map<string, ProfileOption>()
+  sceneCharacters.value.forEach((item) => {
+    if (item.character) options.set(item.id, { id: item.id, character: item.character, profile: item.profile, inScene: true })
+  })
+  for (const profile of storyboard.adaptation?.visualProfiles ?? []) {
+    const character = codex.byId.get(profile.codexEntryId)
+    if (!character) continue
+    const existing = options.get(profile.codexEntryId)
+    options.set(profile.codexEntryId, {
+      id: profile.codexEntryId,
+      character,
+      profile,
+      inScene: existing?.inScene ?? false
+    })
+  }
+  return [...options.values()]
+})
+const activeCharacterId = computed(() => profileOptions.value.some((item) => item.id === selectedCharacterId.value)
   ? selectedCharacterId.value
-  : sceneCharacters.value[0]?.id ?? null)
-const activeCharacter = computed(() => sceneCharacters.value.find((item) => item.id === activeCharacterId.value)?.character ?? null)
-const activeProfile = computed(() => sceneCharacters.value.find((item) => item.id === activeCharacterId.value)?.profile ?? null)
+  : profileOptions.value[0]?.id ?? null)
+const activeCharacter = computed(() => profileOptions.value.find((item) => item.id === activeCharacterId.value)?.character ?? null)
+const activeProfile = computed(() => profileOptions.value.find((item) => item.id === activeCharacterId.value)?.profile ?? null)
 const profileAssets = computed(() => activeProfile.value
   ? storyboard.assets.filter((asset) => asset.visualProfileId === activeProfile.value!.id && asset.kind === 'character_sheet')
   : [])
@@ -579,9 +599,9 @@ async function moveShot(shotId: string, direction: -1 | 1) {
           <span class="storyboard-count">{{ storyboard.adaptation?.visualProfiles.length ?? 0 }}</span>
         </div>
         <p class="storyboard-inspector-intro">视觉档案先于图片生成。锁定后，所有镜头都应引用同一版本。</p>
-        <nav v-if="sceneCharacters.length > 1" class="visual-profile-switcher" aria-label="当前场景人物">
-          <button v-for="item in sceneCharacters" :key="item.id" type="button" :data-active="item.id === activeCharacterId" @click="selectCharacter(item.id)">
-            <strong>{{ item.character?.name }}</strong><small>{{ item.profile ? '已有档案' : '待建立' }}</small>
+        <nav v-if="profileOptions.length > 1" class="visual-profile-switcher" aria-label="人物档案">
+          <button v-for="item in profileOptions" :key="item.id" type="button" :data-active="item.id === activeCharacterId" @click="selectCharacter(item.id)">
+            <strong>{{ item.character?.name }}</strong><small>{{ item.profile ? (item.inScene ? '本场 · 已有档案' : '其他人物 · 已有档案') : '本场 · 待建立' }}</small>
           </button>
         </nav>
         <div v-if="activeProfile" class="visual-profile">

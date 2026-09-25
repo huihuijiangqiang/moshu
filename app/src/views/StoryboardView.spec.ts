@@ -210,4 +210,30 @@ describe('storyboard static editing workflow', () => {
     expect(wrapper.get('.visual-profile-head').text()).toContain('老周头')
     wrapper.unmount()
   })
+
+  it('keeps full-body controls reachable for profiles outside the current scene', async () => {
+    const pinia = createPinia()
+    setActivePinia(pinia)
+    const store = useStoryboardStore()
+    await store.load('p1')
+    await store.createVisualProfile('p1', {
+      codexEntryId: 'c-zhoutou', displayName: '老周头', appearance: '花白短发', costume: '旧皮围裙'
+    })
+    const router = createRouter({
+      history: createMemoryHistory(),
+      routes: [{ path: '/projects/:projectId/storyboard', component: StoryboardView }]
+    })
+    await router.push('/projects/p1/storyboard')
+    await router.isReady()
+    const wrapper = mount(StoryboardView, { attachTo: document.body, global: { plugins: [pinia, router] } })
+    await vi.waitFor(() => expect(wrapper.find('.visual-profile-switcher').exists()).toBe(true))
+
+    const otherCharacter = wrapper.findAll('.visual-profile-switcher button').find((button) => button.text().includes('老周头'))
+    expect(otherCharacter).toBeTruthy()
+    await otherCharacter!.trigger('click')
+    expect(wrapper.get('.visual-profile-head').text()).toContain('老周头')
+    expect(wrapper.get('.visual-profile-sheet').text()).toContain('全身设定图')
+    expect(wrapper.find('.visual-profile-sheet-actions input[type="file"]').exists()).toBe(true)
+    wrapper.unmount()
+  })
 })
