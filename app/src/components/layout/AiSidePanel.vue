@@ -94,7 +94,9 @@ const longPlanBusy = ref(false)
 const longPlanError = ref('')
 const longModel = ref<'basic' | 'advanced'>('basic')
 const longContextMode = ref<ContextMode>('smart')
+const longAutoRun = ref(false)
 let longPollTimer: number | null = null
+let longPumpInFlight = false
 let referenceStateRequest = 0
 let previewRequest = 0
 let notesRequest = 0
@@ -168,6 +170,7 @@ async function loadLongPlan() {
   longPlanError.value = ''
   try {
     longPlan.value = await longGenerationApi.getPlan(chapterId)
+    if (longAutoRun.value) await pumpLongAutoRun()
     scheduleLongPoll()
   } catch (error) {
     const message = error instanceof Error ? error.message : '长篇计划加载失败'
@@ -224,6 +227,47 @@ async function queueLongNext() {
   }
 }
 
+/**
+ * Queue one segment at a time so the existing lease/checkpoint/credit path stays
+ * authoritative. A failed worker segment pauses the run for author review
+ * instead of retrying indefinitely or hiding a quality/cost problem.
+ */
+async function pumpLongAutoRun() {
+  if (longPumpInFlight || !longAutoRun.value || !longPlan.value || longPlanBusy.value || longRunning.value) return
+  const next = longNextSegment.value
+  if (!next) {
+    longAutoRun.value = false
+    return
+  }
+  if (next.status === 'failed') {
+    longAutoRun.value = false
+    return
+  }
+  longPumpInFlight = true
+  try {
+    await queueLongNext()
+  } catch {
+    longAutoRun.value = false
+  } finally {
+    longPumpInFlight = false
+  }
+}
+
+function startLongAutoRun() {
+  if (!longPlan.value || longRunning.value || !longNextSegment.value || longPlanBusy.value) return
+  longAutoRun.value = true
+  void pumpLongAutoRun()
+}
+
+function stopLongAutoRun() {
+  longAutoRun.value = false
+}
+
+function toggleLongAutoRun() {
+  if (longAutoRun.value) stopLongAutoRun()
+  else startLongAutoRun()
+}
+
 async function mergeLongPlan() {
   const chapterId = project.activeId
   if (!chapterId || longPlanBusy.value || !longReadyCount.value) return
@@ -244,6 +288,7 @@ watch(() => project.activeId, () => {
   clearLongPoll()
   longPlan.value = null
   longPlanError.value = ''
+  longAutoRun.value = false
   if (tab.value === 'long') void loadLongPlan()
 })
 
@@ -251,7 +296,10 @@ watch(() => tab.value, (value) => {
   if (value === 'long') void loadLongPlan()
 })
 
-onBeforeUnmount(clearLongPoll)
+onBeforeUnmount(() => {
+  clearLongPoll()
+  longAutoRun.value = false
+})
 
 watch(() => project.project?.id, () => void loadNotes(), { immediate: true })
 
@@ -953,7 +1001,8 @@ function forwardReviewDecision(round: ReviewRound, decision: 'approved' | 'chang
               <span v-if="segment.errorCode" class="long-generation-segment-error">{{ segment.errorCode }}</span>
             </div>
           </div>
-          <div class="long-generation-actions"><button class="wk-btn" type="button" :disabled="longPlanBusy || longRunning || !longNextSegment" @click="queueLongNext">{{ longPlanBusy ? '排队中…' : longRunning ? '当前段生成中…' : longNextSegment?.status === 'failed' ? '重试当前段' : '生成下一段' }}</button><button class="wk-btn" data-primary="true" type="button" :disabled="longPlanBusy || !longReadyCount" @click="mergeLongPlan">{{ longComplete ? '合并全部候选' : '合并已完成段落' }}</button></div>
+          <div class="long-generation-actions"><button class="wk-btn" type="button" :disabled="longPlanBusy || longRunning || !longNextSegment" @click="queueLongNext">{{ longPlanBusy ? '排队中…' : longRunning ? '当前段生成中…' : longNextSegment?.status === 'failed' ? '重试当前段' : '生成下一段' }}</button><button class="wk-btn" type="button" :disabled="longPlanBusy || (!longAutoRun && (longRunning || !longNextSegment))" @click="toggleLongAutoRun">{{ longAutoRun ? '暂停连续生成' : '连续生成剩余' }}</button><button class="wk-btn" data-primary="true" type="button" :disabled="longPlanBusy || !longReadyCount" @click="mergeLongPlan">{{ longComplete ? '合并全部候选' : '合并已完成段落' }}</button></div>
+          <p v-if="longAutoRun" class="long-generation-state" role="status">连续生成已开启：每段完成后自动排队下一段，遇到失败会暂停。</p>
         </template>
         <button v-else class="wk-btn" data-primary="true" type="button" :disabled="longPlanBusy || longPlanLoading || !project.activeId" @click="createLongPlan">{{ longPlanBusy ? '创建中…' : '创建长篇计划' }}</button>
       </section>

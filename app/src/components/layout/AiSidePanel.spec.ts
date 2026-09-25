@@ -314,6 +314,42 @@ describe('writing reference side panel', () => {
     wrapper.unmount()
   })
 
+  it('can queue long-generation segments continuously without bypassing review', async () => {
+    const plan = {
+      chapterId: 'ch87',
+      projectId: 'p1',
+      targetWords: 4800,
+      segmentWords: 2400,
+      totalSegments: 2,
+      acceptedSegments: 0,
+      nextSegment: 0,
+      segments: [
+        { id: 'segment-1', index: 0, targetWords: 2400, status: 'pending' as const, revision: 0, generatedWords: 0 },
+        { id: 'segment-2', index: 1, targetWords: 2400, status: 'pending' as const, revision: 0, generatedWords: 0 }
+      ]
+    }
+    const getPlan = vi.spyOn(generationApi.longGenerationApi, 'getPlan').mockResolvedValue(plan)
+    const queueSegment = vi.spyOn(generationApi.longGenerationApi, 'queueSegment').mockResolvedValue({
+      ...plan.segments[0], status: 'running', leaseOwner: 'test-owner'
+    })
+    const { wrapper } = await mountPanel()
+    const longTab = wrapper.findAll('.wk-tab').find((button) => button.text() === '长篇')
+    if (!longTab) throw new Error('long-generation tab not found')
+    await longTab.trigger('click')
+    await flushPromises()
+
+    expect(getPlan).toHaveBeenCalledWith('ch87')
+    const autoButton = wrapper.findAll('.long-generation-actions button').find((button) => button.text() === '连续生成剩余')
+    if (!autoButton) throw new Error('continuous generation button not found')
+    await autoButton.trigger('click')
+    await flushPromises()
+
+    expect(queueSegment).toHaveBeenCalledWith('segment-1', expect.objectContaining({ contextMode: 'smart' }))
+    expect(wrapper.text()).toContain('连续生成已开启')
+    expect(wrapper.text()).toContain('合并已完成段落')
+    wrapper.unmount()
+  })
+
   it('persists paragraph decisions and inserts only accepted draft text', async () => {
     const summary: GenerationDraftSummary = {
       id: 'draft-review', runId: 'run-review', projectId: 'p1', chapterId: 'ch87', kind: 'chapter',
