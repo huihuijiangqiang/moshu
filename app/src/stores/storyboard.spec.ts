@@ -109,6 +109,22 @@ describe('storyboard store', () => {
     expect(checked?.assets.some((item) => item.id === asset!.id && item.status === 'approved')).toBe(true)
   })
 
+  it('uploads a full-body character sheet and keeps profile references in sync', async () => {
+    const store = useStoryboardStore()
+    await store.load('p1')
+    const profile = store.adaptation!.visualProfiles[0]!
+    const asset = await store.uploadCharacterSheet(
+      'p1', new File(['character-sheet'], 'character-sheet.png', { type: 'image/png' }), profile.id
+    )
+
+    expect(asset?.kind).toBe('character_sheet')
+    expect(profile.referenceAssetIds).toContain(asset?.id)
+    await store.approveAsset('p1', asset!.id, 'rejected', '需要保留完整鞋面')
+    expect(profile.referenceAssetIds).not.toContain(asset!.id)
+    await store.approveAsset('p1', asset!.id, 'approved')
+    expect(profile.referenceAssetIds).toContain(asset!.id)
+  })
+
   it('moves scenes and shots without losing the current selection', async () => {
     const store = useStoryboardStore()
     await store.load('storyboard-order-test')

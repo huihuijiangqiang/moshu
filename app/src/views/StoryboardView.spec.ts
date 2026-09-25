@@ -161,4 +161,28 @@ describe('storyboard static editing workflow', () => {
     expect(store.selectedShot?.referenceAssetIds).toContain(asset!.id)
     wrapper.unmount()
   })
+
+  it('uploads an existing full-body sheet from the character profile panel', async () => {
+    const pinia = createPinia()
+    setActivePinia(pinia)
+    const store = useStoryboardStore()
+    const router = createRouter({
+      history: createMemoryHistory(),
+      routes: [{ path: '/projects/:projectId/storyboard', component: StoryboardView }]
+    })
+    await router.push('/projects/p1/storyboard')
+    await router.isReady()
+    const wrapper = mount(StoryboardView, { attachTo: document.body, global: { plugins: [pinia, router] } })
+    await vi.waitFor(() => expect(wrapper.find('.visual-profile').exists()).toBe(true))
+
+    const input = wrapper.get('.visual-profile-sheet-actions input[type="file"]')
+    Object.defineProperty(input.element, 'files', {
+      configurable: true,
+      value: [new File(['sheet'], 'hero-sheet.png', { type: 'image/png' })]
+    })
+    await input.trigger('change')
+    await vi.waitFor(() => expect(wrapper.text()).toContain('全身设定图已上传，待确认'), { timeout: 3000 })
+    expect(store.assets.some((asset) => asset.kind === 'character_sheet')).toBe(true)
+    wrapper.unmount()
+  })
 })

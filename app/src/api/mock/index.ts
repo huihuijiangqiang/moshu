@@ -752,11 +752,35 @@ export const mockApi = {
     return structuredClone(asset)
   },
 
+  async uploadCharacterSheet(projectId: string, adaptationId: string, profileId: string, file: File): Promise<StoryboardAsset> {
+    await delay(110)
+    const assets = storyboardAssetStates.get(projectId) ?? []
+    const asset: StoryboardAsset = {
+      id: `${projectId}-asset-${Date.now().toString(36)}`, adaptationId, visualProfileId: profileId,
+      kind: 'character_sheet', originalFilename: file.name, mimeType: file.type || 'image/png', byteSize: file.size,
+      width: undefined, height: undefined, sha256: `${file.size}-${file.name}`, status: 'draft',
+      createdBy: 'mock-user', contentUrl: ''
+    }
+    assets.push(asset)
+    storyboardAssetStates.set(projectId, assets)
+    const profile = storyboardFor(projectId).visualProfiles.find((item) => item.id === profileId)
+    if (profile) profile.referenceAssetIds = [...new Set([...profile.referenceAssetIds, asset.id])]
+    return structuredClone(asset)
+  },
+
   async updateStoryboardAsset(projectId: string, assetId: string, status: StoryboardAsset['status'], rejectionReason?: string): Promise<StoryboardAsset> {
     await delay(70)
     const asset = (storyboardAssetStates.get(projectId) ?? []).find((item) => item.id === assetId)
     if (!asset) throw new Error('漫剧素材不存在')
     Object.assign(asset, { status, rejectionReason: status === 'rejected' ? rejectionReason : undefined })
+    if (asset.visualProfileId) {
+      const profile = storyboardFor(projectId).visualProfiles.find((item) => item.id === asset.visualProfileId)
+      if (profile) {
+        profile.referenceAssetIds = status === 'rejected'
+          ? profile.referenceAssetIds.filter((id) => id !== asset.id)
+          : [...new Set([...profile.referenceAssetIds, asset.id])]
+      }
+    }
     return structuredClone(asset)
   },
 

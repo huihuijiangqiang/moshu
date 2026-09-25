@@ -26,6 +26,7 @@ const assetRejectionReason = ref('')
 const imageConfirmOpen = ref(false)
 const fullBodyConfirmOpen = ref(false)
 const assetInput = ref<HTMLInputElement | null>(null)
+const profileAssetInput = ref<HTMLInputElement | null>(null)
 const episodeDraft = reactive({ title: '', sourceChapterIds: [] as string[], targetDuration: 90 })
 const sceneDraft = reactive({ purpose: '', summary: '', timeAnchor: '', locationEntryId: '', characterEntryIds: [] as string[] })
 const profileDraft = reactive({ codexEntryId: '', displayName: '', style: '', appearance: '', costume: '' })
@@ -266,6 +267,24 @@ async function uploadShotAsset(event: Event) {
   }
   await storyboard.loadAssetPreview(projectId.value, asset)
   showSaved('画面素材已上传，待确认')
+}
+
+async function uploadProfileAsset(event: Event) {
+  const input = event.target as HTMLInputElement
+  const file = input.files?.[0]
+  input.value = ''
+  const profileId = activeProfile.value?.id
+  if (!file || !profileId) return
+  assetUploadError.value = ''
+  assetUploading.value = true
+  const asset = await storyboard.uploadCharacterSheet(projectId.value, file, profileId)
+  assetUploading.value = false
+  if (!asset) {
+    assetUploadError.value = storyboard.error || '全身图上传失败'
+    return
+  }
+  await storyboard.loadAssetPreview(projectId.value, asset)
+  showSaved('全身设定图已上传，待确认')
 }
 
 async function openAssetReview(asset: StoryboardAsset) {
@@ -560,9 +579,10 @@ async function moveShot(shotId: string, direction: -1 | 1) {
           <section class="visual-profile-sheet" aria-label="人物全身设定图">
             <div class="visual-profile-sheet-head"><div><span class="wk-label">角色资产</span><strong>全身设定图</strong></div><span v-if="fullBodyAsset" class="visual-profile-sheet-status">{{ fullBodyAsset.status === 'approved' ? '已确认' : '待审阅' }}</span></div>
             <button v-if="fullBodyAsset && storyboard.assetPreviewUrls[fullBodyAsset.id]" class="visual-profile-sheet-image" type="button" @click="openAssetReview(fullBodyAsset)"><img :src="storyboard.assetPreviewUrls[fullBodyAsset.id]" :alt="`${activeProfile.displayName}全身设定图`" /></button>
+            <div v-else-if="fullBodyAsset" class="visual-profile-sheet-empty"><AppIcon name="codex" :size="18" /><span>全身图已保存，预览加载中…</span></div>
             <div v-else class="visual-profile-sheet-empty"><AppIcon name="codex" :size="18" /><span>还没有全身图</span></div>
             <p class="visual-profile-sheet-hint">用于固定人物从头到脚的比例、服装和道具，镜头生成会持续参考。</p>
-            <div class="visual-profile-sheet-actions"><button class="wk-btn" type="button" :disabled="storyboard.fullBodyLoading || storyboard.fullBodyGenerating || !activeProfile.appearance.trim() || !activeProfile.costume.trim()" @click="openFullBodyConfirmation">{{ storyboard.fullBodyLoading ? '读取价格…' : activeFullBodyJob ? '生成中…' : fullBodyAsset ? '重新生成' : '生成全身图' }}</button><span v-if="activeFullBodyJob" class="visual-profile-sheet-job">{{ imageJobLabel(activeFullBodyJob.status, activeFullBodyJob.error_code) }}</span></div>
+            <div class="visual-profile-sheet-actions"><button class="wk-btn" type="button" :disabled="storyboard.fullBodyLoading || storyboard.fullBodyGenerating || !activeProfile.appearance.trim() || !activeProfile.costume.trim()" @click="openFullBodyConfirmation">{{ storyboard.fullBodyLoading ? '读取价格…' : activeFullBodyJob ? '生成中…' : fullBodyAsset ? '重新生成' : '生成全身图' }}</button><label class="wk-btn" :data-primary="!fullBodyAsset" :class="{ 'is-disabled': assetUploading || storyboard.saving }">{{ assetUploading ? '上传中…' : '上传全身图' }}<input ref="profileAssetInput" type="file" accept="image/png,image/jpeg,image/webp" :disabled="assetUploading || storyboard.saving" @change="uploadProfileAsset" /></label><span v-if="activeFullBodyJob" class="visual-profile-sheet-job">{{ imageJobLabel(activeFullBodyJob.status, activeFullBodyJob.error_code) }}</span></div>
           </section>
           <p v-if="activeProfile.notes" class="visual-profile-note">{{ activeProfile.notes }}</p>
         </div>
@@ -632,13 +652,13 @@ async function moveShot(shotId: string, direction: -1 | 1) {
 
     <div v-if="assetReview" class="storyboard-dialog-backdrop" @click.self="assetReview = null">
       <div class="storyboard-dialog storyboard-asset-review" role="dialog" aria-modal="true" aria-labelledby="asset-review-title">
-        <header><div><span class="wk-label">镜头画面</span><h2 id="asset-review-title">审阅画面</h2></div><button type="button" aria-label="关闭" @click="assetReview = null"><AppIcon name="close" :size="15" /></button></header>
+        <header><div><span class="wk-label">{{ assetReview.visualProfileId ? '人物资产' : '镜头画面' }}</span><h2 id="asset-review-title">{{ assetReview.visualProfileId ? '审阅全身设定图' : '审阅画面' }}</h2></div><button type="button" aria-label="关闭" @click="assetReview = null"><AppIcon name="close" :size="15" /></button></header>
         <img v-if="storyboard.assetPreviewUrls[assetReview.id]" class="storyboard-review-image" :src="storyboard.assetPreviewUrls[assetReview.id]" :alt="assetReview.originalFilename" />
         <p v-else class="storyboard-shot-assets-error">图片暂时无法加载，请稍后重试。</p>
         <div class="storyboard-review-meta"><strong>{{ assetReview.originalFilename }}</strong><span>{{ assetReview.width ?? '?' }} × {{ assetReview.height ?? '?' }} · {{ Math.ceil(assetReview.byteSize / 1024) }} KB</span></div>
         <label>退回原因<textarea v-model="assetRejectionReason" rows="2" maxlength="500" placeholder="需要修改的画面细节" /></label>
         <p v-if="storyboard.error" class="storyboard-shot-assets-error" role="alert">{{ storyboard.error }}</p>
-        <footer><button class="wk-btn" type="button" @click="assetReview = null">关闭</button><button class="wk-btn" type="button" :disabled="storyboard.saving" @click="saveAssetReview('rejected')">退回修改</button><button class="wk-btn" data-primary="true" type="button" :disabled="storyboard.saving || !storyboard.assetPreviewUrls[assetReview.id]" @click="saveAssetReview('approved')">确认画面</button></footer>
+        <footer><button class="wk-btn" type="button" @click="assetReview = null">关闭</button><button class="wk-btn" type="button" :disabled="storyboard.saving" @click="saveAssetReview('rejected')">退回修改</button><button class="wk-btn" data-primary="true" type="button" :disabled="storyboard.saving || !storyboard.assetPreviewUrls[assetReview.id]" @click="saveAssetReview('approved')">{{ assetReview.visualProfileId ? '确认设定图' : '确认画面' }}</button></footer>
       </div>
     </div>
   </div>

@@ -290,6 +290,19 @@ export const useStoryboardStore = defineStore('storyboard', () => {
     return asset
   }
 
+  async function uploadCharacterSheet(projectId: string, file: File, profileId: string) {
+    if (!adaptation.value) return null
+    const asset = await mutate(
+      () => api.uploadCharacterSheet(projectId, adaptation.value!.id, profileId, file),
+      '人物全身图上传失败'
+    )
+    if (!asset) return null
+    assets.value.push(asset)
+    const profile = adaptation.value.visualProfiles.find((item) => item.id === profileId)
+    if (profile && !profile.referenceAssetIds.includes(asset.id)) profile.referenceAssetIds.push(asset.id)
+    return asset
+  }
+
   async function approveAsset(projectId: string, assetId: string, status: StoryboardAsset['status'], rejectionReason?: string) {
     const updated = await mutate(() => api.updateStoryboardAsset(projectId, assetId, status, rejectionReason), '画面素材状态保存失败')
     if (updated) {
@@ -298,6 +311,9 @@ export const useStoryboardStore = defineStore('storyboard', () => {
       const shot = adaptation.value?.episodes.flatMap((episode) => episode.scenes).flatMap((scene) => scene.shots).find((item) => item.id === updated.shotId)
       if (shot && status === 'rejected') shot.referenceAssetIds = shot.referenceAssetIds.filter((id) => id !== assetId)
       if (shot && status === 'approved' && !shot.referenceAssetIds.includes(assetId)) shot.referenceAssetIds.push(assetId)
+      const profile = adaptation.value?.visualProfiles.find((item) => item.id === updated.visualProfileId)
+      if (profile && status === 'rejected') profile.referenceAssetIds = profile.referenceAssetIds.filter((id) => id !== assetId)
+      if (profile && status === 'approved' && !profile.referenceAssetIds.includes(assetId)) profile.referenceAssetIds.push(assetId)
     }
     return updated
   }
@@ -426,5 +442,5 @@ export const useStoryboardStore = defineStore('storyboard', () => {
     selectedShotId.value = selectedScene.value?.shots[0]?.id ?? null
   }
 
-  return { adaptation, assets, assetPreviewUrls, imagePreview, imageJobs, fullBodyPreview, fullBodyJobs, fullBodyLoading, fullBodyGenerating, generationLoading, generating, generationError, loadedProjectId, loading, saving, checking, productionPackage, error, selectedEpisodeId, selectedSceneId, selectedShotId, selectedEpisode, selectedScene, selectedShot, totalShots, load, clearError, clearAssetPreviews, loadImageJobs, prepareImageGeneration, confirmImageGeneration, prepareFullBodyGeneration, confirmFullBodyGeneration, loadFullBodyJobs, cancelImageGeneration, checkProductionPackage, uploadAsset, approveAsset, loadAssetPreview, createEpisode, updateEpisode, createScene, updateScene, moveScene, createShot, updateShot, moveShot, createVisualProfile, updateVisualProfile, selectEpisode, selectScene }
+  return { adaptation, assets, assetPreviewUrls, imagePreview, imageJobs, fullBodyPreview, fullBodyJobs, fullBodyLoading, fullBodyGenerating, generationLoading, generating, generationError, loadedProjectId, loading, saving, checking, productionPackage, error, selectedEpisodeId, selectedSceneId, selectedShotId, selectedEpisode, selectedScene, selectedShot, totalShots, load, clearError, clearAssetPreviews, loadImageJobs, prepareImageGeneration, confirmImageGeneration, prepareFullBodyGeneration, confirmFullBodyGeneration, loadFullBodyJobs, cancelImageGeneration, checkProductionPackage, uploadAsset, uploadCharacterSheet, approveAsset, loadAssetPreview, createEpisode, updateEpisode, createScene, updateScene, moveScene, createShot, updateShot, moveShot, createVisualProfile, updateVisualProfile, selectEpisode, selectScene }
 })

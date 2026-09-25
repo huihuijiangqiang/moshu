@@ -304,6 +304,9 @@ button { font: inherit; color: inherit; }
 .visual-profile-sheet-empty { display: grid; place-items: center; gap: 5px; min-height: 120px; color: var(--ink-4); border: 1px dashed var(--line-strong); background: var(--panel-sunken); font-size: 10px; }
 .visual-profile-sheet-hint { margin: 0; color: var(--ink-4); font-size: 10px; line-height: 1.55; }
 .visual-profile-sheet-actions { justify-content: flex-start; flex-wrap: wrap; }
+.visual-profile-sheet-actions label.wk-btn { position: relative; overflow: hidden; }
+.visual-profile-sheet-actions input[type='file'] { position: absolute; inset: 0; width: 100%; height: 100%; opacity: 0; cursor: pointer; }
+.visual-profile-sheet-actions label.is-disabled { opacity: .55; cursor: default; }
 .storyboard-binding { margin: 20px 14px 0; padding: 13px 0; border-top: var(--hair) solid var(--line-strong); }
 .binding-row { display: flex; justify-content: space-between; gap: 10px; padding: 9px 0; border-bottom: var(--hair) solid var(--line); font-size: 11px; }
 .binding-row span { color: var(--ink-4); }
