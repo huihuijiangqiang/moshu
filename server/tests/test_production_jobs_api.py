@@ -166,8 +166,12 @@ async def test_image_worker_persists_private_draft_and_charges_once(
     assert (tmp_path / asset.storage_key).read_bytes() == output.getvalue()
     assert log.status == "completed" and log.credits == 23
     assert (await async_db_session.get(User, "image_owner")).quota_remaining == 977
+    assert asset.id in (await async_db_session.get(Shot, "image_shot")).reference_asset_ids
     assert len(called) == 1 and called[0][1:] == ("9:16", "gpt-image-2")
     assert (await app_client.get(f"/assets/{asset.id}/content", headers=headers)).status_code == 200
+    package = (await app_client.get("/episodes/image_episode/production-package", headers=headers)).json()
+    assert asset.id in [item["id"] for item in package["assets"]]
+    assert any(item["code"] == "asset_unapproved" for item in package["readiness"]["issues"])
     assert (await app_client.post(f"/image-jobs/{job_id}/cancel", headers=headers)).status_code == 409
 
 

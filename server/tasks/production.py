@@ -11,7 +11,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from celery_app import celery_app
-from db import Adaptation, ProductionAsset, ProductionJob
+from db import Adaptation, ProductionAsset, ProductionJob, Shot
 from db.session import AsyncSessionLocal
 from providers.production_images import ImageGatewayError, generate_storyboard_image
 from services.production_assets import IMAGE_EXTENSIONS, asset_path
@@ -61,6 +61,10 @@ async def process_image_job(db: AsyncSession, job_id: str) -> str:
             metadata_json={"source": "image_generation", "job_id": job.id, "provider_id": image.provider_id},
         )
         db.add(asset)
+        if job.shot_id is not None:
+            shot = await db.get(Shot, job.shot_id)
+            if shot is not None:
+                shot.reference_asset_ids = [*dict.fromkeys([*(shot.reference_asset_ids or []), asset_id])]
         await settle_fixed_credits(db, UsageReservation(job.usage_log_id, job.credits))
         job.asset_id = asset_id
         job.status = "completed"
