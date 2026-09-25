@@ -22,7 +22,9 @@ services:
       POSTGRES_USER: moshu
       POSTGRES_PASSWORD: moshu
     ports:
-      - "5432:5432"
+      # The application uses the internal postgres:5432 address. Keep the host
+      # port configurable so a local PostgreSQL service cannot block startup.
+      - "${MOSHU_POSTGRES_HOST_PORT:-55432}:5432"
     volumes:
       - ${MOSHU_POSTGRES_DATA_DIR:-./.docker-data/postgres}:/var/lib/postgresql/data
     healthcheck:
@@ -80,7 +82,7 @@ services:
         VITE_API_BASE: /api
         VITE_USE_MOCK: "false"
     ports:
-      - "5180:80"
+      - "${MOSHU_FRONTEND_HOST_PORT:-8080}:80"
     depends_on:
       api:
         condition: service_healthy
