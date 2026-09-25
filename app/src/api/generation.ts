@@ -1,4 +1,4 @@
-import { request, requestResponse, USE_MOCK } from './http'
+import { refreshSessionAccessToken, request, requestResponse, USE_MOCK } from './http'
 import { mockApi } from './mock'
 import { getAccessToken } from './session'
 import type { ContextMode, GenerateOptions, GenerationCoverageReport, GenerationDraftDecision, GenerationDraftDetail, GenerationDraftSummary, GenerationMeta, InlineGenerateOptions } from '@/types'
@@ -352,7 +352,8 @@ export function normalizeGenerationError(error: unknown): GenerationError | Erro
   return error instanceof Error ? error : new Error('生成失败，请重试')
 }
 
-async function sseStream(
+/** @internal Exported for the stream transport contract test. */
+export async function sseStream(
   path: string,
   opts: GenerateOptions | InlineGenerateOptions,
   signal: AbortSignal,
@@ -360,16 +361,22 @@ async function sseStream(
 ) {
   let completed = false
   try {
-    const token = getAccessToken()
-    const res = await fetch(`${import.meta.env.VITE_API_BASE ?? '/api'}${path}`, {
+    const base = `${import.meta.env.VITE_API_BASE ?? '/api'}${path}`
+    const body = JSON.stringify(opts)
+    const openStream = (token: string | null) => fetch(base, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
         ...(token ? { Authorization: `Bearer ${token}` } : {})
       },
-      body: JSON.stringify(opts),
+      body,
       signal
     })
+    let res = await openStream(getAccessToken())
+    if (res.status === 401) {
+      const refreshed = await refreshSessionAccessToken()
+      if (refreshed) res = await openStream(refreshed)
+    }
     if (!res.ok) throw await responseError(res)
     if (!res.body) throw new GenerationError('empty_stream', '生成服务没有返回数据流')
 

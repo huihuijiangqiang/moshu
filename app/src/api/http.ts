@@ -27,6 +27,11 @@ async function refreshAccessToken(): Promise<string | null> {
   return refreshInFlight
 }
 
+/** Reuse the normal refresh single-flight for streaming endpoints as well. */
+export function refreshSessionAccessToken(): Promise<string | null> {
+  return refreshAccessToken()
+}
+
 export async function requestResponse(path: string, init?: RequestInit, retryAuth = true): Promise<Response> {
   const token = getAccessToken()
   const isFormData = typeof FormData !== 'undefined' && init?.body instanceof FormData

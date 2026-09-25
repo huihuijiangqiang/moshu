@@ -1,8 +1,11 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { generationDraftApi, longGenerationPayload, normalizeGenerationError, responseError } from './generation'
+import { generationDraftApi, longGenerationPayload, normalizeGenerationError, responseError, sseStream } from './generation'
+import { setSession } from './session'
 
 describe('generation stream failure contract', () => {
-  afterEach(() => vi.unstubAllGlobals())
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
 
   it('classifies insufficient credits from a 402 response', async () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(
@@ -59,5 +62,41 @@ describe('generation stream failure contract', () => {
       contextMode: 'deep',
       instruction: '在段尾留下可见风险。'
     })
+  })
+
+  it('refreshes an expired access token before opening the generation stream', async () => {
+    const user = { id: 'u1', name: '作者', email: 'writer@example.com', plan: 'free' as const }
+    const storage = new Map<string, string>()
+    vi.stubGlobal('localStorage', {
+      getItem: (key: string) => storage.get(key) ?? null,
+      setItem: (key: string, value: string) => storage.set(key, value),
+      removeItem: (key: string) => storage.delete(key)
+    })
+    setSession({ access_token: 'expired', refresh_token: 'refresh-token', user })
+    const stream = new Response('data: {"type":"done"}\n\ndata: [DONE]\n\n', {
+      status: 200,
+      headers: { 'content-type': 'text/event-stream' }
+    })
+    const fetchMock = vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(new Response('expired', { status: 401 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        access_token: 'renewed', refresh_token: 'rotated', user
+      }), { status: 200, headers: { 'content-type': 'application/json' } }))
+      .mockResolvedValueOnce(stream)
+    const onDone = vi.fn()
+    const onError = vi.fn()
+    await sseStream(
+      '/generate/chapter',
+      {
+        chapterId: 'ch87', targetWords: 3000, model: 'basic', useStyleProfile: true,
+        dialogueDensity: 'high'
+      },
+      new AbortController().signal,
+      { onChunk: vi.fn(), onDone, onError }
+    )
+    expect(onDone).toHaveBeenCalledOnce()
+    expect(onError).not.toHaveBeenCalled()
+    expect(fetchMock).toHaveBeenCalledTimes(3)
+    expect(fetchMock.mock.calls[2]?.[1]?.headers).toMatchObject({ Authorization: 'Bearer renewed' })
   })
 })
