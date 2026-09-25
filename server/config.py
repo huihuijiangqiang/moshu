@@ -96,7 +96,7 @@ class Settings(BaseSettings):
 
     # Password reset delivery. Credentials stay in the runtime environment;
     # the API never persists or logs the plaintext reset token.
-    public_app_url: str = "http://localhost:5180"
+    public_app_url: str = "http://localhost:8080"
     smtp_host: Optional[str] = None
     smtp_port: int = Field(default=587, ge=1, le=65_535)
     smtp_username: Optional[str] = None

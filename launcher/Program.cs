@@ -9,7 +9,7 @@ namespace Moshu.Launcher;
 
 internal static class Program
 {
-    private const string FrontendUrl = "http://127.0.0.1:5180/";
+    private const string FrontendUrl = "http://127.0.0.1:8080/";
     private const string ReadyUrl = "http://127.0.0.1:8000/health/ready";
     private const string DockerDesktopUrl = "https://www.docker.com/products/docker-desktop/";
 

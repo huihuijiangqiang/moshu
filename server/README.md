@@ -109,7 +109,7 @@ docker compose up -d --build
 ```
 
 该命令先执行 Alembic migration，再启动 API、Celery worker/dispatcher/beat 和前端
-Nginx。前端监听 `5180`，API 监听 `8000`；本地密钥只从被 Git 忽略的 `server/.env`
+Nginx。前端监听 `8080`，API 监听 `8000`；本地密钥只从被 Git 忽略的 `server/.env`
 注入容器。
 
 Windows 上如果 Docker Desktop 尚未运行，先启动 Docker Desktop，再执行上述命令。

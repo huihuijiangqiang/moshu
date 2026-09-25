@@ -326,7 +326,7 @@ Docker Desktop 提供运行 PostgreSQL、Redis、API、Worker 和前端所需的
 `LocalAppData\\Moshu\\data`，也可用 `--data-dir <目录>` 指定其他位置。
 
 双击 `Moshu.exe` 会检查 Docker Desktop、执行数据库迁移、启动 Compose、等待 API 就绪并打开
-`http://127.0.0.1:5180/`。停止服务可运行 `Moshu.exe --stop`。首次使用仍需在发布包的
+`http://127.0.0.1:8080/`。停止服务可运行 `Moshu.exe --stop`。首次使用仍需在发布包的
 `server/.env` 中配置模型网关；启动器只会在缺失时从 `.env.example` 创建本地模板，并自动生成
 JWT 与凭据加密密钥。
 
