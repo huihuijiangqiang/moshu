@@ -51,7 +51,7 @@
 - **作品记忆**：人物、地点、势力、物品、伏笔和时间线按作品隔离保存。
 - **一致性守卫**：展示冲突两端的来源，作者可以回到正文或时间线处理。
 - **自然化审查**：按整章或选区检查模板化衔接、句式节奏和修饰堆叠，并逐条确认修改。
-- **漫剧分镜**：管理改编版本、集、场景、镜头和人物视觉档案，暂不生成视频。
+- **漫剧分镜**：管理改编版本、集、场景、镜头和人物视觉档案；人物支持生成或上传全身设定图，统一经过私有素材审阅后复用，暂不生成视频。
 
 ## 系统截图
 
@@ -71,7 +71,7 @@
 
 ## 技术实现
 
-当前仓库包含 Vue 3 写作前端、FastAPI API、PostgreSQL/pgvector、Redis 与 Celery 异步任务，以及架构、计费和实现文档。后端当前 migration head 为 `039_long_generation_hardening`。
+当前仓库包含 Vue 3 写作前端、FastAPI API、PostgreSQL/pgvector、Redis 与 Celery 异步任务，以及架构、计费和实现文档。后端当前 migration head 为 `045_character_full_body`。
 
 ### 长篇一致性保障
 
@@ -183,7 +183,7 @@ docker compose up -d --build api worker dispatcher beat
 curl http://localhost:8000/health/ready
 ```
 
-漫剧分镜页可为单个镜头先预览提示词和积分，再确认生成。出场人物必须有已锁定且包含外观锚点的视觉档案；任务排队、生成和失败状态会回到镜头，失败或取消排队任务会返还预留积分。生成图先存为私有草稿，人工确认后才能进入制作包。图片由 worker 生成，API 和 worker 必须挂载同一持久化素材目录；默认 Compose 已处理。图片网关需支持 OpenAI 兼容 `POST /v1/images/generations` 并返回 `data[0].b64_json`，不从供应商返回的任意 URL 下载图片。`IMAGE_GENERATION_CREDITS` 是部署者自定的固定价格，示例数字不代表实际上游成本。
+漫剧分镜页可为单个镜头和人物全身设定图先预览提示词和积分，再确认生成，也可上传已有立绘。出场人物必须有已锁定且包含外观锚点的视觉档案；任务排队、生成和失败状态会回到对应资产，失败或取消排队任务会返还预留积分。生成图和上传图先存为私有草稿，人工确认后才能进入制作包。图片由 worker 生成，API 和 worker 必须挂载同一持久化素材目录；默认 Compose 已处理。图片网关需支持 OpenAI 兼容 `POST /v1/images/generations` 并返回 `data[0].b64_json`，不从供应商返回的任意 URL 下载图片。`IMAGE_GENERATION_CREDITS` 是部署者自定的固定价格，示例数字不代表实际上游成本。
 
 #### 用户配置自己的服务（BYOK）
 
@@ -338,14 +338,14 @@ JWT 与凭据加密密钥。
 
 漫剧分镜在演示模式和真实 API 模式下使用同一套交互。真实 API 将改编版本、集、场景、
 镜头和视觉档案持久化到 PostgreSQL，并按作品权限限制查看、编辑分镜和维护视觉档案。
-当前阶段已支持分镜静态画面生成、私有素材审阅与制作包校验；实际视频、配音、字幕时间轴或合成任务尚未接入。
+当前阶段已支持分镜静态画面生成、人物全身设定图生成/上传、私有素材审阅与制作包校验；实际视频、配音、字幕时间轴或合成任务尚未接入。
 
 正文索引运维接口：`GET /projects/{project_id}/chapter-chunks/status` 查看当前正文版本的
 ready/pending/failed/stale 分块、已完成向量的章节数和排队数；
 `POST /projects/{project_id}/chapter-chunks/reindex` 以异步 outbox 方式批量重建当前正文版本。
 查看需要作品权限，批量重建需要项目管理权限；重建不会改写正文或正文版本历史。
 
-最近一次后端回归记录：`1726 passed, 38 skipped`；本轮前端回归为 `207 passed`。后端被跳过的
+最近一次后端回归记录：`1728 passed, 38 skipped`；本轮前端回归为 `209 passed`。后端被跳过的
 测试需要显式配置真实 PostgreSQL/pgvector 集成环境；测试正文、模型 key、`.env` 和 Docker
 数据卷均不提交 Git。
 
