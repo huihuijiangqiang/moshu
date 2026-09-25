@@ -2883,3 +2883,35 @@ async def test_dispatch_outbox_acknowledges_outline_refresh_without_false_dead_l
     assert result["dispatched"] == 1
     assert result["failed"] == 0
     assert sent == [(8, "lease-8")]
+
+
+@pytest.mark.parametrize(
+    "topic",
+    ["chapter.scene_updated", "chapter.scene_reordered", "chapter.scene_archived"],
+)
+async def test_dispatch_outbox_acknowledges_scene_events_without_false_dead_letter(
+    use_test_session, monkeypatch, topic
+):
+    event = SimpleNamespace(
+        id=80,
+        topic=topic,
+        payload={"project_id": "project-1", "chapter_id": "ch_a", "scene_id": "scene-1"},
+        lease_token="lease-80",
+    )
+    sent: list[tuple[int, str]] = []
+
+    async def fake_lease_batch(db, owner_id, batch_size, lease_duration_seconds):
+        return [event]
+
+    async def fake_mark_sent(db, event_id, lease_token):
+        sent.append((event_id, lease_token))
+        return True
+
+    monkeypatch.setattr(tasks.OutboxService, "lease_batch", fake_lease_batch)
+    monkeypatch.setattr(tasks.OutboxService, "mark_sent", fake_mark_sent)
+
+    result = await tasks._dispatch_outbox_async("dispatcher-scene", 20)
+
+    assert result["dispatched"] == 1
+    assert result["failed"] == 0
+    assert sent == [(80, "lease-80")]

@@ -1076,6 +1076,17 @@ async def _dispatch_outbox_async(task_id: str, batch_size: int):
                     # Acknowledge the event so it does not become a false DLQ.
                     await OutboxService.mark_sent(db, event.id, event.lease_token)
                     dispatched += 1
+                elif event.topic in {
+                    "chapter.scene_updated",
+                    "chapter.scene_reordered",
+                    "chapter.scene_archived",
+                }:
+                    # Scene cards are already the authoritative rows consumed by
+                    # context assembly.  Their events are an audit/extension seam
+                    # for future projections, so acknowledge them until a
+                    # materialized scene projection is introduced.
+                    await OutboxService.mark_sent(db, event.id, event.lease_token)
+                    dispatched += 1
                 else:
                     # Unknown topic
                     await OutboxService.mark_failed(
