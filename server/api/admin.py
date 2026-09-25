@@ -16,6 +16,7 @@ from db.models_core import Project, User
 from db.models_guard import GuardIssue
 from db.models_usage import UsageLog
 from db.session import get_db
+from providers.production_images import ImageGatewayError, image_gateway_config
 from services.usage import DEFAULT_CREDIT_RATES, get_credit_rates
 
 router = APIRouter()
@@ -59,6 +60,9 @@ class AdminSettingsOut(BaseModel):
     embedding_model: str
     generation_gateway_configured: bool
     embedding_gateway_configured: bool
+    image_gateway_configured: bool
+    image_model: str
+    image_generation_credits: int
     password_reset_delivery_configured: bool
     credit_rates: dict[str, int]
 
@@ -284,6 +288,11 @@ async def get_settings(
     db: AsyncSession = Depends(get_db),
 ) -> AdminSettingsOut:
     credit_rates = await get_credit_rates(db)
+    try:
+        image_gateway_config()
+        image_configured = settings.image_generation_credits > 0
+    except ImageGatewayError:
+        image_configured = False
     return AdminSettingsOut(
         registration_enabled=await _setting(db, "registration_enabled", "enabled", True),
         default_plan=await _setting(db, "account_defaults", "plan", "free"),
@@ -293,6 +302,9 @@ async def get_settings(
         embedding_model=settings.embedding_model,
         generation_gateway_configured=bool(settings.model_gateway_main_url and settings.model_gateway_main_key),
         embedding_gateway_configured=bool(settings.embedding_gateway_url and settings.embedding_gateway_key),
+        image_gateway_configured=image_configured,
+        image_model=settings.image_gateway_model,
+        image_generation_credits=settings.image_generation_credits,
         password_reset_delivery_configured=bool(
             settings.public_app_url and settings.smtp_host and settings.smtp_from
             and bool(settings.smtp_username) == bool(settings.smtp_password)

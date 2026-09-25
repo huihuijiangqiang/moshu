@@ -325,6 +325,9 @@ onMounted(() => {
           <div><dt>Embedding</dt><dd>{{ settings.embedding_model }}</dd></div>
           <div><dt>生成网关</dt><dd>{{ settings.generation_gateway_configured ? '已配置' : '未配置' }}</dd></div>
           <div><dt>向量网关</dt><dd>{{ settings.embedding_gateway_configured ? '已配置' : '未配置' }}</dd></div>
+          <div><dt>图片网关</dt><dd>{{ settings.image_gateway_configured ? '已配置' : '未配置' }}</dd></div>
+          <div><dt>图片模型</dt><dd>{{ settings.image_model }}</dd></div>
+          <div><dt>单张图片</dt><dd>{{ settings.image_generation_credits.toLocaleString() }} 积分</dd></div>
           <div><dt>密码邮件</dt><dd>{{ settings.password_reset_delivery_configured ? '已配置' : '未配置' }}</dd></div>
         </dl>
         <p>密钥只从服务端环境变量读取，管理页面不会返回密钥原文。</p>
