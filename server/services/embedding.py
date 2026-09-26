@@ -171,16 +171,20 @@ class GatewayEmbeddingProvider(EmbeddingProvider):
             vector = item.get("embedding")
             if not isinstance(vector, list) or not vector:
                 raise EmbeddingProviderError("embedding response item missing 'embedding' vector")
-            if len(vector) != settings.embedding_dimensions:
+            source_dimensions = settings.embedding_source_dimensions or settings.embedding_dimensions
+            if len(vector) != source_dimensions:
                 raise EmbeddingProviderError(
                     f"embedding dimension mismatch: got {len(vector)}, "
-                    f"expected {settings.embedding_dimensions}"
+                    f"expected {source_dimensions}"
                 )
             if not all(isinstance(value, (int, float)) for value in vector):
                 raise EmbeddingProviderError("embedding vector contains non-numeric values")
             if ordered[index] is not None:
                 raise EmbeddingProviderError(f"embedding response has duplicate index {index}")
-            ordered[index] = [float(value) for value in vector]
+            normalized = [float(value) for value in vector]
+            if source_dimensions < settings.embedding_dimensions:
+                normalized.extend([0.0] * (settings.embedding_dimensions - source_dimensions))
+            ordered[index] = normalized
 
         if any(vector is None for vector in ordered):
             raise EmbeddingProviderError("embedding response is missing some indexes")

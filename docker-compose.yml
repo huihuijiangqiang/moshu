@@ -20,6 +20,19 @@ x-server-base: &server-base
   environment: *server-environment
 
 services:
+  ollama:
+    image: ollama/ollama:latest
+    ports:
+      - "127.0.0.1:${MOSHU_OLLAMA_HOST_PORT:-11434}:11434"
+    volumes:
+      - ${MOSHU_OLLAMA_DATA_DIR:-./.docker-data/ollama}:/root/.ollama
+    healthcheck:
+      test: ["CMD", "ollama", "list"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+    restart: unless-stopped
+
   postgres:
     image: pgvector/pgvector:pg16
     environment:

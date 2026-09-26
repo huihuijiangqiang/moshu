@@ -28,6 +28,7 @@ from services.providers import MockEmbeddingProvider
 def small_dimensions(monkeypatch):
     """把维度调小，并隔离开发机 .env 中的真实独立网关配置。"""
     monkeypatch.setattr(settings, "embedding_dimensions", 4)
+    monkeypatch.setattr(settings, "embedding_source_dimensions", None)
     monkeypatch.setattr(settings, "embedding_gateway_url", None)
     monkeypatch.setattr(settings, "embedding_gateway_key", None)
 
@@ -201,6 +202,17 @@ async def test_dimension_mismatch_raises_instead_of_persisting_bad_vector():
 
     with pytest.raises(EmbeddingProviderError, match="dimension mismatch"):
         await provider.embed_text("角色A")
+
+
+async def test_local_source_dimension_is_zero_padded_to_database_dimension(monkeypatch):
+    """本地低维模型可安全写入现有 HALFVEC(2048) 列。"""
+    monkeypatch.setattr(settings, "embedding_source_dimensions", 2)
+    gateway = RecordingEmbeddingGateway([embeddings_response([0.1, 0.2])])
+    provider = GatewayEmbeddingProvider(client=gateway.client())
+
+    vector = await provider.embed_text("角色A")
+
+    assert vector == [0.1, 0.2, 0.0, 0.0]
 
 
 async def test_missing_data_field_raises():

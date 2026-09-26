@@ -245,10 +245,30 @@ EMBEDDING_GATEWAY_URL=https://embedding.example.com/v1
 EMBEDDING_GATEWAY_KEY=your-embedding-key
 EMBEDDING_MODEL=your-embedding-model
 EMBEDDING_DIMENSIONS=2048
+# 本地 Ollama 低维模型可填写 1024，服务端会零填充到 2048；远程 2048 维网关留空。
+EMBEDDING_SOURCE_DIMENSIONS=
 ```
 
-Embedding 响应必须包含与输入数量相同的 `data[].embedding` 数组，且维度为 2048；
-当前 PostgreSQL schema 使用 `HALFVEC(2048)`，更换维度前必须先做数据库迁移。
+Embedding 响应必须包含与输入数量相同的 `data[].embedding` 数组。当前 PostgreSQL
+schema 使用 `HALFVEC(2048)`；本地 Ollama 的 1024 维向量可以通过
+`EMBEDDING_SOURCE_DIMENSIONS=1024` 自动零填充，切换模型后应执行一次回填，不能把
+不同模型生成的旧向量混在一起检索。
+
+本地低成本部署可以直接启动 Ollama 并拉取中文 embedding 模型：
+
+```bash
+docker compose up -d ollama
+docker compose exec ollama ollama pull qwen3-embedding:0.6b
+```
+
+然后在未跟踪的 `server/.env` 中配置：
+
+```dotenv
+EMBEDDING_GATEWAY_URL=http://ollama:11434/v1
+EMBEDDING_GATEWAY_KEY=local-ollama
+EMBEDDING_MODEL=qwen3-embedding:0.6b
+EMBEDDING_SOURCE_DIMENSIONS=1024
+```
 
 ## 完整环境启动
 

@@ -180,6 +180,10 @@ class Settings(BaseSettings):
     embedding_model: str = "doubao-embedding-vision"
     # 数据库列是 HALFVEC(2048)；换维度必须先做 schema migration。
     embedding_dimensions: int = 2048
+    # 本地模型可以使用更小的向量维度。服务端会在写入 HALFVEC(2048) 前
+    # 追加零分量，保持余弦相似度方向不变，同时避免为本地开发强制迁移现有库。
+    # 留空时严格要求网关返回 embedding_dimensions，适用于远程生产网关。
+    embedding_source_dimensions: Optional[int] = Field(default=None, ge=1, le=2048)
 
     # 分块参数：长章节必须切块后全量处理，不能截断丢尾部
     consistency_chunk_chars: int = 6000
