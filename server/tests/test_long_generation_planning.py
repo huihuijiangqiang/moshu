@@ -43,7 +43,7 @@ def test_manifest_carries_revisions_and_recovery_index():
     assert manifest["sourceRevisions"]["bodyRev"] == 3
     assert manifest["qualityPolicy"] == {
         "minRatio": 0.55,
-        "maxRatio": 1.35,
+        "maxRatio": 1.40,
         "requiredTerms": [],
     }
     assert next_segment_index([
