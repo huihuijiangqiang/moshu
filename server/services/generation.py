@@ -196,8 +196,8 @@ class GenerationService:
         context_mode: ContextMode = "smart",
         generation_scope: Literal["chapter", "segment"] = "chapter",
     ) -> PromptPackage:
-        task = TASK_MAP.get(action or "", "chapter")
         segment_mode = generation_scope == "segment"
+        task = "segment" if segment_mode else TASK_MAP.get(action or "", "chapter")
         tier = "premium" if model == "advanced" else settings.generation_gateway_tier
         resolved_route = route or GenerationRoute(
             source="platform",
@@ -387,7 +387,7 @@ class GenerationService:
         # it in its escaped user-level boundary, never in reference or system data.
         if instruction:
             current_instruction += "\n\n作者补充要求：\n" + author_instruction_block(instruction)
-        if task != "chapter":
+        if task != "chapter" and not segment_mode:
             current_instruction += f"\n\n输出约{target_words}字，只输出替换或续写正文。"
 
         project_metadata = untrusted_json_block(

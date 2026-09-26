@@ -1135,10 +1135,7 @@ async def merge_long_generation_segments(
         # commonly still pending while an earlier prefix is ready. Merge only
         # the contiguous completed prefix so it can be reviewed immediately.
         merge_rows = _contiguous_mergeable_prefix(rows)
-        new_rows = [row for row in merge_rows if row.status == "ready"]
-        if not new_rows:
-            raise SegmentMergeBlockedError("没有尚未采纳的新分段可合并")
-        merged = merge_new_segment_outputs(new_rows)
+        merged = merge_new_segment_outputs(merge_rows)
         segment_meta = [
             {
                 "id": row.id,
@@ -1725,7 +1722,14 @@ async def accept_draft(
             if not isinstance(item, dict) or not isinstance(item.get("id"), str) or not isinstance(item.get("revision"), int):
                 raise HTTPException(status_code=409, detail={"code": "DRAFT_SEGMENT_METADATA_INVALID"})
             try:
-                source_segment = await db.get(GenerationSegment, item["id"])
+                # Check acceptance after acquiring the row lock. Different
+                # drafts can overlap even though each draft itself is locked.
+                source_segment = await db.scalar(
+                    select(GenerationSegment)
+                    .where(GenerationSegment.id == item["id"])
+                    .with_for_update()
+                    .execution_options(populate_existing=True)
+                )
                 if source_segment is None or source_segment.chapter_id != draft.chapter_id or source_segment.project_id != draft.project_id:
                     raise HTTPException(status_code=409, detail={"code": "DRAFT_SEGMENT_SCOPE_MISMATCH"})
                 if source_segment.status == "accepted":

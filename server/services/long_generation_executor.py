@@ -495,14 +495,10 @@ def merge_segment_outputs(rows: Iterable[GenerationSegment]) -> SegmentMerge:
 def merge_new_segment_outputs(rows: Iterable[GenerationSegment]) -> SegmentMerge:
     """Merge only newly completed segments for an incremental author draft.
 
-    Accepted segments are the ledger for prose already placed in the editor;
-    they must never be copied into the next candidate.  Unlike the full-plan
-    materializer this function may start at any segment index, because the
-    caller has deliberately removed the accepted prefix.
+    Validate the entire completed prefix before removing accepted content.
+    Never append an earlier regenerated segment after an accepted later one.
     """
     ordered = sorted(rows, key=lambda row: row.segment_index)
-    if not ordered:
-        raise SegmentMergeBlockedError("no new segments to merge")
     chapter_id = ordered[0].chapter_id
     expected_index = ordered[0].segment_index
     content = ""
@@ -511,12 +507,18 @@ def merge_new_segment_outputs(rows: Iterable[GenerationSegment]) -> SegmentMerge
         if row.chapter_id != chapter_id or row.segment_index != expected_index:
             raise SegmentMergeBlockedError("new segments must be contiguous and belong to one chapter")
         expected_index += 1
+        if row.status == "skipped":
+            continue
+        if row.status in {"accepted", "skipped"}:
+            continue
         if row.status != "ready":
             raise SegmentMergeBlockedError(f"new segment {row.segment_index} is not ready: {row.status}")
         if not (row.content_text or "").strip():
             raise SegmentMergeBlockedError(f"segment {row.segment_index} has no content")
         content = _merge_boundary(content, row.content_text)
         included.append(row.id)
+    if not included:
+        raise SegmentMergeBlockedError("没有尚未采纳的新分段可合并")
     return SegmentMerge(
         chapter_id=chapter_id,
         content_text=content,
