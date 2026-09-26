@@ -51,6 +51,33 @@ async def seed_shot(db, seed_project, *, locked=True):
 
 
 @pytest.mark.asyncio
+async def test_shot_preview_excludes_other_moments_from_scene_summary(
+    app_client, async_db_session, seed_project, auth_headers, image_settings,
+):
+    await seed_shot(async_db_session, seed_project)
+    scene = await async_db_session.get(Scene, "image_scene")
+    scene.purpose = "女主发现生命信标并奔向机甲"
+    scene.summary = "林照触摸维修终端，随后抓起头盔冲向驾驶舱。"
+    shot = await async_db_session.get(Shot, "image_shot")
+    shot.shot_type = "wide"
+    shot.action = "船坞外壁亮起爆破红灯，撤离舰在远处点火。"
+    shot.visual_prompt = "巨型旋转船坞的外部远景"
+    await async_db_session.commit()
+
+    response = await app_client.get("/shots/image_shot/image-preview", headers=auth_headers("image_owner"))
+    assert response.status_code == 200
+    prompt = response.json()["prompt"]
+    visual_data = json.loads(prompt.split("\n", 1)[1])
+    assert visual_data["shot"]["action"] == shot.action
+    assert visual_data["shot"]["type"] == "wide"
+    assert scene.summary not in prompt
+    assert scene.purpose not in prompt
+    assert visual_data["character_references"][0]["appearance"] == "黑色短发，左眉有细疤"
+    assert "not a required cast" in prompt
+    assert "faces need not be readable" in prompt
+
+
+@pytest.mark.asyncio
 async def test_image_job_preview_confirm_idempotency_and_cancel(
     app_client, async_db_session, seed_project, auth_headers, image_settings,
 ):
