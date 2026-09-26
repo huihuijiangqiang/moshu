@@ -361,7 +361,9 @@ async def search_chapter_chunks(
     chapter_id: str,
     query: str = Query(..., min_length=1, max_length=2000),
     top_k: int = Query(default=8, ge=1, le=50),
-    threshold: float = Query(default=0.55, ge=0.0, le=1.0),
+    # The bundled qwen3-embedding model is compact; calibrate its cosine floor
+    # against the same model rather than silently returning no hits.
+    threshold: float = Query(default=0.50, ge=0.0, le=1.0),
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> list[ChapterChunkSearchResponse]:

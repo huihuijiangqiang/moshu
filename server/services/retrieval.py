@@ -429,7 +429,7 @@ class ConsistencyRetrieval:
         query_text: str,
         *,
         top_k: int = 8,
-        threshold: float = 0.55,
+        threshold: float = 0.50,
         chapter_ids: list[str] | None = None,
     ) -> list[dict]:
         """Semantic retrieval over current, ready chapter-body chunks.
@@ -558,7 +558,7 @@ class ConsistencyRetrieval:
         top_k: int = 12,
         near_window: int = 2,
         entity_threshold: float = 0.8,
-        chunk_threshold: float = 0.55,
+        chunk_threshold: float = 0.50,
         chapter_ids: list[str] | None = None,
         statuses: list[str] | None = None,
     ) -> list[dict[str, Any]]:
