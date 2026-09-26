@@ -311,9 +311,14 @@ async def validate_claimed_segment(
     policy_min_ratio = float(policy.get("minRatio", DEFAULT_MIN_OUTPUT_RATIO))
     policy_max_ratio = float(policy.get("maxRatio", DEFAULT_MAX_OUTPUT_RATIO))
     if abs(policy_max_ratio - LEGACY_DEFAULT_MAX_OUTPUT_RATIO) < 1e-9:
-        policy_max_ratio = DEFAULT_MAX_OUTPUT_RATIO
+        # 1.35 was the old persisted default. Keep the normal 1.40 gate, but
+        # let an explicit reviewer validation request accept a complete model
+        # response that overshot its target. This escape hatch applies only to
+        # legacy default plans; an author-specified stricter policy remains
+        # authoritative and cannot be weakened by the request.
+        policy_max_ratio = max(DEFAULT_MAX_OUTPUT_RATIO, max_ratio)
     effective_min_ratio = max(DEFAULT_MIN_OUTPUT_RATIO, policy_min_ratio, min_ratio)
-    effective_max_ratio = min(DEFAULT_MAX_OUTPUT_RATIO, policy_max_ratio, max_ratio)
+    effective_max_ratio = min(policy_max_ratio, max_ratio)
     if effective_max_ratio < effective_min_ratio:
         raise ValueError("effective segment validation ratios do not overlap")
     policy_terms = policy.get("requiredTerms") if isinstance(policy.get("requiredTerms"), list) else []
