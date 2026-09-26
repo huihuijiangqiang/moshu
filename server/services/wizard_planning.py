@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
 from typing import Any
 
@@ -12,6 +13,8 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_valida
 from config import settings
 from providers.consistency import ConsistencyProvider, ProviderResponseError
 from services.prompt_security import security_policy, untrusted_json_block
+
+logger = logging.getLogger(__name__)
 
 
 class WizardPlanningError(RuntimeError):
@@ -168,6 +171,13 @@ class WizardPlanner:
         except WizardPlanningError:
             raise
         except (httpx.HTTPError, ProviderResponseError, TypeError, ValueError, ValidationError) as exc:
+            # Do not log response bodies, prompts, URLs or credentials.
+            cause = exc.__cause__ or exc
+            logger.warning(
+                "wizard_plan failed: type=%s cause=%s upstream_status=%s",
+                type(exc).__name__, type(cause).__name__,
+                exc.response.status_code if isinstance(exc, httpx.HTTPStatusError) else None,
+            )
             raise WizardPlanningError("故事骨架生成失败") from exc
         finally:
             if self._client is None:
