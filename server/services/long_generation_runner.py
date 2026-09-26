@@ -62,24 +62,13 @@ class LongSegmentOptions:
 
 
 def _append_stream(existing: str, incoming: str) -> str:
-    """Append a provider delta while removing a repeated boundary prefix."""
-    if not incoming:
-        return existing
-    if not existing:
-        return incoming
-    # Keep the persisted prefix byte-for-byte intact.  ``checkpoint_segment``
-    # uses it as a CAS-protected prefix; stripping a trailing newline here
-    # would make an otherwise valid continuation look like a replacement.
-    left = existing.rstrip()
-    right = incoming.lstrip()
-    upper = min(500, len(left), len(right))
-    overlap = next((size for size in range(upper, 19, -1) if left.endswith(right[:size])), 0)
-    if overlap:
-        right = right[overlap:].lstrip()
-    if not right:
-        return existing
-    separator = "" if existing[-1].isspace() else "\n"
-    return f"{existing}{separator}{right}"
+    """Preserve provider deltas verbatim, including whitespace and repetition.
+
+    Transport chunks can split words and paragraph separators anywhere. They
+    are not paragraph boundaries; deduplication belongs to completed segment
+    merging, never to the stream. This also preserves checkpoint prefixes.
+    """
+    return existing + incoming
 
 
 def _error_code(error: Exception) -> str:

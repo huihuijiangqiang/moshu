@@ -1,6 +1,7 @@
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 
+import pytest
 from sqlalchemy import select
 
 from db.models_long_generation import GenerationSegment
@@ -19,17 +20,27 @@ def test_append_stream_preserves_checkpoint_prefix_and_spacing():
     assert continued == "已经保存的段落结尾。\n接着推进新的动作。"
 
 
-def test_append_stream_deduplicates_repeated_boundary_without_rewriting_prefix():
+def test_append_stream_preserves_intentional_repetition():
     existing = "已经保存的段落结尾，门外的脚步声越来越近，所有人都屏住了呼吸。"
 
     continued = _append_stream(existing, existing + "新的动作。")
 
     assert continued.startswith(existing)
-    assert continued == existing + "\n新的动作。"
+    assert continued == existing + existing + "新的动作。"
 
 
+@pytest.mark.parametrize("chunk_size", [1, 2, 7, 100])
+def test_stream_boundaries_do_not_change_prose(chunk_size):
+    prose = "林照推开舱门。\n\n  ‘Not yet,’ she said.\n引航者-7亮起了灯。\n"
+    content = "断点前的正文。"
+    for offset in range(0, len(prose), chunk_size):
+        content = _append_stream(content, prose[offset:offset + chunk_size])
+    assert content == "断点前的正文。" + prose
+
+
+@pytest.mark.parametrize("chunk_size", [1, 17, 4096])
 async def test_execute_long_segment_checkpoints_validates_and_records_run(
-    async_db_session, seed_project, monkeypatch
+    async_db_session, seed_project, monkeypatch, chunk_size
 ):
     await seed_project(
         user_id="runner_writer",
@@ -52,7 +63,7 @@ async def test_execute_long_segment_checkpoints_validates_and_records_run(
     async_db_session.add(segment)
     await async_db_session.commit()
 
-    content = "沈禾核对粮账并记录新的证据，门外忽然传来急促的脚步声。" * 35
+    content = "沈禾核对粮账并记录新的证据，门外忽然传来急促的脚步声。\n\n" * 35
     package = SimpleNamespace(
         route=SimpleNamespace(source="platform", config_id=None),
         model_id="gpt-test",
@@ -71,7 +82,8 @@ async def test_execute_long_segment_checkpoints_validates_and_records_run(
             return package
 
     async def fake_stream(_gateway, _package):
-        yield SimpleNamespace(type="chunk", text=content, usage=None)
+        for offset in range(0, len(content), chunk_size):
+            yield SimpleNamespace(type="chunk", text=content[offset:offset + chunk_size], usage=None)
         yield SimpleNamespace(type="usage", text="", usage={"prompt_tokens": 1200, "completion_tokens": 900})
 
     async def fake_reserve(_db, **_kwargs):
@@ -81,6 +93,7 @@ async def test_execute_long_segment_checkpoints_validates_and_records_run(
         return 18
 
     monkeypatch.setattr("services.long_generation_runner.GenerationService", FakeService)
+    monkeypatch.setattr("services.long_generation_runner.CHECKPOINT_CHAR_INTERVAL", 200)
     monkeypatch.setattr("services.long_generation_runner.retryable_stream", fake_stream)
     monkeypatch.setattr("services.long_generation_runner.reserve_generation", fake_reserve)
     monkeypatch.setattr("services.long_generation_runner.settle_generation", fake_settle)
@@ -99,6 +112,7 @@ async def test_execute_long_segment_checkpoints_validates_and_records_run(
     assert result["credits"] == 18
     row = await async_db_session.get(GenerationSegment, segment.id)
     assert row is not None and row.status == "ready"
+    assert row.content_text == content
     assert row.run_id == result["runId"]
     assert row.generated_words >= 800
     assert row.context_manifest["generationRequest"]["contextMode"] == "deep"
@@ -183,6 +197,8 @@ async def test_execute_long_segment_requests_only_remaining_words_after_checkpoi
     assert result["status"] == "ready"
     assert prepared_targets == [remaining]
     assert reserved_targets == [remaining]
+    row = await async_db_session.get(GenerationSegment, segment.id)
+    assert row.content_text == prefix + continuation
 
 
 async def test_execute_long_segment_accepts_a_complete_checkpoint_without_regenerating(
