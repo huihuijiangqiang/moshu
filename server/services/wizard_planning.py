@@ -165,7 +165,13 @@ class WizardPlanner:
                 payload,
                 context="wizard_plan",
             )
-            plan = WizardStoryPlan.model_validate(_json_object(content))
+            generated = _json_object(content)
+            # Models may include optional extras such as a pilot storyboard when
+            # the creative brief mentions an adaptation. Keep the editable plan
+            # without accepting arbitrary fields or weakening its value checks.
+            allowed = set(WizardStoryPlan.model_fields)
+            allowed.update(field.alias for field in WizardStoryPlan.model_fields.values() if field.alias)
+            plan = WizardStoryPlan.model_validate({key: value for key, value in generated.items() if key in allowed})
             self.usage_events.extend(provider.usage_events)
             return plan
         except WizardPlanningError:
@@ -174,9 +180,11 @@ class WizardPlanner:
             # Do not log response bodies, prompts, URLs or credentials.
             cause = exc.__cause__ or exc
             logger.warning(
-                "wizard_plan failed: type=%s cause=%s upstream_status=%s",
+                "wizard_plan failed: type=%s cause=%s upstream_status=%s validation_fields=%s",
                 type(exc).__name__, type(cause).__name__,
                 exc.response.status_code if isinstance(exc, httpx.HTTPStatusError) else None,
+                [(item["loc"], item["type"]) for item in exc.errors(include_input=False)]
+                if isinstance(exc, ValidationError) else None,
             )
             raise WizardPlanningError("故事骨架生成失败") from exc
         finally:

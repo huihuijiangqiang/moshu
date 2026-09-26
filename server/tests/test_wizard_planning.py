@@ -1,6 +1,7 @@
 import json
 
 import httpx
+import pytest
 from sqlalchemy import select
 
 from api.projects import get_wizard_planner
@@ -96,6 +97,26 @@ async def test_wizard_planner_rejects_incomplete_model_output():
             pass
         else:
             raise AssertionError("incomplete model response was accepted")
+
+
+@pytest.mark.parametrize("valid", [True, False])
+async def test_optional_storyboard_does_not_invalidate_plan_or_bypass_required_fields(valid):
+    generated = {**PLAN, "pilotStoryboard": {"scenes": ["extra content"]}}
+    if not valid:
+        del generated["chapters"]
+    transport = httpx.MockTransport(lambda request: httpx.Response(200, json={
+        "choices": [{"message": {"content": json.dumps(generated, ensure_ascii=False)}}],
+    }))
+    async with httpx.AsyncClient(transport=transport) as client:
+        result = WizardPlanner(client).plan(inspiration="女主驾驶机甲救援并改编分镜", audience="女频",
+                                           genre="科幻", tags=[], template="机甲成长")
+        if valid:
+            plan = await result
+            assert len(plan.chapters) == 3
+            assert "pilotStoryboard" not in plan.model_dump()
+        else:
+            with pytest.raises(WizardPlanningError):
+                await result
 
 
 def test_wizard_plan_flattens_structured_editable_fields():
