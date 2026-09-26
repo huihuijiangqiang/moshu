@@ -96,6 +96,64 @@ async def test_long_segment_lifecycle_merge_and_author_acceptance(
     assert saved_draft is not None and saved_draft.status == "accepted"
 
 
+async def test_long_merge_materializes_only_contiguous_ready_prefix(
+    app_client, async_db_session, seed_project, auth_headers
+):
+    await seed_project(
+        user_id="long_prefix_writer",
+        project_id="long_prefix_project",
+        chapter_ids=("long_prefix_chapter",),
+    )
+    rows = [
+        GenerationSegment(
+            id="long_prefix_segment_0",
+            project_id="long_prefix_project",
+            chapter_id="long_prefix_chapter",
+            segment_index=0,
+            target_words=800,
+            status="ready",
+            content_text="第一段已经完成，留下一个可审阅的局面。" * 30,
+            generated_words=800,
+            revision=1,
+        ),
+        GenerationSegment(
+            id="long_prefix_segment_1",
+            project_id="long_prefix_project",
+            chapter_id="long_prefix_chapter",
+            segment_index=1,
+            target_words=800,
+            status="accepted",
+            content_text="第二段也已完成，继续推进冲突。" * 30,
+            generated_words=800,
+            revision=1,
+        ),
+        GenerationSegment(
+            id="long_prefix_segment_2",
+            project_id="long_prefix_project",
+            chapter_id="long_prefix_chapter",
+            segment_index=2,
+            target_words=800,
+            status="pending",
+            content_text="",
+            generated_words=0,
+            revision=1,
+        ),
+    ]
+    async_db_session.add_all(rows)
+    await async_db_session.commit()
+
+    merged = await app_client.post(
+        "/generate/long-plan/long_prefix_chapter/merge",
+        headers=auth_headers("long_prefix_writer"),
+    )
+
+    assert merged.status_code == 200, merged.text
+    payload = merged.json()
+    metadata = payload["requestSummary"]["longGenerationMerge"]
+    assert metadata["segmentIds"] == ["long_prefix_segment_0", "long_prefix_segment_1"]
+    assert "long_prefix_segment_2" not in payload["content"]
+
+
 async def test_replanning_changed_segment_discards_incompatible_checkpoint(
     app_client,
     async_db_session,

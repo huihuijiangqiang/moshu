@@ -909,6 +909,25 @@ def _segment_error(exc: Exception) -> HTTPException:
     return HTTPException(status_code=500, detail={"code": "SEGMENT_OPERATION_FAILED"})
 
 
+def _contiguous_mergeable_prefix(rows: list[GenerationSegment]) -> list[GenerationSegment]:
+    """Return the completed prefix that can be safely materialized now.
+
+    Plans contain all segments from the outset. A pending, running, or failed
+    segment after a ready prefix must not prevent the author from reviewing
+    that prefix, while a gap or an invalid first segment remains rejected by
+    ``merge_segment_outputs``.
+    """
+    mergeable = {"ready", "accepted", "skipped"}
+    prefix: list[GenerationSegment] = []
+    expected_index = 0
+    for row in rows:
+        if row.segment_index != expected_index or row.status not in mergeable:
+            break
+        prefix.append(row)
+        expected_index += 1
+    return prefix
+
+
 def _segment_payload(row: GenerationSegment, *, include_content: bool = False) -> dict:
     payload = {
         "id": row.id,
@@ -1112,7 +1131,11 @@ async def merge_long_generation_segments(
             .with_for_update()
         )
         rows = list(result.scalars().all())
-        merged = merge_segment_outputs(rows)
+        # A long-generation plan is created up front, so later segments are
+        # commonly still pending while an earlier prefix is ready. Merge only
+        # the contiguous completed prefix so it can be reviewed immediately.
+        merge_rows = _contiguous_mergeable_prefix(rows)
+        merged = merge_segment_outputs(merge_rows or rows)
         segment_meta = [
             {
                 "id": row.id,
