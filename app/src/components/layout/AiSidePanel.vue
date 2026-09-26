@@ -141,6 +141,7 @@ async function loadNotes() {
 
 const longNextSegment = computed(() => longPlan.value?.segments.find((segment) => segment.status === 'pending' || segment.status === 'failed') ?? null)
 const longRunning = computed(() => Boolean(longPlan.value?.segments.some((segment) => segment.status === 'running')))
+const longPlanLocked = computed(() => Boolean(longPlan.value?.segments.some((segment) => ['running', 'ready', 'accepted'].includes(segment.status))))
 const longReadyCount = computed(() => longPlan.value?.segments.filter((segment) => segment.status === 'ready').length ?? 0)
 const longCompletedCount = computed(() => longPlan.value?.segments.filter((segment) => segment.status === 'ready' || segment.status === 'accepted').length ?? 0)
 const longActiveCount = computed(() => longPlan.value?.segments.filter((segment) => segment.status !== 'skipped').length ?? 0)
@@ -170,7 +171,10 @@ async function loadLongPlan() {
   longPlanLoading.value = true
   longPlanError.value = ''
   try {
-    longPlan.value = await longGenerationApi.getPlan(chapterId)
+    const plan = await longGenerationApi.getPlan(chapterId)
+    longPlan.value = plan
+    if (typeof plan.targetWords === 'number') longTargetWords.value = plan.targetWords
+    if (typeof plan.segmentWords === 'number') longSegmentWords.value = plan.segmentWords
     if (longAutoRun.value) await pumpLongAutoRun()
     scheduleLongPoll()
   } catch (error) {
@@ -995,8 +999,8 @@ function forwardReviewDecision(round: ReviewRound, decision: 'approved' | 'chang
       <section class="long-generation-card" aria-label="长篇分段生成">
         <p class="long-generation-intro">当前计划只生成这一章；整本百万字通过多章累计。每章拆成可恢复的小段，逐段校验后再合并到候选区，关闭页面也不会丢失已保存的段落。</p>
         <div class="long-generation-fields">
-          <label><span>目标字数</span><input v-model.number="longTargetWords" type="number" min="800" max="1000000" step="1000" :disabled="Boolean(longPlan?.segments.length)" /></label>
-          <label><span>每段字数</span><input v-model.number="longSegmentWords" type="number" min="800" max="32000" step="200" :disabled="Boolean(longPlan?.segments.length)" /></label>
+          <label><span>目标字数</span><input v-model.number="longTargetWords" type="number" min="800" max="1000000" step="1000" :disabled="longPlanLocked" /></label>
+          <label><span>每段字数</span><input v-model.number="longSegmentWords" type="number" min="800" max="32000" step="200" :disabled="longPlanLocked" /></label>
           <label><span>模型档位</span><select v-model="longModel"><option value="basic">均衡</option><option value="advanced">高级</option></select></label>
           <label><span>上下文</span><select v-model="longContextMode"><option value="smart">智能</option><option value="standard">标准</option><option value="deep">深度</option><option value="fast">快速</option></select></label>
         </div>
@@ -1015,7 +1019,7 @@ function forwardReviewDecision(round: ReviewRound, decision: 'approved' | 'chang
               <span v-if="segment.errorCode" class="long-generation-segment-error">{{ segment.errorCode }}</span>
             </div>
           </div>
-          <div class="long-generation-actions"><button class="wk-btn" type="button" :disabled="longPlanBusy || longRunning || !longNextSegment" @click="queueLongNext">{{ longPlanBusy ? '排队中…' : longRunning ? '当前段生成中…' : longNextSegment?.status === 'failed' ? '重试当前段' : '生成下一段' }}</button><button class="wk-btn" type="button" :disabled="longPlanBusy || (!longAutoRun && (longRunning || !longNextSegment))" @click="toggleLongAutoRun">{{ longAutoRun ? '暂停连续生成' : '连续生成剩余' }}</button><button class="wk-btn" data-primary="true" type="button" :disabled="longPlanBusy || !longReadyCount" @click="mergeLongPlan">{{ longComplete ? '合并全部候选' : '合并已完成段落' }}</button></div>
+          <div class="long-generation-actions"><button v-if="!longPlanLocked" class="wk-btn" type="button" :disabled="longPlanBusy || longRunning" @click="createLongPlan">更新计划</button><button class="wk-btn" type="button" :disabled="longPlanBusy || longRunning || !longNextSegment" @click="queueLongNext">{{ longPlanBusy ? '排队中…' : longRunning ? '当前段生成中…' : longNextSegment?.status === 'failed' ? '重试当前段' : '生成下一段' }}</button><button class="wk-btn" type="button" :disabled="longPlanBusy || (!longAutoRun && (longRunning || !longNextSegment))" @click="toggleLongAutoRun">{{ longAutoRun ? '暂停连续生成' : '连续生成剩余' }}</button><button class="wk-btn" data-primary="true" type="button" :disabled="longPlanBusy || !longReadyCount" @click="mergeLongPlan">{{ longComplete ? '合并全部候选' : '合并已完成段落' }}</button></div>
           <p v-if="longAutoRun" class="long-generation-state" role="status">连续生成已开启：每段完成后自动排队下一段，遇到失败会暂停。</p>
         </template>
         <button v-else class="wk-btn" data-primary="true" type="button" :disabled="longPlanBusy || longPlanLoading || !project.activeId" @click="createLongPlan">{{ longPlanBusy ? '创建中…' : '创建长篇计划' }}</button>

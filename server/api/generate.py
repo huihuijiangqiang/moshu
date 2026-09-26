@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import re
 import uuid
 from datetime import UTC, datetime
 from typing import AsyncIterator, Literal
@@ -29,6 +30,7 @@ from db.models_usage import GenerationDraft, GenerationRun
 from db.session import AsyncSessionLocal, get_db
 from memory.assembler import ContextBudgetPolicy
 from memory.tokenizer import tokenizer
+from services.chunking import html_to_paragraphs
 from services.generation import (
     GenerationGateway,
     GenerationProviderError,
@@ -212,6 +214,51 @@ class LongSegmentGenerateRequest(BaseModel):
         "smart", alias="contextMode"
     )
     instruction: str = Field("", max_length=2000)
+
+
+def _normalized_story_text(value: str) -> str:
+    """Compare persisted prose without treating HTML whitespace as a fact change."""
+
+    return re.sub(r"\s+", "", value or "")
+
+
+def _accepted_ledger_mismatch(body: ChapterBody | None, rows: list[GenerationSegment]) -> list[int]:
+    """Return accepted segment indexes that are absent from the current body.
+
+    Segment acceptance is an execution-ledger fact, while the chapter body is
+    the author-visible source of truth.  A restored/manual body can therefore
+    legitimately move backwards while the old ledger remains marked accepted.
+    Continuing from that ledger would feed stale events back to the model and
+    is worse than stopping with an actionable conflict.
+    """
+
+    accepted = [row for row in rows if row.status == "accepted" and (row.content_text or "").strip()]
+    if not accepted:
+        return []
+    body_text = _normalized_story_text(
+        "\n".join(html_to_paragraphs(body.content_html)) if body is not None else ""
+    )
+    if not body_text:
+        return [row.segment_index for row in accepted]
+    return [
+        row.segment_index
+        for row in accepted
+        if _normalized_story_text(row.content_text) not in body_text
+    ]
+
+
+def _raise_ledger_body_mismatch(mismatched_indexes: list[int]) -> None:
+    if not mismatched_indexes:
+        return
+    indexes = ", ".join(str(index + 1) for index in mismatched_indexes[:8])
+    raise HTTPException(
+        status_code=409,
+        detail={
+            "code": "LONG_LEDGER_BODY_MISMATCH",
+            "message": f"正文与已采纳分段不一致（第 {indexes} 段），请先恢复对应正文版本或重新规划后再生成。",
+            "segmentIndexes": mismatched_indexes,
+        },
+    )
 
 
 def get_generation_gateway() -> GenerationGateway:
@@ -694,6 +741,7 @@ async def create_long_chapter_plan(
     )
     existing = list(result.scalars().all())
     body = await db.scalar(select(ChapterBody).where(ChapterBody.chapter_id == chapter.id))
+    _raise_ledger_body_mismatch(_accepted_ledger_mismatch(body, existing))
     source_revisions = {"chapterBodyRev": body.rev if body else 0, "chapterUpdatedAt": chapter.updated_at.isoformat() if chapter.updated_at else None}
     by_index = {row.segment_index: row for row in existing}
     for plan in plans:
@@ -779,9 +827,16 @@ async def get_long_chapter_plan(
     )
     segments = list(result.scalars().all())
     accepted = sum(row.status == "accepted" for row in segments)
+    target_words = sum(row.target_words for row in segments if row.status != "skipped")
+    # The final segment may be shorter to hit the exact total.  The first
+    # segment is the author's configured size and is the useful value for the
+    # editable plan controls.
+    segment_words = segments[0].target_words if segments else None
     return {
         "chapterId": chapter.id,
         "projectId": project.id,
+        "targetWords": target_words,
+        "segmentWords": segment_words,
         "totalSegments": len(segments),
         "acceptedSegments": accepted,
         "nextSegment": next((row.segment_index for row in segments if row.status == "pending"), None),
@@ -812,6 +867,18 @@ async def queue_long_generation_segment(
 ):
     """Claim and queue one long-form segment for the existing Celery worker."""
     segment = await _load_segment_scope(segment_id, user, db, ProjectPermission.GENERATE)
+    if segment.segment_index > 0:
+        earlier_result = await db.execute(
+            select(GenerationSegment)
+            .where(
+                GenerationSegment.chapter_id == segment.chapter_id,
+                GenerationSegment.segment_index < segment.segment_index,
+            )
+            .order_by(GenerationSegment.segment_index)
+        )
+        earlier_rows = list(earlier_result.scalars().all())
+        body = await db.scalar(select(ChapterBody).where(ChapterBody.chapter_id == segment.chapter_id))
+        _raise_ledger_body_mismatch(_accepted_ledger_mismatch(body, earlier_rows))
     if segment.status in {"ready", "accepted"}:
         return _segment_payload(segment)
     if segment.status not in {"pending", "failed", "running"}:

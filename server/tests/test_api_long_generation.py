@@ -28,6 +28,12 @@ async def test_long_segment_lifecycle_merge_and_author_acceptance(
         json={"chapterId": "long_api_chapter", "targetWords": 1600, "segmentWords": 800},
     )
     assert planned.status_code == 200
+    inspected = await app_client.get(
+        "/generate/long-plan/long_api_chapter", headers=headers
+    )
+    assert inspected.status_code == 200
+    assert inspected.json()["targetWords"] == 1600
+    assert inspected.json()["segmentWords"] == 800
     segments = (await async_db_session.execute(select(GenerationSegment))).scalars().all()
     assert len(segments) == 2
 
@@ -94,6 +100,74 @@ async def test_long_segment_lifecycle_merge_and_author_acceptance(
     assert await async_db_session.get(ChapterBody, "long_api_chapter") is None
     saved_draft = await async_db_session.get(GenerationDraft, draft["id"])
     assert saved_draft is not None and saved_draft.status == "accepted"
+
+
+async def test_long_plan_blocks_stale_accepted_ledger_after_body_restore(
+    app_client, async_db_session, seed_project, auth_headers
+):
+    await seed_project(
+        user_id="long_mismatch_writer",
+        project_id="long_mismatch_project",
+        chapter_ids=("long_mismatch_chapter",),
+    )
+    async_db_session.add(
+        ChapterBody(
+            chapter_id="long_mismatch_chapter",
+            content_html="<p>第一段已经在正文里。</p>",
+            content_json={
+                "type": "doc",
+                "content": [
+                    {
+                        "type": "paragraph",
+                        "attrs": {"pid": "body-p1"},
+                        "content": [{"type": "text", "text": "第一段已经在正文里。"}],
+                    }
+                ],
+            },
+            rev=3,
+        )
+    )
+    async_db_session.add_all(
+        [
+            GenerationSegment(
+                id="long_mismatch_segment_0",
+                project_id="long_mismatch_project",
+                chapter_id="long_mismatch_chapter",
+                segment_index=0,
+                target_words=800,
+                status="accepted",
+                content_text="第一段已经在正文里。",
+                generated_words=800,
+                revision=1,
+            ),
+            GenerationSegment(
+                id="long_mismatch_segment_1",
+                project_id="long_mismatch_project",
+                chapter_id="long_mismatch_chapter",
+                segment_index=1,
+                target_words=800,
+                status="accepted",
+                content_text="第二段已经被回退，不应再进入上下文。",
+                generated_words=800,
+                revision=1,
+            ),
+        ]
+    )
+    await async_db_session.commit()
+
+    blocked = await app_client.post(
+        "/generate/long-plan",
+        headers=auth_headers("long_mismatch_writer"),
+        json={
+            "chapterId": "long_mismatch_chapter",
+            "targetWords": 2400,
+            "segmentWords": 800,
+        },
+    )
+
+    assert blocked.status_code == 409
+    assert blocked.json()["detail"]["code"] == "LONG_LEDGER_BODY_MISMATCH"
+    assert blocked.json()["detail"]["segmentIndexes"] == [1]
 
 
 async def test_long_merge_materializes_only_contiguous_ready_prefix(
