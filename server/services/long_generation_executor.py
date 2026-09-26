@@ -492,6 +492,40 @@ def merge_segment_outputs(rows: Iterable[GenerationSegment]) -> SegmentMerge:
     )
 
 
+def merge_new_segment_outputs(rows: Iterable[GenerationSegment]) -> SegmentMerge:
+    """Merge only newly completed segments for an incremental author draft.
+
+    Accepted segments are the ledger for prose already placed in the editor;
+    they must never be copied into the next candidate.  Unlike the full-plan
+    materializer this function may start at any segment index, because the
+    caller has deliberately removed the accepted prefix.
+    """
+    ordered = sorted(rows, key=lambda row: row.segment_index)
+    if not ordered:
+        raise SegmentMergeBlockedError("no new segments to merge")
+    chapter_id = ordered[0].chapter_id
+    expected_index = ordered[0].segment_index
+    content = ""
+    included: list[str] = []
+    for row in ordered:
+        if row.chapter_id != chapter_id or row.segment_index != expected_index:
+            raise SegmentMergeBlockedError("new segments must be contiguous and belong to one chapter")
+        expected_index += 1
+        if row.status != "ready":
+            raise SegmentMergeBlockedError(f"new segment {row.segment_index} is not ready: {row.status}")
+        if not (row.content_text or "").strip():
+            raise SegmentMergeBlockedError(f"segment {row.segment_index} has no content")
+        content = _merge_boundary(content, row.content_text)
+        included.append(row.id)
+    return SegmentMerge(
+        chapter_id=chapter_id,
+        content_text=content,
+        content_hash=checkpoint_hash(content),
+        segment_ids=tuple(included),
+        generated_words=_word_count(content),
+    )
+
+
 __all__ = [
     "DEFAULT_SEGMENT_LEASE_SECONDS",
     "LEGACY_SEGMENT_LEASE_SECONDS",
@@ -515,4 +549,5 @@ __all__ = [
     "accept_ready_segment",
     "heartbeat_segment",
     "merge_segment_outputs",
+    "merge_new_segment_outputs",
 ]

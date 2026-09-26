@@ -275,6 +275,9 @@ async function mergeLongPlan() {
   longPlanError.value = ''
   try {
     await longGenerationApi.merge(chapterId)
+    // The previous candidate may refer to an already accepted prefix. Clear
+    // it before refreshing so the detail pane cannot offer stale actions.
+    selectedDraft.value = null
     emit('refreshDrafts')
     tab.value = 'drafts'
   } catch (error) {
@@ -283,6 +286,16 @@ async function mergeLongPlan() {
     longPlanBusy.value = false
   }
 }
+
+watch(
+  () => (props.drafts ?? []).map((draft) => draft.id),
+  (ids) => {
+    if (selectedDraft.value && !ids.includes(selectedDraft.value.id)) {
+      selectedDraft.value = null
+      draftDetailError.value = ''
+    }
+  },
+)
 
 watch(() => project.activeId, () => {
   clearLongPoll()

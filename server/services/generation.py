@@ -6,7 +6,7 @@ import asyncio
 import json
 import re
 from dataclasses import dataclass, field
-from typing import Any, AsyncIterator, Optional
+from typing import Any, AsyncIterator, Literal, Optional
 
 import httpx
 from sqlalchemy import func, select
@@ -194,8 +194,10 @@ class GenerationService:
         route: GenerationRoute | None = None,
         provider_model: str | None = None,
         context_mode: ContextMode = "smart",
+        generation_scope: Literal["chapter", "segment"] = "chapter",
     ) -> PromptPackage:
         task = TASK_MAP.get(action or "", "chapter")
+        segment_mode = generation_scope == "segment"
         tier = "premium" if model == "advanced" else settings.generation_gateway_tier
         resolved_route = route or GenerationRoute(
             source="platform",
@@ -317,13 +319,19 @@ class GenerationService:
         # message as well as the auditable context block.  Putting it only in
         # the reference context allowed some providers to follow the setting
         # while dropping the anti-repetition and ending requirements.
-        system_parts.append(
-            "本次生成的章节结构硬约束（优先级高于一般写作习惯）：\n" + variation_contract
-        )
-        system_parts.append(
-            "本次生成必须先在内部完成以下五拍蓝图，再将其自然写成正文；不得输出蓝图标签：\n"
-            + dramatic_blueprint
-        )
+        if not segment_mode:
+            system_parts.append(
+                "本次生成的章节结构硬约束（优先级高于一般写作习惯）：\n" + variation_contract
+            )
+            system_parts.append(
+                "本次生成必须先在内部完成以下五拍蓝图，再将其自然写成正文；不得输出蓝图标签：\n"
+                + dramatic_blueprint
+            )
+        else:
+            system_parts.append(
+                "本次是长篇正文的单一分段生成。只完成当前分段契约，不能完整覆盖本章章纲，"
+                "不能预演后续节点，不能重复已写正文；当前分段结束时只留下一个由人物行动造成的局面变化。"
+            )
         if active_hook_debts:
             system_parts.append(
                 "作品存在尚未兑现的章尾悬念。已到期悬念必须在本章以人物行动和可见后果承接；"
@@ -335,8 +343,9 @@ class GenerationService:
                 + "\nurgency=due 或 overdue 的项目必须进入本章因果链；若本章不能完整兑现，至少让相关人物"
                 "采取动作并留下可观察进展。不要只复述问题，也不要未经作者确认把悬念标成已解决。"
             )
-        context_text += "\n\n# 本章差异化戏剧契约\n" + variation_contract
-        context_text += "\n\n# 本章五拍戏剧蓝图\n" + dramatic_blueprint
+        if not segment_mode:
+            context_text += "\n\n# 本章差异化戏剧契约\n" + variation_contract
+            context_text += "\n\n# 本章五拍戏剧蓝图\n" + dramatic_blueprint
         if recent_dramatic_patterns:
             context_text += (
                 "\n\n# 近期章节结构去重\n"
@@ -351,7 +360,13 @@ class GenerationService:
             {"nodes": list(chapter.outline or [])},
         )
 
-        if task == "chapter":
+        if segment_mode:
+            current_instruction = (
+                f"为当前长篇分段生成约{target_words}字正文。只完成当前分段任务，"
+                "承接已给出的前情，从当前状态推进一次具体行动和后果；不要重复前文，"
+                "不要提前写完本章或处理尚未到场的章纲节点。"
+            )
+        elif task == "chapter":
             current_instruction = (
                 f"为当前作品的本章生成约{target_words}字正文。"
                 "完整覆盖章纲，正文从场景本身开始。"

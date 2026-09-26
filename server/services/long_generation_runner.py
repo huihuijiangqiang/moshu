@@ -215,6 +215,7 @@ async def execute_long_segment(
         route=route,
         provider_model=options.provider_model,
         context_mode=options.context_mode,  # type: ignore[arg-type]
+        generation_scope="segment",
     )
     manifest["generationRequest"] = {
         "model": options.model,

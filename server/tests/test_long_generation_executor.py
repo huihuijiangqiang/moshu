@@ -14,6 +14,7 @@ from services.long_generation_executor import (
     claim_segment,
     fail_segment,
     heartbeat_segment,
+    merge_new_segment_outputs,
     merge_segment_outputs,
     validate_claimed_segment,
 )
@@ -210,6 +211,25 @@ async def test_validation_persists_evidence_and_allows_retry(async_db_session, e
     # columns and current timestamptz columns in PostgreSQL.
     assert row.completed_at.tzinfo is None
     assert row.context_manifest["lastValidation"]["status"] == "ready"
+
+
+async def test_incremental_merge_can_start_after_accepted_prefix(async_db_session, executor_scope):
+    await _segment(
+        async_db_session,
+        index=0,
+        status="accepted",
+        content="已经放入正文的前缀。" * 30,
+    )
+    ready = await _segment(
+        async_db_session,
+        index=1,
+        status="ready",
+        content="只应作为下一次候选的新增段。" * 30,
+    )
+    merged = merge_new_segment_outputs([ready])
+    assert merged.segment_ids == (ready.id,)
+    assert "已经放入正文" not in merged.content_text
+    assert "新增段" in merged.content_text
 
 
 async def test_validation_request_cannot_weaken_manifest_policy(async_db_session, executor_scope):

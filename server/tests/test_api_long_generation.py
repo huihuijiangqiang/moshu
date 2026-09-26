@@ -150,8 +150,11 @@ async def test_long_merge_materializes_only_contiguous_ready_prefix(
     assert merged.status_code == 200, merged.text
     payload = merged.json()
     metadata = payload["requestSummary"]["longGenerationMerge"]
-    assert metadata["segmentIds"] == ["long_prefix_segment_0", "long_prefix_segment_1"]
-    assert "long_prefix_segment_2" not in payload["content"]
+    # Segment 1 is already present in the editor's accepted ledger.  The
+    # candidate must contain only the newly ready segment 0; otherwise the UI
+    # appends the accepted prefix a second time.
+    assert metadata["segmentIds"] == ["long_prefix_segment_0"]
+    assert "第二段也已完成" not in payload["content"]
 
 
 async def test_replanning_changed_segment_discards_incompatible_checkpoint(

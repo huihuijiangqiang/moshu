@@ -59,7 +59,7 @@ from services.long_generation_executor import (
     claim_segment,
     fail_segment,
     heartbeat_segment,
-    merge_segment_outputs,
+    merge_new_segment_outputs,
     validate_claimed_segment,
 )
 from services.long_generation_runner import LONG_SEGMENT_LEASE_SECONDS
@@ -1135,7 +1135,10 @@ async def merge_long_generation_segments(
         # commonly still pending while an earlier prefix is ready. Merge only
         # the contiguous completed prefix so it can be reviewed immediately.
         merge_rows = _contiguous_mergeable_prefix(rows)
-        merged = merge_segment_outputs(merge_rows or rows)
+        new_rows = [row for row in merge_rows if row.status == "ready"]
+        if not new_rows:
+            raise SegmentMergeBlockedError("没有尚未采纳的新分段可合并")
+        merged = merge_new_segment_outputs(new_rows)
         segment_meta = [
             {
                 "id": row.id,
@@ -1725,6 +1728,14 @@ async def accept_draft(
                 source_segment = await db.get(GenerationSegment, item["id"])
                 if source_segment is None or source_segment.chapter_id != draft.chapter_id or source_segment.project_id != draft.project_id:
                     raise HTTPException(status_code=409, detail={"code": "DRAFT_SEGMENT_SCOPE_MISMATCH"})
+                if source_segment.status == "accepted":
+                    raise HTTPException(
+                        status_code=409,
+                        detail={
+                            "code": "DRAFT_SEGMENT_ALREADY_ACCEPTED",
+                            "message": "候选包含已经采纳的分段，请刷新候选后再试。",
+                        },
+                    )
                 await accept_ready_segment(
                     db,
                     item["id"],
