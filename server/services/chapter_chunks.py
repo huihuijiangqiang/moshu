@@ -43,11 +43,13 @@ async def project_chunk_index_status(
         or 0
     )
     current = ChapterChunk.body_rev == ChapterBody.rev
+    compatible = ChapterChunk.embedding_space_id == settings.embedding_space_id
+    incompatible = or_(ChapterChunk.embedding_space_id.is_(None), ~compatible)
     active = (
         select(
             func.count(ChapterChunk.id),
-            func.coalesce(func.sum(case((current & (ChapterChunk.status == "ready"), 1), else_=0)), 0),
-            func.coalesce(func.sum(case((current & (ChapterChunk.status == "pending"), 1), else_=0)), 0),
+            func.coalesce(func.sum(case((current & (ChapterChunk.status == "ready") & compatible, 1), else_=0)), 0),
+            func.coalesce(func.sum(case((current & ((ChapterChunk.status == "pending") | ((ChapterChunk.status == "ready") & incompatible)), 1), else_=0)), 0),
             func.coalesce(func.sum(case((current & (ChapterChunk.status == "failed"), 1), else_=0)), 0),
             func.coalesce(
                 func.sum(case((or_(~current, ChapterChunk.status == "stale"), 1), else_=0)),
@@ -82,7 +84,8 @@ async def project_chunk_index_status(
                 case(
                     (
                         (ChapterChunk.status != "ready")
-                        | ChapterChunk.embedding.is_(None),
+                        | ChapterChunk.embedding.is_(None)
+                        | incompatible,
                         1,
                     ),
                     else_=0,
@@ -123,7 +126,7 @@ async def current_chunk_states_by_chapter(
 ) -> dict[tuple[str, int], set[str]]:
     """Return only head-revision states; historical rows cannot affect scheduling."""
     result = await db.execute(
-        select(ChapterChunk.chapter_id, ChapterChunk.body_rev, ChapterChunk.status)
+        select(ChapterChunk.chapter_id, ChapterChunk.body_rev, ChapterChunk.status, ChapterChunk.embedding_space_id)
         .join(Chapter, Chapter.id == ChapterChunk.chapter_id)
         .join(ChapterBody, ChapterBody.chapter_id == ChapterChunk.chapter_id)
         .where(
@@ -135,7 +138,9 @@ async def current_chunk_states_by_chapter(
         )
     )
     states: dict[tuple[str, int], set[str]] = {}
-    for chapter_id, body_rev, status in result.all():
+    for chapter_id, body_rev, status, space_id in result.all():
+        if status == "ready" and space_id != settings.embedding_space_id:
+            status = "pending"
         states.setdefault((str(chapter_id), int(body_rev)), set()).add(str(status))
     return states
 
@@ -275,7 +280,7 @@ async def replace_chapter_chunks(
             )
             db.add(row)
         else:
-            changed = row.content_hash != digest
+            changed = row.content_hash != digest or row.embedding_space_id != settings.embedding_space_id
             row.project_id = project_id
             row.paragraph_start = chunk.start_paragraph
             row.paragraph_end = chunk.end_paragraph
@@ -299,6 +304,7 @@ async def replace_chapter_chunks(
         for row, vector in zip(to_embed, vectors):
             row.embedding = vector
             row.embedding_text_hash = row.content_hash
+            row.embedding_space_id = settings.embedding_space_id
             row.status = "ready"
             row.error_detail = None
         await db.flush()
@@ -324,8 +330,9 @@ async def embed_pending_chapter_chunks(
         .where(ChapterChunk.project_id == project_id)
         .where(Chapter.project_id == project_id)
         .where(Chapter.deleted_at.is_(None))
-        .where(ChapterChunk.status.in_(("pending", "failed")))
-        .where(ChapterChunk.embedding.is_(None))
+        .where(ChapterChunk.status != "stale")
+        .where(or_(ChapterChunk.embedding.is_(None), ChapterChunk.embedding_space_id.is_(None),
+                   ChapterChunk.embedding_space_id != settings.embedding_space_id))
         .where(ChapterChunk.body_rev == ChapterBody.rev)
         .order_by(ChapterChunk.chapter_id, ChapterChunk.chunk_index)
     )
@@ -343,6 +350,7 @@ async def embed_pending_chapter_chunks(
         for row, vector in zip(batch, vectors):
             row.embedding = vector
             row.embedding_text_hash = row.content_hash
+            row.embedding_space_id = settings.embedding_space_id
             row.status = "ready"
             row.error_detail = None
             written += 1
@@ -376,10 +384,15 @@ async def count_current_chapter_chunks(db: AsyncSession, *, chapter_id: str, bod
     """Return index health for a chapter head without loading chunk text."""
     from sqlalchemy import func
 
+    effective_status = case(
+        ((ChapterChunk.status == "ready") & or_(ChapterChunk.embedding_space_id.is_(None),
+            ChapterChunk.embedding_space_id != settings.embedding_space_id), "pending"),
+        else_=ChapterChunk.status,
+    )
     result = await db.execute(
-        select(ChapterChunk.status, func.count(ChapterChunk.id))
+        select(effective_status, func.count(ChapterChunk.id))
         .where(ChapterChunk.chapter_id == chapter_id, ChapterChunk.body_rev == body_rev)
-        .group_by(ChapterChunk.status)
+        .group_by(effective_status)
     )
     return {str(status): int(count) for status, count in result.all()}
 
@@ -395,6 +408,7 @@ def current_chunk_query(*, project_id: str, chapter_ids: Optional[Iterable[str]]
         .where(Chapter.deleted_at.is_(None))
         .where(ChapterChunk.status == "ready")
         .where(ChapterChunk.embedding.is_not(None))
+        .where(ChapterChunk.embedding_space_id == settings.embedding_space_id)
         .where(ChapterChunk.body_rev == ChapterBody.rev)
     )
     if chapter_ids is not None:

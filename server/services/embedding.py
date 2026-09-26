@@ -10,6 +10,7 @@
   常量，把任意条目都判成「相似」；
 * 批量接口保证返回顺序与输入顺序一致（按响应里的 index 重排）。
 """
+import math
 from typing import Any, Optional
 
 import httpx
@@ -87,7 +88,7 @@ class GatewayEmbeddingProvider(EmbeddingProvider):
     async def _get_client(self) -> httpx.AsyncClient:
         if self._client:
             return self._client
-        return httpx.AsyncClient(timeout=httpx.Timeout(30.0, connect=10.0))
+        return httpx.AsyncClient(timeout=httpx.Timeout(settings.embedding_request_timeout, connect=10.0))
 
     async def embed_text(self, text: str, model: Optional[str] = None) -> list[float]:
         """单条文本向量化。"""
@@ -177,8 +178,11 @@ class GatewayEmbeddingProvider(EmbeddingProvider):
                     f"embedding dimension mismatch: got {len(vector)}, "
                     f"expected {source_dimensions}"
                 )
-            if not all(isinstance(value, (int, float)) for value in vector):
-                raise EmbeddingProviderError("embedding vector contains non-numeric values")
+            if not all(isinstance(value, (int, float)) and not isinstance(value, bool)
+                       and math.isfinite(value) for value in vector):
+                raise EmbeddingProviderError("embedding vector contains non-numeric or non-finite values")
+            if not any(vector):
+                raise EmbeddingProviderError("embedding vector must not be all zeros")
             if ordered[index] is not None:
                 raise EmbeddingProviderError(f"embedding response has duplicate index {index}")
             normalized = [float(value) for value in vector]

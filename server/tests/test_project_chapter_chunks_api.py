@@ -2,6 +2,7 @@
 
 from sqlalchemy import select
 
+from config import settings
 from db.models_chapter_chunks import ChapterChunk
 from db.models_consistency import OutboxEvent
 from db.models_core import ChapterBody
@@ -41,6 +42,7 @@ def chunk(
         content_hash=f"hash-{chunk_id}",
         embedding=embedding,
         embedding_text_hash=f"hash-{chunk_id}" if embedding else None,
+        embedding_space_id=settings.embedding_space_id if embedding else None,
         status=status,
     )
 

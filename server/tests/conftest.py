@@ -32,6 +32,7 @@ _ENV_DEFAULTS = {
     "EMBEDDING_GATEWAY_KEY": "test-embedding-key",
     "EMBEDDING_MODEL": "test-embedding-model",
     "EMBEDDING_DIMENSIONS": "2048",
+    "EMBEDDING_SOURCE_DIMENSIONS": "",
     "S3_ENDPOINT": "http://s3.invalid",
     "S3_ACCESS_KEY": "test-access",
     "S3_SECRET_KEY": "test-secret",

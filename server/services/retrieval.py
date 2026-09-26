@@ -24,6 +24,7 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from config import settings
 from db.models_chapter_chunks import ChapterChunk
 from db.models_codex import CodexAlias, CodexEntry, resolve_codex_statuses
 from db.models_consistency_extended import DocumentSummary
@@ -278,6 +279,8 @@ class ConsistencyRetrieval:
             )
             .where(CodexEntry.project_id == project_id)
             .where(CodexEntry.embedding.isnot(None))
+            .where(CodexEntry.embedding_text_hash.is_not(None))
+            .where(CodexEntry.embedding_space_id == settings.embedding_space_id)
             .where(CodexEntry.status.in_(effective_statuses))
             .where(distance <= distance_threshold)
         )

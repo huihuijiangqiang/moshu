@@ -65,6 +65,7 @@ class CodexEntry(Base, TimestampMixin):
     #: 有它才能回答两个问题：这次改动要不要重算（哈希没变就不调网关），以及哪些
     #: 条目的向量已经过时（NULL = 待重算，回填任务据此挑行）。只有写入成功才落哈希。
     embedding_text_hash: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    embedding_space_id: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
 
     # 关系
     project: Mapped["Project"] = relationship(back_populates="codex_entries")

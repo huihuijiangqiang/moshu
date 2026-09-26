@@ -38,6 +38,7 @@ class ChapterChunk(Base, TimestampMixin):
     content_hash: Mapped[str] = mapped_column(String(64), nullable=False)
     embedding: Mapped[Optional[list[float]]] = mapped_column(HALFVEC(2048), nullable=True)
     embedding_text_hash: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    embedding_space_id: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
     status: Mapped[str] = mapped_column(String(20), default="pending", nullable=False)
     error_detail: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
 

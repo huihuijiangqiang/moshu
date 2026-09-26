@@ -5,8 +5,30 @@ from sqlalchemy import select
 
 from db.models_chapter_chunks import ChapterChunk
 from db.models_core import ChapterBody
+from config import settings
 from services.chapter_chunks import current_chunk_query, embed_pending_chapter_chunks, replace_chapter_chunks
 from services.providers import MockEmbeddingProvider
+
+
+@pytest.mark.asyncio
+async def test_old_model_chunks_are_hidden_until_reindexed(async_db_session, seed_project, monkeypatch):
+    from services.chapter_chunks import count_current_chapter_chunks, current_chunk_states_by_chapter
+
+    await seed_project(chapter_ids=("ch_1",))
+    body = document(("p1", "林照驾驶救援机甲进入船坞。"))
+    async_db_session.add(ChapterBody(chapter_id="ch_1", content_html="<p>林照驾驶救援机甲进入船坞。</p>", content_json=body, rev=1))
+    await async_db_session.flush()
+    await replace_chapter_chunks(async_db_session, chapter_id="ch_1", project_id="proj_a", body_rev=1,
+                                 content_html="<p>林照驾驶救援机甲进入船坞。</p>", content_json=body,
+                                 embedding_provider=MockEmbeddingProvider())
+    assert len((await async_db_session.execute(current_chunk_query(project_id="proj_a"))).scalars().all()) == 1
+    monkeypatch.setattr(settings, "embedding_model", "new-local-model")
+    assert not (await async_db_session.execute(current_chunk_query(project_id="proj_a"))).scalars().all()
+    assert await count_current_chapter_chunks(async_db_session, chapter_id="ch_1", body_rev=1) == {"pending": 1}
+    assert await current_chunk_states_by_chapter(async_db_session, project_id="proj_a") == {("ch_1", 1): {"pending"}}
+    assert await embed_pending_chapter_chunks(async_db_session, MockEmbeddingProvider(), project_id="proj_a") == 1
+    assert len((await async_db_session.execute(current_chunk_query(project_id="proj_a"))).scalars().all()) == 1
+    assert await count_current_chapter_chunks(async_db_session, chapter_id="ch_1", body_rev=1) == {"ready": 1}
 
 
 def document(*paragraphs: tuple[str, str]) -> dict:

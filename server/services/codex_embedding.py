@@ -24,6 +24,7 @@ from typing import Optional
 from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from config import settings
 from db.models_codex import CodexAlias, CodexEntry
 from services.providers import EmbeddingProvider
 
@@ -68,7 +69,8 @@ async def entry_embedding_text(db: AsyncSession, entry: CodexEntry) -> str:
 
 def is_embedding_fresh(entry: CodexEntry, text: str) -> bool:
     """当前向量是否就是这段文本生成的。"""
-    if entry.embedding is None or entry.embedding_text_hash is None:
+    if (entry.embedding is None or entry.embedding_text_hash is None
+            or entry.embedding_space_id != settings.embedding_space_id):
         return False
     return entry.embedding_text_hash == embedding_text_hash(text)
 
@@ -94,6 +96,7 @@ async def embed_codex_entry(
 
     entry.embedding = await provider.embed_text(text)
     entry.embedding_text_hash = embedding_text_hash(text)
+    entry.embedding_space_id = settings.embedding_space_id
     return True
 
 
@@ -120,6 +123,8 @@ def select_stale_entries(project_id: str):
             or_(
                 CodexEntry.embedding.is_(None),
                 CodexEntry.embedding_text_hash.is_(None),
+                CodexEntry.embedding_space_id.is_(None),
+                CodexEntry.embedding_space_id != settings.embedding_space_id,
             )
         )
         .order_by(CodexEntry.id)
@@ -160,6 +165,7 @@ async def embed_missing_codex_entries(
         for entry, vector, text in zip(batch, vectors, texts):
             entry.embedding = vector
             entry.embedding_text_hash = embedding_text_hash(text)
+            entry.embedding_space_id = settings.embedding_space_id
             written += 1
         if commit_each_batch:
             await db.commit()

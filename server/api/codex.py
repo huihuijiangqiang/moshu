@@ -46,6 +46,7 @@ from services.codex_states import (
     list_state_history,
     update_state_change,
 )
+from config import settings
 from services.embedding import GatewayEmbeddingProvider
 from services.embedding_jobs import fail_job, lock_job, queue_job
 from services.provider_usage import record_platform_usage
@@ -641,6 +642,7 @@ async def list_codex_entries(
             embedding_status=(
                 "fresh"
                 if entry.embedding is not None and entry.embedding_text_hash is not None
+                and entry.embedding_space_id == settings.embedding_space_id
                 else "deferred"
             ),
             relations=relations_by_entry.get(entry.id, []),

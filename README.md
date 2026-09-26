@@ -252,7 +252,9 @@ EMBEDDING_SOURCE_DIMENSIONS=
 Embedding 响应必须包含与输入数量相同的 `data[].embedding` 数组。当前 PostgreSQL
 schema 使用 `HALFVEC(2048)`；本地 Ollama 的 1024 维向量可以通过
 `EMBEDDING_SOURCE_DIMENSIONS=1024` 自动零填充，切换模型后应执行一次回填，不能把
-不同模型生成的旧向量混在一起检索。
+不同模型生成的旧向量混在一起检索。系统记录网关、模型和维度组成的向量空间标识，
+切换后自动排除旧空间的向量；设定与正文仍保留，回填完成后恢复语义检索。
+升级前没有模型标识的旧向量也需要回填。
 
 本地低成本部署可以直接启动 Ollama 并拉取中文 embedding 模型：
 
@@ -268,7 +270,13 @@ EMBEDDING_GATEWAY_URL=http://ollama:11434/v1
 EMBEDDING_GATEWAY_KEY=local-ollama
 EMBEDDING_MODEL=qwen3-embedding:0.6b
 EMBEDDING_SOURCE_DIMENSIONS=1024
+EMBEDDING_REQUEST_TIMEOUT=120
 ```
+
+执行 `docker compose up -d --build api worker dispatcher beat` 应用配置。Ollama 是
+可选服务，平常启动不会下载；端口只绑定本机回环地址，模型缓存在已忽略的
+`.docker-data/ollama`。在设定库执行向量回填，在正文索引执行重建，即可重新检索旧作品。
+本地向量计算不调用外部供应商；正文、摘要和图片仍使用各自配置的模型服务。
 
 ## 完整环境启动
 

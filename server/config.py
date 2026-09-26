@@ -184,6 +184,27 @@ class Settings(BaseSettings):
     # 追加零分量，保持余弦相似度方向不变，同时避免为本地开发强制迁移现有库。
     # 留空时严格要求网关返回 embedding_dimensions，适用于远程生产网关。
     embedding_source_dimensions: Optional[int] = Field(default=None, ge=1, le=2048)
+    embedding_request_timeout: float = Field(default=120.0, ge=1.0, le=600.0)
+
+    @field_validator("embedding_source_dimensions", mode="before")
+    @classmethod
+    def blank_embedding_source_dimensions(cls, value):
+        return None if isinstance(value, str) and not value.strip() else value
+
+    @property
+    def embedding_space_id(self) -> str:
+        """Identify a vector space without persisting any gateway credentials."""
+        import hashlib
+        import json
+
+        endpoint = (self.embedding_gateway_url or self.gateway_url()).rstrip("/")
+        for suffix in ("/chat/completions", "/embeddings", "/completions"):
+            if endpoint.endswith(suffix):
+                endpoint = endpoint[:-len(suffix)]
+                break
+        identity = [endpoint, self.embedding_model, self.embedding_source_dimensions or self.embedding_dimensions,
+                    self.embedding_dimensions]
+        return hashlib.sha256(json.dumps(identity).encode()).hexdigest()
 
     # 分块参数：长章节必须切块后全量处理，不能截断丢尾部
     consistency_chunk_chars: int = 6000

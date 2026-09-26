@@ -19,6 +19,8 @@ from services.codex_embedding import (
     build_embedding_text,
     embed_codex_entry,
     embed_missing_codex_entries,
+    is_embedding_fresh,
+    select_stale_entries,
 )
 from services.embedding import EmbeddingProviderError, GatewayEmbeddingProvider
 from services.providers import MockEmbeddingProvider
@@ -61,6 +63,38 @@ def test_settings_reject_dimension_that_does_not_match_database(monkeypatch):
 
     with pytest.raises(ValidationError, match="HALFVEC\\(2048\\)"):
         Settings(_env_file=None)
+
+
+def test_blank_source_dimension_uses_remote_model_dimensions(monkeypatch):
+    monkeypatch.setenv("EMBEDDING_SOURCE_DIMENSIONS", "")
+    assert Settings(_env_file=None).embedding_source_dimensions is None
+
+
+@pytest.mark.parametrize("vector", [[True, 1, 2, 3], [0, 0, 0, 0], [1, float("inf"), 2, 3], [1, float("nan"), 2, 3]])
+def test_unusable_vectors_are_rejected(vector):
+    # Raw JSON allows us to exercise non-finite values from a broken upstream.
+    response = httpx.Response(200, content=json.dumps({"data": [{"index": 0, "embedding": vector}]}))
+    with pytest.raises(EmbeddingProviderError):
+        GatewayEmbeddingProvider._parse_vectors(response, expected_count=1)
+
+
+async def test_model_change_reindexes_unchanged_codex_text(async_db_session, seed_project, monkeypatch):
+    await seed_project()
+    entry = make_entry("cx_changed_model")
+    async_db_session.add(entry)
+    await async_db_session.flush()
+    provider = MockEmbeddingProvider()
+    await embed_codex_entry(async_db_session, provider, entry)
+    text = build_embedding_text(name=entry.name, kind=entry.kind, description=entry.description)
+    old_space = entry.embedding_space_id
+    assert is_embedding_fresh(entry, text)
+
+    monkeypatch.setattr(settings, "embedding_model", "replacement-local-model")
+    assert not is_embedding_fresh(entry, text)
+    assert entry in (await async_db_session.execute(select_stale_entries("proj_a"))).scalars().all()
+    assert await embed_missing_codex_entries(async_db_session, provider, project_id="proj_a") == 1
+    assert entry.embedding_space_id != old_space
+    assert is_embedding_fresh(entry, text)
 
 
 # --- GatewayEmbeddingProvider ---------------------------------------------------
