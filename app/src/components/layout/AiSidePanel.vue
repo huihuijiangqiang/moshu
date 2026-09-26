@@ -86,7 +86,7 @@ const notesLoading = ref(false)
 const noteBusy = ref(false)
 const noteError = ref('')
 const longPlan = ref<LongGenerationPlan | null>(null)
-const longTargetWords = ref(100000)
+const longTargetWords = ref(20000)
 const longSegmentWords = ref(2400)
 const longInstruction = ref('')
 const longPlanLoading = ref(false)
@@ -141,10 +141,11 @@ async function loadNotes() {
 
 const longNextSegment = computed(() => longPlan.value?.segments.find((segment) => segment.status === 'pending' || segment.status === 'failed') ?? null)
 const longRunning = computed(() => Boolean(longPlan.value?.segments.some((segment) => segment.status === 'running')))
-const longReadyCount = computed(() => longPlan.value?.segments.filter((segment) => segment.status === 'ready' || segment.status === 'accepted').length ?? 0)
+const longReadyCount = computed(() => longPlan.value?.segments.filter((segment) => segment.status === 'ready').length ?? 0)
+const longCompletedCount = computed(() => longPlan.value?.segments.filter((segment) => segment.status === 'ready' || segment.status === 'accepted').length ?? 0)
 const longActiveCount = computed(() => longPlan.value?.segments.filter((segment) => segment.status !== 'skipped').length ?? 0)
-const longProgressPercent = computed(() => longActiveCount.value ? Math.min(100, (longReadyCount.value / longActiveCount.value) * 100) : 0)
-const longComplete = computed(() => Boolean(longPlan.value && longActiveCount.value > 0 && longReadyCount.value === longActiveCount.value))
+const longProgressPercent = computed(() => longActiveCount.value ? Math.min(100, (longCompletedCount.value / longActiveCount.value) * 100) : 0)
+const longComplete = computed(() => Boolean(longPlan.value && longActiveCount.value > 0 && longCompletedCount.value === longActiveCount.value))
 
 function clearLongPoll() {
   if (longPollTimer !== null) {
@@ -990,9 +991,9 @@ function forwardReviewDecision(round: ReviewRound, decision: 'approved' | 'chang
     </template>
 
     <template v-else-if="tab === 'long'">
-      <div class="wk-head"><span>长篇分段</span><span class="wk-head-push">最多 100 万字</span><button class="draft-refresh" type="button" title="刷新长篇计划" aria-label="刷新长篇计划" @click="loadLongPlan"><AppIcon name="restore" :size="14" /></button></div>
+      <div class="wk-head"><span>长篇分段</span><span class="wk-head-push">整本可累计至 100 万字</span><button class="draft-refresh" type="button" title="刷新长篇计划" aria-label="刷新长篇计划" @click="loadLongPlan"><AppIcon name="restore" :size="14" /></button></div>
       <section class="long-generation-card" aria-label="长篇分段生成">
-        <p class="long-generation-intro">把整章拆成可恢复的小段，每段独立校验，完成后再合并到候选区。关闭页面也不会丢失已保存的段落。</p>
+        <p class="long-generation-intro">当前计划只生成这一章；整本百万字通过多章累计。每章拆成可恢复的小段，逐段校验后再合并到候选区，关闭页面也不会丢失已保存的段落。</p>
         <div class="long-generation-fields">
           <label><span>目标字数</span><input v-model.number="longTargetWords" type="number" min="800" max="1000000" step="1000" :disabled="Boolean(longPlan?.segments.length)" /></label>
           <label><span>每段字数</span><input v-model.number="longSegmentWords" type="number" min="800" max="32000" step="200" :disabled="Boolean(longPlan?.segments.length)" /></label>
@@ -1004,7 +1005,7 @@ function forwardReviewDecision(round: ReviewRound, decision: 'approved' | 'chang
         <p v-if="longPlanLoading" class="long-generation-state" role="status">正在读取分段计划…</p>
         <template v-if="longPlan?.segments.length">
           <div class="long-generation-progress">
-            <div class="row-between"><strong>{{ longReadyCount }} / {{ longActiveCount }} 段已完成</strong><span>{{ longPlan.targetWords?.toLocaleString() ?? longTargetWords.toLocaleString() }} 字</span></div>
+            <div class="row-between"><strong>{{ longCompletedCount }} / {{ longActiveCount }} 段已完成</strong><span>{{ longPlan.targetWords?.toLocaleString() ?? longTargetWords.toLocaleString() }} 字</span></div>
             <div class="long-generation-progress-bar"><span :style="{ width: `${longProgressPercent}%` }" /></div>
           </div>
           <div class="long-generation-segments">
