@@ -269,6 +269,31 @@ async def test_validation_request_cannot_weaken_manifest_policy(async_db_session
     }
 
 
+async def test_legacy_default_length_policy_upgrades_to_current_tolerance(async_db_session, executor_scope):
+    row = await _segment(async_db_session)
+    row.context_manifest = {"qualityPolicy": {"minRatio": 0.55, "maxRatio": 1.35}}
+    claim = await claim_segment(async_db_session, row.id)
+    prose = "沈砚秋在维修道里确认了新的敌情，并决定先断开旧权限再反向追踪。" * 35
+    await checkpoint_segment(
+        async_db_session,
+        row.id,
+        lease_revision=claim.lease_revision,
+        expected_checkpoint_hash=claim.checkpoint_hash,
+        content_text=prose,
+    )
+
+    result = await validate_claimed_segment(
+        async_db_session,
+        row.id,
+        lease_revision=claim.lease_revision,
+        max_ratio=1.40,
+    )
+
+    assert result.blocking is False
+    assert row.status == "ready"
+    assert row.context_manifest["lastValidation"]["effectivePolicy"]["maxRatio"] == 1.40
+
+
 async def test_merge_requires_contiguous_ready_segments_and_deduplicates_boundary(async_db_session, executor_scope):
     boundary = "这是需要跨段保留且不能重复出现的边界句子。"
     first = await _segment(async_db_session, index=0, status="ready", content="第一段正文。" + boundary)

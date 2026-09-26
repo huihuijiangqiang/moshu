@@ -17,7 +17,11 @@ MIN_SEGMENT_WORDS = 800
 DEFAULT_SEGMENT_WORDS = 2_400
 MAX_SEGMENT_WORDS = 32_000
 DEFAULT_MIN_OUTPUT_RATIO = 0.55
-DEFAULT_MAX_OUTPUT_RATIO = 1.35
+# Long-form providers occasionally finish a paragraph after crossing the
+# requested target by a small amount.  Keep the lower bound strict while
+# allowing a 40% upper tolerance so a complete segment is not made
+# permanently retryable for a few hundred extra characters.
+DEFAULT_MAX_OUTPUT_RATIO = 1.40
 
 
 @dataclass(frozen=True)

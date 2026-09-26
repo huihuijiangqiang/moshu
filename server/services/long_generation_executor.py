@@ -24,6 +24,11 @@ from services.long_generation import (
     validate_segment_output,
 )
 
+# Plans created before the 1.40 tolerance was introduced persisted the old
+# default in their manifest.  Upgrade only that exact legacy default; an
+# author supplied stricter policy remains authoritative.
+LEGACY_DEFAULT_MAX_OUTPUT_RATIO = 1.35
+
 DEFAULT_SEGMENT_LEASE_SECONDS = 5 * 60
 LEGACY_SEGMENT_LEASE_SECONDS = DEFAULT_SEGMENT_LEASE_SECONDS
 MAX_CHECKPOINT_CHARS = 500_000
@@ -305,6 +310,8 @@ async def validate_claimed_segment(
     policy = manifest.get("qualityPolicy") if isinstance(manifest.get("qualityPolicy"), dict) else {}
     policy_min_ratio = float(policy.get("minRatio", DEFAULT_MIN_OUTPUT_RATIO))
     policy_max_ratio = float(policy.get("maxRatio", DEFAULT_MAX_OUTPUT_RATIO))
+    if abs(policy_max_ratio - LEGACY_DEFAULT_MAX_OUTPUT_RATIO) < 1e-9:
+        policy_max_ratio = DEFAULT_MAX_OUTPUT_RATIO
     effective_min_ratio = max(DEFAULT_MIN_OUTPUT_RATIO, policy_min_ratio, min_ratio)
     effective_max_ratio = min(DEFAULT_MAX_OUTPUT_RATIO, policy_max_ratio, max_ratio)
     if effective_max_ratio < effective_min_ratio:
