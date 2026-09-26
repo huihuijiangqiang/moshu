@@ -229,15 +229,16 @@ def backfill_chapter_chunks_task(
     chapter_id: str,
     body_rev: int,
     force: bool = False,
-    batch_size: int = 32,
+    batch_size: int | None = None,
 ):
     """Embed only the current revision's pending body chunks."""
+    effective_batch_size = batch_size or settings.embedding_batch_size
     return run_async(
         _backfill_chapter_chunks_async(
             project_id,
             chapter_id,
             body_rev,
-            batch_size,
+            effective_batch_size,
             task_id=getattr(self.request, "id", None),
             exhausted=int(getattr(self.request, "retries", 0)) >= self.max_retries,
             force=force,
@@ -254,13 +255,14 @@ def backfill_chapter_chunks_task(
     retry_backoff_max=600,
     retry_jitter=True,
 )
-def backfill_codex_embeddings_task(self, project_id: str, batch_size: int = 32):
+def backfill_codex_embeddings_task(self, project_id: str, batch_size: int | None = None):
     """Backfill stale entries and persist every attempt, including exhaustion."""
+    effective_batch_size = batch_size or settings.embedding_batch_size
     retries = int(getattr(self.request, "retries", 0))
     return run_async(
         _backfill_async(
             project_id,
-            batch_size,
+            effective_batch_size,
             attempt=retries + 1,
             task_id=getattr(self.request, "id", None),
             exhausted=retries >= self.max_retries,

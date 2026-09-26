@@ -219,6 +219,8 @@ class Settings(BaseSettings):
     embedding_chunk_chars: int = 1200
     embedding_chunk_overlap_chars: int = 120
     embedding_max_chunks: int = 2048
+    # 本地 embedding 模型通常按单条请求更稳定；远程网关可按需调大。
+    embedding_batch_size: int = Field(default=8, ge=1, le=64)
 
     # SSE 流式与重试配置
     consistency_reasoning_effort: str = "low"  # none, low, medium, high
