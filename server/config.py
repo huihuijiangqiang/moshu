@@ -206,12 +206,19 @@ class Settings(BaseSettings):
                     self.embedding_dimensions]
         return hashlib.sha256(json.dumps(identity).encode()).hexdigest()
 
-    # 分块参数：长章节必须切块后全量处理，不能截断丢尾部。
+    # 一致性抽取分块参数：长章节必须切块后全量处理，不能截断丢尾部。
     # 1M 字正文约需要 180 个 6000 字块；512 为有余量的硬上限，
     # 同时避免对异常超大请求完全取消保护。
     consistency_chunk_chars: int = 6000
     consistency_chunk_overlap_chars: int = 400
     consistency_max_chunks: int = 512
+
+    # 向量检索使用独立的块大小。轻量本地 embedding 模型通常无法在
+    # 6000 字输入上及时返回；较小的检索块保证长篇 RAG 能稳定回填，
+    # 不改变上面供事实抽取使用的上下文块。
+    embedding_chunk_chars: int = 1200
+    embedding_chunk_overlap_chars: int = 120
+    embedding_max_chunks: int = 2048
 
     # SSE 流式与重试配置
     consistency_reasoning_effort: str = "low"  # none, low, medium, high

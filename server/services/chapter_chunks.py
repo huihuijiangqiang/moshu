@@ -236,13 +236,13 @@ async def replace_chapter_chunks(
         .values(status="stale")
     )
 
-    max_chars = settings.consistency_chunk_chars if max_chars is None else max_chars
-    overlap_chars = settings.consistency_chunk_overlap_chars if overlap_chars is None else overlap_chars
+    max_chars = settings.embedding_chunk_chars if max_chars is None else max_chars
+    overlap_chars = settings.embedding_chunk_overlap_chars if overlap_chars is None else overlap_chars
     chunks = chunk_html(
         content_html,
         max_chars=max_chars,
         overlap_chars=overlap_chars,
-        max_chunks=settings.consistency_max_chunks,
+        max_chunks=settings.embedding_max_chunks,
     )
     paragraph_ids = _paragraph_ids(content_json)
     existing_rows = list(
