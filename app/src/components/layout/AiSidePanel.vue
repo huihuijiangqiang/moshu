@@ -659,13 +659,30 @@ const selectedDraftWarnings = computed(() => selectedDraft.value?.coverage?.chec
   (check) => check.severity === 'warning' && ['attention', 'author_review'].includes(check.status)
 ) ?? [])
 
+// The API deliberately bounds one review request so an accidental click on
+// a million-character candidate cannot create an oversized JSON payload. A
+// long segment can contain well over 500 paragraphs, so bulk review must be
+// sent as versioned batches and each response becomes the base for the next.
+const DRAFT_REVIEW_BATCH_SIZE = 400
+
 async function decideDraftSegments(segmentIds: string[], decision: GenerationDraftDecision) {
   const draft = selectedDraft.value
   if (!draft || draftReviewBusy.value || draft.status === 'streaming' || !segmentIds.length) return
   draftReviewBusy.value = true
   draftDetailError.value = ''
   try {
-    selectedDraft.value = await generationDraftApi.review(draft.id, segmentIds, decision, draft.reviewVersion)
+    const uniqueIds = [...new Set(segmentIds)]
+    for (let start = 0; start < uniqueIds.length; start += DRAFT_REVIEW_BATCH_SIZE) {
+      const current = selectedDraft.value
+      if (!current) break
+      const batch = uniqueIds.slice(start, start + DRAFT_REVIEW_BATCH_SIZE)
+      selectedDraft.value = await generationDraftApi.review(
+        current.id,
+        batch,
+        decision,
+        current.reviewVersion,
+      )
+    }
   } catch (error) {
     draftDetailError.value = error instanceof Error ? error.message : '候选审阅保存失败'
     try {

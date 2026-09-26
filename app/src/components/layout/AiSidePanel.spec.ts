@@ -431,6 +431,54 @@ describe('writing reference side panel', () => {
     wrapper.unmount()
   })
 
+  it('chunks bulk paragraph review requests for long candidates', async () => {
+    const segments = Array.from({ length: 401 }, (_, index) => ({
+      id: `long-p${index}`,
+      text: `段落 ${index}。`,
+      decision: 'pending' as const
+    }))
+    const summary: GenerationDraftSummary = {
+      id: 'draft-long-review', runId: 'run-long-review', projectId: 'p1', chapterId: 'ch87', kind: 'chapter',
+      status: 'ready', generatedWords: 12000, excerpt: '长篇候选', requestSummary: {}, errorCode: null,
+      createdAt: '2026-09-07T10:00:00Z', updatedAt: '2026-09-07T10:00:00Z', acceptedAt: null,
+      reviewVersion: 0, review: { total: segments.length, pending: segments.length, accepted: 0, rejected: 0 }
+    }
+    let detail = {
+      ...summary,
+      content: segments.map((segment) => segment.text).join('\n'),
+      segments
+    } as unknown as GenerationDraftDetail
+    vi.spyOn(generationDraftApi, 'get').mockResolvedValue(detail)
+    const review = vi.spyOn(generationDraftApi, 'review').mockImplementation(async (_id, ids, decision, baseVersion) => {
+      detail = {
+        ...detail,
+        reviewVersion: baseVersion + 1,
+        segments: detail.segments.map((segment) => ids.includes(segment.id) ? { ...segment, decision } : segment),
+        review: {
+          ...detail.review,
+          pending: detail.segments.filter((segment) => !ids.includes(segment.id) && segment.decision === 'pending').length,
+          accepted: detail.segments.filter((segment) => ids.includes(segment.id) || segment.decision === 'accepted').length
+        }
+      }
+      return detail
+    })
+    const { wrapper } = await mountPanel()
+    await wrapper.setProps({ drafts: [summary] })
+    const draftsTab = wrapper.findAll('.wk-tab').find((button) => button.text().includes('候选'))
+    if (!draftsTab) throw new Error('draft tab not found')
+    await draftsTab.trigger('click')
+    await wrapper.get('.draft-row').trigger('click')
+    await flushPromises()
+
+    await wrapper.get('.draft-review-tools button').trigger('click')
+    await flushPromises()
+
+    expect(review).toHaveBeenCalledTimes(2)
+    expect(review.mock.calls.map((call) => [call[1].length, call[3]])).toEqual([[400, 0], [1, 1]])
+    expect(wrapper.get('.draft-actions button[data-primary="true"]').attributes('disabled')).toBeUndefined()
+    wrapper.unmount()
+  })
+
   it('turns the mobile panel into persistent private quick notes', async () => {
     const pinia = createPinia()
     setActivePinia(pinia)
