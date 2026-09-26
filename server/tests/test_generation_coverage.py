@@ -14,6 +14,25 @@ def _report(text: str) -> dict:
     return result
 
 
+def test_draft_flags_chapter_numbers_leaking_into_character_memory():
+    text = "她看着信号，想起第四章里伪装救援艇的姿态喷口。"
+    report = _report(text)
+    check = next(item for item in report["checks"] if item["id"] == "quality.narrative_meta")
+    assert check["status"] == "author_review"
+    assert text in check["evidence"][0]
+    assert report["status"] == "needs_attention"
+
+
+def test_draft_flags_generated_prefaces_and_previous_chapter_references():
+    for text in ("以下是本章正文。", "她记得上一章中留下的伤口。", "作为一个语言模型，我会继续故事。"):
+        assert any(item["id"] == "quality.narrative_meta" for item in _report(text)["checks"])
+
+
+def test_draft_preserves_in_world_recollections_and_document_chapters():
+    text = "她想起撤离时那艘假救援艇。维修手册第四章里记着电路图，她翻开第四章逐行查找。"
+    assert not any(item["id"] == "quality.narrative_meta" for item in _report(text)["checks"])
+
+
 def _dramatic_report(text: str) -> dict:
     result = assess_draft_coverage(
         {

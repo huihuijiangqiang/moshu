@@ -121,6 +121,13 @@ _CONCRETE_HOOK_EVENT = re.compile(
     r"逼近|追来|失踪|夺走|撕开|掐住|拽住|拦下|烧着|坠落|翻倒|冲出|闯入|截住)"
     r"[^。！？!?]{0,48}[。！？!?]?$"
 )
+_CHAPTER_REFERENCE = r"(?:第[零一二三四五六七八九十百千万\d]{1,8}章|前一章|上一章|上章|前章|本章)"
+_NARRATIVE_META = re.compile(
+    rf"(?:想起|回想起|记得|回忆起|承接|延续)(?:了|在)?{_CHAPTER_REFERENCE}(?:里|中|的|时|发生|提到)"
+    rf"|{_CHAPTER_REFERENCE}(?:里|中)(?:曾经|已经|发生过|提到过)"
+    r"|(?:以下|下面)是(?:本章|小说)?正文"
+    r"|作为(?:一个|一名)?(?:AI|人工智能|语言模型)"
+)
 
 
 def _summary(checks: list[dict[str, Any]], *, stage: str) -> dict[str, int | str]:
@@ -852,6 +859,20 @@ def assess_draft_coverage(prompt_coverage: dict[str, Any] | None, content: str) 
             )
         checks.append(check)
 
+    meta_matches = list(_NARRATIVE_META.finditer(content or ""))
+    if meta_matches:
+        checks.append({
+            "id": "quality.narrative_meta",
+            "checkType": "quality",
+            "sourceType": "quality",
+            "sourceId": None,
+            "label": "叙述穿帮与生成说明",
+            "status": "author_review",
+            "severity": "warning",
+            "message": "疑似把章节编号或生成说明写进了故事。请改为故事内的事件锚点；若是人物讨论书籍或有意打破第四面墙，请结合语境确认。",
+            "expected": [],
+            "evidence": [content[max(0, match.start() - 16):match.end() + 40] for match in meta_matches[:3]],
+        })
     checks.extend(_narrative_vitality_checks(content))
     checks.extend(_dramatic_contract_checks(content, prompt_coverage))
     checks.extend(_recent_chapter_similarity_checks(content, prompt_coverage))
