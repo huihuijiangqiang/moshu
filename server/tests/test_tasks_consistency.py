@@ -2769,6 +2769,48 @@ async def test_dispatch_outbox_pins_chunk_embedding_to_saved_revision(
     assert sent == [(71, "lease-71")]
 
 
+@pytest.mark.asyncio
+async def test_dispatch_outbox_skips_body_events_behind_current_revision(
+    use_test_session, pipeline_setup, async_db_session, monkeypatch
+):
+    body = await async_db_session.get(ChapterBody, "ch_a")
+    body.rev = 2
+    await async_db_session.commit()
+
+    event = SimpleNamespace(
+        id=73,
+        topic="chapter.body_saved",
+        payload={"project_id": "proj_a", "chapter_id": "ch_a", "body_rev": 1},
+        lease_token="lease-73",
+    )
+    dispatched = []
+    sent = []
+
+    async def fake_lease_batch(db, owner_id, batch_size, lease_duration_seconds):
+        return [event]
+
+    async def fake_mark_sent(db, event_id, lease_token):
+        sent.append((event_id, lease_token))
+        return True
+
+    class FakeTask:
+        @staticmethod
+        def delay(*args):
+            dispatched.append(args)
+
+    monkeypatch.setattr(tasks.OutboxService, "lease_batch", fake_lease_batch)
+    monkeypatch.setattr(tasks.OutboxService, "mark_sent", fake_mark_sent)
+    monkeypatch.setattr(tasks, "process_body_saved", FakeTask())
+
+    result = await tasks._dispatch_outbox_async("dispatcher-stale-body", 20)
+
+    assert result["dispatched"] == 0
+    assert result["skipped"] == 1
+    assert result["failed"] == 0
+    assert dispatched == []
+    assert sent == [(73, "lease-73")]
+
+
 async def test_dispatch_outbox_routes_forced_project_chunk_reindex(
     use_test_session, monkeypatch
 ):

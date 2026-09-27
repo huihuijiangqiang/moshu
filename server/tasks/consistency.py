@@ -1057,10 +1057,31 @@ async def _dispatch_outbox_async(task_id: str, batch_size: int):
         )
 
         dispatched = 0
+        skipped = 0
         failed = 0
 
         for event in events:
             try:
+                # 正文保存和分块索引都是按 revision 绑定的。长文连续保存时，
+                # 旧 revision 的 outbox 可能还没来得及投递；若当前头行已经前进，
+                # 再投递这些任务只会浪费模型调用，且最终必然被 stale_revision 丢弃。
+                # 事件仍然标记 sent，保留审计记录，但把执行机会让给最新版本。
+                if event.topic in {
+                    "chapter.body_saved",
+                    "chapter.chunk_embedding_requested",
+                    "chapter.chunk_reindex_requested",
+                }:
+                    chapter_id = event.payload.get("chapter_id")
+                    body_rev = event.payload.get("body_rev")
+                    if isinstance(chapter_id, str) and isinstance(body_rev, int):
+                        current_rev = await db.scalar(
+                            select(ChapterBody.rev).where(ChapterBody.chapter_id == chapter_id)
+                        )
+                        if current_rev is not None and current_rev > body_rev:
+                            await OutboxService.mark_sent(db, event.id, event.lease_token)
+                            skipped += 1
+                            continue
+
                 # Route based on topic
                 if event.topic == "chapter.body_saved":
                     process_body_saved.delay(event.payload)
@@ -1119,6 +1140,7 @@ async def _dispatch_outbox_async(task_id: str, batch_size: int):
             "task_id": task_id,
             "dispatched": dispatched,
             "failed": failed,
+            "skipped": skipped,
             "batch_size": batch_size,
         }
 
