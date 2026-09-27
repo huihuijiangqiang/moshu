@@ -189,8 +189,8 @@ async def _backfill_chapter_chunks_async(
                 chapter_id=chapter_id,
                 body_rev=body_rev,
                 batch_size=batch_size,
+                on_batch_complete=db.commit,
             )
-            await db.commit()
             await _persist_embedding_usage(project_id, provider, task_id)
             return {
                 "status": "success",

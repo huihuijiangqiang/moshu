@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import secrets
-from collections.abc import Iterable
+from collections.abc import Awaitable, Callable, Iterable
 from dataclasses import dataclass
 from typing import Optional
 
@@ -354,6 +354,7 @@ async def embed_pending_chapter_chunks(
     chapter_id: Optional[str] = None,
     body_rev: Optional[int] = None,
     batch_size: int = 32,
+    on_batch_complete: Callable[[], Awaitable[None]] | None = None,
 ) -> int:
     """Backfill current chunks, optionally pinned to an outbox body revision."""
     if batch_size <= 0:
@@ -389,7 +390,9 @@ async def embed_pending_chapter_chunks(
             row.status = "ready"
             row.error_detail = None
             written += 1
-    await db.flush()
+        await db.flush()
+        if on_batch_complete is not None:
+            await on_batch_complete()
     return written
 
 

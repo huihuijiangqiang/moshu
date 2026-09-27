@@ -182,6 +182,56 @@ async def test_append_does_not_reuse_vector_from_other_embedding_space(
 
 
 @pytest.mark.asyncio
+async def test_batch_checkpoint_survives_interrupted_embedding_and_resumes(
+    async_db_session, seed_project
+):
+    await seed_project(chapter_ids=("ch_1",))
+    first_text = "林照穿过船坞。" * 8
+    second_text = "警报在舱门边响起。" * 8
+    body = document(("p1", first_text), ("p2", second_text))
+    content_html = f"<p>{first_text}</p><p>{second_text}</p>"
+    async_db_session.add(ChapterBody(
+        chapter_id="ch_1", content_html=content_html, content_json=body, rev=1
+    ))
+    await async_db_session.flush()
+    await replace_chapter_chunks(
+        async_db_session, chapter_id="ch_1", project_id="proj_a", body_rev=1,
+        content_html=content_html, content_json=body, max_chars=100, overlap_chars=0,
+    )
+    await async_db_session.commit()
+
+    class InterruptedProvider:
+        def __init__(self):
+            self.calls = 0
+
+        async def embed_batch(self, texts):
+            self.calls += 1
+            if self.calls == 2:
+                raise RuntimeError("embedding interrupted")
+            return await MockEmbeddingProvider().embed_batch(texts)
+
+    with pytest.raises(RuntimeError, match="embedding interrupted"):
+        await embed_pending_chapter_chunks(
+            async_db_session, InterruptedProvider(), project_id="proj_a",
+            chapter_id="ch_1", body_rev=1, batch_size=1,
+            on_batch_complete=async_db_session.commit,
+        )
+    await async_db_session.rollback()
+    statuses = [
+        row.status for row in (
+            await async_db_session.execute(
+                select(ChapterChunk).order_by(ChapterChunk.chunk_index)
+            )
+        ).scalars().all()
+    ]
+    assert statuses == ["ready", "pending"]
+    assert await embed_pending_chapter_chunks(
+        async_db_session, MockEmbeddingProvider(), project_id="proj_a",
+        chapter_id="ch_1", body_rev=1, batch_size=1,
+    ) == 1
+
+
+@pytest.mark.asyncio
 async def test_replace_rejects_cross_project_chapter(async_db_session, seed_project):
     await seed_project(chapter_ids=("ch_1",))
     with pytest.raises(ValueError, match="does not belong"):
