@@ -28,6 +28,32 @@ def test_plan_distributes_beats_and_keeps_scene_purpose():
     assert sum(len(item.required_beats) for item in plan) == 3
 
 
+def test_sparse_outline_spans_entire_long_plan_instead_of_only_the_opening():
+    plan = make_segment_plan(
+        16_000,
+        scene_purposes=["进入补给环", "查清权限", "带队撤离", "公开证据"],
+        required_beats=["发现名单", "夺回记录", "公布真相"],
+        segment_words=2_000,
+    )
+    assert [item.purpose.split("；")[0] for item in plan] == [
+        "进入补给环", "进入补给环", "查清权限", "查清权限",
+        "带队撤离", "带队撤离", "公开证据", "公开证据",
+    ]
+    assert [index for index, item in enumerate(plan) if item.required_beats] == [0, 2, 5]
+    assert len({item.purpose for item in plan}) == len(plan)
+    assert "兑现本节点结果" in plan[-1].purpose
+
+
+def test_single_segment_outline_group_must_complete_its_goal():
+    plan = make_segment_plan(
+        3_200,
+        scene_purposes=["设局", "反制", "撤离"],
+        segment_words=800,
+    )
+    assert "完成本节点目标" in plan[2].purpose
+    assert "完成本节点目标" in plan[-1].purpose
+
+
 def test_context_budget_is_elastic_but_has_tested_ceiling():
     small = context_budget_for_segment(model_window_tokens=256_000, segment_target_words=1_000)
     large = context_budget_for_segment(model_window_tokens=1_000_000, segment_target_words=20_000)

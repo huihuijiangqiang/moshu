@@ -60,14 +60,37 @@ def make_segment_plan(
     sizes = split_target_words(target_words, segment_words=segment_words)
     purposes = [str(value).strip() for value in scene_purposes if str(value).strip()]
     beats = tuple(str(value).strip() for value in required_beats if str(value).strip())
+    count = len(sizes)
+    beat_targets: dict[int, list[str]] = {}
+    for beat_index, beat in enumerate(beats):
+        target = min(count - 1, beat_index * count // len(beats))
+        beat_targets.setdefault(target, []).append(beat)
     result: list[SegmentPlan] = []
     for index, size in enumerate(sizes):
-        purpose = purposes[index] if index < len(purposes) else (
-            "开场与目标" if index == 0 else "推进冲突并完成转折" if index < len(sizes) - 1 else "收束本段并留下自然钩子"
-        )
-        # Beats are distributed, rather than repeated in every call.  The
-        # caller may still include all open threads in the context manifest.
-        assigned = tuple(beat for beat_index, beat in enumerate(beats) if beat_index % len(sizes) == index)
+        if purposes and len(purposes) < count:
+            purpose_index = min(len(purposes) - 1, index * len(purposes) // count)
+            start = (purpose_index * count + len(purposes) - 1) // len(purposes)
+            end = ((purpose_index + 1) * count + len(purposes) - 1) // len(purposes)
+            stage = index - start
+            stage_count = end - start
+            if stage_count == 1:
+                phase = "完成本节点目标并引出下一个节点"
+            elif stage == 0:
+                phase = "建立目标和新的障碍"
+            elif stage == stage_count - 1:
+                phase = "兑现本节点结果并引出下一个节点"
+            elif stage >= stage_count * 2 // 3:
+                phase = "让对手反制并改变代价或信息"
+            else:
+                phase = "用不可重复的行动推进局面"
+            purpose = f"{purposes[purpose_index]}；第{stage + 1}/{stage_count}段：{phase}"
+        elif purposes:
+            purpose = purposes[index] if index < len(purposes) else (
+                "收束本段并留下自然钩子" if index == count - 1 else "推进冲突并完成转折"
+            )
+        else:
+            purpose = "开场与目标" if index == 0 else "推进冲突并完成转折" if index < count - 1 else "收束本段并留下自然钩子"
+        assigned = tuple(beat_targets.get(index, ()))
         result.append(SegmentPlan(index=index, target_words=size, purpose=purpose, required_beats=assigned))
     return result
 
