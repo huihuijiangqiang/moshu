@@ -383,6 +383,20 @@ async def test_l3_rejects_an_empty_status_list_before_calling_the_gateway(
         )
 
 
+async def test_batch_l3_rejects_statuses_before_embedding(async_db_session, seed_project):
+    await seed_project()
+
+    class ForbiddenEmbeddingProvider:
+        async def embed_batch(self, texts):
+            raise AssertionError("invalid status filter reached embedding gateway")
+
+    retrieval = ConsistencyRetrieval(embedding_provider=ForbiddenEmbeddingProvider())
+    with pytest.raises(ValueError, match="must not be empty"):
+        await retrieval.retrieve_similar_entities_l3_batch(
+            async_db_session, "proj_a", ["查询"], statuses=[]
+        )
+
+
 async def test_claim_subject_resolution_ignores_pending_entries(
     async_db_session, seed_project
 ):

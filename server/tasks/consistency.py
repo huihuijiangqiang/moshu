@@ -545,11 +545,11 @@ async def _extract_claims_async(task_id: str, run_id: int):
             # 解析 subject/object 的 entry_id：规则按 entry_id 分组，
             # 不解析就等于关掉跨章节冲突检测。
             linker = build_entity_linker()
+            linked_pairs = await linker.link_claims(db, run.project_id, claims_data)
             linked = []
-            for claim_data in claims_data:
-                subject_entry_id, object_entry_id = await linker.link_claim(
-                    db, run.project_id, claim_data
-                )
+            for claim_data, (subject_entry_id, object_entry_id) in zip(
+                claims_data, linked_pairs
+            ):
                 linked.append(
                     {
                         **claim_data,

@@ -275,6 +275,41 @@ async def test_link_stats_count_resolved_and_unresolved(codex_fixture, async_db_
     assert stats["resolved_objects"] == 1
 
 
+async def test_claim_batch_deduplicates_queries_and_keeps_kind_filters(
+    codex_fixture, async_db_session
+):
+    class BatchRetrieval(RecordingRetrieval):
+        def __init__(self):
+            super().__init__()
+            self.embedding_provider = object()
+            self.batch_calls = []
+
+        async def retrieve_similar_entities_l3_batch(
+            self, db, project_id, query_texts, top_k=5, threshold=0.8,
+            kinds=None, statuses=None,
+        ):
+            self.batch_calls.append((list(query_texts), kinds))
+            candidates = {"陌生甲": "cx_lee", "陌生乙": "cx_wang", "陌生地点": "cx_city"}
+            return [[{"entry_id": candidates[text]}] for text in query_texts]
+
+    retrieval = BatchRetrieval()
+    linker = EntityLinker(retrieval)
+    pairs = await linker.link_claims(async_db_session, "proj_a", [
+        {"subject_text": "陌生甲", "object_type": "entity", "object_value": "陌生乙"},
+        {"subject_text": "陌生甲", "object_type": "scalar", "object_value": "true"},
+        {"subject_text": "长风", "object_type": "location", "object_value": "陌生地点"},
+    ])
+
+    assert pairs == [("cx_lee", "cx_wang"), ("cx_lee", None), ("cx_lee", "cx_city")]
+    assert retrieval.batch_calls == [
+        (["陌生甲", "陌生乙"], None),
+        (["陌生地点"], ["location", "place"]),
+    ]
+    assert retrieval.l3_calls == []
+    assert linker.stats.resolved_subjects == 3
+    assert linker.stats.resolved_objects == 2
+
+
 # --- 与抽取任务的接线 ---------------------------------------------------------
 
 

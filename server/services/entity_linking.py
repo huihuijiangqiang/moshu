@@ -23,6 +23,7 @@ from typing import Optional
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from config import settings
 from services.retrieval import ConsistencyRetrieval
 
 #: object_type='entity' 时才把 object_value 当作实体去解析；
@@ -145,25 +146,136 @@ class EntityLinker:
         claim_data: dict,
     ) -> tuple[Optional[str], Optional[str]]:
         """解析一条 claim 的 (subject_entry_id, object_entry_id)。"""
-        subject_entry_id = await self.resolve(db, project_id, claim_data.get("subject_text"))
-        if subject_entry_id:
-            self.stats.resolved_subjects += 1
-        else:
-            self.stats.unresolved_subjects += 1
+        return (await self.link_claims(db, project_id, [claim_data]))[0]
 
-        object_entry_id = None
-        object_type = claim_data.get("object_type")
-        if object_type in ENTITY_OBJECT_TYPES:
-            object_entry_id = await self.resolve(
-                db,
-                project_id,
-                claim_data.get("object_value"),
-                kinds=_OBJECT_KIND_HINTS.get(object_type),
+    async def _resolve_many(
+        self,
+        db: AsyncSession,
+        project_id: str,
+        requests: list[tuple[Optional[str], Optional[list[str]]]],
+    ) -> list[Optional[str]]:
+        """Resolve aliases first, then batch the vector fallback by kind."""
+        results: list[Optional[str]] = [None] * len(requests)
+        pending: dict[tuple[str, str, Optional[str]], tuple[str, Optional[list[str]], list[int]]] = {}
+
+        for index, (text, kinds) in enumerate(requests):
+            if not text or not text.strip():
+                continue
+            key = self._cache_key(project_id, text, kinds)
+            if key in self._cache:
+                results[index] = self._cache[key]
+                continue
+            item = pending.get(key)
+            if item is None:
+                pending[key] = (text, kinds, [index])
+            else:
+                item[2].append(index)
+
+        unresolved: list[tuple[str, Optional[list[str]], tuple[str, str, Optional[str]], list[int]]] = []
+        for key, (text, kinds, indexes) in pending.items():
+            entry_id = await self._retrieval.resolve_entity_by_alias_l2(
+                db, project_id, text, kinds=kinds
             )
+            if entry_id:
+                self._cache[key] = entry_id
+                for index in indexes:
+                    results[index] = entry_id
+            else:
+                unresolved.append((text, kinds, key, indexes))
+
+        if not unresolved or not self._use_vector_fallback:
+            return results
+
+        batch_method = getattr(self._retrieval, "retrieve_similar_entities_l3_batch", None)
+        can_batch = callable(batch_method) and self._retrieval.embedding_provider is not None
+        if not can_batch:
+            for text, kinds, key, indexes in unresolved:
+                try:
+                    candidates = await self._retrieval.retrieve_similar_entities_l3(
+                        db, project_id, text, top_k=1, threshold=self._threshold, kinds=kinds
+                    )
+                    entry_id = candidates[0]["entry_id"] if candidates else None
+                except Exception as exc:
+                    if self._strict:
+                        raise
+                    self._record_vector_failure(exc)
+                    entry_id = None
+                self._cache[key] = entry_id
+                for index in indexes:
+                    results[index] = entry_id
+            return results
+
+        grouped: dict[tuple[str, ...], list[tuple[str, Optional[list[str]], tuple[str, str, Optional[str]], list[int]]]] = {}
+        for item in unresolved:
+            grouped.setdefault(tuple(item[1] or ()), []).append(item)
+
+        for grouped_items in grouped.values():
+            kinds = grouped_items[0][1]
+            for start in range(0, len(grouped_items), settings.embedding_batch_size):
+                batch = grouped_items[start : start + settings.embedding_batch_size]
+                try:
+                    candidate_batches = await batch_method(
+                        db,
+                        project_id,
+                        [item[0] for item in batch],
+                        top_k=1,
+                        threshold=self._threshold,
+                        kinds=kinds,
+                    )
+                    if len(candidate_batches) != len(batch):
+                        raise RuntimeError("embedding batch result length mismatch")
+                except Exception as exc:
+                    if self._strict:
+                        raise
+                    self._record_vector_failure(exc, count=len(batch))
+                    candidate_batches = [[] for _ in batch]
+
+                for item, candidates in zip(batch, candidate_batches):
+                    entry_id = candidates[0]["entry_id"] if candidates else None
+                    self._cache[item[2]] = entry_id
+                    for index in item[3]:
+                        results[index] = entry_id
+
+        return results
+
+    def _record_vector_failure(self, error: Exception, *, count: int = 1) -> None:
+        self.stats.vector_failures += count
+        if len(self.stats.vector_error_samples) < 3:
+            self.stats.vector_error_samples.append(f"{type(error).__name__}: {error}")
+
+    async def link_claims(
+        self,
+        db: AsyncSession,
+        project_id: str,
+        claims: list[dict],
+    ) -> list[tuple[Optional[str], Optional[str]]]:
+        """Link a claim batch while sharing alias and embedding work."""
+        requests: list[tuple[Optional[str], Optional[list[str]]]] = []
+        subject_indexes: list[int] = []
+        object_indexes: list[Optional[int]] = []
+        for claim in claims:
+            subject_indexes.append(len(requests))
+            requests.append((claim.get("subject_text"), None))
+            object_type = claim.get("object_type")
+            if object_type in ENTITY_OBJECT_TYPES:
+                object_indexes.append(len(requests))
+                requests.append((claim.get("object_value"), _OBJECT_KIND_HINTS.get(object_type)))
+            else:
+                object_indexes.append(None)
+
+        resolved = await self._resolve_many(db, project_id, requests)
+        linked: list[tuple[Optional[str], Optional[str]]] = []
+        for index, object_index in zip(subject_indexes, object_indexes):
+            subject_entry_id = resolved[index]
+            object_entry_id = resolved[object_index] if object_index is not None else None
+            if subject_entry_id:
+                self.stats.resolved_subjects += 1
+            else:
+                self.stats.unresolved_subjects += 1
             if object_entry_id:
                 self.stats.resolved_objects += 1
-
-        return subject_entry_id, object_entry_id
+            linked.append((subject_entry_id, object_entry_id))
+        return linked
 
 
 __all__ = ["ENTITY_OBJECT_TYPES", "EntityLinker", "LinkStats"]

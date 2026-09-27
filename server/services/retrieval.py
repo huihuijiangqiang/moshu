@@ -249,19 +249,43 @@ class ConsistencyRetrieval:
         Returns:
             List of {"entry_id", "name", "kind", "distance", "similarity"}
         """
-        from sqlalchemy import text
-
         if top_k <= 0:
             raise ValueError("top_k must be positive")
         if not 0.0 <= threshold <= 1.0:
             raise ValueError("threshold must be between 0 and 1")
-        effective_statuses = resolve_codex_statuses(statuses)
+        resolve_codex_statuses(statuses)
         if not query_text or not query_text.strip():
             return []
 
         # Generate query embedding
         query_embedding = await self.embedding_provider.embed_text(query_text)
+        return await self._retrieve_similar_entities_for_embedding(
+            db,
+            project_id,
+            query_embedding,
+            top_k=top_k,
+            threshold=threshold,
+            kinds=kinds,
+            exclude_entry_ids=exclude_entry_ids,
+            statuses=statuses,
+        )
 
+    async def _retrieve_similar_entities_for_embedding(
+        self,
+        db: AsyncSession,
+        project_id: str,
+        query_embedding: list[float],
+        *,
+        top_k: int,
+        threshold: float,
+        kinds: list[str] | None,
+        exclude_entry_ids: list[str] | None,
+        statuses: list[str] | None,
+    ) -> list[dict]:
+        """Run the pgvector part after the embedding has already been computed."""
+        from sqlalchemy import text
+
+        effective_statuses = resolve_codex_statuses(statuses)
         # pgvector cosine distance: 0 = 完全相同，1 = 正交，2 = 完全相反。
         # similarity = 1 - distance，所以 similarity >= threshold 等价于
         # distance <= 1 - threshold。
@@ -320,6 +344,50 @@ class ConsistencyRetrieval:
             )
 
         return candidates
+
+    async def retrieve_similar_entities_l3_batch(
+        self,
+        db: AsyncSession,
+        project_id: str,
+        query_texts: list[str],
+        top_k: int = 5,
+        threshold: float = 0.8,
+        kinds: list[str] | None = None,
+        statuses: list[str] | None = None,
+    ) -> list[list[dict]]:
+        """Batch embedding-backed entity retrieval while preserving input order.
+
+        Entity linking often resolves the same handful of names across hundreds of
+        claims.  Sending all unresolved names through ``embed_batch`` avoids one
+        network round trip per claim; the pgvector queries remain isolated so a
+        candidate from one text can never leak into another result.
+        """
+        if not query_texts:
+            return []
+        if top_k <= 0:
+            raise ValueError("top_k must be positive")
+        if not 0.0 <= threshold <= 1.0:
+            raise ValueError("threshold must be between 0 and 1")
+        resolve_codex_statuses(statuses)
+        if any(not text or not text.strip() for text in query_texts):
+            raise ValueError("query texts must not be empty")
+
+        vectors = await self.embedding_provider.embed_batch(query_texts)
+        if len(vectors) != len(query_texts):
+            raise ValueError("embedding provider returned a different number of vectors")
+        return [
+            await self._retrieve_similar_entities_for_embedding(
+                db,
+                project_id,
+                vector,
+                top_k=top_k,
+                threshold=threshold,
+                kinds=kinds,
+                exclude_entry_ids=None,
+                statuses=statuses,
+            )
+            for vector in vectors
+        ]
 
     async def resolve_entity(
         self,

@@ -227,8 +227,9 @@ class Settings(BaseSettings):
     consistency_request_timeout: float = 180.0  # 秒
     consistency_max_retries: int = 3
     consistency_retry_base_delay: float = 1.0  # 秒
-    # 分块抽取/摘要的并发上限；保留有限并发，避免百万字扫描串行超时。
-    consistency_chunk_concurrency: int = Field(default=2, ge=1, le=32)
+    # 分块抽取/摘要的并发上限。六路并发能让百万字扫描在 worker 时限内完成；
+    # 低配或受限网关可通过 MOSHU_CONSISTENCY_CHUNK_CONCURRENCY 下调。
+    consistency_chunk_concurrency: int = Field(default=6, ge=1, le=32)
 
     # Novel generation.  The model falls back to the configured consistency
     # summary model so deployments keep one source of truth unless overridden.
