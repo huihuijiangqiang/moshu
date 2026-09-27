@@ -737,11 +737,20 @@ async def create_long_chapter_plan(
         select(GenerationSegment)
         .where(GenerationSegment.chapter_id == chapter.id)
         .order_by(GenerationSegment.segment_index)
-        .with_for_update()
     )
     existing = list(result.scalars().all())
     body = await db.scalar(select(ChapterBody).where(ChapterBody.chapter_id == chapter.id))
     _raise_ledger_body_mismatch(_accepted_ledger_mismatch(body, existing))
+    editable_result = await db.execute(
+        select(GenerationSegment)
+        .where(
+            GenerationSegment.chapter_id == chapter.id,
+            GenerationSegment.status.notin_(("accepted", "running")),
+        )
+        .with_for_update(skip_locked=True)
+        .execution_options(populate_existing=True)
+    )
+    editable_by_index = {row.segment_index: row for row in editable_result.scalars().all()}
     source_revisions = {"chapterBodyRev": body.rev if body else 0, "chapterUpdatedAt": chapter.updated_at.isoformat() if chapter.updated_at else None}
     by_index = {row.segment_index: row for row in existing}
     for plan in plans:
@@ -763,7 +772,8 @@ async def create_long_chapter_plan(
                 status="pending",
             )
             db.add(row)
-        elif row.status not in {"accepted", "running"}:
+        elif row.segment_index in editable_by_index:
+            row = editable_by_index[row.segment_index]
             plan_changed = row.target_words != plan.target_words or row.context_manifest != manifest
             if plan_changed:
                 row.target_words = plan.target_words
@@ -782,8 +792,8 @@ async def create_long_chapter_plan(
                 row.status = "pending"
                 row.error_code = None
     planned_indexes = {plan.index for plan in plans}
-    for row in existing:
-        if row.segment_index not in planned_indexes and row.status not in {"accepted", "running"}:
+    for row in editable_by_index.values():
+        if row.segment_index not in planned_indexes:
             row.status = "skipped"
     await db.commit()
     rows = await db.execute(

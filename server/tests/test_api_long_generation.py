@@ -170,6 +170,47 @@ async def test_long_plan_blocks_stale_accepted_ledger_after_body_restore(
     assert blocked.json()["detail"]["segmentIndexes"] == [1]
 
 
+async def test_replan_preserves_running_segment_and_updates_future_purposes(
+    app_client, async_db_session, seed_project, auth_headers
+):
+    await seed_project(
+        user_id="long_replan_writer",
+        project_id="long_replan_project",
+        chapter_ids=("long_replan_chapter",),
+    )
+    headers = auth_headers("long_replan_writer")
+    first = await app_client.post(
+        "/generate/long-plan",
+        headers=headers,
+        json={"chapterId": "long_replan_chapter", "targetWords": 2400, "segmentWords": 800},
+    )
+    assert first.status_code == 200, first.text
+    running_id = first.json()["segments"][0]["id"]
+    claim = await app_client.post(
+        f"/generate/long-segments/{running_id}/claim",
+        headers=headers,
+        json={"leaseOwner": "ongoing-worker"},
+    )
+    assert claim.status_code == 200, claim.text
+
+    changed = await app_client.post(
+        "/generate/long-plan",
+        headers=headers,
+        json={
+            "chapterId": "long_replan_chapter",
+            "targetWords": 2400,
+            "segmentWords": 800,
+            "scenePurposes": ["开场", "发现证据", "公开证据"],
+        },
+    )
+    assert changed.status_code == 200, changed.text
+    segments = changed.json()["segments"]
+    assert segments[0]["id"] == running_id
+    assert segments[0]["status"] == "running"
+    assert segments[0]["revision"] == claim.json()["leaseRevision"]
+    assert [row["manifest"]["purpose"] for row in segments[1:]] == ["发现证据", "公开证据"]
+
+
 async def test_long_merge_materializes_only_contiguous_ready_prefix(
     app_client, async_db_session, seed_project, auth_headers
 ):
