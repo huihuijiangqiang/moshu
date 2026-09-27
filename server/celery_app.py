@@ -18,10 +18,11 @@ celery_app.conf.update(
     timezone="UTC",
     enable_utc=True,
     task_track_started=True,
-    # A long chapter may require multiple 180-second streamed requests and retries.
-    # Keep a finite ceiling, but do not kill valid chunked work after one slow retry.
-    task_time_limit=1800,
-    task_soft_time_limit=1740,
+    # A long chapter may require hundreds of streamed extraction requests. Keep
+    # a finite ceiling, but leave enough time for a million-word consistency run
+    # to finish instead of leaving its run row stuck in ``extracting``.
+    task_time_limit=7200,
+    task_soft_time_limit=7140,
     task_acks_late=True,
     task_reject_on_worker_lost=True,
     worker_prefetch_multiplier=1,
