@@ -24,7 +24,9 @@ services:
     image: ollama/ollama:latest
     profiles: ["local-embedding"]
     environment:
-      OLLAMA_NUM_PARALLEL: "1"
+      # Allow generation-time retrieval and background indexing to make progress
+      # together. The value remains overridable for low-memory machines.
+      OLLAMA_NUM_PARALLEL: "${MOSHU_OLLAMA_NUM_PARALLEL:-2}"
       OLLAMA_MAX_LOADED_MODELS: "1"
       OLLAMA_KEEP_ALIVE: "2m"
       OLLAMA_CONTEXT_LENGTH: "8192"
