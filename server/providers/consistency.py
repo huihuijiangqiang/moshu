@@ -649,8 +649,15 @@ class ConsistencyProvider:
         client = await self._get_client()
         try:
             aggregated: dict[str, dict[str, Any]] = {}
-            for chunk in chunks:
-                for claim_dict in await self._extract_chunk(client, chunk):
+            semaphore = asyncio.Semaphore(settings.consistency_chunk_concurrency)
+
+            async def extract_one(chunk: TextChunk) -> list[dict[str, Any]]:
+                async with semaphore:
+                    return await self._extract_chunk(client, chunk)
+
+            extracted_chunks = await asyncio.gather(*(extract_one(chunk) for chunk in chunks))
+            for chunk_claims in extracted_chunks:
+                for claim_dict in chunk_claims:
                     fingerprint = claim_dict["fingerprint"]
                     existing = aggregated.get(fingerprint)
                     if existing is None or claim_dict["confidence"] > existing["confidence"]:
@@ -788,15 +795,21 @@ class ConsistencyProvider:
                     max_words=max_words,
                 )
 
+            semaphore = asyncio.Semaphore(settings.consistency_chunk_concurrency)
+
+            async def summarize_one(chunk: TextChunk) -> tuple[str, int]:
+                async with semaphore:
+                    return await self._summarize_text(
+                        client,
+                        chunk.text,
+                        summary_type=f"{summary_type} section",
+                        max_words=max_words,
+                    )
+
+            partial_results = await asyncio.gather(*(summarize_one(chunk) for chunk in chunks))
             total_tokens = 0
             partials = []
-            for chunk in chunks:
-                text, tokens = await self._summarize_text(
-                    client,
-                    chunk.text,
-                    summary_type=f"{summary_type} section",
-                    max_words=max_words,
-                )
+            for text, tokens in partial_results:
                 partials.append(text)
                 total_tokens += tokens
 
