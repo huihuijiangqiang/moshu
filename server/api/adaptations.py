@@ -588,16 +588,14 @@ async def get_production_package(
         ).order_by(VisualProfile.codex_entry_id)
     )).scalars().all() if character_ids else []
     profiles_by_character = {profile.codex_entry_id: profile for profile in profiles}
-    referenced_asset_ids = {
-        asset_id
-        for shot in shots
-        for asset_id in (shot.reference_asset_ids or [])
-    }
-    referenced_asset_ids.update(
-        asset_id
-        for profile in profiles
-        for asset_id in (profile.reference_asset_ids or [])
-    )
+    asset_referrers: dict[str, set[tuple[str, str]]] = {}
+    for shot in shots:
+        for asset_id in shot.reference_asset_ids or []:
+            asset_referrers.setdefault(asset_id, set()).add(("shot", shot.id))
+    for profile in profiles:
+        for asset_id in profile.reference_asset_ids or []:
+            asset_referrers.setdefault(asset_id, set()).add(("character", profile.codex_entry_id))
+    referenced_asset_ids = set(asset_referrers)
     asset_rows = (await db.execute(
         select(ProductionAsset).where(
             ProductionAsset.adaptation_id == adaptation.id,
@@ -630,10 +628,12 @@ async def get_production_package(
                 issue("visual_profile_appearance_missing", "character", character_id, "人物视觉档案缺少外观锚点")
     for asset_id in sorted(referenced_asset_ids):
         asset = assets_by_id.get(asset_id)
-        if not asset:
-            issue("asset_reference_missing", "shot", asset_id, "镜头引用的画面素材不存在")
-        elif asset.status != "approved":
-            issue("asset_unapproved", "shot", asset.id, "镜头引用的画面素材尚未确认")
+        for entity_type, entity_id in sorted(asset_referrers[asset_id]):
+            label = "人物全身设定图" if entity_type == "character" else "镜头引用的画面素材"
+            if not asset:
+                issue("asset_reference_missing", entity_type, entity_id, f"{label}不存在")
+            elif asset.status != "approved":
+                issue("asset_unapproved", entity_type, entity_id, f"{label}尚未确认")
 
     scene_data = []
     total_duration = 0

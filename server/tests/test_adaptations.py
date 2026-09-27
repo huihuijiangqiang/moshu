@@ -415,7 +415,12 @@ async def test_production_asset_upload_binds_to_shot_and_requires_review(
 
     package_path = f"/episodes/{episode['id']}/production-package"
     pending = (await app_client.get(package_path, headers=headers)).json()
-    assert "asset_unapproved" in {item["code"] for item in pending["readiness"]["issues"]}
+    assert any(
+        item["code"] == "asset_unapproved"
+        and item["entity_type"] == "shot"
+        and item["entity_id"] == shot["id"]
+        for item in pending["readiness"]["issues"]
+    )
     await app_client.patch(f"/shots/{shot['id']}", headers=headers, json={"status": "approved"})
     approved = await app_client.patch(f"/assets/{asset['id']}", headers=headers, json={"status": "approved"})
     assert approved.status_code == 200
@@ -482,6 +487,21 @@ async def test_character_sheet_upload_binds_to_visual_profile_and_review(
     asset_id = uploaded.json()["id"]
     profile = await async_db_session.get(VisualProfile, "profile-asset-profile")
     assert profile.reference_asset_ids == [asset_id]
+    episode = (await app_client.post(
+        "/adaptations/profile-asset-adaptation/episodes", headers=headers,
+        json={"number": 1, "title": "第一集", "source_chapter_ids": ["profile-asset-chapter"]},
+    )).json()
+    await app_client.post(
+        f"/episodes/{episode['id']}/scenes", headers=headers,
+        json={"order": 1, "purpose": "人物亮相", "character_entry_ids": ["profile-asset-character"]},
+    )
+    pending = (await app_client.get(f"/episodes/{episode['id']}/production-package", headers=headers)).json()
+    assert any(
+        item["code"] == "asset_unapproved"
+        and item["entity_type"] == "character"
+        and item["entity_id"] == "profile-asset-character"
+        for item in pending["readiness"]["issues"]
+    )
 
     rejected = await app_client.patch(
         f"/assets/{asset_id}", headers=headers,

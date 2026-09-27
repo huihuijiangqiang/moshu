@@ -83,11 +83,18 @@ describe('storyboard static editing workflow', () => {
     await router.isReady()
     const wrapper = mount(StoryboardView, { attachTo: document.body, global: { plugins: [pinia, router] } })
     await vi.waitFor(() => expect(wrapper.find('.storyboard-shot-editor').exists()).toBe(true))
+    const store = useStoryboardStore()
+    const characterId = store.selectedScene?.characterEntryIds[0]
+    const profile = store.adaptation?.visualProfiles.find((item) => item.codexEntryId === characterId)
+    if (!profile) throw new Error('selected scene character profile not found')
+    await store.uploadCharacterSheet('p1', new File(['character-sheet'], 'character.png', { type: 'image/png' }), profile.id)
 
     await wrapper.get('.storyboard-production-actions button:first-child').trigger('click')
     await vi.waitFor(() => expect(wrapper.get('.storyboard-production-result').text()).toContain('镜头'))
     expect(wrapper.get('.storyboard-production-actions button:last-child').attributes('disabled')).toBeUndefined()
     expect(wrapper.findAll('.storyboard-production-issues li').length).toBeGreaterThan(0)
+    expect(wrapper.get('.storyboard-production-issues').text()).toContain(`${profile.displayName}人物全身设定图尚未确认`)
+    expect(wrapper.get('.storyboard-production-issues').text()).not.toContain('场 -')
 
     await wrapper.get('.storyboard-editor-grid textarea[placeholder^="人物、环境"]').setValue('新的画面锚点')
     await vi.waitFor(() => expect(wrapper.find('.storyboard-production-result').exists()).toBe(false))

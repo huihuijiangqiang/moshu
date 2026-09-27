@@ -802,8 +802,20 @@ export const mockApi = {
     const profiles = adaptation.visualProfiles.filter((profile) => characterIds.includes(profile.codexEntryId)).sort((a, b) => a.codexEntryId.localeCompare(b.codexEntryId))
     const profilesByCharacter = new Map(profiles.map((profile) => [profile.codexEntryId, profile]))
     const assets = storyboardAssetStates.get(projectId) ?? []
-    const referencedAssetIds = new Set(scenes.flatMap((scene) => scene.shots.flatMap((shot) => shot.referenceAssetIds)))
-    for (const profile of profiles) profile.referenceAssetIds.forEach((assetId) => referencedAssetIds.add(assetId))
+    const assetReferrers = new Map<string, Array<{ type: 'shot' | 'character'; id: string }>>()
+    for (const scene of scenes) {
+      for (const shot of scene.shots) {
+        for (const assetId of shot.referenceAssetIds) {
+          assetReferrers.set(assetId, [...(assetReferrers.get(assetId) ?? []), { type: 'shot', id: shot.id }])
+        }
+      }
+    }
+    for (const profile of profiles) {
+      for (const assetId of profile.referenceAssetIds) {
+        assetReferrers.set(assetId, [...(assetReferrers.get(assetId) ?? []), { type: 'character', id: profile.codexEntryId }])
+      }
+    }
+    const referencedAssetIds = new Set(assetReferrers.keys())
     const chapters = chaptersFor(projectId)
     if (!scenes.length) addIssue('no_scenes', 'episode', episode.id, '本集还没有场景')
     for (const chapterId of episode.sourceChapterIds) {
@@ -819,8 +831,11 @@ export const mockApi = {
     }
     for (const assetId of [...referencedAssetIds].sort()) {
       const asset = assets.find((item) => item.id === assetId)
-      if (!asset) addIssue('asset_reference_missing', 'shot', assetId, '镜头引用的画面素材不存在')
-      else if (asset.status !== 'approved') addIssue('asset_unapproved', 'shot', asset.id, '镜头引用的画面素材尚未确认')
+      for (const referrer of assetReferrers.get(assetId) ?? []) {
+        const label = referrer.type === 'character' ? '人物全身设定图' : '镜头引用的画面素材'
+        if (!asset) addIssue('asset_reference_missing', referrer.type, referrer.id, `${label}不存在`)
+        else if (asset.status !== 'approved') addIssue('asset_unapproved', referrer.type, referrer.id, `${label}尚未确认`)
+      }
     }
     let totalDuration = 0
     const sceneRows = scenes.map((scene) => {

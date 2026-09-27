@@ -166,6 +166,7 @@ function issueTarget(issue: ProductionPackageIssue) {
 
 function focusIssue(issue: ProductionPackageIssue) {
   const episode = storyboard.selectedEpisode
+  if (issue.entity_type === 'character') selectedCharacterId.value = issue.entity_id
   const scene = episode?.scenes.find((item) => item.id === issue.entity_id || item.shots.some((shot) => shot.id === issue.entity_id || shot.referenceAssetIds.includes(issue.entity_id)) || (issue.entity_type === 'character' && item.characterEntryIds.includes(issue.entity_id)))
   if (!scene) return
   storyboard.selectScene(scene.id)
