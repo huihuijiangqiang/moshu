@@ -258,6 +258,36 @@ async def replace_chapter_chunks(
         .all()
     )
     existing = {row.chunk_index: row for row in existing_rows}
+    # Appending to a long chapter leaves most earlier chunks byte-for-byte
+    # unchanged. Reuse only vectors from this chapter and embedding space;
+    # historical rows are stale for retrieval but remain valid as a cache.
+    historical_vectors: dict[str, list[float]] = {}
+    candidate_hashes = {_content_hash(chunk.text) for chunk in chunks}
+    if candidate_hashes:
+        latest_vector_rev = await db.scalar(
+            select(func.max(ChapterChunk.body_rev)).where(
+                ChapterChunk.project_id == project_id,
+                ChapterChunk.chapter_id == chapter_id,
+                ChapterChunk.body_rev < body_rev,
+                ChapterChunk.content_hash.in_(candidate_hashes),
+                ChapterChunk.embedding.is_not(None),
+                ChapterChunk.embedding_space_id == settings.embedding_space_id,
+                ChapterChunk.embedding_text_hash == ChapterChunk.content_hash,
+            )
+        )
+        if latest_vector_rev is not None:
+            vector_rows = await db.execute(
+                select(ChapterChunk.content_hash, ChapterChunk.embedding).where(
+                    ChapterChunk.project_id == project_id,
+                    ChapterChunk.chapter_id == chapter_id,
+                    ChapterChunk.body_rev == latest_vector_rev,
+                    ChapterChunk.content_hash.in_(candidate_hashes),
+                    ChapterChunk.embedding.is_not(None),
+                    ChapterChunk.embedding_space_id == settings.embedding_space_id,
+                    ChapterChunk.embedding_text_hash == ChapterChunk.content_hash,
+                )
+            )
+            historical_vectors = {digest: list(vector) for digest, vector in vector_rows}
     output: list[ChapterChunk] = []
     to_embed: list[ChapterChunk] = []
     for chunk in chunks:
@@ -292,6 +322,11 @@ async def replace_chapter_chunks(
                 row.embedding_text_hash = None
             row.status = "ready" if row.embedding is not None and not changed else "pending"
             row.error_detail = None
+        if row.status == "pending" and digest in historical_vectors:
+            row.embedding = historical_vectors[digest]
+            row.embedding_text_hash = digest
+            row.embedding_space_id = settings.embedding_space_id
+            row.status = "ready"
         output.append(row)
         if row.status == "pending":
             to_embed.append(row)

@@ -3,9 +3,9 @@
 import pytest
 from sqlalchemy import select
 
+from config import settings
 from db.models_chapter_chunks import ChapterChunk
 from db.models_core import ChapterBody
-from config import settings
 from services.chapter_chunks import current_chunk_query, embed_pending_chapter_chunks, replace_chapter_chunks
 from services.providers import MockEmbeddingProvider
 
@@ -113,6 +113,72 @@ async def test_same_revision_is_idempotent_and_preserves_ready_vector(
     assert rows[0].id == first_id
     assert rows[0].status == "ready"
     assert list(rows[0].embedding) == first_vector
+
+
+@pytest.mark.asyncio
+async def test_append_reuses_unchanged_historical_vectors_without_reembedding(
+    async_db_session, seed_project
+):
+    await seed_project(chapter_ids=("ch_1",))
+    first_text = "林照穿过船坞。" * 8
+    second_text = "警报在舱门边响起。" * 8
+    added_text = "许澄带着队员赶来。" * 8
+    first = document(("p1", first_text), ("p2", second_text))
+    first_html = f"<p>{first_text}</p><p>{second_text}</p>"
+    await replace_chapter_chunks(
+        async_db_session,
+        chapter_id="ch_1",
+        project_id="proj_a",
+        body_rev=1,
+        content_html=first_html,
+        content_json=first,
+        max_chars=100,
+        overlap_chars=0,
+        embedding_provider=MockEmbeddingProvider(),
+    )
+    old = list((await async_db_session.execute(select(ChapterChunk))).scalars().all())
+    assert len(old) == 2
+    old_vectors = {row.content_hash: list(row.embedding) for row in old}
+
+    second = document(("p1", first_text), ("p2", second_text), ("p3", added_text))
+    current = await replace_chapter_chunks(
+        async_db_session,
+        chapter_id="ch_1",
+        project_id="proj_a",
+        body_rev=2,
+        content_html=f"{first_html}<p>{added_text}</p>",
+        content_json=second,
+        max_chars=100,
+        overlap_chars=0,
+    )
+
+    assert len(current) == 3
+    assert [row.status for row in current] == ["ready", "ready", "pending"]
+    assert all(list(row.embedding) == old_vectors[row.content_hash] for row in current[:2])
+    assert all(row.status == "stale" for row in old)
+
+
+@pytest.mark.asyncio
+async def test_append_does_not_reuse_vector_from_other_embedding_space(
+    async_db_session, seed_project, monkeypatch
+):
+    await seed_project(chapter_ids=("ch_1",))
+    text = "林照穿过船坞。" * 8
+    body = document(("p1", text))
+    kwargs = dict(
+        chapter_id="ch_1", project_id="proj_a", content_html=f"<p>{text}</p>",
+        content_json=body, max_chars=100, overlap_chars=0,
+    )
+    await replace_chapter_chunks(
+        async_db_session, body_rev=1, embedding_provider=MockEmbeddingProvider(), **kwargs
+    )
+    monkeypatch.setattr(settings, "embedding_model", "different-embedding-model")
+
+    current = await replace_chapter_chunks(async_db_session, body_rev=2, **kwargs)
+
+    assert len(current) == 1
+    assert current[0].status == "pending"
+    assert current[0].embedding is None
 
 
 @pytest.mark.asyncio
